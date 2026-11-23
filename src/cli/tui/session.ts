@@ -28,6 +28,9 @@ import {
   EVOLVE_IPC,
   type HostKind,
   type HostScope,
+  type McpLibraryInfo,
+  type McpMutationResult,
+  type McpServerInfo,
   type PermissionMode,
   type Project,
   type ProjectCreateInput,
@@ -40,6 +43,10 @@ import {
   type RunOutput,
   type RunTeam,
   type SetRunPermissionModeResult,
+  type SkillContent,
+  type SkillInfo,
+  type SkillLibraryInfo,
+  type SkillMutationResult,
   type SwitchRunModelResult,
   type WorktreeDiff
 } from '../../shared/types'
@@ -70,6 +77,7 @@ import {
   upsertRunSummary
 } from './state'
 import { hintStore, type TuiConfigApi } from './configApi'
+import { patchedMcpSpec, type TuiToolsApi } from './toolsApi'
 import { sanitizeTty } from './sanitizeTty'
 import type {
   ComposeTarget,
@@ -641,6 +649,49 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     ...(firstOpen ? { firstOpen } : {})
   }
 
+  // /mcp and /skills: the commands' channels. A save answers with the saved project; the session's project follows.
+  const followProject = <T extends { project: Project }>(res: T): T => {
+    if (res?.project && state.project?.id === res.project.id) set(setProject(state, res.project))
+    return res
+  }
+  const tools: TuiToolsApi = {
+    project: (id) => config.project(id),
+    async mcpServers(projectId) {
+      const list = await call<McpServerInfo[]>('mcp:list', [projectId])
+      return Array.isArray(list) ? list : []
+    },
+    async mcpLibrary() {
+      const list = await call<McpLibraryInfo[]>('mcpLibrary:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async setMcp(projectId, serverId, patch) {
+      // Read afresh, then change one field: the host compares the spec with its own list under the save's lock.
+      const listed = (await tools.mcpServers(projectId)).find((s) => s.spec.id === serverId)
+      if (!listed) throw new Error('That MCP server is no longer in the project.')
+      return followProject(await write<McpMutationResult>('mcp:upsert', [{ projectId, spec: patchedMcpSpec(listed.spec, patch) }]))
+    },
+    linkMcp: async (projectId, libraryId) => followProject(await write<McpMutationResult>('mcp:linkLibrary', [{ projectId, libraryId }])),
+    removeMcp: async (projectId, serverId) => followProject(await write<McpMutationResult>('mcp:remove', [{ projectId, serverId }])),
+    // A secret value goes one way only: it is never read back, so nothing here keeps it.
+    setMcpSecret: async (projectId, serverId, kind, name, value) => followProject(await write<McpMutationResult>('mcp:setSecret', [{ projectId, serverId, kind, name, value }])),
+    async setMcpLibrarySecret(libraryId, kind, name, value) {
+      await write<unknown>('mcpLibrary:setSecret', [{ libraryId, kind, name, value }])
+    },
+    async skills(projectId) {
+      const list = await call<SkillInfo[]>('skills:list', [projectId])
+      return Array.isArray(list) ? list : []
+    },
+    async skillLibrary() {
+      const list = await call<SkillLibraryInfo[]>('skillLibrary:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    readSkill: (projectId, skillId) => call<SkillContent>('skills:read', [{ projectId, skillId }]),
+    readLibrarySkill: (libraryId) => call<SkillContent>('skillLibrary:read', [{ libraryId }]),
+    updateSkill: async (projectId, skillId, patch) => followProject(await write<SkillMutationResult>('skills:update', [{ projectId, skillId, ...patch }])),
+    linkSkill: async (projectId, libraryId, roleIds) => followProject(await write<SkillMutationResult>('skills:linkLibrary', [{ projectId, libraryId, roleIds }])),
+    removeSkill: async (projectId, skillId) => followProject(await write<SkillMutationResult>('skills:remove', [{ projectId, skillId }]))
+  }
+
   const mergedOverrides = (over: RunOverrides | undefined): RunOverrides | undefined => {
     const base: RunOverrides = { ...(staged.goal ? { goal: staged.goal } : {}), ...(over ?? {}) }
     return Object.keys(base).length ? base : undefined
@@ -672,6 +723,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
 
   const api: TuiSessionApi = {
     config,
+    tools,
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener)

@@ -21,6 +21,7 @@ import { applyEdit, shownValue } from './cards/textEdit'
 import { boundCardClosedStatus, outcomeStatus, rejectionStatus, type TrayStatus } from './cards/status'
 import { useFocusHandler, useTuiEnv } from './context'
 import {
+  appliesToLiveRun,
   bindingsFor,
   cardDetail,
   cardFullView,
@@ -261,8 +262,8 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
     if (b.act === 'view') {
       const title = cardTitle(card)
       const full = cardFullView(card)
-      if (full.cut && card.kind === 'permission') {
-        // The full view itself is cut: the rest of the command cannot be read here, so v does not unlock y / s / a.
+      if (full.cut && (card.kind === 'permission' || appliesToLiveRun(card))) {
+        // The full view itself is cut: the rest cannot be read here, so v does not unlock y / s / a.
         st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here, so it can only be denied.', tone: 'warn' }
         bump()
       } else st.readAll = true
@@ -385,6 +386,7 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
   const detailView = top ? cardDetail(top, width - (top.kind === 'question' ? 8 : 2)) : undefined
   const preview = props.compact && top ? proposalPreview(top, width - 2) : undefined
   const detail = preview ?? detailView?.lines ?? []
+  const liveTeamChange = !!top && appliesToLiveRun(top)
   const statusRows = st.status ? 1 : 0
   const modeRows = st.mode.t !== 'idle' || st.pending ? 1 : 0
   const phrases = top ? hintPhrases(top, env.dumbTerminal, props.compact, focused && st.mode.t === 'idle' ? selectedChoice?.key : undefined) : []
@@ -533,6 +535,16 @@ export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
           : props.variant === 'footer'
             ? 'Read the whole command first: v shows it all.'
             : 'Read the whole command first: Down scrolls, v shows it all.'
+      )
+      return true
+    }
+    if (liveTeamChange && b.act === 'approve' && !st.readAll) {
+      notice(
+        detailView?.capped
+          ? 'This team change is too long to read here (cut at 64 KB): it can only be declined.'
+          : props.variant === 'footer'
+            ? 'Read the whole team change first: v shows it all.'
+            : 'Read the whole team change first: Down scrolls to its end, v shows it all.'
       )
       return true
     }

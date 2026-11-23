@@ -11,6 +11,7 @@ import { SessionBusyError, registerSession, type SessionHandle } from '../host/s
 import { McpLibraryStore } from './mcpLibrary'
 import { retainRunProject, readRetainedRunProjects } from './projectData'
 import { ProjectStore } from './projects'
+import { roleEditOf } from '../runtime/hostChange'
 import { SecretStore } from './secrets'
 import { SettingsStore, changedFields } from './settings'
 import { SkillLibraryStore } from './skillLibrary'
@@ -84,6 +85,86 @@ describe('ProjectStore, two sessions', () => {
     expect(b.list().map((p) => p.id)).toEqual(['proj_b'])
     b.save(project('proj_c', 'Gamma'))
     expect((read('projects.json').projects as Project[]).map((p) => p.id).sort()).toEqual(['proj_b', 'proj_c'])
+  })
+})
+
+describe('ProjectStore.baseOf: the version a copy was made from', () => {
+  it('answers the version this session handed out, as a copy, whatever was saved since; null when unknown', () => {
+    const a = new ProjectStore(dataDir, { sync: session(A).sync, home: root })
+    const b = new ProjectStore(dataDir, { sync: session(B).sync, home: root })
+    a.save(project('proj_a', 'Alpha'))
+    const mine = a.get('proj_a') as Project
+    b.update('proj_a', (p) => ({ ...p, brief: 'set by b' }))
+    expect(a.get('proj_a')?.brief).toBe('set by b')
+    const base = a.baseOf(mine)
+    expect(base).toEqual(mine)
+    expect(base).not.toBe(mine)
+    expect(a.baseOf({ id: 'proj_a', updatedAt: '1999-01-01T00:00:00.000Z' })).toBeNull()
+    expect(a.baseOf({ id: 'nope', updatedAt: mine.updatedAt })).toBeNull()
+  })
+
+  it('one process per data folder: the stored project when the copy was made from it, else null', () => {
+    const solo = new ProjectStore(dataDir, { sync: SOLO, home: root })
+    const saved = solo.save(project('proj_a', 'Alpha'))
+    expect(solo.baseOf(saved)).toEqual(saved)
+    expect(solo.baseOf({ id: 'proj_a', updatedAt: 'older' })).toBeNull()
+  })
+
+  it('a version this session saved itself stays known after another session saves and the file is read again', () => {
+    const a = new ProjectStore(dataDir, { sync: session(A).sync, home: root })
+    const b = new ProjectStore(dataDir, { sync: session(B).sync, home: root })
+    const mine = a.saveFromRenderer({ ...a.save(project('proj_a', 'Alpha')), brief: 'saved by a' })
+    b.save(project('proj_b', 'Beta'))
+    expect(a.get('proj_b')?.name).toBe('Beta')
+    expect(a.baseOf(mine)).toEqual(mine)
+    // ... and what another session reads of it is the same version.
+    const theirs = b.get('proj_a') as Project
+    expect(theirs.updatedAt).toBe(mine.updatedAt)
+    expect(b.baseOf(theirs)).toEqual(theirs)
+  })
+
+  it('a stamp seen with two different contents is not answered: nobody can tell which one a copy came from', () => {
+    const a = new ProjectStore(dataDir, { sync: session(A).sync, home: root })
+    a.save(project('proj_a', 'Alpha'))
+    const mine = a.get('proj_a') as Project
+    expect(a.baseOf(mine)).toEqual(mine)
+    // What a migration does: the stored project changes and keeps its stamp.
+    const file = read('projects.json') as { projects: Project[] }
+    writeFileSync(join(dataDir, 'projects.json'), JSON.stringify({ ...file, projects: file.projects.map((p) => ({ ...p, brief: 'rewritten, same stamp' })) }))
+    const b = new ProjectStore(dataDir, { sync: session(B).sync, home: root })
+    b.save(project('proj_b', 'Beta'))
+    expect(a.get('proj_a')?.brief).toBe('rewritten, same stamp')
+    expect(a.get('proj_a')?.updatedAt).toBe(mine.updatedAt)
+    expect(a.baseOf(mine)).toBeNull()
+  })
+
+  // Astra review, finding 1: terminal A reads the project while B has changed a role, B changes it back, A then saves
+  // an unrelated edit of that role. Roles merge per item, so A's stale copy puts B's first value back into the saved
+  // project. Read against the STORED project that looks like an edit the user made; against the version A edited it is
+  // not one, so it never moves onto a live run.
+  it('a save from a stale copy: only the caller\'s own edit shows against baseOf, not what another session undid', () => {
+    const a = new ProjectStore(dataDir, { sync: session(A).sync, home: root })
+    const b = new ProjectStore(dataDir, { sync: session(B).sync, home: root })
+    const first = a.save(project('proj_a', 'Alpha'))
+    const engineer = first.roles[1].id
+    const withPrompt = (p: Project, prompt: string): Project => ({ ...p, roles: p.roles.map((r) => (r.id === engineer ? { ...r, prompt } : r)) })
+    b.saveFromRenderer(withPrompt(b.get('proj_a') as Project, 'May use the deploy tool.'))
+    const mine = a.get('proj_a') as Project
+    expect(mine.roles[1].prompt).toBe('May use the deploy tool.')
+    b.saveFromRenderer(withPrompt(b.get('proj_a') as Project, 'Never deploy.'))
+    const storedBefore = structuredClone(a.get('proj_a') as Project)
+    expect(storedBefore.roles[1].prompt).toBe('Never deploy.')
+    const request: Project = { ...mine, roles: mine.roles.map((r) => (r.id === engineer ? { ...r, effort: 'high' as const } : r)) }
+    const base = a.baseOf(request) as Project
+    const saved = a.saveFromRenderer(request)
+    expect(saved.roles[1].effort).toBe('high')
+    const fields = (before: Project): string[] => Object.keys(roleEditOf(before.roles, request.roles, saved.roles).changed.get(engineer) ?? {}).sort()
+    // The comparison the terminal host makes (dispatcher.ts projects:save): the user's edit is the effort alone.
+    expect(fields(base)).toEqual(['effort'])
+    // The merge is per role, so the stale prompt is back in the saved project; read against the stored project (the
+    // desktop's comparison, right with one process) it would count as the user's edit and reach the live run.
+    expect(saved.roles[1].prompt).toBe('May use the deploy tool.')
+    expect(fields(storedBefore)).toEqual(['effort', 'prompt'])
   })
 })
 

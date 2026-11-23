@@ -288,6 +288,22 @@ export function upsertFieldsOf(input: Record<string, unknown>, stored: Record<st
   return keys.filter((k) => MCP_LINK_OWN.has(k) || (k in input && !same(input[k], entry![k])))
 }
 
+/** The fields of a server the terminal UI changes with mcp:upsert, one per save. */
+const TERMINAL_UPSERT_FIELDS: ReadonlySet<string> = new Set(['enabled', 'roles'])
+
+/**
+ * mcp:upsert on the terminal's own host: a client sends the whole spec, read before the save, so it can carry a stale
+ * value of some other field. `shown` is the server as mcp:list answers it now, read under the same lock as the save.
+ * Only a spec that differs from it in exactly one field, `enabled` or `roles`, is the user's one edit and may reach a
+ * live run: that field's name. Anything else (a new server, two differing fields, another field): undefined, and the
+ * save applies from the next run.
+ */
+export function terminalUpsertField(spec: Record<string, unknown> | undefined, shown: Record<string, unknown> | undefined): string | undefined {
+  if (!spec || !shown || typeof spec !== 'object' || typeof shown !== 'object') return undefined
+  const differs = [...new Set([...Object.keys(spec), ...Object.keys(shown)])].filter((k) => JSON.stringify(spec[k]) !== JSON.stringify(shown[k]))
+  return differs.length === 1 && TERMINAL_UPSERT_FIELDS.has(differs[0]) ? differs[0] : undefined
+}
+
 /** Fields of a linked MCP server the project owns (defaults.ts linkedSpec); every other field comes from the library. */
 export const MCP_LINK_OWN: ReadonlySet<string> = new Set(['id', 'enabled', 'roles', 'envOverrides', 'headerOverrides', 'addedAt', 'source', 'libraryId'])
 /** Fields of a linked skill the project owns (skills/service.ts linkedSnapshot); every other field comes from the library. */

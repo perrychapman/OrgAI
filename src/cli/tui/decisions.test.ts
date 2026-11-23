@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { CardKind, McpInstallRequest, MergeReview, PermissionRequest, PermissionRuleRequest, Proposal, UserQuestion } from '../../shared/types'
-import { bindingsFor, cardDetailLines, cardFullText, cardTitle, decisionFor, secretSlotsFor, wrapLine, type TrayAction } from './decisions'
+import type { CardKind, McpInstallRequest, MergeReview, OrgChartProposalPayload, PermissionRequest, PermissionRuleRequest, Proposal, Role, UserQuestion } from '../../shared/types'
+import { appliesToLiveRun, bindingsFor, cardDetail, cardDetailLines, cardFullText, cardFullView, cardTitle, confirmQuestion, decisionFor, proposalPreview, secretSlotsFor, wrapLine, type TrayAction } from './decisions'
 import { cardKey, type CardRef, type TrayCard } from './types'
 
 const RUN = 'run_1'
@@ -231,5 +231,126 @@ describe('card text', () => {
     expect(cardFullText(tray('merge', merge()))).toContain('+added\n-removed')
     const arch: Proposal = { id: REQ, runId: RUN, agentId: 'root', title: 'Arch', createdAt: 1, kind: 'architecture', payload: { summary: 's', stack: [], modules: [], conventions: [], commands: [], risks: [] } }
     expect(cardTitle(tray('proposal', arch, 1, { projectKind: 'engagement' }))).toBe('Approve engagement plan')
+  })
+})
+
+describe('org chart cards show the diff', () => {
+  const orgRole = (id: string, over: Partial<Role> = {}): Role => ({
+    id,
+    slug: id,
+    name: `Name ${id}`,
+    description: `desc ${id}`,
+    responsibilities: [],
+    prompt: '',
+    tools: ['Read'],
+    model: 'claude-sonnet-5',
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: null,
+    position: { x: 0, y: 0 },
+    color: '#ffffff',
+    ...over
+  })
+  const savedLead = orgRole('lead', { name: 'Lead', description: 'runs the team' })
+  const proposedLead = orgRole('lead', { name: 'Lead', description: 'runs the team' })
+  const proposedQa = orgRole('qa', { name: 'QA', description: 'writes tests', reportsTo: 'lead' })
+  const org = (payload: OrgChartProposalPayload, effect?: Proposal['effect']): Proposal => ({
+    id: REQ,
+    runId: RUN,
+    agentId: 'root',
+    title: 'Add a tester',
+    createdAt: 1,
+    kind: 'orgChart',
+    ...(effect === undefined ? {} : { effect }),
+    payload
+  })
+  const approve = (c: TrayCard) => bindingsFor(c).find((b) => b.key === 'y')!
+
+  it('lists the diff against the project\'s saved roles when the card has no run baseline', () => {
+    const card = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: 'no tester yet' }), 1, { savedRoles: [savedLead] })
+    const lines = cardDetailLines(card, 120)
+    expect(lines).toContain('Org chart: Add a tester')
+    expect(lines).toContain('1 added (compared with the saved team)')
+    expect(lines).toContain('+ QA (reports to Lead), Everyday: writes tests')
+    expect(lines).toContain('1 role unchanged')
+    expect(lines).toContain('Why: no tester yet')
+    expect(lines.some((l) => l.includes('roles:'))).toBe(false)
+  })
+
+  it('keeps the plain listing when there is nothing to compare with', () => {
+    const lines = cardDetailLines(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' })), 120)
+    expect(lines).toContain('2 roles:')
+    expect(lines).toContain('- Lead (orchestrator), claude-sonnet-5: runs the team')
+    expect(lines).toContain('- QA, claude-sonnet-5: writes tests')
+  })
+
+  it('Approve is two-step only when the change reaches this run now', () => {
+    const twoStep = (c: TrayCard): boolean => approve(c).twoStep === true
+    const live = (effect: Proposal['effect']): TrayCard => tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, effect))
+    expect(twoStep(live('now'))).toBe(true)
+    expect(twoStep(live('after-turn'))).toBe(true)
+    expect(twoStep(live('next-run'))).toBe(false)
+    expect(twoStep(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' }, 'now'), 1, { savedRoles: [savedLead] }))).toBe(false)
+    expect(twoStep(tray('proposal', mcpProposal()))).toBe(false)
+  })
+
+  it('the confirmation names the team change it applies to this run', () => {
+    const live = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'now'))
+    expect(confirmQuestion(live, approve(live))).toBe("Change this run's team now (1 added)?")
+    const later = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'next-run'))
+    expect(confirmQuestion(later, approve(later))).toBe('Approve (Approve org chart proposal)?')
+  })
+
+  it('the tray preview shows the summary line', () => {
+    const card = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' }), 1, { savedRoles: [savedLead] })
+    expect(proposalPreview(card, 120)).toContain('1 added (compared with the saved team)')
+    expect(proposalPreview(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' })), 120)).toContain('2 roles proposed')
+  })
+
+  it('the body of a card that changes this run carries every value that moves, not field names', () => {
+    const live = tray('proposal', org({ roles: [proposedLead, { ...proposedQa, tools: ['Bash', 'Write'], prompt: 'Run every script.', tier: 'deep', effort: 'high', canSpawn: true, spawnable: ['lead'] }], rationale: '', runBaseline: [savedLead] }, 'now'))
+    const lines = proposalPreview(live, 120) ?? []
+    expect(lines).toContain("1 added (compared with this run's team)")
+    expect(lines).toContain('    Tools: Bash, Write')
+    expect(lines).toContain('    Tier: deep')
+    expect(lines).toContain('    Effort: high')
+    expect(lines.join('\n')).toContain('spawns: Lead')
+    expect(lines).toContain('      Run every script.')
+    expect(lines).toContain('Takes effect now.')
+    // A changed role shows from -> to, not just the name of the field.
+    const movedLead = orgRole('lead', { name: 'Lead', description: 'runs the team', tools: ['Read', 'Grep'], model: 'claude-opus-5' })
+    const moved = proposalPreview(tray('proposal', org({ roles: [movedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'after-turn')), 120) ?? []
+    expect(moved.some((l) => /Tools?: .*Read.* -> .*Grep/i.test(l))).toBe(true)
+    expect(moved.some((l) => /Everyday -> Deep/.test(l))).toBe(true)
+  })
+
+  it('a live team change is cut at 64 KB: the view is cut, and capped says y must wait', () => {
+    const big = tray('proposal', org({ roles: [proposedLead, { ...proposedQa, prompt: `${'x'.repeat(100)}\n`.repeat(900) }], rationale: '', runBaseline: [savedLead] }, 'now'))
+    expect(cardFullView(big).cut).toBe(true)
+    expect(cardDetail(big, 120).capped).toBe(true)
+    const small = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'now'))
+    expect(cardFullView(small).cut).toBe(false)
+    expect(cardDetail(small, 120).capped).toBe(false)
+    expect(appliesToLiveRun(small)).toBe(true)
+    expect(appliesToLiveRun(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'next-run')))).toBe(false)
+  })
+
+  it('hostile text in a role name and a prompt never reaches the live card body as an escape', () => {
+    const evil = orgRole('evil', { name: 'Ev\u001b[31mil\u001b]0;pwn\u0007', description: 'd‮evil', prompt: 'ok\u001b[2Jwipe‮gnp.exe\nsecond', reportsTo: 'lead' })
+    const live = tray('proposal', org({ roles: [proposedLead, evil], rationale: '', runBaseline: [savedLead] }, 'now'))
+    const all = [...(proposalPreview(live, 120) ?? []), cardFullText(live)].join('\n')
+    // The real formatter shows hidden characters as visible \u escapes and never passes the raw character on.
+    expect(all).toContain('\\u001b')
+    expect(all).toContain('\\u202e')
+    expect(all).toContain('wipe')
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u001b\u0007‮\u009b]/.test(all)).toBe(false)
+  })
+
+  it('a next-run card keeps today\'s preview: the summary line, no role lines', () => {
+    const later = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'next-run'))
+    expect(proposalPreview(later, 120)).toEqual(['Add a tester', "1 added (compared with this run's team)", 'Applies to the next run.'])
+    const saved = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' }), 1, { savedRoles: [savedLead] })
+    expect(proposalPreview(saved, 120)).not.toContain('+ QA')
   })
 })

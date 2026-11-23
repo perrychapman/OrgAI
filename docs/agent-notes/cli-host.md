@@ -145,15 +145,24 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     publish (D2 fallback). release.yml has three desktop build jobs on two OSes (Windows x64, macOS arm64, macOS x64) and
     no Linux leg: Linux is covered only by verify-npm. The app no longer contains the CLI (standalone spec 5.2); `pack:verify` has no CLI-driven checks.
   - Model (docs/design/cli-standalone-default.md, implemented 2026-11-08): see the first bullet. `orgai` always runs its host in-process (`src/cli/inprocHost.ts`, ownership in `src/main/host/ownership.ts`, one `orgai` per CLI data folder, a second one is refused with exit 6; read-only commands read files beside an owner, `src/cli/client/readOnlyStore.ts`). There is no `--host`, daemon, Node or headless host, no `orgai app`, `terminal-access`, `watch`, `inbox`, `decide` or `attach`, and no launcher or shared host. Cards are answered inside the owning TUI. `ORGAI_SECRET_*` / `--secret-env` rules follow spec 4.1 (Round 6 item 8); `ORGAI_SECRET_*` names are refused as `--from-env` / `--client-secret-from-env` sources (exit 2).
-  - Mid-run org changes are DESKTOP ONLY (owner decision, fourth review of the live roster, 2026-11-18): the `orgai`
-    host's RunManager is built without `RunManagerOptions.liveRosterCards` (bootstrap.ts sets it only with `desktop`),
-    because the TUI decides org chart cards without a diff against runBaseline (`src/cli/tui/decisions.ts`). So a CLI /
-    TUI / exec run keeps the pre-feature behaviour exactly even though the adapters' sessions declare `liveRoster`: no
-    runBaseline on the payload (an agent-supplied one is dropped), `ctx.roles` untouched, card effect 'next-run', and
-    propose_org_change says "applies from the next run". The headless exec policy only ever declines a proposal.
-    Checked by runRoster.test.ts (the gate fails closed) and runManagerRoster.test.ts (a RunManager without the option on
-    a liveRoster session). Turning it on for the CLI needs a TUI org chart diff against runBaseline with every field
-    that can move, then the option in the inproc bootstrap.
+  - Mid-run org changes in the terminal (2026-11-23). They were desktop only by owner decision (fourth review of the
+    live roster, 2026-11-18) because the TUI decided org chart cards without a diff against runBaseline; the note here
+    said what turning it on needs: "a TUI org chart diff against runBaseline with every field that can move, then the
+    option in the inproc bootstrap". Both are done. The card (`src/cli/tui/orgChartCard.ts`, used by `decisions.ts`)
+    renders the desktop's own diff (`src/shared/view/orgDiff.ts` `diffOrgChart` over `orgDiffBase`). A card that changes
+    this live run (`orgChartAppliesNow`: effect 'now' / 'after-turn' and a runBaseline) shows, in its scrollable
+    compact body, the `from -> to` of every changed field and, for an added role, its model, tools, tier, effort,
+    connection, staffing, skills, spawn rights, responsibilities and prompt (PR 68 review H1). `y` is refused with a
+    one-line reason until that body was scrolled to its end or `v` opened the full view, the mechanism the permission
+    cards use (`readAll`); a body or full view cut at 64 KB never unlocks `y` (decline it). Then Approve is a two-step
+    key: "Change this run's team now (1 added, 1 changed)?". A card that applies from the next run keeps the short
+    preview. Checked by `DecisionTray.orgGate.test.tsx` and `decisions.test.ts`; e2e section j is not runnable on
+    Windows (no pty). bootstrap.ts sets `liveRosterCards` for hostKind 'inproc' as well: the TUI tray is the only approving
+    path there (exec's policy declines, fails or waits; no other process reaches a card). A `run.roster` event shows
+    as one status notice (`rosterNotice`). A card without a runBaseline (setup, /evolve, a single-assistant run) is
+    compared with the saved team and applies from the next run as before. Checked by orgChartCard.test.ts,
+    decisions.test.ts, runRoster.test.ts and e2e `cli-tui.mjs` section j (the mock's `[mock:org-change]`: the new
+    role joins the run and takes work); no live provider.
   - PR 49 (in-memory dispatch, lazy loading, run choices, exec flags; review fixes 2026-11-12). Each item says how it was checked; nothing here was run against a live provider, and no e2e beyond the area scripts listed in the PR 49 fix report.
     - `orgai exec -q` / `--quiet`: stdout carries only the sanitized final answer, logs go nowhere or to stderr, JSON output is unchanged (exec.test.ts "--quiet ..." cases).
     - `--output-last-message <file>`: the final answer is written to a temporary file and renamed over the destination (relative to the cwd), never through a link; a failed write fails the command (exec.test.ts; the link case needs symlink privilege and fails with EPERM on a Windows account without it, a test-environment limit).
@@ -565,8 +574,40 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   `previewTierChange` (now exported; the touched roles are listed before `y`), then connections:update; App rows through
   `orgai settings`' `SETTING_KEYS` / `parseSettingValue`, then settings:set. The project's connection row is read-only.
   Host calls: `TuiSessionApi.config` (`configApi.ts`), reads on the shared client, writes on a one-call 'configure'
-  connection (`callConfigured`); a save updates the session's project. Mid-run: the host lets a project be saved while a
-  run is live and RunManager keeps the live run's roles as they started, so a save during a live run says it applies from
-  the next run. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
+  connection (`callConfigured`); a save updates the session's project. Mid-run (2026-11-22): a role edit saved in /team
+  reaches the team work runs this terminal hosts (ARCHITECTURE.md "Host changes in a live run", TERMINAL), and each
+  run's answer shows as one status notice (`liveChangeText.ts`: "The team: this run uses the change now." or "from the
+  next run" with the reason). A single-assistant run and a run another terminal hosts keep the team they started with:
+  only then /team adds its "keeps the team it started with" note (`takesSavedTeam`). /settings saves change no role, so
+  a live run keeps the settings it started with. Checked by e2e/cli-tui.mjs section i (mock adapter) and unit tests; no
+  live provider. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
   backs out one level. The first time a terminal opens a project it shows one notice naming /team and /settings
   (`<userDataDir>/tui-hints.json`, `hintStore`).
+- TUI `/mcp` and `/skills` (2026-11-23; `McpView.tsx` / `mcpModel.ts`, `SkillsView.tsx` / `skillsModel.ts`, host calls in
+  `toolsApi.ts`, built like /team on `configUi.tsx`): the project's servers and skills as a list; Space turns one on or
+  off, `r` ticks the roles (MCP: `McpServerSpec.roles` slugs, every role ticked = no list; skills: the complete set of
+  role ids), `l` adds one from the library, `x` removes it after `y`, Enter shows the details (a skill's text is read
+  in the background). Each save is ONE field of ONE item, so it reaches the live team runs this terminal hosts
+  (ARCHITECTURE.md "Host changes in a live run", TERMINAL); the run answers in the status line, and the view adds its
+  "keeps what it started with" note only when some live run does not take the save. `setMcp` reads mcp:list afresh
+  and upserts the spec with that one field changed, which is what the host's one-field rule expects. `s` in /mcp
+  (2026-11-23) sets or deletes one secret value: a hidden input (`configUi.tsx` 'input' dialog with `secret: true`:
+  dots, never the text; a pasted line break is dropped; up to 4000 characters), saved with mcp:setSecret, or
+  mcpLibrary:setSecret when the values live in the linked library entry (`McpServerInfo.secretScope`); the value is
+  never read back and never in a message; e2e checks the raw pty output never carries it. A live run is not told
+  about a new secret (mcp:setSecret has no live path on any host). Not in the views: adding a new server or skill by
+  hand, and sign-in (the `orgai mcp` / `orgai skills` commands). A WIDENING save asks first (PR 68 review, M1): turning
+  an item on, linking one from the library, or a roles / grants change that adds at least one role (including "every
+  role") opens a `confirm` dialog (`strict`: `y` saves, any other key cancels, nothing is saved). The MCP dialog shows
+  the name, transport, the command and every argument (one per line) or the URL, the NAMES of env variables, headers
+  and secret slots (never a value), the source and who gets it; the skill dialog the name, source, files, who holds it
+  and the first 12 lines of SKILL.md. The text is read afresh when the dialog opens (`skills:read` for a project
+  skill, never the text cached for the details; `skillLibrary:read` through `TuiToolsApi.readLibrarySkill` for a
+  library entry). Fail closed (PR 68 recheck, N2 / N3): when that read fails no dialog opens, nothing is saved and
+  the one-line message points to the `orgai skills` command. Text is sanitized and never cut: a definition that does
+  not fit the window is refused with a message instead of being cut, and a strict dialog that a resize has since
+  made too small is closed on the next key instead of accepting `y` (`strictConfirmCut`, N4). Narrowing keeps saving at once. The
+  predicates and line builders are pure (`mcpWidens`, `mcpConfirmLines`, `skillWidens`, `skillConfirmLines`), checked by
+  `widening.test.ts` and the view tests; the selected row is one clamped index for highlight and action (L5). Checked by
+  the four view and model test files and e2e `cli-tui.mjs` section i (mock adapter); no live provider. The views were
+  written by a local model from a design brief and reviewed line by line.

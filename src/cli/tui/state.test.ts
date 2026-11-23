@@ -213,6 +213,23 @@ describe('applyEvent', () => {
     ])
   })
 
+  it('run.roster notes what an approved org chart changed in a live run', () => {
+    let s = liveState()
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r1', roster: [], change: { added: ['r-qa'], changed: [], removed: [], deferred: [] } }, 11))
+    expect(s.notices.map((n) => [n.text, n.tone])).toEqual([['The team of this run changed: 1 role added.', 'ok']])
+    // A run the user is not following is named by its tag; a deferred role says why it waits.
+    s = applyEvent(s, ev({ type: 'run.status', runId: 'r2', status: 'running' }, 12))
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r2', roster: [], change: { added: [], changed: ['r-lead'], removed: [], deferred: [{ id: 'r-9', name: 'QA', reason: 'The run was still starting' }] } }, 13))
+    expect(s.notices.map((n) => [n.text, n.tone])).toEqual([
+      ['The team of this run changed: 1 role added.', 'ok'],
+      ['The team of R2 changed: 1 changed. 1 waits for the next run: QA: The run was still starting.', 'warn']
+    ])
+    // Nothing moved, and a malformed event, add nothing.
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r1', roster: [], change: { added: [], changed: [], removed: [], deferred: [] } }, 14))
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r1', roster: [], change: undefined } as unknown as RunEvent, 15))
+    expect(s.notices).toHaveLength(2)
+  })
+
   it('caps the transcript at TUI_TRANSCRIPT_MAX keeping the newest and counts the dropped into omitted', () => {
     let s = liveState()
     for (let i = 0; i < TUI_TRANSCRIPT_MAX + 3; i++) s = applyEvent(s, ev({ type: 'transcript', runId: 'r1', entry: entry(`x${i}`) }, 100 + i))

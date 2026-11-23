@@ -19,12 +19,14 @@ import type {
   Project,
   RunEvent,
   RunRecord,
+  RunRosterChange,
   RunsEventParams,
   RunSummary,
   TranscriptEntry
 } from '../../shared/types'
 import { applyRunDelegation } from '../../shared/delegationView'
 import { statusEventEndFacts } from '../../shared/view/runChains'
+import { runTag } from '../../shared/view/runLabels'
 import type { SnapshotResult } from '../client/runStream'
 import { safeLine } from '../output'
 import { StreamSanitizers, sanitizeTty } from './sanitizeTty'
@@ -42,6 +44,8 @@ import {
   type TuiRun,
   type TuiState
 } from './types'
+import { liveChangeNotice, type LiveChangeNotice } from './liveChangeText'
+import { rosterNotice } from './orgChartCard'
 
 // ---------- Partial streams ----------
 
@@ -501,6 +505,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   const existing = out.runs[e.runId]
   if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove' || e.type === 'agent.message')) return out
   let compactedNotice: string | undefined
+  let liveChange: LiveChangeNotice | undefined
+  let rosterNote: { text: string; tone: 'ok' | 'warn' } | undefined
   let run: TuiRun = existing ?? newRun(stubSummary(out, e.runId, now))
   const summary = run.summary
 
@@ -540,6 +546,24 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'run.moved':
       run = { ...run, summary: { ...summary, projectId: e.projectId } }
       break
+    case 'run.liveChange': {
+      // A change the user saved while this run is live (docs: "Host changes in a live run"): say what the run does with
+      // it. "This run" is the run on screen; another run of the project is named by its tag (R2).
+      const at = out.runOrder.indexOf(e.runId)
+      const who = e.runId === out.activeRunId ? undefined : runTag(at >= 0 ? at + 1 : undefined)
+      liveChange = liveChangeNotice(e.change, Array.isArray(e.what) ? e.what : [], who)
+      break
+    }
+    case 'run.roster': {
+      // An org chart the user approved on this card reached the live run: say what its team became.
+      const at = out.runOrder.indexOf(e.runId)
+      const who = e.runId === out.activeRunId ? undefined : runTag(at >= 0 ? at + 1 : undefined)
+      const change: RunRosterChange | undefined = e.change
+      if (change && Array.isArray(change.added) && Array.isArray(change.changed) && Array.isArray(change.removed) && Array.isArray(change.deferred)) {
+        rosterNote = rosterNotice(change, who)
+      }
+      break
+    }
     case 'run.model':
       // The root's live model (a model switch): the status bar and the inspector read summary.modelSelection.
       if (!e.selection || typeof e.selection.model !== 'string' || typeof e.selection.connection !== 'string') return out
@@ -651,6 +675,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   }
 
   if (compactedNotice) out = addNotice(out, compactedNotice, 'warn', now)
+  if (liveChange) out = addNotice(out, safeLine(liveChange.text), liveChange.tone, now)
+  if (rosterNote) out = addNotice(out, safeLine(rosterNote.text), rosterNote.tone, now)
   return finish(out, run, existing, summary)
 }
 

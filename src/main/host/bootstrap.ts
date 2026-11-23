@@ -499,11 +499,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     log: (m) => log.info(m)
   })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
-    // Mid-run org changes: the desktop app's only decision path for an org chart card is the renderer's ProposalCard,
-    // which diffs against runBaseline. The CLI host (TUI, exec) shows no diff, so it never opts in (fail closed).
-    ...(opts.desktop ? { liveRosterCards: true as const } : {}),
+    // Mid-run org changes: a host opts in only when every path that can approve an org chart card shows its diff
+    // against runBaseline. The desktop app: the renderer's ProposalCard. The orgai command's own host: the TUI tray
+    // (decisions.ts orgChartCardLines, the shared orgDiff the desktop uses, and a second key press before it changes a
+    // live run); exec has no approving path (its policy declines, fails or waits) and no other process reaches a card.
+    ...(opts.desktop || hostKind === 'inproc' ? { liveRosterCards: true as const } : {}),
     // The desktop window's saves (projects:save, mcp:*, skills:*) reach the project's live work runs (applyProjectChange).
     ...(opts.desktop ? { liveHostChanges: true as const } : {}),
+    // The terminal's own orgai process serves only itself: a project save the user typed there (TUI /team) does too.
+    ...(!opts.desktop && hostKind === 'inproc' ? { liveUserSaves: true as const } : {}),
     ...(opts.desktop
       ? {
           todos: {

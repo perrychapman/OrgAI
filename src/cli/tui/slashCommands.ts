@@ -510,6 +510,29 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
+    name: 'mcp',
+    aliases: ['servers'],
+    summary: "The project's MCP servers: turn one on or off, choose the roles that may use it, add one from your library",
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('mcp')
+        else ctx.notify('The MCP view is not available here; use orgai mcp list.', 'warn')
+      })
+  },
+  {
+    name: 'skills',
+    summary: "The project's skills: turn one on or off, choose the roles that may load it, add one from your library",
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('skills')
+        else ctx.notify('The Skills view is not available here; use orgai skills list.', 'warn')
+      })
+  },
+  {
     // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).
     name: 'inbox',
     aliases: ['tray', 'decisions'],

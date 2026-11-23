@@ -321,9 +321,11 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   gate, role lookup and restart sees it; review M1).
   - Org changes in the same run (owner request 2026-11-18; ARCHITECTURE.md "Org changes in the same run"): on a team
     work run whose session sets `RuntimeSession.liveRoster` (`runRoster.ts` `liveRosterApplies`), an approved
-    propose_org_change also changes `ctx.roles` in place, on the DESKTOP host only (fourth review, owner decision:
-    `RunManagerOptions.liveRosterCards`, set by bootstrap.ts with `desktop`, checked inside `liveRosterApplies`; the CLI
-    / TUI / exec host keeps the pre-feature behaviour, runManagerRoster.test.ts "fourth review"), under one invariant
+    propose_org_change also changes `ctx.roles` in place, on the desktop host and, since 2026-11-23, the orgai
+    command's own host (`RunManagerOptions.liveRosterCards`, set by bootstrap.ts with `desktop` or hostKind 'inproc',
+    checked inside `liveRosterApplies`; its TUI card shows every value that moves and `y` waits until it was read, see
+    docs/agent-notes/cli-host.md "Mid-run org changes in the terminal"; a socket or exec host keeps the pre-feature
+    behaviour, runManagerRoster.test.ts "fourth review"), under one invariant
     (third review): RunManager sets
     `OrgChartProposalPayload.runBaseline` (the run's roles plus waiting ones, `runBaselineOf`; an incoming value is
     dropped, never saved), the card diffs against it, and a field moves only if the card differs from the baseline
@@ -401,11 +403,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       unverified: that thread/resume applies new developerInstructions (the MCP restart assumes the same), and that a
       new role's own model gets the native-agents catalog override before the next app-server restart.
   - Host changes in a live run (owner request 2026-11-19; ARCHITECTURE.md Conventions "Host changes in a live run";
-    desktop only): desktop saves (projects:save roles and role grants, mcp:upsert / remove / linkLibrary /
+    the desktop app; since 2026-11-23 also a project, MCP or skill save typed in the terminal's own orgai process,
+    never a card there): the user's saves (projects:save roles and role grants, mcp:upsert / remove / linkLibrary /
     setProjectOverrides, skills:create / update / remove / linkLibrary) and approved MCP / skill / org chart cards of
     another session of the same project reach every other live team work run through
     `RunManager.applyProjectChange` (`runtime/hostChange.ts`; handlers in `host/dispatcher.ts`, `liveRunsOf`, only for
-    `ctx.surface === 'desktop'`; `RunManagerOptions.liveHostChanges` set by bootstrap.ts with `desktop`). Each run's
+    `ctx.surface === 'desktop'`; `RunManagerOptions.liveHostChanges` set by bootstrap.ts with `desktop`; the terminal: `isUsersOwnSurface` and `liveUserSaves`; projects:save is read against `ProjectStore.baseOf`, mcp:* / skills:* read and save as one locked step (`oneStep`), mcp:upsert only as one of `enabled` / `roles` (`terminalUpsertField`), a user-saved role edit asks `liveRosterTakesSave`). Each run's
     `ActiveRun.hostApply` reuses `setLive` (new settle 'grants') and `applyRosterChange` with the run's own baseline;
     the handler reads the stored project before the save (a structuredClone copy, every handler), so a team-file ingest
     of the same save does not ride along on roles and grants (`runManagerHostChange.test.ts` "INVARIANT", which fails if

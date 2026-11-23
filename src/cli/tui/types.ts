@@ -66,6 +66,7 @@ import type {
   Proposal,
   ProviderModel,
   QuickRunPromoteResult,
+  Role,
   RpcHelloResult,
   RunOverrides,
   RunPlan,
@@ -87,6 +88,7 @@ import type { HostClient, InprocHostHandle, SessionPeer } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
 import type { ApprovalsApi } from './approvals'
 import type { TuiConfigApi } from './configApi'
+import type { TuiToolsApi } from './toolsApi'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -422,6 +424,8 @@ export type TrayCard = {
   runTag: string
   runKind: RunSummary['kind']
   projectKind?: ProjectKind
+  /** The open project's saved roles, when this card's run belongs to it: what an org chart card without a run baseline is compared with. */
+  savedRoles?: readonly Role[]
   /** Arrival order (TuiState.cardSeq at arrival). */
   arrivedSeq: number
   /** The agent the card is about (every card kind carries one) and its sanitized label. */
@@ -566,6 +570,8 @@ export interface TuiSessionApi {
   projectNames?(): Promise<Map<string, string>>
   /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
   config?: TuiConfigApi
+  /** The host calls of /mcp and /skills: the channels `orgai mcp` and `orgai skills` use. */
+  tools?: TuiToolsApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
   readonly hostKind: HostKind
@@ -794,7 +800,7 @@ export interface SlashContext {
   /** /agent <name>: open that agent's inspector. */
   openAgent?(arg: string): void
   /** /team and /settings: open that view over the run view (cli-parity 3.7). */
-  openConfig?(view: 'team' | 'settings'): void
+  openConfig?(view: 'team' | 'settings' | 'mcp' | 'skills'): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
   /** /mode: change the followed run's permission mode, or stage it for the next run when none is followed. */
