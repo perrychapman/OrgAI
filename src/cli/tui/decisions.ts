@@ -35,7 +35,7 @@ import {
 } from '../../shared/view/mcpProposal'
 import { pinnedVersionOf } from '../../shared/view/mcpVersion'
 import { collapseRules, noRuleLine, permissionOffer, referenceEffect, referenceLocation, ruleChip } from '../../shared/view/permissionCopy'
-import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines, orgChartSummaryLine } from './orgChartCard'
+import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines, orgChartRoleLines, orgChartSummaryLine } from './orgChartCard'
 import { graphemes, graphemeWidth, textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import type { DecisionCall, TrayCard } from './types'
@@ -676,7 +676,11 @@ export function proposalPreview(card: TrayCard, width: number): string[] | undef
   const p = card.card
   const lines = [oneText(p.title, 200)]
   if (p.kind === 'architecture' && p.payload.summary) lines.push(oneText(p.payload.summary, 160))
-  if (p.kind === 'orgChart') lines.push(orgChartSummaryLine(p.payload, card.savedRoles) ?? `${p.payload.roles.length} roles proposed`)
+  if (p.kind === 'orgChart') {
+    lines.push(orgChartSummaryLine(p.payload, card.savedRoles) ?? `${p.payload.roles.length} roles proposed`)
+    // A card that changes this run's team names the roles it moves, so y is not pressed on a bare count.
+    if (orgChartAppliesNow(p)) lines.push(...(orgChartRoleLines(p.payload, card.savedRoles, { one: oneText, text }) ?? []))
+  }
   const effect = p.effect === 'next-run' ? 'Applies to the next run.' : proposalEffectCopy(p.effect)
   if (effect) lines.push(effect)
   if (anyHidden(card.card)) lines.unshift(HIDDEN_BADGE)

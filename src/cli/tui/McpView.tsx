@@ -146,9 +146,10 @@ export function McpView(props: McpViewProps) {
   }
 
   /**
-   * s: set one secret value of this server, or delete it (empty text). The value is typed once and never shown again,
-   * in the frame or in the message. A server with several secrets asks which one first. When the values live in the
-   * library entry the server links, the save goes to that entry and every project that links it gets it.
+   * s: set one secret value of this server, or delete it (empty text, and only after a confirm asks). The value is
+   * typed once and never shown again, in the frame or in the message. A server with several secrets asks
+   * which one first. When the values live in the library entry the server links, the save goes to that entry and every
+   * project that links it gets it.
    */
   const editSecret = (): void => {
     const info = target!
@@ -162,32 +163,51 @@ export function McpView(props: McpViewProps) {
     const libraryId = info.spec.libraryId ?? ''
     const ask = (slot: McpSecretSlot): void => {
       const secret = clean(slot.name, 80)
+      /** One call: `value` null deletes the stored value, anything else replaces it. */
+      const apply = (value: string | null): void => {
+        const done = `${value === null ? 'Deleted' : 'Saved'} ${secret} ${value === null ? 'of' : 'for'} ${name}. A run that is live now may not use it until its next run.`
+        if (!library) {
+          save(() => api.setMcpSecret(projectId, info.spec.id, slot.kind, slot.name, value), info.spec.id, done, false)
+          return
+        }
+        // The library save answers with the library, not the project: reload the list the same way `save` does.
+        act('Saving', async () => {
+          await api.setMcpLibrarySecret(libraryId, slot.kind, slot.name, value)
+          const next = await load().catch(() => undefined)
+          if (!alive.current) return
+          // The value is saved even when the list cannot be read again: say so either way.
+          if (next) {
+            setData(next)
+            const at = mcpRows(next).findIndex((r) => r.id === info.spec.id)
+            if (at >= 0) setSel(at)
+          }
+          setMessage({ text: done, tone: 'ok' })
+        })
+      }
       setDialog({
         kind: 'input',
         secret: true,
         title: `Value of ${secret} for ${name}`,
         text: '',
-        hint: `Typed text is hidden. Enter saves it, Esc cancels. Leave it empty to delete the stored value.${library ? ' It belongs to your library entry: every project that links it uses it.' : ''}`,
-        onSubmit: (text) => {
-          // Empty text deletes the stored value, anything else replaces it.
-          const value = text === '' ? null : text
-          const done = `${value === null ? 'Deleted' : 'Saved'} ${secret} ${value === null ? 'of' : 'for'} ${name}. A run that is live now may not use it until its next run.`
-          if (!library) {
-            save(() => api.setMcpSecret(projectId, info.spec.id, slot.kind, slot.name, value), info.spec.id, done, false)
+        hint: `Typed text is hidden. Enter saves it, Esc cancels. Leave it empty to delete the stored value (it asks first).${library ? ' It belongs to your library entry: every project that links it uses it.' : ''}`,
+        onSubmit: (typed) => {
+          if (typed !== '') {
+            apply(typed)
             return
           }
-          // The library save answers with the library, not the project: reload the list the same way `save` does.
-          act('Saving', async () => {
-            await api.setMcpLibrarySecret(libraryId, slot.kind, slot.name, value)
-            const next = await load().catch(() => undefined)
-            if (!alive.current) return
-            // The value is saved even when the list cannot be read again: say so either way.
-            if (next) {
-              setData(next)
-              const at = mcpRows(next).findIndex((r) => r.id === info.spec.id)
-              if (at >= 0) setSel(at)
-            }
-            setMessage({ text: done, tone: 'ok' })
+          // Nothing to delete on a slot that has no value: say so and save nothing.
+          if (!slot.set) {
+            setMessage({ text: 'Nothing typed: nothing saved.', tone: 'dim' })
+            return
+          }
+          // A stored value is dropped only after a second ask: one stray Enter must not wipe a working secret (for a
+          // library entry, in every project that links it). `dialogKey` runs this after the dialog is set, so the
+          // confirm replaces the input the same way the library pick opens its second dialog.
+          setDialog({
+            kind: 'confirm',
+            title: 'Confirm',
+            lines: [`Delete the stored value of ${secret} for ${name}?`, ...(library ? ['Every project that links this library entry loses it.'] : []), '', 'Press y to delete, n or Esc to keep it.'],
+            onYes: () => apply(null)
           })
         }
       })

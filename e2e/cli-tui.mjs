@@ -684,6 +684,8 @@ try {
       const summary = await t.waitFor((s) => s.includes("1 added, 1 changed (compared with this run's team)"), 10_000).then(() => true, () => false)
       check(summary, "j: the org chart card says what changes, compared with this run's team", esc(t.screen()))
       check(t.screen().includes('Takes effect now.'), 'j: ... and that it takes effect in this run', esc(t.screen()))
+      // The card names the roles before any key is pressed: a count alone is not enough to approve a live change.
+      check(t.screen().includes('+ Roster Tester') && /~ Orchestrator: [^\n]*spawns/.test(t.screen()), 'j: the card names the added role and the changed role with the field that changes', esc(t.screen()))
       // v: the whole diff, in the app's own text view. (A card ignores keys for a moment after it arrives.)
       await sleep(1200)
       t.key('f2')

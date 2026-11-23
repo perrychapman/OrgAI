@@ -306,4 +306,23 @@ describe('org chart cards show the diff', () => {
     expect(proposalPreview(card, 120)).toContain('1 added (compared with the saved team)')
     expect(proposalPreview(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' })), 120)).toContain('2 roles proposed')
   })
+
+  it('the tray preview of a card that changes this run names the roles it moves', () => {
+    const live = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'now'))
+    const lines = proposalPreview(live, 120) ?? []
+    expect(lines).toEqual(['Add a tester', "1 added (compared with this run's team)", '+ QA', 'Takes effect now.'])
+    // Between the summary and the effect line, so y is never pressed on a bare count.
+    expect(lines.indexOf('+ QA')).toBeGreaterThan(lines.indexOf("1 added (compared with this run's team)"))
+    expect(lines.indexOf('+ QA')).toBeLessThan(lines.indexOf('Takes effect now.'))
+    // A changed role names the fields that move.
+    const movedLead = orgRole('lead', { name: 'Lead', description: 'runs the team', tools: ['Read', 'Grep'] })
+    expect(proposalPreview(tray('proposal', org({ roles: [movedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'after-turn')), 120)).toContain('~ Lead: tools')
+  })
+
+  it('a next-run card keeps today\'s preview: the summary line, no role lines', () => {
+    const later = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'next-run'))
+    expect(proposalPreview(later, 120)).toEqual(['Add a tester', "1 added (compared with this run's team)", 'Applies to the next run.'])
+    const saved = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' }), 1, { savedRoles: [savedLead] })
+    expect(proposalPreview(saved, 120)).not.toContain('+ QA')
+  })
 })

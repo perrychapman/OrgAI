@@ -1,8 +1,8 @@
 /**
  * /mcp: the list at 120 columns, Space on/off, the role ticks saved as one field (and saving them unchanged), the
  * confirm before a removal, the selection kept on a row after one, adding a library entry, the empty library and
- * read-only refusals, the live-run note, setting or deleting a secret value (masked in the frame, one slot or several,
- * this project's own or the library entry's), and Esc.
+ * read-only refusals, the live-run note, setting a secret value (masked in the frame, one slot or several, this
+ * project's own or the library entry's), and deleting a stored value only after a confirm asks, and Esc.
  * The host is an in-memory fake of TuiToolsApi that keeps a server list and records every call.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -64,6 +64,12 @@ const secretServers = (): McpServerInfo[] => [
   server({ id: 's1', name: 'Docs', command: 'npx', secretEnv: ['DOCS_TOKEN'], missingSecrets: ['DOCS_TOKEN'] }),
   server({ id: 's2', name: 'Tracker', transport: 'http', url: 'https://tracker.example/mcp', secretEnv: ['TRACKER_KEY'], secretHeaders: ['Authorization'], missingSecrets: ['TRACKER_KEY', 'Authorization'] }),
   server({ id: 's3', name: 'Notion', libraryId: 'l1', secretHeaders: ['Authorization'], headersSet: ['Authorization'], secretScope: 'library' })
+]
+
+/** The same servers with DOCS_TOKEN already stored, so an empty value would delete a working secret. */
+const storedSecretServers = (): McpServerInfo[] => [
+  server({ id: 's1', name: 'Docs', command: 'npx', secretEnv: ['DOCS_TOKEN'], envSet: ['DOCS_TOKEN'] }),
+  ...secretServers().slice(1)
 ]
 
 /** Type a whole string into an open dialog, one character at a time. */
@@ -423,16 +429,66 @@ describe('MCP view', () => {
     expect(selectedRow(v.frame())).toContain('Docs')
   })
 
-  it('an empty value deletes the stored one', async () => {
+  it('an empty value on a slot that has none saves nothing and says so', async () => {
     const api = fakeTools({ servers: secretServers() })
     const v = mcpView(120, {}, api)
     await tick(60)
     await v.keys(char('s'), key('enter'))
     await tick(60)
+    expect(api.secrets).toHaveLength(0)
+    expect(v.frame()).toContain('Nothing typed: nothing saved.')
+    expect(api.servers.find((s) => s.spec.id === 's1')?.missingSecrets).toEqual(['DOCS_TOKEN'])
+  })
+
+  it('the secret hint says an empty value asks first', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    await v.keys(char('s'))
+    expect(unwrapped(v.frame())).toContain('Leave it empty to delete the stored value (it asks first).')
+  })
+
+  it('an empty value on a stored slot asks first: n keeps it, y deletes it', async () => {
+    const api = fakeTools({ servers: storedSecretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    await v.keys(char('s'), key('enter'))
+    const asked = unwrapped(v.frame())
+    expect(asked).toContain('Confirm')
+    expect(asked).toContain('Delete the stored value of DOCS_TOKEN for Docs?')
+    expect(asked).toContain('Press y to delete, n or Esc to keep it.')
+    expect(asked).not.toContain('Every project that links this library entry loses it.')
+    expect(api.secrets).toHaveLength(0)
+    await v.keys(char('n'))
+    await tick(60)
+    expect(api.secrets).toHaveLength(0)
+    expect(api.servers.find((s) => s.spec.id === 's1')?.envSet).toEqual(['DOCS_TOKEN'])
+    // y is the same call the view made before: the value goes, the slot reads missing again.
+    await v.keys(char('s'), key('enter'), char('y'))
+    await tick(60)
     expect(api.secrets).toEqual([{ serverId: 's1', kind: 'env', name: 'DOCS_TOKEN', value: null }])
     expect(unwrapped(v.frame())).toContain('Deleted DOCS_TOKEN of Docs.')
     expect(api.servers.find((s) => s.spec.id === 's1')?.envSet).toEqual([])
     expect(api.servers.find((s) => s.spec.id === 's1')?.missingSecrets).toEqual(['DOCS_TOKEN'])
+  })
+
+  it('deleting a library entry\'s stored value says every project that links it loses it', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    // Notion is the middle row, and its Authorization is stored in the library entry.
+    await v.keys(key('down'), char('s'), key('enter'))
+    const asked = unwrapped(v.frame())
+    expect(asked).toContain('Delete the stored value of Authorization for Notion?')
+    expect(asked).toContain('Every project that links this library entry loses it.')
+    expect(api.librarySecrets).toHaveLength(0)
+    await v.keys(char('y'))
+    await tick(60)
+    expect(api.librarySecrets).toEqual([{ libraryId: 'l1', kind: 'header', name: 'Authorization', value: null }])
+    expect(api.secrets).toHaveLength(0)
+    expect(unwrapped(v.frame())).toContain('Deleted Authorization of Notion.')
+    expect(api.library.find((e) => e.entry.id === 'l1')?.headersSet).toEqual([])
+    expect(selectedRow(v.frame())).toContain('Notion')
   })
 
   it('s on a server with two secrets asks which one first, then takes the value', async () => {

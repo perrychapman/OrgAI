@@ -72,7 +72,7 @@ export function orgChartCardLines(payload: OrgChartProposalPayload, saved: reado
 
   for (const r of d.diff.added) {
     const model = modelOf(r)
-    out.push(`+ ${fmt.one(r.name, 60)} (reports to ${parentName(r, proposed, fmt)})${model ? `, ${fmt.one(model, 60)}` : ''}: ${fmt.one(r.description, 200)}`)
+    out.push(`+ ${fmt.one(r.name, 60)} (reports to ${parentName(r, proposed, fmt)})${model ? `, ${fmt.one(model, 60)}` : ''}: ${full ? fmt.text(r.description) : fmt.one(r.description, 200)}`)
     for (const line of addedRoleLines(r, proposed)) out.push(`    ${fmt.text(line)}`)
     if (full) {
       for (const resp of r.responsibilities ?? []) out.push(`    * ${fmt.text(resp)}`)
@@ -101,7 +101,8 @@ export function orgChartCardLines(payload: OrgChartProposalPayload, saved: reado
         }
         continue
       }
-      out.push(`    ${fmt.one(ch.label, 40)}: ${fmt.one(ch.from, 300)} -> ${fmt.one(ch.to, 300)}`)
+      // Full shows the whole value: a long list or a text that only differs at its end reads differently on both sides.
+      out.push(`    ${fmt.one(ch.label, 40)}: ${full ? fmt.text(ch.from) : fmt.one(ch.from, 300)} -> ${full ? fmt.text(ch.to) : fmt.one(ch.to, 300)}`)
     }
   }
 
@@ -118,6 +119,28 @@ export function orgChartCardLines(payload: OrgChartProposalPayload, saved: reado
   const why = typeof payload.rationale === 'string' && payload.rationale.trim() !== '' ? payload.rationale : ''
   if (why) out.push(`Why: ${fmt.text(why)}`)
   return out
+}
+
+/**
+ * One short line per role the card changes, for the tray's compact card: "+ QA", "~ Dev: tools, connection", "- Ops"
+ * (added, then changed with the names of the fields that change, then removed). At most `max` lines: when there are
+ * more, the last line says how many are left and that v shows them all. Undefined when there is nothing to compare with.
+ */
+export function orgChartRoleLines(payload: OrgChartProposalPayload, saved: readonly Role[] | undefined, fmt: OrgCardFormat, max = 6): string[] | undefined {
+  const d = orgChartCardDiff(payload, saved)
+  if (!d) return undefined
+  const out: string[] = []
+  for (const r of d.diff.added) out.push(`+ ${fmt.one(r.name, 60)}`)
+  for (const c of d.diff.changed) {
+    const renamed = c.renamed === true && c.before.name !== c.role.name
+    const fields = c.changes.map((ch) => fmt.one(ch.label, 40)).join(', ')
+    out.push(`~ ${fmt.one(c.role.name, 60)}${renamed ? ` (renamed from ${fmt.one(c.before.name, 60)})` : ''}: ${fields}`)
+  }
+  for (const r of d.diff.removed) out.push(`- ${fmt.one(r.name, 60)}`)
+  if (out.length <= max) return out
+  const shown = out.slice(0, Math.max(0, max - 1))
+  shown.push(`+${out.length - shown.length} more (v shows all)`)
+  return shown
 }
 
 /** Whether approving this card changes the team of the run that shows it (so approval asks first). */

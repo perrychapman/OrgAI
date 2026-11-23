@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OrgChartProposalPayload, Role, RunRosterChange } from '../../shared/types'
-import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines, orgChartSummaryLine, rosterNotice, type OrgCardFormat } from './orgChartCard'
+import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines, orgChartRoleLines, orgChartSummaryLine, rosterNotice, type OrgCardFormat } from './orgChartCard'
 
 const role = (id: string, over: Partial<Role> = {}): Role => ({
   id,
@@ -145,11 +145,75 @@ describe('orgChartCardLines', () => {
     expect(orgChartCardLines(payload([lead, qa], { runBaseline: [lead], rationale: '   ' }), undefined, false, fmt)?.at(-1)).toBe('1 role unchanged')
   })
 
+  it('full shows a long value whole, and keeps a value that has line breaks on one line', () => {
+    const long = 'd'.repeat(500)
+    const added = payload([lead, role('qa', { name: 'QA', reportsTo: 'lead', description: long })], { runBaseline: [lead] })
+    expect((orgChartCardLines(added, undefined, true, fmt) ?? []).some((l) => l.includes(long))).toBe(true)
+    const short = orgChartCardLines(added, undefined, false, fmt) ?? []
+    expect(short.some((l) => l.includes(long))).toBe(false)
+    expect(short.some((l) => l.includes(long.slice(0, 200)))).toBe(true)
+
+    const before = role('dev', { name: 'Dev', reportsTo: 'lead', description: long })
+    const after = role('dev', { name: 'Dev', reportsTo: 'lead', description: 'builds' })
+    const both = payload([after], { runBaseline: [before] })
+    // Both sides of a changed field: the whole text, so two values that differ only at the end do not read the same.
+    expect((orgChartCardLines(both, undefined, true, fmt) ?? []).some((l) => l.includes(long))).toBe(true)
+    const clipped = orgChartCardLines(both, undefined, false, fmt) ?? []
+    expect(clipped.some((l) => l.includes(long))).toBe(false)
+    expect(clipped.some((l) => l.includes(long.slice(0, 300)))).toBe(true)
+
+    const wrapped = orgChartCardLines(payload([lead, role('qa', { name: 'QA', reportsTo: 'lead', description: 'first line\nsecond line' })], { runBaseline: [lead] }), undefined, true, fmt) ?? []
+    expect(wrapped).toContain('+ QA (reports to Lead), Everyday: first line\nsecond line')
+    expect(wrapped.filter((l) => l.startsWith('+ QA'))).toHaveLength(1)
+  })
+
   it('every value the card shows goes through the formatter', () => {
     const upper: OrgCardFormat = { one: (s) => String(s ?? '').toUpperCase(), text: (s) => String(s ?? '').toUpperCase() }
     const lines = orgChartCardLines(payload([lead, qa], { runBaseline: [lead], rationale: 'need a tester' }), undefined, false, upper) ?? []
     expect(lines).toContain('+ QA (reports to LEAD), EVERYDAY: WRITES TESTS')
     expect(lines).toContain('Why: NEED A TESTER')
+  })
+})
+
+describe('orgChartRoleLines', () => {
+  const baseDev = role('dev', { name: 'Dev', description: 'builds', reportsTo: 'lead', tools: ['Read'] })
+  const ops = role('ops', { name: 'Ops', reportsTo: 'lead' })
+  const arch = role('arch', { name: 'Arch', reportsTo: 'lead' })
+  const newQa = role('qa', { name: 'QA', reportsTo: 'lead' })
+  const extra = role('newr', { name: 'New Role', reportsTo: 'lead' })
+  const movedDev = role('dev', { name: 'Dev', description: 'builds', reportsTo: 'lead', tools: ['Read', 'Grep'], connection: 'ollama' })
+
+  it('names the roles the card moves: added, then changed with the fields that change, then removed', () => {
+    expect(orgChartRoleLines(payload([lead, movedDev, newQa], { runBaseline: [lead, baseDev, ops] }), undefined, fmt)).toEqual(['+ QA', '~ Dev: connection, tools', '- Ops'])
+    // At the cap exactly, nothing is left out, so there is no "more" line.
+    expect(orgChartRoleLines(payload([lead, movedDev, newQa], { runBaseline: [lead, baseDev, ops] }), undefined, fmt, 3)).toEqual(['+ QA', '~ Dev: connection, tools', '- Ops'])
+  })
+
+  it('a renamed role says what it was called, like the card\'s own line', () => {
+    const before = role('r1', { slug: 'backend-dev', name: 'Backend Dev' })
+    const after = role('r1', { slug: 'backend-developer', name: 'Backend Developer' })
+    expect(orgChartRoleLines(payload([after], { runBaseline: [before] }), undefined, fmt)).toEqual(['~ Backend Developer (renamed from Backend Dev): name, id'])
+  })
+
+  it('cuts the list to max and says how many are left and that v shows them', () => {
+    const p = payload([lead, movedDev, newQa, extra], { runBaseline: [lead, baseDev, ops, arch] })
+    expect(orgChartRoleLines(p, undefined, fmt, 3)).toEqual(['+ QA', '+ New Role', '+3 more (v shows all)'])
+    expect(orgChartRoleLines(p, undefined, fmt, 6)).toEqual(['+ QA', '+ New Role', '~ Dev: connection, tools', '- Ops', '- Arch'])
+  })
+
+  it('is an empty array when the card changes nothing', () => {
+    expect(orgChartRoleLines(payload([lead, baseDev], { runBaseline: [lead, baseDev] }), undefined, fmt)).toEqual([])
+  })
+
+  it('is nothing when there is nothing to compare with', () => {
+    expect(orgChartRoleLines(payload([lead]), undefined, fmt)).toBeUndefined()
+  })
+
+  it('names and field names go through the formatter', () => {
+    const long = role('r9', { name: 'R'.repeat(80) })
+    expect(orgChartRoleLines(payload([long], { runBaseline: [] }), undefined, fmt)).toEqual([`+ ${'R'.repeat(60)}`])
+    const upper: OrgCardFormat = { one: (s, max = 200) => String(s ?? '').slice(0, max).toUpperCase(), text: (s) => String(s ?? '').toUpperCase() }
+    expect(orgChartRoleLines(payload([lead, movedDev], { runBaseline: [lead, baseDev] }), undefined, upper)).toEqual(['~ DEV: CONNECTION, TOOLS'])
   })
 })
 
