@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { McpLibraryInfo, SkillLibraryInfo } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
@@ -22,6 +22,7 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Dialog } from '../ui/Dialog'
+import '../../styles/kit.css'
 
 interface KitRow {
   id: string
@@ -164,9 +165,10 @@ export default function KitExportDialog({ onClose, onSaved }: { onClose: () => v
         )}
         {!rows && !loadError && <div className="skeleton kit-skeleton" aria-busy="true" aria-label="Loading your library" />}
         {rows &&
-          KIT_GROUPS.map((g) => (
+          KIT_GROUPS.map((g, i) => (
             <KitGroup
               key={g}
+              index={i}
               group={g}
               rows={rows[g]}
               selected={selected[g]}
@@ -181,6 +183,7 @@ export default function KitExportDialog({ onClose, onSaved }: { onClose: () => v
 }
 
 function KitGroup({
+  index,
   group,
   rows,
   selected,
@@ -188,6 +191,7 @@ function KitGroup({
   onToggle,
   onToggleAll
 }: {
+  index: number
   group: KitGroupId
   rows: KitRow[]
   selected: Set<string>
@@ -204,7 +208,7 @@ function KitGroup({
   const empty = rows.length === 0
   const note = GROUP_NOTE[group]
   return (
-    <fieldset className="kit-group" data-testid="kit-group" data-group={group}>
+    <fieldset className="kit-group motion-enter" style={{ '--i': index } as CSSProperties} data-testid="kit-group" data-group={group}>
       <legend>
         <span ref={wrap} className="kit-group-check">
           <Checkbox
