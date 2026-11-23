@@ -1111,16 +1111,25 @@ ul.maint-list {
     box-shadow: 0 0 0 1px var(--border-subtle);
   }
 }
+/* The wordmark keeps its width; the tags (MOCK, Dev) are what gives way: they wrap onto two lines, then clip. */
 .brand-lockup-word {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   color: var(--text-primary);
   font-size: var(--text-title);
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
   letter-spacing: -0.01em;
   white-space: nowrap;
+}
+.brand-lockup-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0h) var(--space-1);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 .brand-lockup-trail {
   display: inline-flex;
