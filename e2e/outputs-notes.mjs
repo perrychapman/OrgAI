@@ -313,7 +313,8 @@ async function textFlow(label) {
   await detail().locator('[data-testid=output-note-delete]').first().click()
   await page.locator('[data-testid=output-note-delete-confirm]').click()
   check(await until(async () => (await notesOf(await idOfKind('markdown'))).length === 0), `${label}: Delete asks first, then removes`)
-  check(/No (open )?notes/.test(clean(await detail().innerText())), `${label}: the empty state is plain text`)
+  // The store reports zero notes before the renderer repaints from it, so poll the panel instead of reading it once.
+  check(await until(async () => /No (open )?notes/.test(clean(await detail().innerText())), 5000), `${label}: the empty state is plain text`)
   await noScroll(`${label}: text notes`)
 }
 
