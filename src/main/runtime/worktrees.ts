@@ -77,7 +77,7 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
  * a credential helper) is the environment of readOnlyGitEnv (GIT_NO_LAZY_FETCH, GIT_ALLOW_PROTOCOL), which a `-c`
  * override cannot replace: a remote's own uploadpack key has no global switch.
  */
-const HOSTILE_CONFIG_OVERRIDES = [
+export const HOSTILE_CONFIG_OVERRIDES = [
   '-c', 'core.fsmonitor=false',
   '-c', `core.hooksPath=${devNull}`,
   '-c', 'core.pager=cat',
