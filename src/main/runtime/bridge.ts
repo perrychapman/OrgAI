@@ -22,6 +22,7 @@ import { effectiveSubagentLimits, effortOptionsFor, newId, staffingGoalOf } from
 import { resolveStaffing } from './staffing'
 import { HandleNamer, spawnHandle } from './network'
 import { settleAgent, isLiveAgent, type RunOutcome } from './activity'
+import { spawnCapRefusal } from './spawnCaps'
 import {
   ROOT_AGENT_ID,
   type BridgeSpawnInput,
@@ -275,6 +276,14 @@ export class BridgedSessions {
     if (depth + 1 > limits.depth) throw new Error(`Delegating to ${role.name} would nest reports ${depth + 1} deep; the limit is ${limits.depth}.`)
     const live = agents.filter((a) => a.id !== ROOT_AGENT_ID && isLiveAgent(a)).length
     if (live >= limits.concurrency) throw new Error(`${live} reports are already working; the limit is ${limits.concurrency}. Wait for one to finish.`)
+    // UI overhaul spawn caps (Role.maxConcurrent, Project.maxAgentsPerRun): the same decision the adapters make, over the
+    // run's whole record (root session and every bridged child, ended agents included, the root excluded), read live from
+    // the parent context. A child this class started that the record does not show yet counts as pending, so parallel
+    // delegate calls cannot all pass under a cap.
+    const known = new Set(agents.map((a) => a.id))
+    const pending = [...this.children.values()].filter((c) => !c.done && !known.has(c.agentId)).map((c) => c.role.id)
+    const capped = spawnCapRefusal({ project: parent.project, roles: parent.roles, roleId: role.id, agents, pending })
+    if (capped) throw new Error(capped)
 
     const namer = new HandleNamer()
     const taken = new Set<string>()
