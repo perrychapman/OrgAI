@@ -151,7 +151,13 @@ export function mockConnectorTest(def: ConnectorDef, variant: ConnectorVariant, 
   return {
     ok: true,
     tools,
-    toolDetails: tools.map((name) => ({ name, description: `Mock ${def.name} tool (ORGAI_MOCK=1).` })),
+    toolDetails: tools.map((name) => ({ name, description: `Mock ${def.name} tool (ORGAI_MOCK=1).`, ...mockToolAnnotations(name) })),
     durationMs: 12
   }
+}
+
+/** Mock annotations, as a server's readOnlyHint / destructiveHint would map: lookups are read-only, a trigger acts. */
+function mockToolAnnotations(name: string): { readOnly: boolean; destructive?: boolean } {
+  if (/^(search|get|list|read|query|ask)(_|$)/.test(name)) return { readOnly: true }
+  return { readOnly: false, destructive: false }
 }

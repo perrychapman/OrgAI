@@ -441,17 +441,29 @@ class HttpClient implements RpcClient {
 
 const MAX_DESCRIPTION = 300
 
-async function handshake(client: RpcClient): Promise<{ name: string; description?: string }[]> {
+type ProbedTool = NonNullable<McpTestResult['toolDetails']>[number]
+
+/** readOnlyHint / destructiveHint of a tool's `annotations`, only when each is a boolean; anything else stays absent. Pure. */
+export function toolAnnotationFlags(annotations: unknown): { readOnly?: boolean; destructive?: boolean } {
+  if (!annotations || typeof annotations !== 'object' || Array.isArray(annotations)) return {}
+  const a = annotations as { readOnlyHint?: unknown; destructiveHint?: unknown }
+  return {
+    ...(typeof a.readOnlyHint === 'boolean' ? { readOnly: a.readOnlyHint } : {}),
+    ...(typeof a.destructiveHint === 'boolean' ? { destructive: a.destructiveHint } : {})
+  }
+}
+
+async function handshake(client: RpcClient): Promise<ProbedTool[]> {
   await client.request('initialize', { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO })
   await client.notify('notifications/initialized')
-  const tools: { name: string; description?: string }[] = []
+  const tools: ProbedTool[] = []
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
-    const res = (await client.request('tools/list', cursor ? { cursor } : {})) as { tools?: { name?: unknown; description?: unknown }[]; nextCursor?: unknown } | undefined
+    const res = (await client.request('tools/list', cursor ? { cursor } : {})) as { tools?: { name?: unknown; description?: unknown; annotations?: unknown }[]; nextCursor?: unknown } | undefined
     for (const t of res?.tools ?? []) {
       if (typeof t?.name !== 'string') continue
       const description = typeof t.description === 'string' ? t.description.trim().slice(0, MAX_DESCRIPTION) : ''
-      tools.push(description ? { name: t.name, description } : { name: t.name })
+      tools.push({ name: t.name, ...(description ? { description } : {}), ...toolAnnotationFlags(t.annotations) })
     }
     if (typeof res?.nextCursor === 'string' && res.nextCursor) cursor = res.nextCursor
     else break

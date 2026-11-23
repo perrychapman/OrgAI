@@ -143,7 +143,9 @@ import { buildAppInfo, buildSettingsInfo } from '../appInfo'
 import type { CapabilityServiceApi } from '../capabilities/types'
 import { claudeAuthStatus } from '../connections/anthropicAuth'
 import type { ConnectionService } from '../connections/service'
-import { applyBundleArgs, exportBundleArgs, previewBundleArgs, type KitService } from '../kit/service'
+import { isPickedAgentFolder } from '../agentFolderPicks'
+import type { AgentImportAccess } from '../setup/import/importer'
+import { applyBundleArgs,exportBundleArgs, previewBundleArgs, type KitService } from '../kit/service'
 import { log, logPath } from '../log'
 import { assistPrompt, harnessProject as buildHarnessProject } from '../mcp/assist'
 import type { McpService } from '../mcp/service'
@@ -408,6 +410,11 @@ export class HostDispatcher {
  * A decision only the user's own surfaces make: the window or the in-process CLI / TUI (surface 'desktop' / 'inproc').
  * Any other surface (a socket client) is refused first, whatever scopes it holds.
  */
+/** projects:previewImport / applyImport: what the importer needs to honour sourcePath / fromProjectId (desktop only, own picks only). */
+function importAccess(ctx: InvokeContext): AgentImportAccess {
+  return { surface: ctx.surface, isPickedFolder: (path) => isPickedAgentFolder(ctx.senderId, path) }
+}
+
 function refuseSocketDecision(ctx: InvokeContext, what: string): void {
   if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', `${what} is the user's own decision, made in the OrgAI window or the terminal UI.`)
 }
@@ -597,9 +604,10 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   // Agent import: read-only scans of the stored project's folder; the renderer supplies choices, never roles.
   handle(IPC.projectsScanAgents, (_e, path: string): AgentImportScan => importer.scan(path))
-  handle(IPC.projectsPreviewImport, (_e, input: AgentImportInput): AgentImportPreview => importer.preview(input))
+  // sourcePath / fromProjectId are honoured on the desktop surface only, and a folder only when this window picked it.
+  handle(IPC.projectsPreviewImport, (ctx, input: AgentImportInput): AgentImportPreview => importer.preview(input, importAccess(ctx)))
   // The digest of the reviewed preview is required; apply refuses without it or when the folder changed since.
-  handle(IPC.projectsApplyImport, (_e, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input))
+  handle(IPC.projectsApplyImport, (ctx, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input, importAccess(ctx)))
   handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   handle(IPC.projectsSave, (ctx, project: Project): Project | Promise<Project> => {
