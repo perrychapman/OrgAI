@@ -21,6 +21,13 @@ import { officeAgentView } from '../lib/office/agentView'
 import { runRoleColor } from '../lib/runRoster'
 import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
+import { CanvasThemeMenu } from '../components/canvas/CanvasThemeMenu'
+import { AgentFilter } from '../components/canvas/AgentFilter'
+import { PlanStrip } from '../components/canvas/PlanStrip'
+import { RunHoldCard } from '../components/canvas/RunHoldCard'
+import AgentFocus from '../components/canvas/AgentFocus'
+import { agentCounts, matchesAgentFilter, waitingAgentIds, type AgentFilterValue } from '../lib/canvasAgents'
+import { openAgentFinder } from '../components/RunDetailTabs'
 import { saveCanvas } from '../lib/canvasSettings'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
@@ -40,7 +47,7 @@ import ChatStartPage from '../components/assistants/ChatStartPage'
 import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
 import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
 import McpInstallCard from '../components/McpInstallCard'
-import { Bell, CircleCheck, CircleHelp, Maximize, MessageSquare, Network, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
+import { Bell, CircleCheck, CircleHelp, Maximize, MessageSquare, Network, Search, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
 import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
@@ -69,7 +76,7 @@ import QuestionCard from '../components/QuestionCard'
 import RuleRequestCard from '../components/RuleRequestCard'
 import MergeReviewCard from '../components/MergeReviewCard'
 import { SidePanel } from '../components/layout/SidePanel'
-import { CanvasFrame, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
+import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
 import RunTabs from '../components/RunTabs'
 import NewRunPage from '../components/NewRunPage'
 import Composer from '../components/Composer'
@@ -283,6 +290,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const [dismissedInstalls, setDismissedInstalls] = useState<Record<string, boolean>>({})
   const [approvedKinds, setApprovedKinds] = useState<ProposalKind[]>([])
   const bodyRef = useRef<HTMLDivElement>(null)
+  // The "Show" filter dims the chart's other nodes; one agent can take the stage (AgentFocus) and hands focus back to its opener.
+  const [agentFilter, setAgentFilter] = useState<AgentFilterValue>('all')
+  const [focusAgentId, setFocusAgentId] = useState<string | null>(null)
+  const focusOpener = useRef<{ el: HTMLElement; testId: string | null } | null>(null)
+  // The one-agent view belongs to the run it was opened in (the root id exists in every run).
+  useEffect(() => {
+    setFocusAgentId(null)
+    focusOpener.current = null
+  }, [runId])
 
   // Turning "Hide finished agents" back on folds every expanded group again (the way back after expanding).
   const toggleCollapse = (): void => {
@@ -488,17 +504,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const positions = placed.positions
 
   // Switching back to the canvas mounts a fresh React Flow: fit it once it has a size.
-  const prevLayout = useRef(layout)
+  const stageKey = `${layout}:${focusAgentId ? 'focus' : 'stage'}`
+  const prevLayout = useRef(stageKey)
   useEffect(() => {
-    if (prevLayout.current === layout) return undefined
-    prevLayout.current = layout
-    if (layout !== 'canvas') return undefined
+    if (prevLayout.current === stageKey) return undefined
+    prevLayout.current = stageKey
+    if (layout !== 'canvas' || focusAgentId) return undefined
     const t = setTimeout(() => {
       if (stageHidden()) return
       void fitView(fitOpts({ duration: 0 }))
     }, 80)
     return () => clearTimeout(t)
-  }, [layout, fitView])
+  }, [stageKey, fitView])
 
   // Glide (motion.md 3.12): a change of layout, node style or topology moves the nodes with a transform transition
   // while the canvas carries data-canvas-gliding. The first layout of a canvas never glides; above 60 nodes it snaps.
@@ -531,6 +548,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     return undefined
   }, [layoutKey, fitView])
 
+  const waitingIds = useMemo(() => waitingAgentIds(run), [run.permissions, run.questions, run.ruleRequests, run.mergeReviews, run.mcpInstalls])
+  const counts = useMemo(() => agentCounts([...agentLookup.values()], waitingIds), [agentLookup, waitingIds])
+  const filterOn = agentFilter !== 'all'
+
   const nodes: CanvasNode[] = useMemo(() => {
     const agentNodes: CanvasNode[] = visibleAgents.map((agent) => ({
       id: agent.id,
@@ -538,6 +559,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       position: positions[agent.id] ?? { x: 0, y: 0 },
       selected: agent.id === selectedAgentId,
       draggable: false,
+      ...(filterOn && !matchesAgentFilter(agent, agentFilter, waitingIds) ? { className: 'node-dim' } : {}),
       initialWidth: agentSize.width,
       initialHeight: agentSize.height,
       ...(nodeDims.dims[agent.id] ? { measured: nodeDims.dims[agent.id] } : {}),
@@ -561,7 +583,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       }
     })
     return [...agentNodes, ...groupNodes]
-  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims, options.nodeStyle, nodeArrival.arrivedKey, breathing])
+  }, [visibleAgents, groups, positions, selectedAgentId, roleColor, agentLookup, groupParent, groupParentName, expandGroup, neutralRoleColor, agentSize, groupSize, nodeDims.dims, options.nodeStyle, nodeArrival.arrivedKey, breathing, filterOn, agentFilter, waitingIds])
 
   // Controlled nodes: keep React Flow's measured sizes so the minimap draws every node (H1).
   // Enter or Space on a focused node arrives as a 'select' change (React Flow's own key handler); it selects like a click.
@@ -599,6 +621,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         }
         return {
           id: `e-${a.parentId}-${a.id}`,
+          className: finished ? 'edge-done' : live ? 'edge-live' : undefined,
           source: a.parentId as string,
           target: a.id,
           type: edgeType,
@@ -677,6 +700,29 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }, [visibleAgents, groups, groupParent, roleColor, messages, msgNow, agentsById, agentLookup, neutralRoleColor, edgeType, station, roundedCorners, options.nodeStyle, reducedMotion, groupEdgeColor, messageColor, edgeMix, edgeInk, edgeDoneOpacity, liveDash, messageDash, positions, agentSize, groupSize, nodeDims.dims, options.layout])
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
+  /** Takes one agent onto the stage; focus goes back to what opened it when the view closes. */
+  const openAgentView = useCallback((id: string): void => {
+    const from = document.activeElement
+    focusOpener.current = from instanceof HTMLElement && from !== document.body ? { el: from, testId: from.getAttribute('data-testid') } : null
+    selectAgent(id)
+    setFocusAgentId(id)
+  }, [selectAgent])
+  const closeAgentView = useCallback((): void => {
+    const id = focusAgentId
+    setFocusAgentId(null)
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const opener = focusOpener.current
+        focusOpener.current = null
+        // The opener may have re-mounted while the view was open (the panel's button): find it again by its test id.
+        const again = opener?.el.isConnected ? opener.el : opener?.testId ? bodyRef.current?.querySelector<HTMLElement>(`[data-testid="${opener.testId}"]`) : null
+        if (again) return again.focus({ preventScroll: true })
+        const node = id ? document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`) : null
+        ;(node ?? bodyRef.current?.querySelector<HTMLElement>('[data-testid="agent-focus-open"], .frame-stage button'))?.focus({ preventScroll: true })
+      })
+    )
+  }, [focusAgentId])
+  const onNodeDoubleClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => { if (!node.id.startsWith('group:')) openAgentView(node.id) }, [openAgentView])
 
   // A selected "done" group lists its reports in the side panel.
   const finishedGroup: FinishedGroup | undefined = useMemo(() => {
@@ -1120,12 +1166,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={stageThinking} />
 
   return (
-    <div className="run-view">
-      {!sessionOpen && run.summary.error && (
-        <Banner tone="danger" testId="run-error" title="This run failed">
-          {run.summary.error}
-        </Banner>
-      )}
+    <div className="run-view" data-kind={projectKindOf(project) === 'engagement' ? 'engagement' : undefined}>
       {setupDone && (
         <Banner
           tone="success"
@@ -1152,6 +1193,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
+            {!conversation && !focusAgentId && (
+              <div className="canvas-chrome-start">
+                <CanvasThemeMenu />
+                {!isScenePresentation(options.presentation) && (
+                  <>
+                    <Button size="sm" variant="ghost" icon={Search} testId="find-agent" onClick={() => openAgentFinder()}>
+                      Find an agent
+                    </Button>
+                    {counts.all > 1 && <AgentFilter value={agentFilter} onChange={setAgentFilter} counts={counts} />}
+                  </>
+                )}
+              </div>
+            )}
             <div className="frame-toolbar-end">
               {!conversation && !isScenePresentation(options.presentation) && (agents.length > 1 || chain.earlier.length > 0) && (
                 <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
@@ -1168,7 +1222,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   </span>
                 </span>
               )}
-              {!conversation && (isScenePresentation(options.presentation) ? <CanvasStyleButton testId="canvas-style-button" /> : <CanvasTools />)}
+              {!conversation && (isScenePresentation(options.presentation) ? <CanvasStyleButton testId="canvas-style-button" withPresentation={false} /> : <CanvasTools />)}
               {!conversation && isScenePresentation(options.presentation) && earlierToLoad > 0 && (
                 <Button size="sm" loading={loadingEarlier} onClick={() => {
                   if (loadingEarlier) return
@@ -1208,6 +1262,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   onReply={() => setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))}
                 />
               </div>
+            ) : focusAgentId ? (
+              <AgentFocus runId={runId} agentId={focusAgentId} onClose={closeAgentView} onSelect={(id) => { selectAgent(id); setFocusAgentId(id) }} />
             ) : factoryOn ? (
               <FactoryScene
                 mode="live"
@@ -1235,6 +1291,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               className={toggledTo === 'canvas' ? 'motion-view' : undefined}
               onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
+              onNodeDoubleClick={onNodeDoubleClick}
               onPaneClick={() => selectAgent(null)}
               nodesConnectable={false}
               elementsSelectable
@@ -1252,30 +1309,20 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             </ReactFlow>
             )}
           </FrameStage>
-          <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
-          {status === 'paused' && <PauseBanner runId={runId} />}
-
-          {status !== 'paused' && run.plan?.status === 'blocked' && (
-            <div className="pause-banner plan-blocked-banner">
-              <div className="pause-title">
-                <span className="dot" /> The orchestrator needs your decision
-              </div>
-              <div className="pause-reason">{run.plan.blockedReason ?? 'It marked the plan blocked.'}</div>
-              <div className="pause-when">
-                Automatic continues are stopped. {sessionOpen || canContinue ? 'Answer below; the orchestrator resumes the plan with your reply.' : ''}
-              </div>
-              <div className="row gap-2">
-                {(sessionOpen || canContinue) && (
-                  <Button variant="primary" size="sm" onClick={() => focusComposer()}>
-                    Answer
-                  </Button>
-                )}
-                <Button variant="secondary" size="sm" onClick={() => setSideTab('plan')}>
-                  Show the plan
-                </Button>
-              </div>
-            </div>
+          {!conversation && !focusAgentId && run.plan && run.plan.steps.length > 0 && (
+            <FrameFooter>
+              <PlanStrip plan={run.plan} onOpenPlan={() => setSideTab('plan')} />
+            </FrameFooter>
           )}
+          <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
+          <RunHoldCard
+            runId={runId}
+            canContinue={canContinue}
+            sessionOpen={sessionOpen}
+            onAnswer={() => focusComposer()}
+            onShowPlan={() => setSideTab('plan')}
+            onSwitchModel={() => bodyRef.current?.querySelector<HTMLElement>('[data-testid="live-settings-bar"] button')?.focus()}
+          />
 
           <DecisionTray items={decisionItems} selected={selectedDecision} onSelect={(i) => setPickedDecision(decisionItems[i].key)} onPin={pinShown} />
         </FrameTray>
@@ -1356,6 +1403,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
           <div className={`live-panel${usesScenePalette(options.presentation) && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && selectedAgent) { if (usesScenePalette(options.presentation)) { event.preventDefault(); returnToOffice(selectedAgent.id) } else if (factoryOn) { event.preventDefault(); returnToFloor(selectedAgent.id) } } }}>
             {usesScenePalette(options.presentation) && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
+            {selectedAgent && !finishedGroup && !focusAgentId && <div className="agent-focus-open-row"><Button size="sm" testId="agent-focus-open" onClick={() => openAgentView(selectedAgent.id)}>Open agent view</Button></div>}
             {factoryOn && selectedAgent && <div className="factory-inspector-action"><Button size="sm" testId="factory-agent-back" onClick={() => returnToFloor(selectedAgent.id)}>Back to floor</Button></div>}
             <TranscriptPanel
               runId={runId}
@@ -1366,6 +1414,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               lead={loadEarlierRow}
               logs={run.logs ?? []}
               finished={finishedGroup}
+              fallback={{ agent: rootAgent, feed }}
             />
             {usesScenePalette(options.presentation) && selectedAgent && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
           </div>
@@ -1390,7 +1439,7 @@ function CanvasTools(): ReactElement {
         <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => zoomInCanvas({ zoomIn }, reduced)} />
         <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && fitCanvas({ fitView }, reduced)} />
       </span>
-      <CanvasStyleButton testId="canvas-style-button" />
+      <CanvasStyleButton testId="canvas-style-button" withPresentation={false} />
       <Popover
         label="Canvas legend"
         placement="bottom-end"
@@ -1452,59 +1501,5 @@ function CanvasTools(): ReactElement {
         </ul>
       </Popover>
     </span>
-  )
-}
-
-/** A run paused at a usage limit: why, when it continues, and the controls for that. */
-function PauseBanner({ runId }: { runId: string }): ReactElement | null {
-  const summary = useAppStore((s) => s.runs[runId]?.summary)
-  const resumeNow = useAppStore((s) => s.resumeNow)
-  const cancelAutoResume = useAppStore((s) => s.cancelAutoResume)
-  const [now, setNow] = useState(() => Date.now())
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(t)
-  }, [])
-
-  if (!summary) return null
-  const until = summary.pausedUntil
-  const act = async (fn: () => Promise<void>): Promise<void> => {
-    setBusy(true)
-    setError(null)
-    try {
-      await fn()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="pause-banner">
-      <div className="pause-title">
-        <span className="dot" /> Paused at a usage limit
-      </div>
-      <div className="pause-reason">{summary.pauseReason ?? 'The plan usage limit was reached.'} Only this run is paused; your other runs keep running unaffected.</div>
-      <div className="pause-when">
-        {summary.autoResume && until
-          ? `Auto-resume at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (in ${formatUntil(until, now)})`
-          : `Auto-resume is off.${until ? ` The window resets at ${new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` : ''} Continue it from the composer when you are ready.`}
-      </div>
-      {error && <div className="pause-error">{error}</div>}
-      <div className="row gap-2">
-        <Button variant="primary" size="sm" disabled={busy} onClick={() => void act(() => resumeNow(runId))}>
-          Resume now
-        </Button>
-        {summary.autoResume && (
-          <Button size="sm" disabled={busy} onClick={() => void act(() => cancelAutoResume(runId))}>
-            Cancel auto-resume
-          </Button>
-        )}
-      </div>
-    </div>
   )
 }

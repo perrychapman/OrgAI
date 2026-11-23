@@ -199,7 +199,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await styleTrigger.click()
   const stylePanel = page.locator('[data-testid=canvas-style-popover]')
   await stylePanel.waitFor()
-  await page.waitForFunction(() => document.activeElement?.matches('[data-testid="canvas-presentation"] input[value="pocket-office"]'))
+  await page.waitForFunction(() => document.activeElement?.matches('[data-testid="canvas-scene-palette"] input:checked'))
   check(await stylePanel.locator('[data-testid=canvas-preset]').count() === 0, 'Office toolbar does not offer accidental Graph preset switches')
   check(await stylePanel.locator('[data-testid=canvas-palette-choice]').count() === 3, 'toolbar offers the same visual Office palette choices')
   await page.keyboard.press('Escape')

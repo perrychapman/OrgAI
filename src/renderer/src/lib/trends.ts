@@ -281,11 +281,11 @@ export function kindLabel(kind: RunKind, summary?: { team?: string; quick?: unkn
     return summary?.team === 'single' ? 'Ask' : 'Work'
   }
   if (kind === 'setup') return 'Setup'
-  if (kind === 'mcp-assist') return 'MCP assistant'
-  return 'Skill assistant'
+  if (kind === 'mcp-assist') return 'Tools helper'
+  return 'Skills helper'
 }
 
-export const KIND_ORDER = ['Work', 'Ask', 'Chat', 'Setup', 'MCP assistant', 'Skill assistant']
+export const KIND_ORDER = ['Work', 'Ask', 'Chat', 'Setup', 'Tools helper', 'Skills helper']
 
 export interface KindRow {
   label: string

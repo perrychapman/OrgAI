@@ -458,3 +458,61 @@
     outline-offset: -2px;
   }
 }
+
+/* Run view assembly: the theme menu, Find and the Show filter lead the toolbar; filtered-out nodes dim, never vanish.
+   Motion tokens collapse under reduced motion and Pause motion, so the dim is just the end state there. */
+.canvas-chrome-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.react-flow__node.node-dim {
+  opacity: 0.35;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.react-flow__node.node-dim:is(:hover, :focus-visible, :focus-within) {
+  opacity: 1;
+}
+.agent-focus-open-row {
+  flex: none;
+  display: flex;
+  padding: var(--space-2) var(--space-3) 0;
+}
+
+/* One 32 px row: meta shrinks first, then the Show filter and Find drop away (the Agents tab and the list keep both jobs). */
+.frame-toolbar.frame-toolbar-dense > .canvas-chrome-start {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+@container frame (max-width: 900px) {
+  .canvas-chrome-start .agent-filter { display: none; }
+}
+@container frame (max-width: 680px) {
+  .canvas-chrome-start [data-testid='find-agent'] { display: none; }
+  .canvas-chrome-start .canvas-theme-label { display: none; }
+}
+@container frame (max-width: 520px) {
+  .canvas-chrome-start .canvas-theme-current { display: none; }
+}
+@container frame (max-width: 340px) {
+  .canvas-chrome-start .canvas-theme-swatch { display: none; }
+  .canvas-chrome-start .canvas-theme-trigger { padding-inline: var(--space-2); }
+}
+/* Under 320 px there is no room for a third item: the theme stays in App settings > Canvas. */
+@container frame (max-width: 320px) {
+  .frame-toolbar.frame-toolbar-dense > .canvas-chrome-start { display: none; }
+}
+
+/* Engagement runs: the coral accent and serif headings of the engagement look; wording stays neutral. */
+.run-view[data-kind='engagement'] :is(.run-hold-title, .agent-focus-name, .agent-focus h2, .agent-focus h3, .side-panel .live-panel h2) {
+  font-family: var(--font-serif);
+}
+.run-view[data-kind='engagement'] .plan-strip-seg[data-status='in_progress'] { background-color: var(--eng); }
+.run-view[data-kind='engagement'] .react-flow__node.selected,
+.run-view[data-kind='engagement'] .agent-row[aria-current='true'] {
+  border-color: var(--eng-line);
+}
+.run-view[data-kind='engagement'] .agent-row[aria-current='true'] { background: var(--eng-soft); }
