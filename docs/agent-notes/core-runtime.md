@@ -1044,7 +1044,11 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   `setup/settingsProposalBoundary.test.ts`): a non-desktop save can only narrow; `settings:set` from those surfaces cannot
   change `openAtLogin`, `closeBehavior`, `keepAwakeDuringRuns` or `spendWarnPercent`, and cannot raise or remove
   `Project.maxBudgetUsd`, nor raise an explicit `maxSubagentDepth` / `maxConcurrentSubagents` (nor clear one when automatic
-  would allow more).
+  would allow more). Also guarded (third pass fix round): approving a settings card from those surfaces, `projects:remove` of a
+  project that carries a limit, and `templates:apply` / `projects:applyImport` that replace roles (`guardedFieldsOf`,
+  `widenGuard`, `SetupService.applyProposal` `nonDesktop`). The merge gate's pin now explains OrgAI's own parallel merges
+  (`orgaiMoves.ts`), pins untracked `.gitattributes`, and the merge ignores global config and attribute-selected drivers;
+  `integration.rootPinMoves.test.ts`.
 - **askBeforeStrongerModel** (`staffing.ts`, used by the Claude, Codex and mock spawn paths): asks "Use a stronger model for
   <role>?"; only "Use it" keeps the stronger tier; the wait ends after 580 s on all three adapters with the role's own tier
   and the card is cancelled. Today it fires only on a retry escalation because `resolveStaffing` clamps to the role's tier.
@@ -1062,7 +1066,9 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
 Stated plainly; the same list is in `docs/design/ui-overhaul/impl-runtime.md`.
 
 - A run under any cap stops when part of its cost has no known price or is unknown (a per-run cap the user chose, the
-  project's budget, and Claude runs included). Before, that spend counted as $0 and the cap never fired.
+  project's budget). A first-party Claude run under the project's budget is the exception for its own session: its SDK stops it
+  and a model or subagent missing from OrgAI's price table does not end it in its first turn (a proxy and Codex keep the stop; a
+  bridged report with no known price still stops the run). Before, that spend counted as $0 and the cap never fired.
 - A project budget (`maxBudgetUsd`) now holds Codex runs and any adapter whose SDK does not enforce one; a Codex run that only
   produced a warning before now stops, and can be continued from the hold card with more budget.
 - A first-party Claude run under the project budget is also stopped when main's own estimate is the only figure there is (the
@@ -1074,13 +1080,35 @@ Stated plainly; the same list is in `docs/design/ui-overhaul/impl-runtime.md`.
 - The test command's environment is an allowlist (`testGate.ts`): scripts that need other variables (cloud credentials, tokens,
   anything not on the list) fail. The run log shows it: the line "<agent>: test output (end):" after "Not merged: the tests
   failed" carries the tail of the output, where a missing variable usually appears as an unset or authorization error.
-- The test command can no longer change the checkout a merge lands in and still have that merge: if HEAD, the branch, the index,
-  tracked files, `.git/config`, `info/attributes` or the hooks folder of the target changed while it ran, the merge is
-  refused and the copy kept, with the reason in the run log. OrgAI's merge, branch switch and cleanup run with git hooks off
-  (a repository's `commit-msg`, `post-merge` and similar hooks do not run for OrgAI's merges).
+- **Merges run with the repository's git hooks off** (`pre-merge-commit`, `commit-msg`, `post-merge`, `post-checkout`), for OrgAI's
+  merge, its `mainBranch` switch and its cleanup. This affects git-lfs hooks, secret scanners that sit in those hooks and signing
+  prompts started from them. The report's own commit in its copy still runs the repository's hooks.
+- **Merges ignore the user's global and system git config and attributes** (a merge driver, `core.attributesFile`,
+  `commit.gpgsign` set only there); the user's `user.name` / `user.email`, their line-ending and file-comparison settings
+  (`core.autocrlf` ...) and `safe.directory` are still used (`mergeCarriedConfigArgs`). A merge whose files an attribute sends to
+  a custom merge driver or to `merge=union` is refused before it runs and the copy is kept; git's text merge, `merge=binary`,
+  `merge=text` and `-merge` are unaffected (`worktrees.ts mergeAttributeRefusal`, `GIT_NULL_FILE`).
+- **Inherited `GIT_*` variables are dropped** for OrgAI's guarded git calls, now on a linked worktree as well as on a plain
+  checkout, and replace objects are ignored: `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_DIR`, `GIT_INDEX_FILE` from the environment
+  OrgAI was started in do not reach a merge or a branch deletion (`worktrees.ts guardedGitEnv`).
+- **Pending native spawns count toward `maxAgentsPerRun`:** a native report an adapter approved but has not started counts in a
+  bridged delegation's cap check (it may count twice for a moment, never fewer).
+- **The project folder changes while the tests run** (`rootPin.ts`, `orgaiMoves.ts`): a merge of another report into the same
+  checkout by OrgAI itself is not a change (the merge goes on on top of it); a commit, an edit of a tracked file or a staged
+  change by anyone else (you, or the test command: git cannot tell them apart) is: with a review card in the merge you are asked
+  once more ("The project folder changed while the tests ran", with the new commits) and approving goes on; without a card the
+  merge is refused and the copy kept, as before. A change to `.git/config`, `config.worktree`, `info/attributes`, the hooks folder
+  or an untracked `.gitattributes` is always refused. Another OrgAI process (the `orgai` CLI) merging into the same checkout is not
+  in the in-memory ledger and reads as a change by someone else.
 - The git summary shows no working-tree status (`dirtyFiles` 0) on a repository that defines its own filter drivers.
-- Saves from the socket and the CLI (`orgai projects set`, `orgai org`, the TUI settings) cannot raise or remove
-  `maxBudgetUsd`, and cannot raise an explicit `maxSubagentDepth` / `maxConcurrentSubagents` (nor clear one when automatic would
-  allow more). They can still set a budget where there was none and lower one; `orgai projects set --max-budget none` or a
-  higher figure fails with "These project settings can be changed in the OrgAI window only: maxBudgetUsd." The desktop window is
-  unchanged.
+- **Which project actions the CLI (and any non-desktop surface, the headless policy included) can no longer do.** A save still
+  cannot raise or remove `maxBudgetUsd`, nor raise an explicit `maxSubagentDepth` / `maxConcurrentSubagents` (nor clear one when
+  automatic would allow more), and can set one where there was none and lower one: `orgai projects set --max-budget none` or a
+  higher figure fails with "These project settings can be changed in the OrgAI window only: maxBudgetUsd." New: approving a
+  settings card (`setup:decide` / `runs:decide`) that raises or removes those limits is refused and comes back as a revise;
+  `orgai projects remove` fails for a project that carries any guarded limit (budget, daily / monthly cap, agent cap, role cap or
+  knowledge restriction, the test gate, the main branch ...) with "This project carries limits (...), so it can be removed in the
+  OrgAI window only" (a project with none removes as before); `templates:apply` and `projects:applyImport` fail when the
+  resulting chart drops a role's cap or knowledge restriction (adding to a chart is unaffected). The desktop window is unchanged.
+  Checked by `host/projectSaveGuard.test.ts`, `setup/settingsProposalBoundary.test.ts`, `setup/templates.test.ts`,
+  `setup/import/importer.test.ts`, `runtime/runManagerSelfKnowledge.test.ts`.

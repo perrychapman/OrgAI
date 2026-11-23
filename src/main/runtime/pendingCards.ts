@@ -30,7 +30,8 @@ import { PROPOSAL_NOTE_MAX_CHARS, isVirtualProjectId } from '@shared/types'
  */
 export interface PendingCardMaps {
   pending: Map<string, { request: PermissionRequest; resolve: (d: PermissionDecision) => void }>
-  pendingProposals: Map<string, { proposal: Proposal; resolve: (d: ProposalDecision) => ProposalOutcome | void }>
+  /** `decidedBy`: who approved (a settings card that widens a spending limit applies only on the desktop's say-so). */
+  pendingProposals: Map<string, { proposal: Proposal; resolve: (d: ProposalDecision, decidedBy?: DecidedBy) => ProposalOutcome | void }>
   pendingQuestions: Map<string, { question: UserQuestion; resolve: (a: QuestionAnswer) => void }>
   pendingMerges: Map<string, { review: MergeReview; resolve: (d: MergeDecision) => void }>
   /**

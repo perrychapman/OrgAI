@@ -7,6 +7,7 @@ import type { ConnectionId, Project } from '@shared/types'
 import { ORG_TEMPLATES_MAX } from '@shared/types'
 import type { ModelContext } from './import/model'
 import { TemplateService } from './templates'
+import { desktopOnlyProjectChanges, desktopOnlyProjectMessage } from '../host/projectSaveGuard'
 
 let dataDir: string
 let stored: Project[]
@@ -264,5 +265,50 @@ describe('TemplateService remove', () => {
     expect(readdirSync(join(dataDir, 'org-templates')).sort()).toEqual([b.id, 'templates.json'].sort())
     expect(() => svc.remove(a.id)).toThrow('Template not found')
     expect(() => svc.remove('../x')).toThrow('Template not found')
+  })
+})
+
+describe('TemplateService apply with a surface check (third pass S1)', () => {
+  // What a non-desktop surface runs first (host/dispatcher.ts widenGuard): the project-save widening rule.
+  const guard = (s: Project, n: Project): void => {
+    const refused = desktopOnlyProjectChanges(s, n)
+    if (refused.length) throw new Error(desktopOnlyProjectMessage(refused))
+  }
+
+  function targetWithCap(): { svc: TemplateService; target: Project; id: string } {
+    const src = make('Source')
+    stored.push(src)
+    const svc = service()
+    const id = svc.saveFromProject({ projectId: src.id, name: 'T' }).id
+    const roles = engagementRoles(contexts.anthropic).slice(0, 2).map((r, i) => (i === 0 ? { ...r, maxConcurrent: 2 } : { ...r, knowledgeWrite: false as const }))
+    const target = make('Target', { roles })
+    stored.push(target)
+    return { svc, target, id }
+  }
+
+  it('a replace that would drop a role\'s cap or restriction is refused before anything is saved or counted', () => {
+    const { svc, target, id } = targetWithCap()
+    expect(() => svc.apply({ projectId: target.id, templateId: id, mode: 'replace' }, guard)).toThrow(/Role\.maxConcurrent|Role\.knowledgeWrite/)
+    expect(stored.find((p) => p.id === target.id)!.roles).toEqual(target.roles)
+    expect(changed).toHaveLength(0)
+    expect(readFileSync(join(dataDir, 'org-templates', 'templates.json'), 'utf8')).not.toMatch(/"appliedCount":\s*[1-9]/)
+  })
+
+  it('the same replace without a check (the desktop window) goes through, and a merge keeps the limits so it passes the check', () => {
+    const { svc, target, id } = targetWithCap()
+    svc.apply({ projectId: target.id, templateId: id, mode: 'merge' }, guard)
+    expect(stored.find((p) => p.id === target.id)!.roles.some((r) => r.maxConcurrent === 2)).toBe(true)
+    svc.apply({ projectId: target.id, templateId: id, mode: 'replace' })
+    expect(stored.find((p) => p.id === target.id)!.roles.some((r) => r.maxConcurrent === 2)).toBe(false)
+  })
+
+  it('a replace on a project whose roles carry no limit passes the check', () => {
+    const src = make('Source')
+    stored.push(src)
+    const svc = service()
+    const id = svc.saveFromProject({ projectId: src.id, name: 'T' }).id
+    const target = make('Plain')
+    stored.push(target)
+    expect(() => svc.apply({ projectId: target.id, templateId: id, mode: 'replace' }, guard)).not.toThrow()
   })
 })

@@ -188,7 +188,7 @@ export class AgentImportService {
   }
 
   /** projects:applyImport: recompute from disk, apply the choices, save. Undo = save previousRoles. */
-  apply(input: AgentImportApplyInput, access?: AgentImportAccess): AgentImportApplyResult {
+  apply(input: AgentImportApplyInput, access?: AgentImportAccess, check?: (stored: Project, next: Project) => void): AgentImportApplyResult {
     const { project, source } = this.target(input, access)
     // The digest is required: apply only what the user reviewed in a preview.
     if (typeof input.digest !== 'string' || !input.digest) throw new Error('Preview the import before applying it.')
@@ -198,6 +198,8 @@ export class AgentImportService {
     }
     if (!preview.items.some((i) => i.action !== 'skip')) throw new Error('There is nothing to import.')
     const next = this.adapt({ ...project, roles: preview.roles })
+    // The caller's refusal (a surface that may not shed a role's limit), before anything is saved.
+    check?.(project, next)
     const saved = this.deps.projects.save(next)
     this.deps.onProjectChanged?.(saved)
     return { project: saved, previousRoles: project.roles }

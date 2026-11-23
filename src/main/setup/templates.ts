@@ -350,12 +350,14 @@ export class TemplateService {
   }
 
   /** templates:apply. Result: the saved project and the roles before (Undo = save previousRoles). */
-  apply(input: OrgTemplateApplyInput): AgentImportApplyResult {
+  apply(input: OrgTemplateApplyInput, check?: (stored: Project, next: Project) => void): AgentImportApplyResult {
     if (input?.mode !== 'replace' && input?.mode !== 'merge') throw new Error('Choose whether the template replaces the org chart or is added to it.')
     const project = this.stored(input.projectId)
     const roles = this.rolesOf(input.templateId, project, input.mode)
     if (!roles) throw new Error('Template not found')
     const next = this.adapt({ ...project, roles })
+    // The caller's refusal (a surface that may not shed a role's limit), before anything is saved or counted.
+    check?.(project, next)
     const saved = this.deps.projects.save(next)
     this.countApplied(input.templateId)
     this.deps.onProjectChanged?.(saved)

@@ -35,8 +35,12 @@ const budgetCap = (v: unknown): number => (typeof v === 'number' && Number.isFin
  * - `mainBranch`: never changed (it decides where merges land).
  *
  * Every change that only narrows what a run may do or delete stays allowed from other surfaces; every widening is refused.
- * Team files never carry any of these (teamFiles/parse.ts ignores unknown team.json keys), and the settings proposal
- * lists (PROJECT_SETTINGS_PROPOSABLE_FIELDS) do not name them. Pure.
+ * Team files never carry any of these (teamFiles/parse.ts ignores unknown team.json keys). The settings proposal list
+ * (PROJECT_SETTINGS_PROPOSABLE_FIELDS) DOES name three of them (`maxBudgetUsd`, `maxSubagentDepth`,
+ * `maxConcurrentSubagents`; a `maxBudgetUsd: null` removes the cap): approving such a card from any surface but the window
+ * applies the same rule (SetupService.applyProposal `nonDesktop`, set by RunManager from the decision's `decidedBy`). The same
+ * rule also covers a project removed and created again (`guardedFieldsOf`) and the services that replace roles
+ * (templates:apply, projects:applyImport: `widenGuard` in the dispatcher). Pure.
  */
 export function desktopOnlyProjectChanges(stored: Project, incoming: Project): string[] {
   const was = cleanProjectLimits(stored)
@@ -100,6 +104,44 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
   if (now.branchNamePattern !== was.branchNamePattern) refused.push('branchNamePattern')
   if ((now.askBeforeStrongerModel === true) !== (was.askBeforeStrongerModel === true)) refused.push('askBeforeStrongerModel')
   return refused
+}
+
+/**
+ * The guarded limits a project carries: what removing it and creating a project at the same folder would shed (a new project
+ * starts with none). Read by comparing the project with a copy that has every guarded field cleared and every role's limit
+ * dropped, through the same rule a save follows, so it names exactly the fields desktopOnlyProjectChanges guards (a spending
+ * cap or an agent cap, a role's cap or restriction, the test gate, the main branch, the spend-limit action ...). Empty for a
+ * project that carries none. Pure.
+ */
+export function guardedFieldsOf(project: Project): string[] {
+  const {
+    maxBudgetUsd: _b,
+    maxDailyUsd: _d,
+    maxMonthlyUsd: _m,
+    maxAgentsPerRun: _a,
+    maxSubagentDepth: _depth,
+    maxConcurrentSubagents: _conc,
+    onSpendLimit: _s,
+    requireTestsPass: _t,
+    testCommand: _c,
+    mainBranch: _mb,
+    branchNamePattern: _bp,
+    askBeforeStrongerModel: _q,
+    schedulesNearPlanLimit: _n,
+    ...rest
+  } = project
+  void [_b, _d, _m, _a, _depth, _conc, _s, _t, _c, _mb, _bp, _q, _n]
+  const roles = (Array.isArray(project.roles) ? project.roles : []).map((r) => {
+    const { maxConcurrent: _mc, knowledgeWrite: _kw, ...kept } = r
+    void [_mc, _kw]
+    return kept
+  })
+  return desktopOnlyProjectChanges(project, { ...rest, roles })
+}
+
+/** The plain refusal sentence when a non-desktop surface removes a project that carries limits. */
+export function removeCarriedMessage(fields: readonly string[]): string {
+  return `This project carries limits (${fields.join(', ')}), so it can be removed in the OrgAI window only: removing it and creating it again would start it without them.`
 }
 
 /**

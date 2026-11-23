@@ -310,6 +310,71 @@ describe('Claude: the SDK stop and main\'s project-cap stop make one hold', () =
     await m.stopAll()
   })
 
+  describe('an unpriced model or subagent in main\'s table does not stop a first-party run (the SDK enforces the cap)', () => {
+    const unpricedAgent = () => rootUsing('claude-sonnet-4-5', undefined, [{ model: 'unexpected-unpriced-model' }])
+
+    it('no SDK total yet: not stopped on "unknown price" in the first turn', async () => {
+      const { m, ctx, run } = await claudeRun(5)
+      spend(ctx(), unpricedAgent())
+      expect(m.summary(run.id)?.usage).toMatchObject({ costPartial: true })
+      expect(m.summary(run.id)?.usage?.providerCostUsd).toBeUndefined()
+      expect(m.summary(run.id)?.status).toBe('running')
+      expect(m.summary(run.id)?.hold).toBeUndefined()
+      expect(logsOf(run.id, 'no known price, so its spending limit')).toHaveLength(0)
+      await m.stopAll()
+    })
+
+    it('an all-unknown first agent (costSource unknown) is not stopped either', async () => {
+      const { m, ctx, run } = await claudeRun(5)
+      spend(ctx(), rootUsing('unexpected-unpriced-model'))
+      expect(m.summary(run.id)?.usage).toMatchObject({ costSource: 'unknown' })
+      expect(m.summary(run.id)?.status).toBe('running')
+      expect(m.summary(run.id)?.hold).toBeUndefined()
+      await m.stopAll()
+    })
+
+    it('the SDK total arrives under the cap: the run keeps going; reaching the cap holds it once', async () => {
+      const { m, ctx, run } = await claudeRun(5)
+      spend(ctx(), unpricedAgent())
+      ctx().emit({ type: 'run.cost', runId: run.id, totalCostUsd: 2 })
+      expect(m.summary(run.id)?.status).toBe('running')
+      expect(m.summary(run.id)?.hold).toBeUndefined()
+      ctx().emit({ type: 'run.cost', runId: run.id, totalCostUsd: 5 })
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget', budget: { limitUsd: 5 } } }))
+      ctx().onRootTurnEnded?.({ turnGen: 1, ok: false, errorSubtype: 'error_max_budget_usd' })
+      expect(holdsOf(run.id)).toHaveLength(1)
+      expect(logsOf(run.id, 'used all of its spending limit')).toHaveLength(1)
+      await m.stopAll()
+    })
+
+    it('the priced part still backstops: 1.5x the cap on the priced estimate holds an unpriced-model run', async () => {
+      const { m, ctx, run } = await claudeRun(5)
+      const a = unpricedAgent()
+      setModelTokens(a, 'claude-sonnet-4-5', BIG)
+      spend(ctx(), a)
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+      expect(logsOf(run.id, 'no known price, so its spending limit')).toHaveLength(0)
+      await m.stopAll()
+    })
+
+    it('a legacy run with no recorded connection resolves to the default Anthropic connection and is exempt too', async () => {
+      const { m, ctx, run } = await claudeRun(5)
+      ;(m as unknown as { runs: Map<string, { summary: { connection?: string } }> }).runs.get(run.id)!.summary.connection = undefined
+      spend(ctx(), unpricedAgent())
+      expect(m.summary(run.id)?.status).toBe('running')
+      expect(m.summary(run.id)?.hold).toBeUndefined()
+      await m.stopAll()
+    })
+
+    it('a per-run cap the user chose keeps the unknown-price stop (the SDK-first rule is the project cap only)', async () => {
+      const { m, ctx } = rig('claude')
+      const run = await m.start({ project: team('claude-sonnet-4-5', 50), prompt: 'go', userChoice: { maxBudgetUsd: 5 } })
+      spend(ctx(), unpricedAgent())
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+      await m.stopAll()
+    })
+  })
+
   it('the total the adapter reports holds a first-party run at once (the SDK-first ordering)', async () => {
     const { m, ctx, run } = await claudeRun(5)
     const a = rootUsing('claude-sonnet-4-5')
@@ -339,6 +404,21 @@ describe('Claude through a proxy: the cap compares the best known cost, not only
     // 6 by the table, 1 reported, 1.2x the cap: a proxy has no SDK-first rule, so the estimate counts.
     await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
     expect(holdsOf(run.id)).toHaveLength(1)
+    await m.stopAll()
+  })
+
+  it('the same unpriced subagent model through a proxy is still stopped on "unknown price"', async () => {
+    const rec = recorder('claude')
+    const setup = { applyProposal: vi.fn(), markScaffolded: vi.fn(), markArchitectureUpdated: vi.fn(), hiddenContext: vi.fn(() => ''), complete: vi.fn(), prepare: vi.fn(async (x: Project) => x) } as unknown as SetupService
+    const m = new RunManager({ claude: rec.adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), setup, () => 100, {
+      dataDir: join(dir, 'data'),
+      catalog: () => CATALOG,
+      resolveConnection: () => ({ connection: 'proxy-1', adapter: 'claude', env: {} })
+    })
+    const run = await m.start({ project: team('claude-sonnet-4-5', 5), prompt: 'go' })
+    spend(rec.ctxs.at(-1)!, rootUsing('claude-sonnet-4-5', undefined, [{ model: 'unexpected-unpriced-model' }]))
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+    expect(logsOf(run.id, 'no known price, so its spending limit')).toHaveLength(1)
     await m.stopAll()
   })
 })

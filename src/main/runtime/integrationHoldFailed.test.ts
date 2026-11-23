@@ -5,7 +5,14 @@ import { fakeCtx } from './testHelpers'
 import { commitLeftovers, integrateWorktree } from './worktrees'
 
 // integration.ts reads the merge target's pin around the test command (rootPin.ts); this file's worktrees mock has no git.
-vi.mock('./rootPin', () => ({ pinRoot: vi.fn(async () => undefined), rootDrift: vi.fn(async () => undefined) }))
+vi.mock('./rootPin', () => ({
+  pinRoot: vi.fn(async () => undefined),
+  rootDrift: vi.fn(async () => undefined),
+  rootVerdict: vi.fn(async () => ({ kind: 'same', pin: undefined })),
+  attributeDirsOf: vi.fn(() => ['']),
+  pinDriftMessage: vi.fn(() => 'drift'),
+  folderChangeNote: vi.fn(async () => 'changed')
+}))
 
 vi.mock('./worktrees', () => ({
   prepareRepo: vi.fn(async () => {}),

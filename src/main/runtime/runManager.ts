@@ -5225,9 +5225,13 @@ export class RunManager {
     // which stored roles each slug named, checked again at approval.
     const cardSlugIds = this.cardRolesForStoreAtCreation(active, proposal)
     return new Promise((resolve) => {
-      active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
+      active.pendingProposals.set(proposal.id, { proposal, resolve: (raw, decidedBy) => {
         // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
         const decision = cleanProposalDecision(raw)
+        // An approval from any surface but the desktop window (a socket client, the CLI, the headless policy) may set a spending
+        // or agent limit and lower one, never raise or remove one (SetupService.applyProposal refuses it). No decidedBy = an
+        // internal caller, which is trusted as before.
+        const fromElsewhere = decidedBy !== undefined && decidedBy.surface !== 'desktop' ? ({ nonDesktop: true } as const) : {}
         if (decision.behavior !== 'approve') {
           const outcome = proposalOutcome(decision)
           resolve(outcome)
@@ -5271,7 +5275,7 @@ export class RunManager {
               if (proposal.kind !== 'settings') throw new Error('Only settings proposals can target a project.')
               const target = this.storedProjectFor(proposal.target.projectId)
               if (!target) throw new Error('That project no longer exists.')
-              const updated = this.setup.applyProposal(target.id, proposal, { targeted: true })
+              const updated = this.setup.applyProposal(target.id, proposal, { targeted: true, ...fromElsewhere })
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             } else if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
@@ -5296,7 +5300,7 @@ export class RunManager {
               const toSave = this.proposalForStore(active, proposal)
               // projectOnly: a work run never writes either library; a setup run's skill card never changes the skill library.
               const projectOnly = active.summary.kind === 'work' || (active.summary.kind === 'setup' && proposal.kind === 'skills')
-              const updated = this.setup.applyProposal(active.summary.projectId, toSave, { projectOnly, ...secrets })
+              const updated = this.setup.applyProposal(active.summary.projectId, toSave, { projectOnly, ...secrets, ...fromElsewhere })
               waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
               roster = onApplied?.(updated, proposal)?.roster
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
@@ -5536,7 +5540,7 @@ export class RunManager {
     // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
     let resolved: ProposalOutcome | void
     try {
-      resolved = pending.resolve(decision)
+      resolved = pending.resolve(decision, opts.decidedBy)
     } catch (e) {
       // Not applied and not answered (the vault cannot take the values now): the card stays open for another try.
       if (!(e instanceof ProposalKeptOpen)) throw e
@@ -6382,7 +6386,9 @@ export class RunManager {
     // while the SDK's total is not (a backstop at SDK_BACKSTOP_RATIO of the cap: the SDK's total or the price table is then
     // wrong, and the run is stopped on the safe side). A per-run cap the user chose always compares the best known cost.
     const sdkTotal = typeof a.providerTotalUsd === 'number' && Number.isFinite(a.providerTotalUsd) && a.providerTotalUsd > 0 ? a.providerTotalUsd : 0
-    const sdkFirst = projectCap !== undefined && a.adapter === 'claude' && s.connection === 'anthropic' && sdkTotal > 0
+    // A run with no recorded connection (saved before connections existed) is on the project's, which defaults to 'anthropic'.
+    const firstPartyClaude = projectCap !== undefined && a.adapter === 'claude' && (s.connection ?? (a.ctx ? projectConnection(a.ctx.project) : 'anthropic')) === 'anthropic'
+    const sdkFirst = firstPartyClaude && sdkTotal > 0
     const ownCost = sdkFirst ? sdkTotal + spent.bridgedUsd : cost
     const backstop = sdkFirst && ownCap !== undefined && cost >= ownCap * SDK_BACKSTOP_RATIO
     if (ownCap !== undefined && (ownCost >= ownCap || backstop)) {
@@ -6394,8 +6400,13 @@ export class RunManager {
     }
     // Unknown price is not zero: a run whose spend cannot be priced (all or part of it) cannot be held to a cap, so under
     // one it stops, as start refuses an unpriced chosen model under a project cap and an exec run ends on one. The hold shows
-    // the known part of the spend. `allowUnpricedBudget` (an exec override) keeps its meaning.
-    if (ownCap !== undefined && (s.usage?.costSource === 'unknown' || s.usage?.costPartial || spent.unknown) && !s.overrides?.allowUnpricedBudget) {
+    // the known part of the spend. `allowUnpricedBudget` (an exec override) keeps its meaning. A first-party Claude run under
+    // the project's cap is the exception for its own session's spend: its SDK enforces the cap on its own total (an unpriced
+    // model or subagent in main's table does not make that total unknown, and stopping on it would end an ordinary run in its
+    // first turn), so the SDK's error and the backstop on the priced part above are its stops. Bridged agents are invisible to
+    // the SDK, so an unpriced one still stops the run.
+    const unknownOwn = (s.usage?.costSource === 'unknown' || s.usage?.costPartial) && !firstPartyClaude
+    if (ownCap !== undefined && (unknownOwn || spent.unknown) && !s.overrides?.allowUnpricedBudget) {
       this.setBudgetHold(a, 'run', ownCap, cost)
       a.spendStopped = true
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: `Part of this run has no known price, so its spending limit (${money(ownCap)}) cannot be enforced and the run stopped. Set a model price in Settings, or remove the limit.` })

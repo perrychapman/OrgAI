@@ -233,7 +233,7 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
-import { desktopOnlyProjectChanges, desktopOnlyProjectMessage, desktopOnlySettingChanges, desktopOnlySettingMessage } from './projectSaveGuard'
+import { desktopOnlyProjectChanges, desktopOnlyProjectMessage, desktopOnlySettingChanges, desktopOnlySettingMessage, guardedFieldsOf, removeCarriedMessage } from './projectSaveGuard'
 import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
 import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
@@ -413,6 +413,19 @@ export class HostDispatcher {
 /** projects:previewImport / applyImport: what the importer needs to honour sourcePath / fromProjectId (desktop only, own picks only). */
 function importAccess(ctx: InvokeContext): AgentImportAccess {
   return { surface: ctx.surface, isPickedFolder: (path) => isPickedAgentFolder(ctx.senderId, path) }
+}
+
+/**
+ * What a service that saves a project on a client's behalf (an import or a template that replaces roles) checks first, for any
+ * surface but the desktop window: the same widening rule as projects:save (projectSaveGuard.ts), so a replaced chart cannot
+ * shed a role's cap or restriction. undefined on the desktop (no check).
+ */
+function widenGuard(ctx: InvokeContext): ((stored: Project, next: Project) => void) | undefined {
+  if (ctx.surface === 'desktop') return undefined
+  return (stored, next) => {
+    const refused = desktopOnlyProjectChanges(stored, next)
+    if (refused.length) throw new HostRpcFailure('scope_denied', desktopOnlyProjectMessage(refused))
+  }
 }
 
 function refuseSocketDecision(ctx: InvokeContext, what: string): void {
@@ -607,7 +620,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   // sourcePath / fromProjectId are honoured on the desktop surface only, and a folder only when this window picked it.
   handle(IPC.projectsPreviewImport, (ctx, input: AgentImportInput): AgentImportPreview => importer.preview(input, importAccess(ctx)))
   // The digest of the reviewed preview is required; apply refuses without it or when the folder changed since.
-  handle(IPC.projectsApplyImport, (ctx, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input, importAccess(ctx)))
+  handle(IPC.projectsApplyImport, (ctx, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input, importAccess(ctx), widenGuard(ctx)))
   handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   handle(IPC.projectsSave, (ctx, project: Project): Project | Promise<Project> => {
@@ -635,10 +648,16 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     return folderConfigReview(project)
   })
   // A string id or ProjectRemoveInput. Facts are gathered before anything is deleted (removalFacts).
-  handle(IPC.projectsRemove, async (_e, input: unknown): Promise<ProjectRemoveResult> => {
+  handle(IPC.projectsRemove, async (ctx, input: unknown): Promise<ProjectRemoveResult> => {
     const { projectId: id, removeRuns: asked } = projectRemoveArgs(input)
     const stored = projects.get(id)
     if (!stored) throw new Error('Project not found')
+    // Removing a project and creating one at the same path would start it with no limits: a project that carries any
+    // guarded limit is removed in the OrgAI window only (a project with none removes from every surface, as before).
+    if (ctx.surface !== 'desktop') {
+      const carried = guardedFieldsOf(stored)
+      if (carried.length) throw new HostRpcFailure('scope_denied', removeCarriedMessage(carried))
+    }
     const removeRuns = effectiveRemoveRuns(projectKindOf(stored), asked)
     if (!removeRuns) retainRunProject(settings.dataDir, id)
     const facts = removalFacts({ dataDir: settings.dataDir, project: stored, runCount: (pid) => runs.list(pid).length }, id, removeRuns)
@@ -1058,7 +1077,7 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
     templates.remove(templateEngagementArgs.templateId(id))
     return templates.listWithBuiltIns()
   })
-  handle(IPC.templatesApply, (_e, input: unknown): AgentImportApplyResult => templates.apply(templateEngagementArgs.applyTemplate(input)))
+  handle(IPC.templatesApply, (ctx, input: unknown): AgentImportApplyResult => templates.apply(templateEngagementArgs.applyTemplate(input), widenGuard(ctx)))
 
   handle(IPC.projectsEngagementDocument, (_e, id: unknown): EngagementDocumentInfo => {
     const project = stored(templateEngagementArgs.projectId(id))

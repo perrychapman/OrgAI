@@ -231,6 +231,30 @@ describe('the daily and monthly spend includes a bridged child, also when the ru
     expect(bridged.providerCostUsd).toBeUndefined()
   })
 
+  it('the root\'s cost is the larger of the adapter\'s total and its own agents\' sum, so a root with no per-agent cost is not counted as 0', () => {
+    const root = agent({ id: ROOT_AGENT_ID, model: 'claude-x' })
+    root.connection = 'proxy-1'
+    const child = priced('ag_child', 'gpt-x', 6, ROOT_AGENT_ID)
+    child.connection = 'proxy-1'
+    // The root's agents carry no cost at all (none): the provider's total of 3 is the root's cost, and the child's 6 is added.
+    const out = computeRunUsage(summary, [root, child], { ...inputs, providerTotalUsd: 3, bridgedAgentIds: new Set(['ag_child']) })
+    expect(out.costUsd).toBe(9)
+    expect(out.providerCostUsd).toBeUndefined()
+    expect(out.costPartial).toBeUndefined()
+  })
+
+  it('the native sum wins when it is larger than the adapter\'s total, and an unpriced child makes the figure partial', () => {
+    const root = priced(ROOT_AGENT_ID, 'claude-x', 5, null)
+    root.connection = 'proxy-1'
+    const child = agent({ id: 'ag_child', model: 'mystery-model-9', parentId: ROOT_AGENT_ID })
+    setModelTokens(child, 'mystery-model-9', { input: 10, output: 10, cacheRead: 0, cacheWrite: 0 })
+    child.usage = priceAgentUsage(child.usage!, ctx)
+    child.connection = 'proxy-1'
+    const out = computeRunUsage(summary, [root, child], { ...inputs, providerTotalUsd: 2, bridgedAgentIds: new Set(['ag_child']) })
+    expect(out.costUsd).toBe(5)
+    expect(out.costPartial).toBe(true)
+  })
+
   it('a run with no bridged agent keeps the provider total as before', () => {
     const root = priced(ROOT_AGENT_ID, 'claude-x', 3, null)
     const out = computeRunUsage(summary, [root], { ...inputs, providerTotalUsd: 3, bridgedAgentIds: new Set(['ag_other']) })

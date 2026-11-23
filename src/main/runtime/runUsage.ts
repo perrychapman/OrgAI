@@ -396,10 +396,30 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   // The provider's run total covers the whole run, so it wins when the agents' costs are provider-priced, and it
   // fills in when agent costs are missing altogether (no per-model cost reported). Computed costs keep their sum.
   const useProvider = hasProvider && (cost.costSource === 'provider' || cost.costSource === 'none' || cost.costSource === 'unknown')
+  // A bridged child on the run's own connection: the adapter's total still stands for the root's own session. The root's cost
+  // is the larger of that total and its native agents' sum (their costs may be none or unknown, which would count as 0), and
+  // the bridged agents' known cost is added on top.
+  let bridgedRoot: { costUsd: number; costSource: CostResult['costSource']; costPartial: boolean } | undefined
+  if (bridgedHere && !multi && provider !== undefined && Number.isFinite(provider) && provider > 0) {
+    const ids = inputs.bridgedAgentIds!
+    const native = mergeCosts(usages.filter((_, i) => !ids.has(agents[i]!.id)))
+    const bridged = mergeCosts(usages.filter((_, i) => ids.has(agents[i]!.id)))
+    const nativeUsd = Math.max(provider, native.costUsd ?? 0)
+    // Where the root's figure comes from: the provider's total when it is the larger (or the agents have no cost of their own).
+    const fromProvider = provider >= (native.costUsd ?? 0)
+    const rootSource = fromProvider ? 'provider' : native.costSource
+    const allProvider = rootSource === 'provider' && (bridged.costSource === 'provider' || bridged.costSource === 'none' || bridged.costSource === 'unknown')
+    bridgedRoot = {
+      costUsd: nativeUsd + (bridged.costUsd ?? 0),
+      costSource: allProvider ? 'provider' : 'computed',
+      // A bridged agent with no known price leaves the sum short; so does a native sum that was itself partial and the larger one.
+      costPartial: !!bridged.costPartial || bridged.costSource === 'unknown' || (!fromProvider && !!native.costPartial)
+    }
+  }
   const usage: RunUsage = {
     tokens,
-    costUsd: useProvider ? provider : cost.costUsd,
-    costSource: useProvider ? 'provider' : cost.costSource,
+    costUsd: bridgedRoot ? bridgedRoot.costUsd : useProvider ? provider : cost.costUsd,
+    costSource: bridgedRoot ? bridgedRoot.costSource : useProvider ? 'provider' : cost.costSource,
     models,
     roles,
     wallMs: Math.max(0, (summary.endedAt ?? now) - summary.startedAt),
@@ -415,7 +435,7 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
     idleMs: inputs.idleMs,
     updatedAt: now
   }
-  if (cost.costPartial && !useProvider) usage.costPartial = true
+  if (bridgedRoot ? bridgedRoot.costPartial : cost.costPartial && !useProvider) usage.costPartial = true
   if (inputs.decisions !== undefined && Number.isFinite(inputs.decisions)) usage.decisions = Math.max(0, Math.floor(inputs.decisions))
   if (noResultParts.length) {
     const nr = mergeCosts(noResultParts)

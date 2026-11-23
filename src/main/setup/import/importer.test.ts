@@ -7,6 +7,7 @@ import type { ConnectionId, Project } from '@shared/types'
 import { HARNESS_PROJECT_ID } from '@shared/types'
 import { forgetAgentFolders, isPickedAgentFolder, rememberAgentFolder } from '../../agentFolderPicks'
 import { AgentImportService } from './importer'
+import { desktopOnlyProjectChanges, desktopOnlyProjectMessage } from '../../host/projectSaveGuard'
 import type { ModelContext } from './model'
 
 let base: string
@@ -301,5 +302,36 @@ describe('AgentImportService: another folder or project (UI overhaul)', () => {
     const { digest } = s.preview({ projectId: p.id, mode: 'merge', fromProjectId: from.id }, desktop())
     from.roles = from.roles.map((r) => ({ ...r, prompt: `${r.prompt} changed` }))
     expect(() => s.apply({ projectId: p.id, mode: 'merge', fromProjectId: from.id, digest }, desktop())).toThrow(/changed since the preview/)
+  })
+})
+
+describe('AgentImportService apply with a surface check (third pass S1)', () => {
+  const guard = (s: Project, n: Project): void => {
+    const refused = desktopOnlyProjectChanges(s, n)
+    if (refused.length) throw new Error(desktopOnlyProjectMessage(refused))
+  }
+
+  it('a replace import that would drop a role\'s cap is refused before saving; without a check (the desktop) it saves', () => {
+    put('.claude/agents/designer.md', claude('designer'))
+    const base0 = make()
+    const p = make({ roles: base0.roles.map((r, i) => (i === 1 ? { ...r, maxConcurrent: 2 } : r)) })
+    const s = service([p])
+    const { digest } = s.preview({ projectId: p.id, mode: 'replace' })
+    expect(() => s.apply({ projectId: p.id, mode: 'replace', digest }, undefined, guard)).toThrow(/Role\.maxConcurrent/)
+    expect(saved).toEqual([])
+    expect(changed).toEqual([])
+    s.apply({ projectId: p.id, mode: 'replace', digest })
+    expect(saved).toHaveLength(1)
+  })
+
+  it('a merge import keeps every role\'s limit, so the check passes', () => {
+    put('.claude/agents/designer.md', claude('designer'))
+    const base0 = make()
+    const p = make({ roles: base0.roles.map((r, i) => (i === 1 ? { ...r, maxConcurrent: 2 } : r)) })
+    const s = service([p])
+    const { digest } = s.preview({ projectId: p.id, mode: 'merge' })
+    s.apply({ projectId: p.id, mode: 'merge', digest }, undefined, guard)
+    expect(saved).toHaveLength(1)
+    expect(saved[0]!.roles.some((r) => r.maxConcurrent === 2)).toBe(true)
   })
 })

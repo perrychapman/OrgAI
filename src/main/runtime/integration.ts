@@ -3,7 +3,8 @@ import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { INTEGRATE_TOOL } from './harnessTools'
 import { branchTip, commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision, type IntegrateOptions, type IntegrateResult } from './worktrees'
 import { runTestGate, testGateCommand, testGateMissingCommand } from './testGate'
-import { pinRoot, rootDrift } from './rootPin'
+import { attributeDirsOf, folderChangeNote, pinDriftMessage, pinRoot, rootDrift, rootVerdict, type RootPin } from './rootPin'
+import { withRepoLock } from './repoLock'
 
 /**
  * The per-run worktree state machine, shared by every adapter whose writing reports work in git
@@ -442,7 +443,7 @@ export class WorktreeIntegrator {
       }
       // Without a review the tests run now (no card is waiting on them).
       if (!this.ctx.project.reviewMerges) {
-        const gate = testCommand ? await this.runTests(ownerName ?? info.branch, info, testCommand, false, targetRoot) : undefined
+        const gate = testCommand ? await this.runTests(ownerName ?? info.branch, info, testCommand, false, targetRoot, changedFiles, false) : undefined
         return gate?.refusal ?? { behavior: 'merge', ...(gate?.verify ? { verify: gate.verify } : {}) }
       }
       // With reviewMerges the gate runs repository code, so it waits for the user's approval: the card shows tests
@@ -471,9 +472,33 @@ export class WorktreeIntegrator {
         if (agentId) this.set(agentId, { ...info, status: 'merging', changedFiles })
         let verify: (() => Promise<string | undefined>) | undefined
         if (testCommand) {
-          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true, targetRoot)
+          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true, targetRoot, changedFiles, true)
           if (gate.refusal) return gate.refusal
           verify = gate.verify
+          if (gate.reask) {
+            // Something other than OrgAI changed the project folder while the tests ran (the user, or the test command: git
+            // cannot tell them apart). The user is asked once more, with the reason, before the merge lands in it as it is.
+            this.log('warn', `${ownerName ?? info.branch}: the project folder changed while the tests ran; asking the user again.`)
+            const again = await diffWorktree(targetRoot, info.branch, approved)
+            if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
+            const second = await this.ctx.requestMergeReview({
+              agentId: agentId ?? ROOT_AGENT_ID,
+              agentName: ownerName ?? info.branch,
+              branch: info.branch,
+              path: info.path,
+              changedFiles: again.changedFiles.length ? again.changedFiles : changedFiles,
+              stat: `${gate.reask.note}\n\n${again.stat}`,
+              patch: again.patch,
+              checks: { tests: 'passed', review: 'unknown' }
+            })
+            if (second.behavior !== 'merge') return second
+            if (agentId) this.set(agentId, { ...info, status: 'merging', changedFiles })
+            // The state the user just approved: the soft parts are read now, the config, hooks and attributes stay as they were.
+            const seen = gate.reask.pin
+            const fresh = await withRepoLock(targetRoot, () => pinRoot(targetRoot, { attrDirs: seen.attrDirs }))
+            const confirmed: RootPin = { ...fresh, config: seen.config, attributes: seen.attributes, hooks: seen.hooks }
+            verify = () => rootDrift(targetRoot, confirmed)
+          }
         }
         const now = await branchTip(targetRoot, info.branch)
         if (now === approved) return { behavior: 'merge', sha: approved, ...(verify ? { verify } : {}) }
@@ -501,25 +526,39 @@ export class WorktreeIntegrator {
     info: WorktreeInfo,
     command: string,
     afterApproval: boolean,
-    targetRoot: string
-  ): Promise<{ detail: string; refusal?: GateDecision; verify?: () => Promise<string | undefined> }> {
+    targetRoot: string,
+    changedFiles: readonly string[],
+    /** A review card is part of this merge, so the user can be asked once more when the project folder changed meanwhile. */
+    canAsk: boolean
+  ): Promise<{ detail: string; refusal?: GateDecision; verify?: () => Promise<string | undefined>; reask?: { note: string; pin: RootPin } }> {
     this.log('info', `${ownerName}: running the project's tests in ${info.path} before merging ${info.branch}${afterApproval ? ' (the merge was approved)' : ''}.`)
     // The command is repository code run as the user: it can reach the checkout the merge lands in through the shared git
-    // folder. That checkout is read before and after (rootPin.ts); a change refuses the merge, and the merge step reads it
-    // once more under the repository lock (GateDecision.verify) in case something changed it after the command ended.
-    const pin = await pinRoot(targetRoot)
+    // folder. That checkout is read before and after (rootPin.ts), under the repository lock so that a merge of OrgAI's own
+    // is read whole. Config, hooks and untracked attributes that moved refuse the merge. HEAD, the index or tracked files that
+    // moved only through merges OrgAI itself made meanwhile (a parallel report) are re-read and the merge goes on; moved by
+    // anything else, the user is asked once more when a card is part of this merge, else the merge is refused. The merge step
+    // reads it once more under the lock (GateDecision.verify) in case something changed it after the command ended.
+    const attrDirs = attributeDirsOf(changedFiles)
+    const pin = await withRepoLock(targetRoot, () => pinRoot(targetRoot, { attrDirs }))
     const result = await runTestGate(command, info.path)
-    const drift = pin ? await rootDrift(targetRoot, pin) : undefined
-    if (drift) {
+    const verdict = await withRepoLock(targetRoot, () => rootVerdict(targetRoot, pin))
+    if (verdict.kind === 'hard' || (verdict.kind === 'folder' && !(canAsk && result.outcome === 'passed'))) {
+      const drift = pinDriftMessage(verdict.labels, targetRoot)
       this.log('warn', `${ownerName}: ${drift}`)
       return {
         detail: result.detail,
         refusal: { behavior: 'refuse', reason: 'tests', message: `${drift} Branch ${info.branch} is kept as it is at ${info.path}.` }
       }
     }
+    if (verdict.kind === 'folder') {
+      this.log('info', `${ownerName}: tests passed before merging ${info.branch}.`)
+      return { detail: result.detail, reask: { note: await folderChangeNote(targetRoot, verdict.was, verdict.pin), pin: verdict.pin } }
+    }
+    const current = verdict.pin
+    if (verdict.kind === 'orgai') this.log('info', `${ownerName}: another merge into ${targetRoot} happened while the tests ran; the merge continues on top of it.`)
     if (result.outcome === 'passed') {
       this.log('info', `${ownerName}: tests passed before merging ${info.branch}.`)
-      return { detail: result.detail, ...(pin ? { verify: () => rootDrift(targetRoot, pin) } : {}) }
+      return { detail: result.detail, ...(pin ? { verify: () => rootDrift(targetRoot, current) } : {}) }
     }
     const why = result.outcome === 'timeout' ? 'the tests timed out' : result.exitCode === null ? 'the tests could not complete' : `the tests failed (exit code ${result.exitCode})`
     const message =
