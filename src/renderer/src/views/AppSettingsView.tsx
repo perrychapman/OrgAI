@@ -33,9 +33,7 @@ import { ADVANCED_SECTIONS, APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, focusPane
 import { scrollWithin } from '../lib/scrollWithin'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
-import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
-import PresetsSection from '../components/connectors/PresetsSection'
-import McpLibrarySection from '../components/mcp/McpLibrarySection'
+import ToolsPane from '../components/connectors/ToolsPane'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
@@ -560,13 +558,7 @@ export default function AppSettingsView(): ReactElement {
             </SettingsAdvanced>
           </>
         )}
-        {pane === 'mcp-library' && (
-          <>
-            <ConnectorGallery />
-            <PresetsSection />
-            <McpLibrarySection />
-          </>
-        )}
+        {pane === 'mcp-library' && <ToolsPane />}
         {pane === 'skill-library' && <SkillLibrarySection />}
         {pane === 'kit' && <TemplatesSection />}
         {pane === 'kit' && <KitSection />}

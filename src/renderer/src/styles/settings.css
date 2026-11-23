@@ -1504,3 +1504,374 @@
   font-size: var(--text-caption);
   color: var(--text-tertiary);
 }
+
+/* ---------- Gallery with a detail panel (SettingsGallery: Providers, Tools, Skills, Templates boards) ---------- */
+.settings-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.settings-gallery-main {
+  flex: 999 1 460px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.settings-gallery-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-gallery-search {
+  flex: 1 1 180px;
+  max-width: 280px;
+}
+.settings-gallery-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.settings-gallery-toolbar {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.settings-gallery-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.settings-gallery-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.settings-gallery-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.settings-gallery-section-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.settings-gallery-section-note {
+  font-weight: var(--weight-medium);
+}
+.settings-gallery-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--space-3);
+}
+.settings-gallery-empty {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.settings-gallery-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-xl);
+  border: 1.5px solid var(--glass-line);
+  min-width: 0;
+}
+.settings-gallery-tile.is-selected {
+  border-color: var(--accent);
+}
+.settings-gallery-tile.is-dashed {
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+.settings-gallery-tile.is-dashed.is-selected {
+  border-color: var(--accent);
+}
+.settings-gallery-tile.is-dimmed .settings-gallery-pick {
+  opacity: 0.6;
+}
+.settings-gallery-pick {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.settings-gallery-pick:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.settings-gallery-tile.has-trailing .settings-gallery-tile-head {
+  padding-right: 44px;
+}
+.settings-gallery-trailing {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+}
+.settings-gallery-tile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.settings-gallery-mark {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  background: var(--field-bg);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.settings-gallery-mark.is-large {
+  width: 40px;
+  height: 40px;
+  font-size: var(--text-title);
+}
+.settings-gallery-names {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.settings-gallery-name {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-gallery-tag {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.settings-gallery-summary {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.settings-gallery-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.settings-gallery-status.tone-warn {
+  color: var(--warning-text);
+}
+.settings-gallery-status.tone-danger {
+  color: var(--danger-text);
+}
+.settings-gallery-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+}
+.tone-ok > .settings-gallery-dot {
+  background: var(--success);
+}
+.tone-warn > .settings-gallery-dot {
+  background: var(--warning);
+}
+.tone-danger > .settings-gallery-dot {
+  background: var(--danger);
+}
+.tone-info > .settings-gallery-dot {
+  background: var(--accent);
+}
+.tone-working > .settings-gallery-dot {
+  background: var(--working);
+}
+
+/* The aside: sticky beside the grid when there is room, below it otherwise. */
+.settings-gallery-aside {
+  flex: 1 1 300px;
+  max-width: 400px;
+  min-width: 0;
+  position: sticky;
+  top: var(--space-4);
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  scroll-margin-top: var(--space-4);
+}
+@container settings-col (max-width: 780px) {
+  .settings-gallery-aside {
+    position: static;
+    max-width: none;
+  }
+}
+.settings-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.settings-detail-names {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.settings-detail-name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.settings-detail-tag {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.settings-detail-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--field-bg);
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.settings-detail-note > .settings-gallery-dot {
+  margin-top: 6px;
+}
+.settings-detail-note.tone-ok {
+  background: var(--success-soft);
+}
+.settings-detail-note.tone-warn {
+  background: var(--warning-soft);
+}
+.settings-detail-note.tone-danger {
+  background: var(--danger-soft);
+}
+.settings-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  min-width: 0;
+}
+.settings-detail-label {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.settings-detail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.settings-detail-list > li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+}
+.settings-detail-mark {
+  flex: none;
+  width: 12px;
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.mark-can .settings-detail-mark {
+  color: var(--success-text);
+}
+.mark-cannot .settings-detail-mark {
+  color: var(--danger-text);
+}
+.settings-detail-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings-detail-side {
+  flex: none;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.settings-detail-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.settings-detail-fact {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-small);
+}
+.settings-detail-fact > dt {
+  color: var(--text-tertiary);
+}
+.settings-detail-fact > dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.settings-detail-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.settings-detail-chip {
+  min-height: 26px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  font-size: var(--text-small);
+  display: inline-flex;
+  align-items: center;
+}
+.settings-detail-chip.is-empty {
+  color: var(--text-tertiary);
+}
+.settings-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+@media (forced-colors: active) {
+  .settings-gallery-tile.is-selected {
+    outline: 2px solid Highlight;
+  }
+}
