@@ -19,6 +19,24 @@ export interface ToolCapabilities {
   signIn?: string
 }
 
+/**
+ * "3 read only, 2 can change or delete, 1 not described" over a test's tools, from the MCP tool annotations the
+ * server reported (McpTestResult.toolDetails readOnly / destructive; absent = not described). Annotations are the
+ * server's own hints: nothing in OrgAI enforces them.
+ */
+export function toolSummary(tools: readonly string[], details: ReadonlyMap<string, { readOnly?: boolean; destructive?: boolean }>): string {
+  let read = 0
+  let change = 0
+  let unknown = 0
+  for (const t of tools) {
+    const d = details.get(t)
+    if (d?.destructive) change++
+    else if (d?.readOnly) read++
+    else unknown++
+  }
+  return [read ? `${read} read only` : '', change ? `${change} can change or delete` : '', unknown ? `${unknown} not described` : ''].filter(Boolean).join(', ')
+}
+
 export function variantOf(info: ConnectorInfo): ConnectorVariant | undefined {
   const def = info.connector
   const id = info.variant ?? def.defaultVariant

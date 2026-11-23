@@ -7,7 +7,8 @@ import { normalizeHex } from '../../lib/theme'
 import { Icon } from '../ui/Icon'
 import { Input } from '../ui/Input'
 import { SegmentedControl } from '../ui/SegmentedControl'
-import { SettingRow } from '../ui/SettingRow'
+import { SettingRow, settingDescId } from '../ui/SettingRow'
+import { Switch } from '../ui/Switch'
 import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 
@@ -30,6 +31,16 @@ const MODES: { value: ThemeMode; label: string; note: string }[] = [
 const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string }[] = [
   { value: 'system', label: 'Match my computer' },
   { value: 'on', label: 'Always reduce' }
+]
+
+const TEXT_SIZES: { value: NonNullable<AppearanceSettings['textSize']>; label: string }[] = [
+  { value: 'small', label: 'Small' },
+  { value: 'default', label: 'Default' },
+  { value: 'large', label: 'Large' }
+]
+const DENSITIES: { value: NonNullable<AppearanceSettings['density']>; label: string }[] = [
+  { value: 'comfortable', label: 'Comfortable' },
+  { value: 'compact', label: 'Compact' }
 ]
 
 /**
@@ -176,6 +187,48 @@ export function AppearanceSection({ appearance, onChange }: { appearance: Appear
               description="Reduced keeps state changes and drops ambient movement. Your computer's own reduce-motion setting always wins."
               width="select"
               control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => onChange({ reduceMotion })} />}
+            />
+          </SettingsCard>
+        </SettingsSection>
+        <SettingsSection id="appsettings-section-reading" title="Panels and text" testId="appearance-reading">
+          <SettingsCard>
+            <SettingRow
+              id="appearance-glass-row"
+              title="See-through panels"
+              description="Panels let the background show through. Off uses solid panels, which can be easier to read."
+              control={
+                <Switch
+                  checked={appearance.glass !== false}
+                  label="See-through panels"
+                  testId="appearance-glass-switch"
+                  describedBy={settingDescId('appearance-glass-row')}
+                  onChange={(glass) => onChange({ glass })}
+                />
+              }
+            />
+            <SettingRow
+              title="Text size"
+              width="select"
+              control={<SegmentedControl label="Text size" value={appearance.textSize ?? 'default'} options={TEXT_SIZES} onChange={(textSize) => onChange({ textSize })} />}
+            />
+            <SettingRow
+              title="Spacing"
+              width="select"
+              control={<SegmentedControl label="Spacing" value={appearance.density ?? 'comfortable'} options={DENSITIES} onChange={(density) => onChange({ density })} />}
+            />
+            <SettingRow
+              id="appearance-dots-row"
+              title="Activity dots in the sidebar"
+              description="A coloured dot beside each project while its team works or waits on you. Counts stay either way."
+              control={
+                <Switch
+                  checked={appearance.sidebarActivityDots !== false}
+                  label="Activity dots in the sidebar"
+                  testId="appearance-dots-switch"
+                  describedBy={settingDescId('appearance-dots-row')}
+                  onChange={(sidebarActivityDots) => onChange({ sidebarActivityDots })}
+                />
+              }
             />
           </SettingsCard>
         </SettingsSection>

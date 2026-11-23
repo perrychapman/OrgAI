@@ -14,6 +14,7 @@ import { LimitsSection } from './LimitsSection'
 import { MaintenanceSection } from './MaintenanceSection'
 import { PermissionsSection } from './PermissionsSection'
 import { WorkCopiesSection } from './WorkCopiesSection'
+import { BranchRulesSection } from './BranchRulesSection'
 
 /**
  * Deep links to the engagement plan and context notes: scroll inside the settings scroller only, then focus the
@@ -67,6 +68,7 @@ export function ProjectSettingsPanes({ project, pane }: { project: Project; pane
       {pane === 'maintenance' && (
         <>
           <WorkCopiesSection project={project} patch={patch} />
+          {!engagement && <BranchRulesSection project={project} patch={patch} />}
           <MaintenanceSection project={project} />
         </>
       )}

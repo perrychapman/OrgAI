@@ -1,5 +1,6 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { currentAppearance, subscribeAppearance } from '../lib/theme'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
 import { AppWindow, BellRing, Briefcase, Code, ExternalLink, FolderOpen, House, Inbox, Plus, CalendarClock, ChartColumn, ChevronDown, ChevronRight, MessageSquare, Network, PanelLeftClose, Plug, Search, Settings, Sparkles, X, type LucideIcon } from 'lucide-react'
@@ -124,6 +125,7 @@ export default function Sidebar({
   /** Opens the command palette (App owns it; Ctrl/Cmd+K opens it too). */
   onOpenPalette: () => void
 }): ReactElement {
+  const activityDots = useSyncExternalStore(subscribeAppearance, () => currentAppearance().sidebarActivityDots !== false)
   const projects = useAppStore((s) => s.projects)
   const selectedId = useAppStore((s) => s.selectedProjectId)
   const view = useAppStore((s) => s.view)
@@ -310,6 +312,8 @@ export default function Sidebar({
     }
     // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
     const st = projectStatus({ open: open.length, decisions: combinedDecisionCount(projectRuns, teamDecisionsFor(teamItems, id)), newest: newest && last ? { startedAt: newest.startedAt, status: last } : undefined })
+    // Appearance "Activity dots" off: the row keeps a quiet dot (no working / waiting colour or pulse); counts stay.
+    const dotTone = activityDots ? st.dot : ''
     const active = selectedId === id && inProject(view)
     const viewedId = draftPage[id] ? undefined : viewedByProject[id]
     const baseName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
@@ -335,7 +339,7 @@ export default function Sidebar({
             {rail ? (
               <span className="nav-initials">
                 {entry.railMark}
-                <span className={`dot ${st.dot}`} aria-hidden="true" />
+                <span className={`dot ${dotTone}`} aria-hidden="true" />
               </span>
             ) : (
               <>
@@ -343,10 +347,10 @@ export default function Sidebar({
                   // A helper or Chat: its own mark, the status dot rides on it.
                   <span className="nav-icon">
                     <Icon icon={entry.icon} size="sm" />
-                    {st.dot && <span className={`dot ${st.dot}`} aria-hidden="true" />}
+                    {dotTone && <span className={`dot ${dotTone}`} aria-hidden="true" />}
                   </span>
                 ) : (
-                  <span className={`dot ${st.dot}`} aria-hidden="true" />
+                  <span className={`dot ${dotTone}`} aria-hidden="true" />
                 )}
                 <span className="nav-text">
                   <span className="nav-name">{name}</span>

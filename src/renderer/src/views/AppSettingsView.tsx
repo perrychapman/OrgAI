@@ -14,6 +14,7 @@ import { CopyButton } from '../components/ui/CopyButton'
 import { Input } from '../components/ui/Input'
 import { SettingRow, settingDescId } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
 import type { SettingsNavGroup } from '../components/settings/SettingsNav'
 import { ProjectSettingsPanes } from '../components/settings/ProjectSettingsPanes'
@@ -72,6 +73,71 @@ const WIDE_PANES = new Set<string>([APP_SETTINGS_PANES.connections, APP_SETTINGS
 function useMenuProject(embedded: Project | undefined): Project | undefined {
   const selected = useAppStore((s) => (s.selectedProjectId && !isVirtualProjectId(s.selectedProjectId) ? s.projects.find((p) => p.id === s.selectedProjectId) : undefined))
   return embedded ?? selected
+}
+
+/**
+ * About board "Report a problem", "Details for support" and "Licences". Report opens the project's new-issue page in
+ * the browser (version and platform only; nothing is sent until you submit there); support details are copied (no
+ * project content); the licences file opens in the system viewer.
+ */
+function SupportRows({ onError }: { onError: (e: string | null) => void }): ReactElement {
+  const [copied, setCopied] = useState(false)
+  const copyDetails = async (): Promise<void> => {
+    try {
+      const d = await window.orgai.about.supportDetails()
+      await navigator.clipboard.writeText(d.text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (e) {
+      onError((e as Error).message)
+    }
+  }
+  return (
+    <>
+      <SettingRow
+        id="report-problem-row"
+        title="Report a problem"
+        description="Opens a new issue page in your browser with the version and system filled in. Nothing is sent until you submit it there."
+        control={
+          <Button size="sm" testId="about-report" onClick={() => void window.orgai.about.reportProblem().catch((e: Error) => onError(e.message))}>
+            Report
+          </Button>
+        }
+      />
+      <SettingRow
+        id="support-details-row"
+        title="Details for support"
+        description="Version, system and provider status. No project content."
+        control={
+          <Button size="sm" testId="about-support-copy" onClick={() => void copyDetails()}>
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
+        }
+      />
+      <p className="sr-only" role="status" aria-live="polite">
+        {copied ? 'Support details copied' : ''}
+      </p>
+      <SettingRow
+        id="licences-row"
+        title="Licences"
+        description="The open source software OrgAI is built with."
+        control={
+          <Button
+            size="sm"
+            testId="about-licences"
+            onClick={() =>
+              void window.orgai.about
+                .openLicences()
+                .then((err) => onError(err || null))
+                .catch((e: Error) => onError(e.message))
+            }
+          >
+            View
+          </Button>
+        }
+      />
+    </>
+  )
 }
 
 function stripInfo(info: AppSettingsInfo): AppSettings {
@@ -447,6 +513,92 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
                     />
                   }
                 />
+                {(
+                  [
+                    ['notifyNeedsMe', 'When a team needs me', 'A permission, a question or a review is waiting.'],
+                    ['notifyRunFinished', 'When a run finishes', undefined],
+                    ['notifyScheduleFindings', 'When a schedule finds something', 'Quiet when there is nothing to report.']
+                  ] as const
+                ).map(([key, title, description]) => (
+                  <SettingRow
+                    key={key}
+                    id={`notify-${key}-row`}
+                    title={title}
+                    description={info.notifications === false ? 'Turn on notifications above first.' : description}
+                    control={
+                      <Switch
+                        checked={info.notifications !== false && info[key] !== false}
+                        disabled={info.notifications === false}
+                        label={title}
+                        testId={`${key}-switch`}
+                        describedBy={settingDescId(`notify-${key}-row`)}
+                        onChange={(v) => patch({ [key]: v }, true)}
+                      />
+                    }
+                  />
+                ))}
+                <SettingRow
+                  id="play-sound-row"
+                  title="Play a sound"
+                  description="A short chime in OrgAI when a new decision starts waiting on you."
+                  control={
+                    <Switch
+                      checked={info.playSound === true}
+                      label="Play a sound"
+                      testId="play-sound-switch"
+                      describedBy={settingDescId('play-sound-row')}
+                      onChange={(playSound) => patch({ playSound }, true)}
+                    />
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
+            <SettingsSection id="appsettings-section-running" title="While OrgAI runs" testId="appsettings-section-running">
+              <SettingsCard>
+                <SettingRow
+                  id="open-at-login-row"
+                  title="Open OrgAI when I sign in"
+                  description="So schedules can run without you opening it."
+                  control={
+                    <Switch
+                      checked={info.openAtLogin === true}
+                      label="Open OrgAI when I sign in"
+                      testId="open-at-login-switch"
+                      describedBy={settingDescId('open-at-login-row')}
+                      onChange={(openAtLogin) => patch({ openAtLogin }, true)}
+                    />
+                  }
+                />
+                <SettingRow
+                  title="When I close the window"
+                  description="Runs and schedules need OrgAI to keep running. Keep running hides the window while they are live; opening OrgAI again shows it."
+                  width="select"
+                  control={
+                    <SegmentedControl
+                      label="When I close the window"
+                      value={info.closeBehavior ?? 'quit'}
+                      options={[
+                        { value: 'keepRunning', label: 'Keep running' },
+                        { value: 'quit', label: 'Quit' }
+                      ]}
+                      onChange={(closeBehavior) => patch({ closeBehavior }, true)}
+                    />
+                  }
+                />
+                <SettingRow
+                  id="keep-awake-row"
+                  title="Keep the computer awake during runs"
+                  description="Only while a team is working."
+                  control={
+                    <Switch
+                      checked={info.keepAwakeDuringRuns === true}
+                      label="Keep the computer awake during runs"
+                      testId="keep-awake-switch"
+                      describedBy={settingDescId('keep-awake-row')}
+                      onChange={(keepAwakeDuringRuns) => patch({ keepAwakeDuringRuns }, true)}
+                    />
+                  }
+                />
               </SettingsCard>
             </SettingsSection>
             <SettingsSection
@@ -688,6 +840,7 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
                   </Button>
                 }
               />
+              <SupportRows onError={setError} />
             </SettingsCard>
           </SettingsSection>
         )}

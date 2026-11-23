@@ -28,6 +28,13 @@ describe('theme', () => {
     applyAppearance({ ...DEFAULT_APPEARANCE, canvas: { ...DEFAULT_APPEARANCE.canvas, presentation: undefined, scenePalette: undefined } }, false, root)
     expect(root.dataset).toMatchObject({ canvasPresentation: 'graph', canvasScenePalette: 'color' })
   })
+  it('writes the Appearance choice attributes only for non-default values, and Motion Off reuses Reduce motion', () => {
+    const root = { dataset: {} as Record<string, string>, style: { removeProperty: () => {}, setProperty: () => {} } } as unknown as HTMLElement
+    applyAppearance({ ...DEFAULT_APPEARANCE, noMotion: true, glass: false, textSize: 'large', density: 'compact', sidebarActivityDots: false }, true, root)
+    expect(root.dataset).toMatchObject({ reduceMotion: 'on', glass: 'off', textSize: 'large', density: 'compact', activityDots: 'off' })
+    applyAppearance({ ...DEFAULT_APPEARANCE, noMotion: false, glass: true, textSize: 'default', density: 'comfortable', sidebarActivityDots: true }, true, root)
+    for (const k of ['reduceMotion', 'glass', 'textSize', 'density', 'activityDots']) expect(root.dataset[k]).toBeUndefined()
+  })
   it('resolves system with the OS preference', () => {
     expect(resolveTheme('system', true)).toBe('dark')
     expect(resolveTheme('system', false)).toBe('light')

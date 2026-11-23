@@ -7,6 +7,7 @@ import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { AuthorizeControl } from './McpAuth'
+import { toolSummary } from '../connectors/toolCapabilities'
 
 /** Inline, collapsible result of mcp.test, shown under the row. Takes focus only when `focusOnMount` is set. */
 export default function TestResultPanel({
@@ -27,6 +28,7 @@ export default function TestResultPanel({
     if (focusOnMount) head.current?.focus()
   }, [focusOnMount])
   const tools = result.tools ?? []
+  const details = new Map((result.toolDetails ?? []).map((d) => [d.name, d]))
   const seconds = result.durationMs !== undefined ? `${(result.durationMs / 1000).toFixed(1)} s` : undefined
   const errorText = (result.error ?? 'The server did not respond.').trim()
   const lines = errorText.split('\n')
@@ -53,13 +55,25 @@ export default function TestResultPanel({
           tools.length === 0 ? (
             <p className="muted">The server connected but reported no tools.</p>
           ) : (
-            <ul className="mcp-tools mono">
-              {tools.map((t) => (
-                <li key={t} title={t}>
-                  {t}
-                </li>
-              ))}
-            </ul>
+            <>
+              {details.size > 0 && (
+                <p className="muted mcp-tools-summary" data-testid="mcp-tools-summary">
+                  As the server describes them: {toolSummary(tools, details)}. Roles that may use this server get every tool.
+                </p>
+              )}
+              <ul className="mcp-tools mono">
+                {tools.map((t) => {
+                  const d = details.get(t)
+                  const mark = d?.destructive ? 'Can change or delete' : d?.readOnly ? 'Reads only' : ''
+                  return (
+                    <li key={t} title={d?.description ? `${t}: ${d.description}` : t} data-tool-kind={d?.destructive ? 'destructive' : d?.readOnly ? 'read' : 'unknown'}>
+                      {t}
+                      {mark && <span className="mcp-tool-mark"> · {mark}</span>}
+                    </li>
+                  )
+                })}
+              </ul>
+            </>
           )
         ) : result.needsAuthorization && authorize ? (
           <Banner tone="warning" title="Needs authorization">

@@ -1,6 +1,12 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Copy, Plus, Trash2 } from 'lucide-react'
+
+/** "Used 3 times" from OrgTemplateInfo.appliedCount; undefined when unknown. */
+function usedLine(n: number | undefined): string | undefined {
+  if (n === undefined) return undefined
+  return n === 0 ? 'Not used yet' : n === 1 ? 'Used once' : `Used ${n} times`
+}
 import { openNewProject, useAppStore } from '../../store/useAppStore'
 import { DetailActions, DetailChips, DetailHeader, DetailNote, SettingsGallery, type GalleryItem } from '../settings/SettingsGallery'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -50,6 +56,19 @@ export default function TemplatesSection(): ReactElement {
     }
   }
 
+  const duplicate = async (id: string, name: string): Promise<void> => {
+    setRemoveError(null)
+    try {
+      const copy = await window.orgai.templatesExtra.duplicate(id)
+      await useAppStore.getState().loadTemplates()
+      setSelected(copy.id)
+      setStatus(`Made a copy of ${name}: ${copy.name}.`)
+    } catch (e) {
+      setRemoveError(cleanIpcError(e))
+    }
+  }
+  const saved = (templates ?? []).filter((t) => !t.builtIn)
+
   return (
     <SettingsSection
       id={APP_SETTINGS_SECTIONS.templates}
@@ -78,20 +97,25 @@ export default function TemplatesSection(): ReactElement {
           testId="template-gallery"
           searchLabel={templates.length > 6 ? 'Search templates' : undefined}
           filters={kinds.length > 1 ? kinds.map((k) => ({ id: k, label: templateKindLabel(k) })) : undefined}
-          selected={selected}
+          // Your own templates first: the panel opens on a saved one when there is one.
+          selected={selected ?? saved[0]?.id ?? null}
           onSelect={setSelected}
-          sections={[{ id: 'saved', label: 'Saved from your projects', note: `${templates.length} ${templates.length === 1 ? 'template' : 'templates'}` }]}
+          sections={[
+            { id: 'builtin', label: 'Comes with OrgAI' },
+            { id: 'saved', label: 'Saved from your projects', note: `${saved.length} ${saved.length === 1 ? 'template' : 'templates'}` }
+          ]}
           items={templates.map(
             (t): GalleryItem => ({
               id: t.id,
               name: t.name,
-              section: 'saved',
+              section: t.builtIn ? 'builtin' : 'saved',
               filter: t.kind,
               tag: `${templateKindLabel(t.kind)} · ${roleCountText(t.roleCount)}`,
               summary: t.description ? <span className="mcp-clamp">{t.description}</span> : undefined,
               searchText: `${t.description} ${t.roleNames.join(' ')}`,
-              status: { text: savedDateLine(t.updatedAt), tone: 'info' },
-              testId: 'template-row',
+              status: { text: usedLine(t.appliedCount) ?? (t.builtIn ? 'Read only' : savedDateLine(t.updatedAt)), tone: 'info' },
+              // Built-in templates keep their own test id so a count of saved rows stays a count of saved templates.
+              testId: t.builtIn ? 'template-builtin' : 'template-row',
               data: { template: t.id }
             })
           )}
@@ -101,8 +125,9 @@ export default function TemplatesSection(): ReactElement {
             const more = t.roleCount - t.roleNames.length
             return (
               <div key={t.id} className="template-detail" data-testid="template-detail" data-template={t.id}>
-                <DetailHeader name={t.name} tag={`${templateKindLabel(t.kind)} · ${savedDateLine(t.updatedAt)}`} />
+                <DetailHeader name={t.name} tag={[templateKindLabel(t.kind), t.builtIn ? 'Comes with OrgAI' : savedDateLine(t.updatedAt), usedLine(t.appliedCount)].filter(Boolean).join(' · ')} />
                 {t.description && <DetailNote tone="off">{t.description}</DetailNote>}
+                {t.builtIn && <p className="settings-detail-hint muted">Read only. Duplicate it to make a copy you can change.</p>}
                 <DetailChips title={`The team (${roleCountText(t.roleCount)})`} chips={more > 0 ? [...t.roleNames, `and ${more} more`] : t.roleNames} empty="No roles" />
                 <p className="settings-detail-hint muted">
                   A template keeps the roles and how they report. It does not keep tool or skill access, or secrets. Use it when you create a project, or on a project's Team tab under Templates.
@@ -111,9 +136,14 @@ export default function TemplatesSection(): ReactElement {
                   <Button size="sm" variant="primary" icon={Plus} testId="template-new-project" onClick={openNewProject}>
                     Start a new project
                   </Button>
-                  <Button size="sm" variant="danger" icon={Trash2} ariaLabel={`Remove the template ${t.name}`} testId="template-remove" onClick={() => void remove(t.id, t.name)}>
-                    Remove...
+                  <Button size="sm" icon={Copy} ariaLabel={`Duplicate the template ${t.name}`} testId="template-duplicate" onClick={() => void duplicate(t.id, t.name)}>
+                    Duplicate
                   </Button>
+                  {!t.builtIn && (
+                    <Button size="sm" variant="danger" icon={Trash2} ariaLabel={`Remove the template ${t.name}`} testId="template-remove" onClick={() => void remove(t.id, t.name)}>
+                      Remove...
+                    </Button>
+                  )}
                 </DetailActions>
               </div>
             )

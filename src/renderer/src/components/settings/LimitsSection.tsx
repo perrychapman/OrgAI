@@ -1,7 +1,9 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useId } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { Project } from '@shared/types'
-import { DEFAULT_KEEP_RUNS } from '@shared/types'
+import { DEFAULT_KEEP_RUNS, PROJECT_MAX_AGENTS_PER_RUN_LIMIT } from '@shared/types'
+import { SegmentedControl } from '../ui/SegmentedControl'
+import { Switch } from '../ui/Switch'
 import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { projectMetering } from '../../lib/limits'
@@ -25,6 +27,65 @@ const PLAN_GUARD_OPTIONS = [
 
 /** Concurrency choices; a saved value outside the list is added. */
 const CONCURRENCY_CHOICES = [1, 2, 4, 8, 12, 16, 24, 32]
+
+const WARN_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: '50', label: '50% of a limit' },
+  { value: '80', label: '80% of a limit' },
+  { value: '90', label: '90% of a limit' }
+]
+
+/**
+ * "Warn me at" (AppSettings.spendWarnPercent, app-wide): read and written through settings directly, since this pane
+ * belongs to a project. One notice per run and limit once spending reaches the share.
+ */
+function SpendWarnRow(): ReactElement {
+  const [value, setValue] = useState<number | null | undefined>(undefined)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    window.orgai.settings
+      .get()
+      .then((s) => live && setValue(s.spendWarnPercent ?? null))
+      .catch(() => live && setValue(null))
+    const off = window.orgai.onSettingsChanged((s) => setValue(s.spendWarnPercent ?? null))
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+  const save = async (v: string): Promise<void> => {
+    const pct = v === 'off' ? null : Number(v)
+    setValue(pct)
+    setError(null)
+    try {
+      const s = await window.orgai.settings.get()
+      const { dataDir: _d, appVersion: _v, ...settings } = s
+      await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...settings, spendWarnPercent: pct }))
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+  const options = value != null && !WARN_OPTIONS.some((o) => o.value === String(value)) ? [...WARN_OPTIONS, { value: String(value), label: `${value}% of a limit` }] : WARN_OPTIONS
+  return (
+    <SettingRow
+      id="spend-warn-row"
+      title="Warn me at"
+      description={error ?? 'A notice in the run when spending reaches this share of a limit. Applies to every project.'}
+      width="select"
+      control={
+        <Select
+          label="Warn me at"
+          describedBy={settingDescId('spend-warn-row')}
+          value={value == null ? 'off' : String(value)}
+          options={options}
+          disabled={value === undefined}
+          onChange={(v) => void save(v)}
+        />
+      }
+    />
+  )
+}
 
 /** Limits pane (config-review spec 4.3): a cost cap on metered projects or the plan guard line on a plan; the rest is Advanced. */
 export function LimitsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
@@ -110,6 +171,20 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           />
         }
       />
+      <SettingRow
+        id={row('sched')}
+        title="Let schedules run when I am near the plan limit"
+        description="Off skips a scheduled run while the plan window is at or above the share above."
+        control={
+          <Switch
+            checked={project.schedulesNearPlanLimit === true}
+            label="Let schedules run when I am near the plan limit"
+            testId="schedules-near-limit-switch"
+            describedBy={desc('sched')}
+            onChange={(schedulesNearPlanLimit) => patch({ schedulesNearPlanLimit })}
+          />
+        }
+      />
       {costRow()}
     </>
   )
@@ -124,6 +199,59 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
             {planGuardLine(planGuardOf(project), project.maxWindowShare)}
           </p>
         )}
+      </SettingsSection>
+
+      <SettingsSection id="settings-section-period-limits" title="Per day and per month" description="Counts every run and schedule in this project." testId="period-limits-section">
+        <SettingsCard>
+          {(
+            [
+              ['maxDailyUsd', 'One day', 'day'],
+              ['maxMonthlyUsd', 'One month', 'month']
+            ] as const
+          ).map(([key, title, word]) => (
+            <SettingRow
+              key={key}
+              id={row(key)}
+              title={title}
+              description={`Runs stop starting, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it.`}
+              width="number"
+              control={
+                <Input
+                  id={`${uid}-${key}`}
+                  aria-label={`Spending limit for ${title.toLowerCase()}`}
+                  aria-describedby={desc(key)}
+                  data-testid={`limit-${word}-input`}
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={project[key] ?? ''}
+                  placeholder="No limit"
+                  onChange={(v) => {
+                    const n = Number(v)
+                    patch({ [key]: v && Number.isFinite(n) && n > 0 ? n : undefined })
+                  }}
+                />
+              }
+            />
+          ))}
+          <SettingRow
+            title="When a limit is reached"
+            description="Either way nothing is lost and you can continue. A paused run waits until the period resets or you raise the limit."
+            width="select"
+            control={
+              <SegmentedControl
+                label="When a limit is reached"
+                value={project.onSpendLimit ?? 'pause'}
+                options={[
+                  { value: 'pause', label: 'Pause and ask me' },
+                  { value: 'stop', label: 'Stop the run' }
+                ]}
+                onChange={(onSpendLimit) => patch({ onSpendLimit })}
+              />
+            }
+          />
+          <SpendWarnRow />
+        </SettingsCard>
       </SettingsSection>
 
       <SettingsSection id="settings-section-run-size" title="How big a run can get">
@@ -157,6 +285,30 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
                 value={limits.explicit.concurrency ? String(limits.concurrency) : 'auto'}
                 options={concurrencyOptions}
                 onChange={(v) => patch({ maxConcurrentSubagents: v === 'auto' ? undefined : Number(v) })}
+              />
+            }
+          />
+          <SettingRow
+            id={row('agents')}
+            title="Most agents in one run"
+            description="Counts every agent a run starts, not the lead. Further starts are refused."
+            width="number"
+            control={
+              <Input
+                id={`${uid}-agents`}
+                aria-label="Most agents in one run"
+                aria-describedby={desc('agents')}
+                data-testid="max-agents-input"
+                type="number"
+                min={1}
+                max={PROJECT_MAX_AGENTS_PER_RUN_LIMIT}
+                step={1}
+                value={project.maxAgentsPerRun ?? ''}
+                placeholder="No limit"
+                onChange={(v) => {
+                  const n = Math.round(Number(v))
+                  patch({ maxAgentsPerRun: v && Number.isFinite(n) && n >= 1 ? Math.min(PROJECT_MAX_AGENTS_PER_RUN_LIMIT, n) : undefined })
+                }}
               />
             }
           />

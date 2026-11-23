@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectorInfo } from '@shared/types'
 import { CONNECTORS } from '@shared/connectors'
-import { toolCapabilities, variantOf } from './toolCapabilities'
+import { toolCapabilities, toolSummary, variantOf } from './toolCapabilities'
+
+describe('toolSummary', () => {
+  it('counts tools by the server annotations, unknown when absent', () => {
+    const d = new Map([
+      ['a', { readOnly: true }],
+      ['b', { destructive: true, readOnly: false }],
+      ['c', {}]
+    ])
+    expect(toolSummary(['a', 'b', 'c', 'd'], d)).toBe('1 read only, 1 can change or delete, 2 not described')
+    expect(toolSummary(['a'], d)).toBe('1 read only')
+  })
+})
 
 const base = (over: Partial<ConnectorInfo> = {}, readOnly = true): ConnectorInfo =>
   ({

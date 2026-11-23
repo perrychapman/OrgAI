@@ -47,11 +47,14 @@ import { FolderTrustPointer } from './components/FolderTrustNotice'
 import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } from './lib/panelWidth'
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 import { useBellCue } from './lib/useBellCue'
+import { useAttentionSound } from './lib/useAttentionSound'
 
 type SectionView = 'home' | 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'team' | 'settings'
 const SECTION_VIEWS: readonly string[] = ['home', 'run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings']
 
 export default function App(): ReactElement {
+  // Settings > General "Play a sound": a chime when a new decision starts waiting (off by default).
+  useAttentionSound()
   const init = useAppStore((s) => s.init)
   const selectedId = useAppStore((s) => s.selectedProjectId)
   const view = useAppStore((s) => s.view)
