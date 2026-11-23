@@ -385,12 +385,12 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
         {!loaded ? (
           <p className="panel-note outputs-loading">Looking…</p>
         ) : empty ? (
-          <EmptyState compact testId="outputs-empty" title="No outputs yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
+          <EmptyState compact testId="outputs-empty" title="No files yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
         ) : noMatch ? (
           <EmptyState
             compact
             testId="outputs-empty-filter"
-            title="No outputs match."
+            title="No files match."
             actions={
               filterActive ? (
                 <Button size="sm" testId="outputs-clear-filters" onClick={clearFilters}>
@@ -443,7 +443,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
               />
             </>
           ) : (
-            <p className="panel-note outputs-pick">Select an output to see its preview here.</p>
+            <p className="panel-note outputs-pick">Select a file to see its preview here.</p>
           )}
           <p className="outputs-notice" role="status" data-testid="output-notice">
             {notice}

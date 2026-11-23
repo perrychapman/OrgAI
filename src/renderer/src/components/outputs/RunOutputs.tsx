@@ -162,7 +162,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
       {showList &&
         (list.length === 0 ? (
           <p className="run-outputs-empty" data-testid="run-outputs-empty" tabIndex={-1}>
-            No outputs yet. Agents can produce documents, workbooks and diagrams here.
+            No files yet. Agents can produce documents, workbooks and diagrams here.
           </p>
         ) : (
           <ul className="run-outputs-list" data-testid="run-outputs-list" data-split={wide && shown ? 'true' : undefined} tabIndex={-1} aria-label="Files">

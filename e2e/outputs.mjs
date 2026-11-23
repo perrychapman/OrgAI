@@ -1123,10 +1123,10 @@ try {
   thumbProbe = await installThumbProbe()
   if (!thumbProbe) console.log('SKIP thumbnail concurrency: window.orgai.outputs.thumb cannot be wrapped from the page')
   // The tab exists on a stored project.
-  check((await page.locator('[data-testid=tab-outputs]').count()) === 1, 'the project has an Outputs tab')
+  check((await page.locator('[data-testid=tab-outputs]').count()) === 1, 'the project has a Files tab')
   await page.locator('[data-testid=tab-outputs]').click()
-  check(await page.locator('[data-testid=outputs-empty]').isVisible(), 'an empty project says "No outputs yet."')
-  check(/No outputs yet\./.test(clean(await page.locator('[data-testid=outputs-empty]').innerText())), 'the empty copy names what appears here')
+  check(await page.locator('[data-testid=outputs-empty]').isVisible(), 'an empty project says "No files yet."')
+  check(/No files yet\./.test(clean(await page.locator('[data-testid=outputs-empty]').innerText())), 'the empty copy names what appears here')
 
   await startRun()
   check(await until(async () => (await outputsOf()).length >= 5, 60_000), 'the run produced five outputs', String((await outputsOf()).length))
