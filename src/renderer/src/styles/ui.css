@@ -695,9 +695,10 @@ ul.maint-list {
 .ui-chip:active:not(:disabled) {
   transform: scale(0.97);
 }
+/* Selected: an accent edge (3:1 against the ground, WCAG 1.4.11) plus the fill and brighter text, not colour of fill alone. */
 .ui-chip.is-selected {
   background: var(--accent-soft);
-  border-color: var(--accent-soft-border);
+  border-color: var(--accent-text);
   color: var(--text-primary);
 }
 .ui-chip:disabled {
