@@ -117,3 +117,53 @@ export function agentInitials(name: string): string {
 export function entriesOfAgent(transcript: readonly TranscriptEntry[], agentId: string): TranscriptEntry[] {
   return transcript.filter((e) => e.agentId === agentId)
 }
+
+export interface DiffFile {
+  path: string
+  added: number
+  removed: number
+  /** Hunk headers and changed / context lines, each starting "@", "+", "-" or " ". File headers are dropped. */
+  lines: string[]
+}
+
+/** A diff block shows this many lines before the "Show all N lines" toggle. */
+export const DIFF_LINE_CAP = 40
+
+/**
+ * Splits a unified diff (git's `diff --git` form) into per-file blocks with +/- counts. Lines before the first
+ * `diff --git` are ignored; "\ No newline" markers are dropped. Never throws: unparseable input gives [].
+ */
+export function parseUnifiedDiff(patch: string): DiffFile[] {
+  const files: DiffFile[] = []
+  let cur: DiffFile | undefined
+  let inHunk = false
+  const rows = patch.replace(/\n$/, '').split('\n')
+  for (const raw of rows) {
+    const line = raw.replace(/\r$/, '')
+    if (line.startsWith('diff --git ')) {
+      const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(line)
+      cur = { path: m ? m[2] : line.slice(11), added: 0, removed: 0, lines: [] }
+      files.push(cur)
+      inHunk = false
+      continue
+    }
+    if (!cur) continue
+    if (!inHunk) {
+      if (line.startsWith('@@')) {
+        inHunk = true
+        cur.lines.push(line)
+      } else if (line.startsWith('Binary files')) cur.lines.push(' ' + line)
+      continue
+    }
+    if (line.startsWith('@@')) cur.lines.push(line)
+    else if (line.startsWith('+')) {
+      cur.added++
+      cur.lines.push(line)
+    } else if (line.startsWith('-')) {
+      cur.removed++
+      cur.lines.push(line)
+    } else if (line.startsWith(' ')) cur.lines.push(line)
+    else if (line === '') cur.lines.push(' ')
+  }
+  return files
+}

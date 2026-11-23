@@ -324,11 +324,54 @@
   font-size: var(--text-mono);
   line-height: var(--text-mono-lh);
 }
+.agent-focus-diff-lines:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
 .agent-focus-line {
   display: block;
   padding: 0 var(--space-3);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--text-secondary);
+}
+.agent-focus-sign {
+  display: inline-block;
+  width: 1.5ch;
+  user-select: none;
+  color: var(--text-tertiary);
+}
+.agent-focus-line.is-hunk {
+  color: var(--text-tertiary);
+  padding-inline-start: calc(var(--space-3) + 1.5ch);
+}
+.agent-focus-more {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  color: var(--accent-text);
+  font: inherit;
+  text-align: start;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.agent-focus-more:hover {
+  background: var(--accent-soft);
+}
+.agent-focus-more:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.agent-focus-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+.agent-focus-over {
+  color: var(--danger-text);
 }
 .agent-focus-line.is-add {
   background: var(--success-soft);
