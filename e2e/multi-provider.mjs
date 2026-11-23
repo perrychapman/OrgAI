@@ -39,7 +39,8 @@ async function selectReviewer() {
   // The Model fold starts closed on short windows; re-open it if a re-render remounts the panel.
   await page.waitForFunction(
     () => {
-      const fold = document.querySelector('[data-testid=role-section-model]')
+      // The Runs on select sits in the Model section's "Choose an exact model" reveal.
+      const fold = document.querySelector('[data-testid=role-model-advanced]')
       if (fold && !fold.open) fold.open = true
       const sel = document.querySelector('[data-testid=role-runs-on]')
       return !!sel && sel.getClientRects().length > 0
@@ -132,7 +133,7 @@ try {
   // The root has no Runs on; its Model section says where it runs.
   await page.locator('.react-flow__node', { hasText: 'Orchestrator' }).first().click()
   await page.waitForFunction(() => !!document.querySelector('[data-testid=role-section-model]'), undefined, { timeout: 10_000 })
-  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-section-model]'); if (f) f.open = true })
+  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-model-advanced]'); if (f) f.open = true })
   const rootLine = page.locator('[data-testid=role-runs-on-root]')
   await rootLine.waitFor({ timeout: 10_000 })
   check(/The orchestrator runs on the project's connection \(.+\); change it in Project settings > Connection\./.test((await rootLine.textContent()) ?? ''), 'the root role shows its one quiet "runs on" line', (await rootLine.textContent()) ?? '')

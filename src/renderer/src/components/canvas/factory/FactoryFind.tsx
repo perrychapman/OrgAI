@@ -120,7 +120,7 @@ export function FactoryFind({ entries, onChoose, buttonRef }: FactoryFindProps):
       triggerTitle="Find a worker"
       triggerClassName="btn sm factory-find-trigger"
       triggerTestId="factory-find"
-      placement="top-start"
+      placement="bottom-start"
       className="factory-find-panel"
       trigger={
         <>

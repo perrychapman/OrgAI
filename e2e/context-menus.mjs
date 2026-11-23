@@ -6,7 +6,7 @@
 // there would pop the native menu from main, which e2e cannot dismiss) and must not be cancelled.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, findProject, finish, gotoProjects, launch, openProject, openProjectForm, projectTab, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, findProject, finish, gotoProjects, launch, openProject, openProjectForm, projectTab, sleep, pickSetup } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-ctxmenu-'))
@@ -99,8 +99,7 @@ try {
   await form.getByLabel('Name', { exact: true }).fill(NAME)
   await form.locator('[data-testid=new-project-client]').fill('Ctx Corp')
   await form.getByLabel('Working folder', { exact: true }).fill(wf)
-  const arch = form.locator('[data-testid=architect-setup]')
-  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+  await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
   const eng = await findProject(page, NAME)

@@ -77,6 +77,18 @@ try {
   check((await search.inputValue()) === '', 'a connector deep link clears the search that hid the tile')
   check(/Showing GitHub/.test((await page.locator('[data-testid=connector-announce]').textContent()) ?? ''), 'a connector deep link announces "Showing GitHub"')
 
+  // Tools board detail panel: follows the focused tile; says what the team could do and what this setup is not for.
+  const detail = page.locator('[data-testid=connector-detail]')
+  check((await detail.getAttribute('data-connector')) === 'github', 'the detail panel describes the deep-linked tile')
+  check(/^Selected service: GitHub$/.test((await detail.getAttribute('aria-label')) ?? ''), 'the detail panel is named for the service')
+  check((await detail.locator('[data-testid=connector-detail-can] .settings-detail-label').textContent()) === 'The team could', 'a service not added yet lists what the team could do')
+  check((await detail.locator('[data-testid=connector-detail-can] li').count()) >= 1, 'the could list has at least one line from the preset')
+  await page.keyboard.press('ArrowRight')
+  await sleep(150)
+  const movedTo = await page.evaluate(() => document.activeElement?.closest('[data-testid=connector-tile]')?.getAttribute('data-connector'))
+  check(!!movedTo && (await detail.getAttribute('data-connector')) === movedTo, 'arrowing to another tile moves the detail panel with it', String(movedTo))
+  check((await detail.locator('[data-testid=connector-detail-action]').textContent())?.trim() === (await tile(movedTo).locator('[data-testid=connector-action]').textContent())?.trim(), 'the panel offers the same action as the tile')
+
   // method badge, ordering, filters, ranked search, live count, roving focus
   const easeText = async (id) => ((await tile(id).locator('[data-testid=connector-ease]').textContent()) ?? '').trim()
   check((await easeText('notion')) === 'Sign in', 'Notion shows the "Sign in" method badge')
@@ -348,7 +360,13 @@ try {
       await openGallery()
       await noHScroll(`gallery ${tag}`)
       const cols = await page.locator('.connector-grid').first().evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length)
-      check(w >= 1600 ? cols === 3 : cols >= 1, `gallery uses ${w >= 1600 ? 3 : 'at least 1'} columns at ${tag}`, String(cols))
+      // Tools board: the detail panel shares the row at wide sizes, so the grid is two columns there.
+      check(w >= 1600 ? cols >= 2 : cols >= 1, `gallery uses ${w >= 1600 ? 'at least 2' : 'at least 1'} columns at ${tag}`, String(cols))
+      if (w >= 1600) {
+        const g = await page.locator('.connectors-gallery .settings-gallery-main').boundingBox()
+        const d = await page.locator('[data-testid=connector-detail]').boundingBox()
+        check(!!g && !!d && d.x >= g.x + g.width - 1, `the detail panel sits beside the gallery at ${tag}`, JSON.stringify({ g, d }))
+      }
       await shot(`gallery-${tag}`)
       await openDialog('github')
       await noHScroll(`token dialog ${tag}`)

@@ -1,12 +1,12 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { BookOpen, FolderPlus, Pencil, Plus, Sparkles, Trash2, TriangleAlert } from 'lucide-react'
+import { BookOpen, FolderPlus, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { DetailActions, DetailBlock, DetailHeader, DetailList, DetailNote, SettingsGallery, type GalleryItem } from '../settings/SettingsGallery'
 import { useAppStore } from '../../store/useAppStore'
 import type { SkillDraft, SkillLibraryInfo } from '@shared/types'
 import { SKILL_BODY_MAX_CHARS } from '@shared/types'
 import { draftProblems, hasDraftProblems, libraryRemoveLines, skillElevatedHint, skillScriptPaths, sourceLabel, usedByList } from '../../lib/skills'
 import { cleanIpcError } from '../../lib/ipcError'
-import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
@@ -19,6 +19,7 @@ import { APP_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { useSkillLibrary } from './useSkillLibrary'
 
 type Modal = { kind: 'form'; editing?: SkillLibraryInfo } | null
+const NEW_TILE = 'new-skill'
 
 /** App settings: the skill library. A skill is defined here once and any project can link it. */
 export default function SkillLibrarySection(): ReactElement {
@@ -26,6 +27,11 @@ export default function SkillLibrarySection(): ReactElement {
   const [modal, setModal] = useState<Modal>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [status, setStatus] = useState('')
+  // Bumped when the edit form closes, so the detail panel re-reads the instructions (a body-only edit changes no
+  // listed field, and the preview is where people check untrusted instructions).
+  const [previewTick, setPreviewTick] = useState(0)
   const { confirm, dialog } = useConfirm()
 
   const addFolder = async (): Promise<void> => {
@@ -65,6 +71,10 @@ export default function SkillLibrarySection(): ReactElement {
     setActionError(null)
     try {
       await lib.remove(info.entry.id)
+      setSelected(null)
+      setStatus(`Removed ${info.entry.name} from the library.`)
+      // The removed skill's panel (and its Remove button) is gone: land on New skill, which is always there.
+      window.setTimeout(() => document.querySelector<HTMLElement>('[data-testid=skill-library-new]')?.focus(), 60)
     } catch (e) {
       setActionError(cleanIpcError(e))
     }
@@ -92,6 +102,9 @@ export default function SkillLibrarySection(): ReactElement {
       }
     >
       <div className="mcp-body">
+        <p className="sr-only" role="status" aria-live="polite" data-testid="skill-library-status">
+          {status}
+        </p>
         {actionError && (
           <Banner tone="danger" title="That did not work">
             {actionError}
@@ -124,11 +137,71 @@ export default function SkillLibrarySection(): ReactElement {
             <p className="muted">Write a skill here, or add a folder that holds a SKILL.md.</p>
           </div>
         ) : (
-          <ul className="card-block mcp-list" aria-label="Library skills">
-            {list.map((info) => (
-              <LibraryRow key={info.entry.id} info={info} onEdit={() => setModal({ kind: 'form', editing: info })} onRemove={() => void remove(info)} />
-            ))}
-          </ul>
+          <SettingsGallery
+            label="Library skills"
+            testId="skill-gallery"
+            searchLabel="Search skills"
+            searchPlaceholder={`Search ${list.length} ${list.length === 1 ? 'skill' : 'skills'}`}
+            filters={[
+              { id: 'used', label: 'In use' },
+              { id: 'unused', label: 'Not used yet' }
+            ]}
+            selected={selected}
+            onSelect={setSelected}
+            sections={[
+              { id: 'skills', label: 'Your skills', note: `${list.length} ${list.length === 1 ? 'skill' : 'skills'}` },
+              { id: 'new', label: 'Add more' }
+            ]}
+            items={[
+              ...list.map((info): GalleryItem => {
+                const used = usedByList(info.usedBy)
+                const hint = skillElevatedHint(skillScriptPaths(info.entry.files))
+                return {
+                  id: info.entry.id,
+                  name: info.entry.name,
+                  section: 'skills',
+                  filter: used.length > 0 ? 'used' : 'unused',
+                  tag: `${sourceLabel(info.entry.source)} · ${info.entry.files.length} file${info.entry.files.length === 1 ? '' : 's'}`,
+                  summary: info.entry.description ? <span className="mcp-clamp">{info.entry.description}</span> : undefined,
+                  searchText: `${info.entry.description} ${sourceLabel(info.entry.source)}`,
+                  status: hint
+                    ? { text: hint, tone: 'warn' }
+                    : used.length > 0
+                      ? { text: `Used in ${used.length} ${used.length === 1 ? 'project' : 'projects'}`, tone: 'ok' }
+                      : { text: 'Not used yet', tone: 'off' },
+                  testId: 'skill-library-row',
+                  data: { name: info.entry.name, id: info.entry.id }
+                }
+              }),
+              { id: NEW_TILE, name: 'Write a skill', section: 'new', dashed: true, mark: '+', summary: 'Write one here, add a folder that holds a SKILL.md, or ask the Skills helper.', testId: 'skill-library-new-tile' }
+            ]}
+            renderDetail={(item) => {
+              if (item.id === NEW_TILE) {
+                return (
+                  <>
+                    <DetailHeader mark="+" name="Write a skill" tag="A SKILL.md: a name, when to use it, and the instructions" />
+                    <DetailList
+                      title="You will need"
+                      mark="plain"
+                      items={[{ text: 'A short name and one sentence on when to use it' }, { text: 'The instructions, in Markdown' }]}
+                    />
+                    <DetailActions>
+                      <Button variant="primary" size="sm" icon={Plus} onClick={() => setModal({ kind: 'form' })}>
+                        New skill
+                      </Button>
+                      <Button size="sm" icon={FolderPlus} disabled={adding} onClick={() => void addFolder()}>
+                        Add from folder
+                      </Button>
+                    </DetailActions>
+                  </>
+                )
+              }
+              const info = list.find((i) => i.entry.id === item.id)
+              return info ? (
+                <SkillDetail key={info.entry.id} info={info} lib={lib} tick={previewTick} onEdit={() => setModal({ kind: 'form', editing: info })} onRemove={() => void remove(info)} />
+              ) : null
+            }}
+          />
         )}
       </div>
       {modal?.kind === 'form' && (
@@ -137,7 +210,10 @@ export default function SkillLibrarySection(): ReactElement {
           editing={modal.editing}
           lib={lib}
           takenNames={(list ?? []).filter((i) => i.entry.id !== modal.editing?.entry.id).map((i) => i.entry.name)}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            setModal(null)
+            setPreviewTick((t) => t + 1)
+          }}
         />
       )}
       {dialog}
@@ -145,55 +221,111 @@ export default function SkillLibrarySection(): ReactElement {
   )
 }
 
-function LibraryRow({ info, onEdit, onRemove }: { info: SkillLibraryInfo; onEdit: () => void; onRemove: () => void }): ReactElement {
+/** "Updated 18 Nov 2026" from an ISO timestamp; '' when unknown. */
+function updatedLine(iso: string | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : `Updated ${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`
+}
+
+/** Most characters of a skill's instructions shown in the detail panel's preview (plain text, never rendered). */
+const PREVIEW_CHARS = 1200
+
+/**
+ * The Skills board's detail panel: what the skill is for, where it came from, a plain-text preview of its instructions
+ * (read from the library on demand), which projects and roles use it, and Edit / Remove.
+ */
+function SkillDetail({
+  info,
+  lib,
+  tick,
+  onEdit,
+  onRemove
+}: {
+  info: SkillLibraryInfo
+  lib: ReturnType<typeof useSkillLibrary>
+  tick: number
+  onEdit: () => void
+  onRemove: () => void
+}): ReactElement {
   const { entry } = info
   const hint = skillElevatedHint(skillScriptPaths(entry.files))
   const used = usedByList(info.usedBy)
+  const [body, setBody] = useState<string | null>(null)
+  const [bodyError, setBodyError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    setBody(null)
+    setBodyError(null)
+    lib
+      .read(entry.id)
+      .then((c) => live && setBody(c.body))
+      .catch((e) => live && setBodyError(cleanIpcError(e)))
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.updatedAt, tick])
+  // Bidi overrides and isolates would let untrusted text reorder what the preview shows: shown as a visible mark instead.
+  const visible = body === null ? null : body.replace(/[‪-‮⁦-⁩‎‏]/g, '�')
+  const cut = visible !== null && visible.length > PREVIEW_CHARS
+  const preview = visible === null ? null : cut ? visible.slice(0, PREVIEW_CHARS).trimEnd() : visible
   return (
-    <li className="mcp-row skill-lib-row" data-testid="skill-library-row" data-name={entry.name} data-id={entry.id}>
-      <div className="skill-lib-main">
-        <div className="mcp-row-id">
-          <span className="mcp-name">{entry.name}</span>
-          {entry.description && <span className="muted mcp-clamp">{entry.description}</span>}
-        </div>
-        <div className="skill-lib-meta">
-          <Badge>{sourceLabel(entry.source)}</Badge>
-          <Badge>
-            {entry.files.length} file{entry.files.length === 1 ? '' : 's'}
-          </Badge>
-          {hint && (
-            <Badge tone="attention" icon={TriangleAlert}>
-              {hint}
-            </Badge>
-          )}
-        </div>
-        <div className="skill-used-by" data-testid="skill-library-used-by">
-          {used.length === 0 ? (
-            <span className="muted">Not used by any project</span>
-          ) : (
-            <>
-              <span className="muted">Used by</span>
-              <ul>
-                {used.map((p) => (
-                  <li key={p.projectId}>
-                    <span>{p.projectName}</span>
-                    {p.roles.length > 0 && <span className="muted"> · {p.roles.join(', ')}</span>}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </div>
-        <div className="skill-lib-actions">
-          <Button size="sm" icon={Pencil} ariaLabel={`Edit ${entry.name}`} onClick={onEdit}>
-            Edit
-          </Button>
-          <Button size="sm" variant="danger" icon={Trash2} ariaLabel={`Remove ${entry.name} from the library`} testId="skill-library-remove" onClick={onRemove}>
-            Remove
-          </Button>
-        </div>
+    <div className="skill-detail" data-testid="skill-library-detail" data-id={entry.id}>
+      <DetailHeader
+        mark={entry.name.slice(0, 1).toUpperCase()}
+        name={entry.name}
+        tag={[sourceLabel(entry.source), `${entry.files.length} file${entry.files.length === 1 ? '' : 's'}`, updatedLine(entry.updatedAt)].filter(Boolean).join(' · ')}
+      />
+      {hint ? (
+        <DetailNote tone="warn">{hint}. Look at its files before you give it to a role that can run commands.</DetailNote>
+      ) : (
+        entry.description && <DetailNote tone={used.length > 0 ? 'ok' : 'off'}>{entry.description}</DetailNote>
+      )}
+      <DetailBlock title="Instructions" testId="skill-library-preview">
+        {bodyError ? (
+          <p className="invalid-text">{bodyError}</p>
+        ) : preview === null ? (
+          <div className="skeleton w-70" aria-label="Loading the instructions" />
+        ) : (
+          // Scrolls when long, so it takes focus (keyboard scrolling) and is named.
+          <pre className="skill-detail-body" tabIndex={0} role="region" aria-label={`Instructions of ${entry.name}`}>
+            {preview || 'No instructions yet.'}
+          </pre>
+        )}
+        {cut && body !== null && (
+          <p className="settings-detail-hint muted" data-testid="skill-library-preview-cut">
+            First {PREVIEW_CHARS.toLocaleString('en-US')} of {body.length.toLocaleString('en-US')} characters. Edit to read all of it.
+          </p>
+        )}
+      </DetailBlock>
+      <div className="settings-detail-block skill-used-by" data-testid="skill-library-used-by">
+        <div className="settings-detail-label">Projects and roles that use it</div>
+        {used.length === 0 ? (
+          <span className="muted">Not used by any project</span>
+        ) : (
+          <ul>
+            {used.map((p) => (
+              <li key={p.projectId}>
+                <span>{p.projectName}</span>
+                {p.roles.length > 0 && <span className="muted"> · {p.roles.join(', ')}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
-    </li>
+      <DetailActions>
+        <Button size="sm" icon={Pencil} ariaLabel={`Edit ${entry.name}`} onClick={onEdit}>
+          Edit
+        </Button>
+        <Button size="sm" variant="danger" icon={Trash2} ariaLabel={`Remove ${entry.name} from the library`} testId="skill-library-remove" onClick={onRemove}>
+          Remove
+        </Button>
+      </DetailActions>
+      <Button variant="ghost" size="sm" icon={Sparkles} className="settings-detail-help" onClick={() => void useAppStore.getState().openAssistant('skills', { fresh: true })}>
+        Ask the Skills helper to improve it
+      </Button>
+    </div>
   )
 }
 

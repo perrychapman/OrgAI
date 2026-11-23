@@ -3,11 +3,11 @@ import { useCallback, useEffect, useId, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { PermissionMode, Project, TeamReviewAuto } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { MAX_AUTO_CONTINUES_LIMIT, isolateWritersOn, projectKindOf, runMessagingOn, teamReviewOf } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, projectKindOf, runMessagingOn, teamReviewOf } from '@shared/defaults'
 import PermissionRulesPanel from '../PermissionRulesPanel'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Switch } from '../ui/Switch'
-import { PERMISSION_MODE_SHORT, SETTINGS_COPY, ISOLATE_WRITERS_STATE, RUN_MESSAGING_ENGAGEMENT_DESCRIPTION, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
+import { PERMISSION_MODE_SHORT, SETTINGS_COPY, RUN_MESSAGING_ENGAGEMENT_DESCRIPTION, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
 import { foldersSummary } from '../../lib/folderLists'
 import { PERMISSION_MODE_TRADEOFF, collapseRules, rulesApplyInMode } from '../../lib/permissionCopy'
 import { scrollWithin } from '../../lib/scrollWithin'
@@ -117,47 +117,10 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
   const referenceCount = (project.referenceDirectories ?? []).length
   const engagement = projectKindOf(project) === 'engagement'
 
-  // Git state, once per mount and path.
-  const [isGit, setIsGit] = useState<boolean | null>(null)
-  useEffect(() => {
-    let live = true
-    window.orgai.projects
-      .checkPath(project.path)
-      .then((c) => live && setIsGit(c.isGitRepo))
-      .catch(() => live && setIsGit(null))
-    return () => {
-      live = false
-    }
-  }, [project.path])
-
   const current = PERMISSION_MODE_OPTIONS.find((o) => o.value === project.permissionMode)
   const review = teamReviewOf(project)
   const autoOn = project.autoContinue !== false
-  const noGit = isGit === false
-  // The switch always shows the stored value (isolateWritersOn); a missing git repository is explained, never shown as Off.
-  const isoStored = isolateWritersOn(project)
-  const isolated = isoStored && !noGit
-  const isoDesc = engagement
-    ? !isoStored
-      ? ISOLATE_WRITERS_STATE.off
-      : noGit
-        ? ISOLATE_WRITERS_STATE.engagementOnNoGit
-        : ISOLATE_WRITERS_STATE.engagementOn
-    : noGit
-      ? isoStored
-        ? 'On, but this folder is not a git repository, so writers work in the folder itself.'
-        : ISOLATE_WRITERS_STATE.off
-      : isoStored
-        ? ISOLATE_WRITERS_STATE.auto
-        : ISOLATE_WRITERS_STATE.off
-  // Engagements show the isolation rows only once the user opted in (isolateWriters === true); once seen on they stay
-  // for this visit, so turning it off does not make the row vanish under the keyboard.
-  const [isoSeenOn, setIsoSeenOn] = useState(false)
-  useEffect(() => {
-    if (project.isolateWriters === true) setIsoSeenOn(true)
-  }, [project.isolateWriters])
-  const showIsolation = !engagement || isoSeenOn || project.isolateWriters === true
-  const isoLabel = engagement ? 'Give each writer its own copy (git worktrees)' : copy.isolateWriters.label
+  // Worktree isolation and merge review moved to the Branches pane (WorkCopiesSection, Branches board).
   const trust = useFolderTrustReview(project)
   // The folder's own settings have their own row below (FolderTrustSection); this row is only the saved rules and folders.
   const summary = allowedSummary(ruleCount, folderCount, referenceCount)
@@ -224,41 +187,6 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
       <SettingsAdvanced paneKey="project-permissions">
         <SettingsGroup title="Runs">
           <SettingsCard>
-            {showIsolation && (
-              <SettingRow
-                id={row('iso-row')}
-                title={isoLabel}
-                description={isoDesc}
-                control={
-                  <Switch
-                    checked={isoStored}
-                    // A code folder without git cannot turn it on, but a stored "on" can always be turned off.
-                    disabled={noGit && !isoStored && !engagement}
-                    title={noGit && !isoStored && !engagement ? ISOLATE_WRITERS_STATE.noGit : undefined}
-                    label={isoLabel}
-                    describedBy={settingDescId(row('iso-row'))}
-                    onChange={(v) => patch({ isolateWriters: engagement ? (v ? true : undefined) : v ? undefined : false })}
-                  />
-                }
-              />
-            )}
-            {showIsolation && (
-              <SettingRow
-                id={row('review-row')}
-                title={copy.reviewMerges.label}
-                description={isolated ? copy.reviewMerges.description : copy.reviewMerges.disabled}
-                control={
-                  <Switch
-                    checked={!!project.reviewMerges}
-                    disabled={!isolated}
-                    title={isolated ? undefined : copy.reviewMerges.disabled}
-                    label={copy.reviewMerges.label}
-                    describedBy={settingDescId(row('review-row'))}
-                    onChange={(v) => patch({ reviewMerges: v })}
-                  />
-                }
-              />
-            )}
             <SettingRow
               id={row('msg-row')}
               title={copy.runMessaging.label}

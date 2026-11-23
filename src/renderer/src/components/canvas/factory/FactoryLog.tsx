@@ -2,6 +2,7 @@
 // mode). A native details strip, closed by default; not a live region. Entry text is untrusted agent output: React text
 // only, never HTML, never a link. Styles live in styles/factory-chrome.css.
 import type { ReactElement } from 'react'
+import { ChevronUp } from 'lucide-react'
 import type { FloorLogEntry } from '../../../lib/factory/types'
 
 export interface FactoryLogProps {
@@ -15,7 +16,11 @@ export function FactoryLog({ entries }: FactoryLogProps): ReactElement {
   const shown = entries.slice(0, MAX_SHOWN)
   return (
     <details className="factory-log" data-testid="factory-log">
-      <summary>Floor log ({entries.length})</summary>
+      <summary>
+        <span className="factory-log-title">Floor log</span>{' '}
+        <span className="factory-log-count">{entries.length}</span>
+        <ChevronUp className="factory-log-chevron" size={14} aria-hidden="true" />
+      </summary>
       {shown.length === 0 ? (
         <p className="factory-log-empty" data-testid="factory-log-empty">
           Nothing has moved yet.

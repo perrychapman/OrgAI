@@ -1801,3 +1801,11 @@ crossing an overlapping nameplate; carriers seen only in the harness, not mid-fl
 short stage hides the first tile row under the control row; a paused run's End session (product question); the
 "assigned" line's child name with real providers; a real (unthrottled) GPU slowdown triggering a quality step; 60 Hz
 displays, other GPUs, macOS and Linux; screen-reader speech.
+
+### UI overhaul chrome (2026-11-22)
+
+The Factory board's chrome landed: Find a worker and a live Show filter at the stage's top (the filter keeps nameplates
+outside it off the floor, dims floor plan tiles and narrows Find), the control toolbar (Zoom out, Zoom in, Fit, Pause
+motion), a Stack light legend and the Floor log chip (`Floor log n`) at the bottom, lamp-coloured nameplate edges and
+two-row line signs. The Running lamp and the plan board's active step now take `--working` (cyan), done steps
+`--success`; the message capsule is magenta. Details: `docs/design/ui-overhaul/impl-scenes.md`.

@@ -13,6 +13,7 @@ import { scrollWithin } from '../../lib/scrollWithin'
 import { connectorPresetsApi, isCustomConnector, type UserConnectorDef } from '../../lib/mcpScope'
 import { useAppStore } from '../../store/useAppStore'
 import { ConnectorTile } from './ConnectorTile'
+import { ConnectorDetail } from './ConnectorDetail'
 import ConnectorDialog from './ConnectorDialog'
 import PresetForm from './PresetForm'
 import { useConnectors } from './useConnectors'
@@ -51,6 +52,15 @@ export function ConnectorGallery(): ReactElement {
     { id: 'easy', label: 'Easy sign-in', count: connectors?.filter((c) => matchesFilter(c, 'easy')).length },
     ...categories.map((c) => ({ id: c.category as GalleryFilter, label: CATEGORY_LABELS[c.category], count: c.count }))
   ]
+
+  // The service the detail panel describes (Tools board): the tile last focused or clicked; else the first one shown.
+  const [selected, setSelected] = useState<string | null>(null)
+  const visible = sections.flatMap((s) => s.items)
+  const shown = visible.find((c) => c.connector.id === selected) ?? visible[0]
+  const pickFrom = (target: EventTarget): void => {
+    const id = (target as HTMLElement).closest?.<HTMLElement>('[data-testid=connector-tile]')?.dataset.connector
+    if (id && id !== selected) setSelected(id)
+  }
 
   const [pending, setPending] = useState<string | null>(() => takeConnectorTarget())
   const [announce, setAnnounce] = useState('')
@@ -96,6 +106,7 @@ export function ConnectorGallery(): ReactElement {
   const reveal = useCallback((id: string): boolean => {
     const el = sectionsRef.current?.querySelector<HTMLElement>(`[data-testid=connector-tile][data-connector="${id}"]`)
     if (!el) return false
+    setSelected(id)
     const reduce = document.documentElement.getAttribute('data-reduce-motion') === 'on' || window.matchMedia('(prefers-reduced-motion: reduce)').matches
     el.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' })
     el.querySelector<HTMLElement>('[data-testid=connector-action]')?.focus({ preventScroll: true })
@@ -212,6 +223,8 @@ export function ConnectorGallery(): ReactElement {
                 {serviceCount(total)}
               </p>
             </div>
+            <div className="settings-gallery connectors-gallery">
+            <div className="settings-gallery-main">
             {total === 0 ? (
               <div className="connector-empty" data-testid="connector-empty">
                 <strong>{query.trim() ? `No service matches "${query.trim()}"` : 'No services here'}</strong>
@@ -233,7 +246,16 @@ export function ConnectorGallery(): ReactElement {
                 </div>
               </div>
             ) : (
-              <div ref={sectionsRef} className="connector-sections" onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
+              <div
+                ref={sectionsRef}
+                className="connector-sections"
+                onKeyDown={roving.onKeyDown}
+                onFocus={(e) => {
+                  roving.onFocus()
+                  pickFrom(e.target)
+                }}
+                onClick={(e) => pickFrom(e.target)}
+              >
                 {sections.map((s) => (
                   <section key={s.key} className="connector-group" aria-label={s.title ?? 'Services'} data-testid="connector-group" data-group={s.key}>
                     {s.title && (
@@ -243,13 +265,16 @@ export function ConnectorGallery(): ReactElement {
                     )}
                     <ul className="connector-grid">
                       {s.items.map((info) => (
-                        <ConnectorTile key={info.connector.id} info={info} onOpen={() => setOpenId(info.connector.id)} />
+                        <ConnectorTile key={info.connector.id} info={info} selected={info.connector.id === shown?.connector.id} onOpen={() => setOpenId(info.connector.id)} />
                       ))}
                     </ul>
                   </section>
                 ))}
               </div>
             )}
+            </div>
+            {shown && <ConnectorDetail info={shown} onOpen={() => setOpenId(shown.connector.id)} />}
+            </div>
           </>
         )}
         {open && (

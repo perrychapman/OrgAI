@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
   agentTally,
+  branchFacts,
+  branchLines,
+  mergeWord,
+  refusalText,
+  retryPlan,
   bucketCounts,
   bucketOf,
   chainFacts,
   dayLabel,
+  filesNote,
   groupByDay,
+  rerunPlan,
+  scopeCounts,
   inPeriod,
   matchesQuery,
   oneLine,
@@ -119,5 +127,86 @@ describe('agents and steps', () => {
     expect(runSummaryText({ planSummary: ' Done. ', rootResult: 'x' })).toBe('Done.')
     expect(runSummaryText({ rootResult: 'x'.repeat(500) }, 20)).toHaveLength(20)
     expect(runSummaryText({})).toBe('')
+  })
+})
+
+describe('scope counts', () => {
+  const items = [
+    { word: 'Running', bucket: 'running' as const, fits: true },
+    { word: 'Needs you', bucket: 'open' as const, fits: true },
+    { word: 'Finished', bucket: 'finished' as const, fits: true },
+    { word: 'Running', bucket: 'running' as const, fits: false },
+    { word: 'Failed', bucket: 'failed' as const, fits: true }
+  ]
+  it('counts what each scope would list under the filters', () => {
+    expect(scopeCounts(items, 'all')).toEqual({ all: 4, running: 2 })
+  })
+  it('follows the status chip', () => {
+    expect(scopeCounts(items, 'finished')).toEqual({ all: 1, running: 0 })
+    expect(scopeCounts(items, 'running')).toEqual({ all: 1, running: 1 })
+  })
+})
+
+describe('files note', () => {
+  it('does not call an unknown index empty', () => {
+    expect(filesNote('loading', 0)).toBe('Checking files…')
+    expect(filesNote('failed', 0)).toBe('Could not load the files.')
+    expect(filesNote('ready', 0)).toBe('No files registered.')
+    expect(filesNote('ready', 2)).toBeNull()
+  })
+})
+
+describe('merge facts', () => {
+  const wt = (status: string, changedFiles?: string[]) => ({ worktree: { path: 'p', branch: 'b', status: status as never, changedFiles } })
+  it('says nothing when no agent used a copy', () => {
+    const f = branchFacts([{}, {}])
+    expect(f.isolated).toBe(0)
+    expect(branchLines(f)).toEqual([])
+    expect(mergeWord(f)).toBe('')
+  })
+  it('counts merged copies and distinct files without inventing line counts', () => {
+    const f = branchFacts([wt('merged', ['a.ts', 'b.ts']), wt('merged', ['b.ts'])])
+    expect(f).toMatchObject({ isolated: 2, merged: 2, kept: 0, files: ['a.ts', 'b.ts'] })
+    expect(mergeWord(f)).toBe('Merged · 2 files changed')
+    expect(branchLines(f)[0]).toEqual({ title: '2 copies merged', note: '2 files changed' })
+  })
+  it('keeps conflicts and held copies as not merged', () => {
+    const f = branchFacts([wt('conflict', ['x']), wt('held'), wt('merged')])
+    expect(f).toMatchObject({ merged: 1, kept: 2, conflict: 1 })
+    expect(mergeWord(f)).toBe('Merge needs you')
+    expect(branchLines(branchFacts([wt('held')])).map((l) => l.title)).toEqual(['1 copy kept'])
+  })
+  it('reports a merged copy with no recorded files as such, not as zero', () => {
+    expect(mergeWord(branchFacts([wt('merged')]))).toBe('Merged')
+    expect(branchLines(branchFacts([wt('merged')]))[0].note).toBe('no changed files recorded')
+  })
+})
+
+describe('try again', () => {
+  const run = { status: 'error' as const, prompt: ' Do it ', projectId: 'p1' }
+  it('is offered for a failed run in the project on screen only', () => {
+    expect(retryPlan(run, 'p1')).toEqual({ ok: true, request: 'Do it' })
+    expect(retryPlan({ ...run, status: 'finished' }, 'p1')).toMatchObject({ ok: false })
+    expect(retryPlan(run, 'p2')).toMatchObject({ ok: false })
+    expect(retryPlan(run, null)).toMatchObject({ ok: false })
+  })
+  it('strips the IPC wrapper from a refusal', () => {
+    expect(refusalText(new Error("Error invoking remote method 'x': Error: Retrying is not available yet."), 'f')).toBe('Retrying is not available yet.')
+    expect(refusalText(undefined, 'fallback')).toBe('fallback')
+  })
+})
+
+describe('run it again', () => {
+  const run = { kind: 'work' as const, quick: undefined, prompt: '  Fix the login bug  ', projectId: 'p1', team: undefined }
+  it('prefills the request in the run own project and sends nothing', () => {
+    expect(rerunPlan(run, 'p1')).toEqual({ ok: true, text: 'Fix the login bug', mode: 'team' })
+    expect(rerunPlan({ ...run, team: 'single' }, 'p1')).toMatchObject({ ok: true, mode: 'ask' })
+  })
+  it('refuses another project, no project, an empty request and non-team runs', () => {
+    expect(rerunPlan(run, 'p2')).toMatchObject({ ok: false })
+    expect(rerunPlan(run, null)).toMatchObject({ ok: false })
+    expect(rerunPlan({ ...run, prompt: '   ' }, 'p1')).toMatchObject({ ok: false })
+    expect(rerunPlan({ ...run, kind: 'setup' }, 'p1')).toMatchObject({ ok: false })
+    expect(rerunPlan({ ...run, quick: { scratch: true } as never }, 'p1')).toMatchObject({ ok: false })
   })
 })

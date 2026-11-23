@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Schedule } from '@shared/types'
-import { boardSummary, dayTimeWords, detailFacts, lastTone, mayChangeFiles, scheduleColour, spendingLimit, summaryText, weekDays, weekStart } from './schedulesBoard'
+import type { Schedule, ScheduleHistoryEntry } from '@shared/types'
+import { runBars, runBarsSummary, scheduleCostFigure, totalCostFigure, boardSummary, dayTimeWords, detailFacts, lastTone, mayChangeFiles, scheduleColour, spendingLimit, summaryText, weekDays, weekStart } from './schedulesBoard'
 
 function sched(over: Partial<Schedule> = {}): Schedule {
   return {
@@ -95,5 +95,33 @@ describe('facts', () => {
     const l = [{ id: 'a', createdAt: 1 }, { id: 'b', createdAt: 2 }]
     expect(scheduleColour(l, 'a')).not.toBe(scheduleColour(l, 'b'))
     expect(scheduleColour(l, 'a')).toBe(scheduleColour([...l].reverse(), 'a'))
+  })
+})
+
+describe('cost and last runs', () => {
+  it('never turns unknown into zero', () => {
+    expect(scheduleCostFigure(undefined).known).toBe(false)
+    expect(scheduleCostFigure({ perRunUsd: null, sampleRuns: 0, runsPerWeek: 7, weeklyUsd: null }).text).toBe('Weekly cost unknown')
+    expect(scheduleCostFigure({ perRunUsd: 0, sampleRuns: 3, runsPerWeek: 7, weeklyUsd: 0 }).text).toBe('$0.00 a week')
+  })
+  it('states the basis', () => {
+    const f = scheduleCostFigure({ perRunUsd: 0.2, sampleRuns: 5, runsPerWeek: 7, weeklyUsd: 1.4 })
+    expect(f.text).toBe('$1.40 a week')
+    expect(f.basis).toContain('last 5 runs')
+  })
+  it('total says what it leaves out', () => {
+    expect(totalCostFigure({ weeklyTotalUsd: 3, unknownCount: 2 }).basis).toContain('excludes 2 schedules')
+    expect(totalCostFigure({ weeklyTotalUsd: null, unknownCount: 1 }).known).toBe(false)
+  })
+  it('keeps the newest seven started runs, oldest first, skipping skipped slots', () => {
+    const mk = (i: number, o: Partial<ScheduleHistoryEntry> = {}): ScheduleHistoryEntry => ({ id: `e${i}`, scheduleId: 's', slotAt: i, at: i * 1000, trigger: 'timer', result: 'started', outcome: 'finished', costUsd: 0.1, ...o })
+    const entries = [...Array.from({ length: 9 }, (_, i) => mk(i + 1)), mk(20, { result: 'skipped', reason: 'app-closed' }), mk(10, { result: 'failed', outcome: undefined, costUsd: null })]
+    const bars = runBars(entries)
+    expect(bars).toHaveLength(7)
+    expect(bars[6].kind).toBe('error')
+    expect(bars[6].costUsd).toBeNull()
+    expect(bars[0].at).toBeLessThan(bars[1].at)
+    expect(runBarsSummary(bars)).toContain('1 failed')
+    expect(runBarsSummary([])).toBe('No runs yet.')
   })
 })

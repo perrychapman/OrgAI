@@ -10,23 +10,26 @@ import { cleanIpcError } from '../../lib/ipcError'
 import { useSchedules } from '../schedules/useSchedules'
 import { HomeLink, HomeSection } from './HomeSection'
 import { openNewRunWith } from './startRun'
-import { useLiveKey, useMonthOverview, useProjectGit, useProjectHistory, useProjectTodos } from './useHomeData'
+import { useLiveKey, useMonthOverview, useProjectGit, useProjectHistory, useProjectSpend, useProjectTodos, useScheduleOutcomes } from './useHomeData'
 import {
   QUICK_STARTS,
   RUNNING_MARKS_MAX,
   homeTodos,
   monthSpend,
+  monthSpendFrom,
   projectSchedules,
   runningLine,
   runningNow,
+  safeSquareColor,
   teamLine,
   teamSummary,
   type RunningNowIn,
   type TodoHomeRow
 } from '../../lib/projectHome'
-import { healthLines, mergedRows, repoStrip } from '../../lib/projectHomeGit'
+import { healthLines, mergedRows, nightlyBars, nightlySummary, repoStrip } from '../../lib/projectHomeGit'
 import { BAND_BREATHING_MAX } from '../../lib/dashboardBand'
 import { displayRunName } from '../../lib/orgChange'
+import { modKeyLabel, currentPlatform } from '../../lib/platform'
 import { useNow } from '../dashboard/useDashboardData'
 
 /**
@@ -41,8 +44,10 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
   const openSchedules = useAppStore((s) => s.openSchedules)
   const now = useNow()
   const liveKey = useLiveKey(project.id)
-  const git = useProjectGit(project.id, liveKey)
+  const gitState = useProjectGit(project.id, liveKey)
+  const git = gitState.kind === 'ready' ? gitState.git : null
   const overview = useMonthOverview(project.id, liveKey)
+  const projectSpend = useProjectSpend(project.id, liveKey)
   const todos = useProjectTodos(project.id)
   const schedules = useSchedules()
   const history = useProjectHistory(project.id)
@@ -63,7 +68,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
   const scheduleRows = useMemo(() => (schedules.list ?? []).filter((s) => s.target.kind === 'team' && s.target.projectId === project.id), [schedules.list, project.id])
   const health = healthLines(git, scheduleRows, now)
   const merged = mergedRows(git, now)
-  const spend = monthSpend(overview)
+  const spend = monthSpendFrom(projectSpend, overview) ?? monthSpend(overview)
   const todo = homeTodos(todos ?? undefined)
   const team = useMemo(() => teamSummary(project.roles), [project.roles])
   const runCount = history.filter((h) => h.kind === 'work').length
@@ -80,6 +85,16 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
             </span>
           ))}
         </div>
+        {gitState.kind === 'none' && (
+          <p className="home-git-note" data-testid="home-git-none">
+            No git information for this folder.
+          </p>
+        )}
+        {gitState.kind === 'failed' && (
+          <p className="home-git-note" data-tone="warn" data-testid="home-git-failed">
+            Git information could not be read.
+          </p>
+        )}
 
         <div className="home-ground">
           <div className="home-row">
@@ -114,9 +129,18 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
                       <span className="home-row-title" title={m.subject}>
                         {m.subject}
                       </span>
-                      <span className="home-diffstat">
-                        <span className="home-add">+{m.added}</span> <span className="home-del">−{m.removed}</span>
-                      </span>
+                      {m.sha && (
+                        <span className="home-sha" title="Commit">
+                          {m.sha.slice(0, 7)}
+                        </span>
+                      )}
+                      {(m.added !== undefined || m.removed !== undefined) && (
+                        <span className="home-diffstat">
+                          {m.added !== undefined && <span className="home-add">+{m.added}</span>}
+                          {m.added !== undefined && m.removed !== undefined && ' '}
+                          {m.removed !== undefined && <span className="home-del">−{m.removed}</span>}
+                        </span>
+                      )}
                       <span className="home-age">{m.when}</span>
                     </li>
                   ))}
@@ -136,7 +160,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
                       </span>
                       <span className="home-squares" aria-hidden="true">
                         {g.colors.map((c, i) => (
-                          <span key={i} className="home-square" style={{ background: c }} />
+                          <span key={i} className="home-square" style={{ background: safeSquareColor(c) }} />
                         ))}
                       </span>
                       <span className="home-group-count">{g.count}</span>
@@ -172,6 +196,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
                   </span>
                   <span className="home-figure-note">{spend.runs === 1 ? '1 run' : `${spend.runs} runs`} this month</span>
                 </div>
+                {(spend.limitText || spend.projectionText) && <p className="home-summary">{[spend.limitText, spend.projectionText].filter(Boolean).join(' · ')}</p>}
                 {spend.typicalText && <p className="home-summary">A typical run costs {spend.typicalText}.</p>}
                 {spend.unknownRuns > 0 && <p className="home-hint">{spend.unknownRuns === 1 ? '1 run has' : `${spend.unknownRuns} runs have`} no known price, so the figure is a lower bound.</p>}
               </HomeSection>
@@ -186,6 +211,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
                         {s.name}
                         {!s.enabled && <span className="home-muted"> · paused</span>}
                       </span>
+                      <ScheduleBar scheduleId={s.id} refreshKey={liveKey} />
                       <span className="home-mono-note" data-tone={s.tone}>
                         {s.last}
                       </span>
@@ -201,11 +227,43 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
   )
 }
 
+// ---------- schedule outcome bar ----------
+
+const BAR_W = 5
+const BAR_GAP = 2
+const BAR_H = 16
+
+/**
+ * The outcome of a schedule's recent runs, oldest left: one bar per handled slot (green finished, amber skipped or
+ * needing you, red failed; height = relative cost where known, otherwise a fixed low bar). Read through the peek
+ * channel so Home never clears the Schedules unread count. Fewer than 3 entries, or no answer: nothing is drawn.
+ */
+function ScheduleBar({ scheduleId, refreshKey }: { scheduleId: string; refreshKey: string }): ReactElement | null {
+  const entries = useScheduleOutcomes(scheduleId, refreshKey)
+  const now = useNow()
+  const bars = useMemo(() => (entries ? nightlyBars(entries, now) : null), [entries, now])
+  if (!bars) return null
+  const w = bars.length * (BAR_W + BAR_GAP) - BAR_GAP
+  return (
+    <svg className="home-nightly" width={w} height={BAR_H} viewBox={`0 0 ${w} ${BAR_H}`} role="img" aria-label={nightlySummary(bars)} data-testid="home-nightly">
+      {bars.map((b, i) => {
+        const h = Math.max(3, Math.round((b.height / 100) * BAR_H))
+        return (
+          <rect key={i} className="home-nightly-bar" data-tone={b.tone} x={i * (BAR_W + BAR_GAP)} y={BAR_H - h} width={BAR_W} height={h} rx={1}>
+            <title>{b.label}</title>
+          </rect>
+        )
+      })}
+    </svg>
+  )
+}
+
 // ---------- "> new run" ----------
 
 function NewRunBox({ project, hasRuns }: { project: Project; hasRuns: boolean }): ReactElement {
   const [text, setText] = useState('')
   const id = useId()
+  const mod = modKeyLabel(currentPlatform())
   const start = (message: string): void => openNewRunWith(project.id, message)
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -246,7 +304,7 @@ function NewRunBox({ project, hasRuns }: { project: Project; hasRuns: boolean })
         </Button>
       </div>
       <p id={`${id}-hint`} className="home-hint">
-        Opens the New run page with your message, where you pick a model and send. Ctrl+Enter does the same.
+        Opens the New run page with your message, where you pick a model and send. {mod}+Enter does the same.
       </p>
     </section>
   )

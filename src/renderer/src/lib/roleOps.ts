@@ -310,6 +310,14 @@ export function uniqueSlug(
  * The slug for a role being added: `slugify(name)` made unique among the roles and clear of every slug a server's
  * explicit `roles` still names (a role removed with Undo on screen), so the new role inherits no connection.
  */
+/** A duplicate's name: "{name} copy", then "{name} copy 2", 3... until no role has it (case-insensitive). */
+export function duplicateName(roles: readonly Pick<Role, 'name'>[], name: string): string {
+  const taken = new Set(roles.map((r) => r.name.trim().toLowerCase()))
+  const base = `${name.trim() || 'Role'} copy`
+  if (!taken.has(base.toLowerCase())) return base
+  for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`
+}
+
 export function newRoleSlug(
   project: Pick<Project, 'mcpServers'>,
   roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined,

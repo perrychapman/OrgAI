@@ -4,6 +4,13 @@ import { DEFAULT_MAX_AUTO_CONTINUES, IPC, QUICK_PROJECT_ID } from '@shared/types
 import { pickFocusWindow } from './windowScope'
 import { APP_USER_MODEL_ID } from './appIdentity'
 
+/**
+ * What a notification is about, for the per-event settings: 'needsMe' (a request, a plan that blocked, a turn waiting
+ * for the user, a usage-limit pause), 'runFinished' (a run that finished or failed, a plan that completed) and
+ * 'scheduleFindings' (Schedules notices: a start that failed, a schedule paused or stopped).
+ */
+export type NotifyCategory = 'needsMe' | 'runFinished' | 'scheduleFindings'
+
 /** What the notifier knows about a run. */
 export interface NotifierRun {
   projectId: string
@@ -27,6 +34,11 @@ export interface NotifierDeps {
    * and a save takes effect at once.
    */
   enabled(): boolean
+  /**
+   * Per-event switches under the master one (AppSettings.notifyNeedsMe / notifyRunFinished / notifyScheduleFindings),
+   * read at every decision. Missing = every category on (settings saved before the fields existed).
+   */
+  categoryEnabled?(category: NotifyCategory): boolean
   /** Absolute PNG path for Linux notifications; never used on Windows or macOS. */
   iconPath?(): string | undefined
 }
@@ -96,7 +108,7 @@ export class Notifier {
     if (isRequest && process.platform === 'darwin') app.dock?.bounce('critical')
     // macOS shows notifications only after the user allows them (System Settings > Notifications > OrgAI). An
     // unsigned or ad-hoc build may be listed under Electron or not at all; a signed build is reliable.
-    if (!this.deps.enabled() || !Notification.isSupported()) return
+    if (!this.deps.enabled() || !this.categoryOn(this.categoryOf(event, isRequest)) || !Notification.isSupported()) return
 
     const notification = new Notification({
       title: this.deps.projectName(run.projectId) ?? 'OrgAI',
@@ -122,8 +134,9 @@ export class Notifier {
    * project). OrgAI-written text only. Honours AppSettings.notifications; shown whether or not a window is focused,
    * since nobody was there when it happened. A click focuses the run when one is named, else the main window.
    */
-  notice(input: { title: string; body: string; target?: FocusRunTarget }): void {
-    if (!this.deps.enabled() || !Notification.isSupported()) return
+  notice(input: { title: string; body: string; target?: FocusRunTarget; category?: NotifyCategory }): void {
+    // Every caller today is Schedules, so a notice without a category counts as 'scheduleFindings'.
+    if (!this.deps.enabled() || !this.categoryOn(input.category ?? 'scheduleFindings') || !Notification.isSupported()) return
     const notification = new Notification({ title: input.title.slice(0, 120), body: input.body.slice(0, 240), urgency: 'normal', ...this.iconOption() })
     const release = (): void => {
       this.alive.delete(notification)
@@ -143,6 +156,18 @@ export class Notifier {
     notification.on('close', release)
     this.alive.add(notification)
     notification.show()
+  }
+
+  private categoryOn(category: NotifyCategory): boolean {
+    return this.deps.categoryEnabled ? this.deps.categoryEnabled(category) : true
+  }
+
+  /** Which per-event switch a run event's notification falls under. */
+  private categoryOf(event: RunEvent, isRequest: boolean): NotifyCategory {
+    if (isRequest) return 'needsMe'
+    if (event.type === 'plan.updated') return 'runFinished'
+    if (event.type === 'run.status' && (event.status === 'finished' || event.status === 'error')) return 'runFinished'
+    return 'needsMe'
   }
 
   private lookup(runId: string): NotifierRun | undefined {

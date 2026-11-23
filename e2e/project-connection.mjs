@@ -4,7 +4,7 @@
 // themes, no page scroll. Keyboard: the Select and the radio list.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, deleteProject, finish, gotoProjects, launch, makeFixtureRepo, openProjectForm, projectTab, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, deleteProject, finish, gotoProjects, launch, makeFixtureRepo, openProjectForm, pickSetup, projectTab, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const A = 'E2E proxy project A (orgai test)'
@@ -32,8 +32,7 @@ async function makeProject(name, dir) {
   await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
   await form.locator('input[placeholder*="repo"]').fill(dir)
   await form.locator('input[placeholder*="Defaults to the folder name"]').fill(name)
-  const arch = form.locator('[data-testid=architect-setup]')
-  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Set up with the Architect' }).click()
+  await pickSetup(form, true)
   const mock = form.locator('[data-testid=use-mock]')
   if ((await mock.count()) && (await mock.isChecked())) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
   return { form, select: form.locator('[data-testid=new-project-connection-select]') }

@@ -628,7 +628,12 @@ export const DEFAULT_APPEARANCE: NormalizedAppearanceSettings = {
   theme: 'dark',
   accent: '#7c5cff',
   canvas: { presentation: 'graph', scenePalette: 'color', pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
-  reduceMotion: 'system'
+  reduceMotion: 'system',
+  noMotion: false,
+  glass: true,
+  textSize: 'default',
+  density: 'comfortable',
+  sidebarActivityDots: true
 }
 
 export type CanvasPresetId = 'blueprint' | 'constellation' | 'subway' | 'mission-control' | 'paper' | 'hive'

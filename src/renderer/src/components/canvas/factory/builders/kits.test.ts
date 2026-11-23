@@ -9,7 +9,7 @@ import { boardLampPosition } from './board'
 import { CRATE_PITCH } from './types'
 import type { FactoryTokenColours, FloorRect, LodBand, ObjectKit } from './types'
 
-const TOKENS: FactoryTokenColours = { success: '#22c58b', warning: '#f5a524', danger: '#ff6b6b', accentText: '#a592ff' }
+const TOKENS: FactoryTokenColours = { success: '#22c58b', working: '#4cc9f0', warning: '#f5a524', danger: '#ff6b6b', accentText: '#a592ff' }
 const HALL: FloorRect = { minX: 0, maxX: 38, minZ: -10, maxZ: 29 }
 const BANDS: LodBand[] = ['near', 'mid', 'far']
 const VARIANTS = [0, 1, 2, 3] as const
@@ -719,22 +719,24 @@ describe('slice 3 conveyor and lead silhouette', () => {
 })
 
 describe('boardLampColour', () => {
-  const LIGHT_TOKENS: FactoryTokenColours = { success: '#0f8a56', warning: '#b45f06', danger: '#c62828', accentText: '#4f33d6' }
-  const lum = (h: string): number => relativeLuminance(h)
+  const LIGHT_TOKENS: FactoryTokenColours = { success: '#0f8a56', working: '#0a7ea4', warning: '#b45f06', danger: '#c62828', accentText: '#4f33d6' }
+  const lum =(h: string): number => relativeLuminance(h)
   for (const [theme, tokens] of [['dark', TOKENS], ['light', LIGHT_TOKENS]] as const) {
-    it(`${theme}: pending and skipped are the off colour, active is success, blocked is warning`, () => {
+    it(`${theme}: pending and skipped are the off colour, active is working, done is success, blocked is warning`, () => {
       const c = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampColour!(theme, s, tokens)
       // Dark: the stack light's off colour; light: that colour sunk towards the dark panel (see board.ts).
       if (theme === 'dark') expect(c('pending')).toBe(factoryKits.lampOffColour(theme))
       expect(c('skipped')).toBe(c('pending'))
-      expect(c('active')).toBe(tokens.success)
+      expect(c('active')).toBe(tokens.working)
+      expect(c('done')).toBe(tokens.success)
       expect(c('blocked')).toBe(tokens.warning)
       for (const s of ['pending', 'active', 'done', 'blocked', 'skipped'] as const) expect(c(s)).toMatch(/^#[0-9a-f]{6}$/i)
     })
 
-    it(`${theme}: done differs from active by lightness (at least 1.6:1), and every lit state reads against the panel`, () => {
+    it(`${theme}: done differs from active by hue (and by the check mark), and every lit state reads against the panel`, () => {
       const c = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampColour!(theme, s, tokens)
-      expect(contrastRatio(c('done'), c('active'))).toBeGreaterThanOrEqual(1.6)
+      expect(c('done')).not.toBe(c('active'))
+      expect(factoryKits.boardLampMarkColour!(theme, 'done', tokens)).not.toBe(c('done'))
       expect(new Set([c('pending'), c('active'), c('done'), c('blocked')]).size).toBe(4)
       const panel = FACTORY_PALETTE[theme].roles.boardPanel
       for (const s of ['active', 'done', 'blocked'] as const) expect(contrastRatio(c(s), panel), s).toBeGreaterThanOrEqual(2.8)
@@ -867,8 +869,8 @@ describe('slice 4 carriers', () => {
       m.dispose()
     }
     // Slice 6 values (slice 4: dark #5b6b8c / #d8dde8 / #9aa2b1, light #6c7c9c / #ffffff / #7d8696).
-    expect(FACTORY_PALETTE.dark.roles).toMatchObject({ tote: '#c9a6ff', capsule: '#4fd6f6', part: '#f1f4fb', carrierBand: '#0b0e14' })
-    expect(FACTORY_PALETTE.light.roles).toMatchObject({ tote: '#5a2bb5', capsule: '#046b8c', part: '#f1f4fb', carrierBand: '#ffffff' })
+    expect(FACTORY_PALETTE.dark.roles).toMatchObject({ tote: '#c9a6ff', capsule: '#f07ad8', part: '#f1f4fb', carrierBand: '#0b0e14' })
+    expect(FACTORY_PALETTE.light.roles).toMatchObject({ tote: '#5a2bb5', capsule: '#a0237f', part: '#f1f4fb', carrierBand: '#ffffff' })
   })
 
   it('the blob shadow is stronger on the dark floor than on the light one and follows applyTheme', () => {
@@ -973,7 +975,7 @@ describe('slice 4 console screen', () => {
 })
 
 describe('slice 4 board check mark', () => {
-  const LIGHT_TOKENS: FactoryTokenColours = { success: '#0f8a56', warning: '#b45f06', danger: '#c62828', accentText: '#4f33d6' }
+  const LIGHT_TOKENS: FactoryTokenColours = { success: '#0f8a56', working: '#0a7ea4', warning: '#b45f06', danger: '#c62828', accentText: '#4f33d6' }
   const mark = boardLamp.parts.find((p) => p.key === 'lamp.mark')!
   const lens = boardLamp.parts.find((p) => p.key === 'boardLamp.lens')!
 
@@ -995,7 +997,7 @@ describe('slice 4 board check mark', () => {
     it(`${theme}: the mark reads only on done: dark on the lens when done, the lens colour itself otherwise`, () => {
       const lensC = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampColour!(theme, s, tokens)
       const markC = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampMarkColour!(theme, s, tokens)
-      expect(contrastRatio(markC('done'), lensC('done'))).toBeGreaterThanOrEqual(7)
+      expect(contrastRatio(markC('done'), lensC('done'))).toBeGreaterThanOrEqual(4.5)
       for (const s of ['pending', 'active', 'blocked', 'skipped'] as const) expect(markC(s), s).toBe(lensC(s))
       for (const s of ['pending', 'active', 'done', 'blocked', 'skipped'] as const) expect(markC(s)).toMatch(/^#[0-9a-f]{6}$/i)
     })

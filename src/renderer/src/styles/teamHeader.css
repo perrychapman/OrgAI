@@ -64,6 +64,162 @@
   }
 }
 
+/* ---------- UI overhaul (Team board): display title, glass secondary buttons, the theme swatch, engagement coral ---------- */
+.team-header-title {
+  font-family: var(--font-display, inherit);
+  letter-spacing: -0.01em;
+}
+.team-editor[data-kind='engagement'] .team-header-title {
+  font-family: var(--font-serif, var(--font-display, inherit));
+}
+.team-header .btn.team-header-btn:not(.primary) {
+  background: var(--glass);
+  border-color: var(--glass-line);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.team-theme-swatch {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--accent), var(--working));
+  border: 1px solid var(--glass-line);
+}
+.team-theme-word {
+  color: var(--text-tertiary);
+}
+.team-theme-name {
+  font-weight: var(--weight-semibold);
+}
+.team-header-menu-note {
+  margin: var(--space-1) var(--space-2) var(--space-0h);
+  max-width: 15rem;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.team-header-groups {
+  color: var(--text-secondary);
+}
+.team-editor[data-kind='engagement'] .team-header .btn.primary {
+  background: var(--eng);
+  border-color: var(--eng);
+  color: var(--surface-0);
+}
+
+/* ---------- Zoom group (bottom right of the stage): − 100% + Fit Tidy ---------- */
+.editor .react-flow__controls.team-zoom {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0h);
+  padding: var(--space-0h);
+  border-radius: var(--radius-md);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-1);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  overflow: visible;
+}
+.editor .react-flow__controls.team-zoom button {
+  width: auto;
+  min-width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0 var(--space-1h, 6px);
+  gap: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+.editor .react-flow__controls.team-zoom button:hover {
+  background: var(--field-bg);
+  color: var(--text-primary);
+}
+.editor .react-flow__controls.team-zoom button:disabled {
+  color: var(--text-disabled, var(--text-tertiary));
+  background: transparent;
+  cursor: default;
+}
+.editor .react-flow__controls.team-zoom button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.editor .react-flow__controls.team-zoom button svg {
+  width: 14px;
+  height: 14px;
+  max-width: none;
+  max-height: none;
+  fill: none;
+}
+.team-zoom-level {
+  min-width: 3rem;
+  text-align: center;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* ---------- Engagement provenance line (EngagementTeam board), top left of the stage ---------- */
+.team-provenance {
+  position: absolute;
+  z-index: 5;
+  top: var(--space-2);
+  left: var(--space-2);
+  max-width: min(46rem, calc(100% - var(--space-4)));
+  display: flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
+  border-radius: var(--radius-lg);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-1);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.team-provenance-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  display: grid;
+  place-items: center;
+}
+.team-provenance-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.team-provenance .link-btn {
+  flex: none;
+}
+/* A narrow stage: the sentence goes (it is in the title), the two actions stay. */
+@container frame (max-width: 640px) {
+  .team-provenance-text {
+    display: none;
+  }
+}
+.team-provenance .link-btn {
+  font-weight: var(--weight-semibold);
+  color: var(--eng);
+}
+.team-provenance-error {
+  flex-basis: 100%;
+  color: var(--danger-text);
+}
+
 /* Menu items of the Layout menu: radio rows with a check column. */
 .team-header-menu {
   display: flex;

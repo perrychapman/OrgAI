@@ -1,6 +1,8 @@
 import { formatUsdCompact } from '@shared/view/cost'
 import type { Schedule } from '@shared/types'
 import { relativeTime } from '@shared/view/runChains'
+import { oneLine } from '@shared/view/decisionTitle'
+import { showHidden } from '@shared/view/hiddenChars'
 import { plural, type LineTone } from './projectHome'
 
 /**
@@ -10,10 +12,14 @@ import { plural, type LineTone } from './projectHome'
  */
 
 export interface HomeCommit {
+  /** Short sha as the repository gave it (hex only; absent when it was not). */
+  sha?: string
+  /** Untrusted repository text: draw as plain text only. */
   subject: string
   at: number
-  added: number
-  removed: number
+  /** Lines added / removed; absent = the repository did not say (draw nothing, never 0). */
+  added?: number
+  removed?: number
 }
 
 export interface HomeGit {
@@ -34,41 +40,52 @@ export interface HomeGit {
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined)
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+/** Untrusted repository text made safe to show: control characters out, hidden characters visible, clamped. */
+const safe = (v: unknown, max: number): string | undefined => {
+  const s = str(v)
+  return s ? oneLine(showHidden(s), max) || undefined : undefined
+}
 
-/** Maps an unknown answer onto HomeGit; null when it holds nothing usable (the git sections are then left out). */
+/**
+ * Maps the main process's `gitInfo.summary` answer (GitSummary, src/shared/types.ts) onto HomeGit; null when it holds
+ * nothing usable (the git sections are then left out). Every field is checked: a missing or odd one leaves its line out.
+ */
 export function normalizeGit(raw: unknown): HomeGit | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
-  if (r.available === false) return null
   const out: HomeGit = {}
-  const branch = str(r.branch)
+  const branch = safe(r.branch, 120)
   if (branch) out.branch = branch
-  const def = str(r.defaultBranch)
+  const def = safe(r.defaultBranch, 120)
   if (def) out.defaultBranch = def
-  const lastAt = num((r.lastCommit as Record<string, unknown> | undefined)?.at) ?? num(r.lastMergeAt)
-  if (lastAt !== undefined) out.lastMergeAt = lastAt
-  const dirty = num(r.dirtyFiles) ?? num(r.dirty)
+  const dirty = num(r.dirtyFiles)
   if (dirty !== undefined) out.dirtyFiles = dirty
-  const un = r.unmerged as Record<string, unknown> | undefined
+  const generatedAt = num(r.generatedAt)
+  const un = r.unmergedBranches as Record<string, unknown> | undefined
   const unCount = num(un?.count)
   if (unCount !== undefined) {
-    const oldest = num(un?.oldestAt)
-    out.unmerged = { count: unCount, ...(oldest !== undefined ? { oldestAt: oldest } : {}) }
+    const age = num(un?.oldestAgeMs)
+    out.unmerged = { count: unCount, ...(age !== undefined && generatedAt !== undefined ? { oldestAt: Math.max(0, generatedAt - age) } : {}) }
   }
-  const ahead = num(r.ahead)
-  const behind = num(r.behind)
+  const up = r.upstream as Record<string, unknown> | undefined
+  const ahead = num(up?.ahead)
+  const behind = num(up?.behind)
   if (ahead !== undefined) out.ahead = ahead
   if (behind !== undefined) out.behind = behind
-  if (Array.isArray(r.commits)) {
+  if (Array.isArray(r.recentCommits)) {
     const commits: HomeCommit[] = []
-    for (const c of r.commits) {
-      const cr = c as Record<string, unknown>
-      const subject = str(cr?.subject)
+    for (const c of r.recentCommits) {
+      const cr = c as Record<string, unknown> | null
+      const subject = safe(cr?.subject, 200)
       const at = num(cr?.at)
-      if (!subject || at === undefined) continue
-      commits.push({ subject, at, added: num(cr.added) ?? num(cr.insertions) ?? 0, removed: num(cr.removed) ?? num(cr.deletions) ?? 0 })
+      if (!cr || !subject || at === undefined) continue
+      const sha = typeof cr.sha === 'string' && /^[0-9a-f]{4,64}$/i.test(cr.sha) ? cr.sha.slice(0, 10) : undefined
+      const added = num(cr.additions)
+      const removed = num(cr.deletions)
+      commits.push({ ...(sha ? { sha } : {}), subject, at, ...(added !== undefined ? { added } : {}), ...(removed !== undefined ? { removed } : {}) })
     }
     out.commits = commits
+    if (commits.length > 0) out.lastMergeAt = commits[0].at
   }
   return Object.keys(out).length > 0 ? out : null
 }
@@ -84,12 +101,25 @@ export interface StripItem {
   title?: string
 }
 
-/** The mono strip under the topbar: branch, last merge, open branches, folder. The folder is always known. */
+/**
+ * The mono strip under the topbar: branch, default branch, last commit, ahead / behind, uncommitted files, unmerged
+ * branches, folder. Each item appears only when the repository answered it (a detached head says so). The folder is
+ * always known.
+ */
 export function repoStrip(git: HomeGit | null | undefined, folder: string, now: number): StripItem[] {
   const items: StripItem[] = []
-  if (git?.branch) items.push({ key: 'branch', label: 'branch', value: git.branch, mark: 'accent' })
-  if (git?.lastMergeAt !== undefined) items.push({ key: 'merge', label: 'last merge', value: relativeTime(git.lastMergeAt, now), mark: 'ok' })
-  if (git?.unmerged) items.push({ key: 'branches', label: 'open branches', value: String(git.unmerged.count), mark: 'working' })
+  if (git) {
+    items.push({ key: 'branch', label: 'branch', value: git.branch ?? 'detached', mark: 'accent', title: git.branch })
+    if (git.defaultBranch && git.defaultBranch !== git.branch) items.push({ key: 'default', label: 'default', value: git.defaultBranch, mark: 'muted', title: git.defaultBranch })
+  }
+  if (git?.lastMergeAt !== undefined) items.push({ key: 'merge', label: 'last commit', value: relativeTime(git.lastMergeAt, now), mark: 'ok' })
+  if (git?.ahead !== undefined || git?.behind !== undefined) {
+    const ahead = git.ahead ?? 0
+    const behind = git.behind ?? 0
+    items.push({ key: 'sync', label: 'remote', value: ahead === 0 && behind === 0 ? 'in step' : [ahead > 0 ? `${ahead} ahead` : '', behind > 0 ? `${behind} behind` : ''].filter(Boolean).join(', '), mark: behind > 0 ? 'working' : 'ok' })
+  }
+  if (git?.dirtyFiles !== undefined) items.push({ key: 'dirty', label: 'uncommitted', value: git.dirtyFiles === 0 ? 'none' : plural(git.dirtyFiles, 'file'), mark: git.dirtyFiles === 0 ? 'ok' : 'working' })
+  if (git?.unmerged) items.push({ key: 'branches', label: 'unmerged', value: String(git.unmerged.count), mark: 'working' })
   items.push({ key: 'folder', label: 'folder', value: folder, mark: 'muted', title: folder })
   return items
 }
@@ -205,9 +235,11 @@ export function nightlySummary(bars: readonly NightlyBar[]): string {
 
 export interface MergedRow {
   key: string
+  sha?: string
   subject: string
-  added: number
-  removed: number
+  /** Absent = the repository did not say; the row then shows no +/- at all. */
+  added?: number
+  removed?: number
   when: string
 }
 
@@ -226,5 +258,12 @@ export function shortAge(at: number, now: number): string {
 export const MERGED_MAX = 5
 
 export function mergedRows(git: HomeGit | null | undefined, now: number, max = MERGED_MAX): MergedRow[] {
-  return (git?.commits ?? []).slice(0, max).map((c, i) => ({ key: `${i}:${c.at}`, subject: c.subject, added: c.added, removed: c.removed, when: shortAge(c.at, now) }))
+  return (git?.commits ?? []).slice(0, max).map((c, i) => ({
+    key: `${i}:${c.sha ?? c.at}`,
+    ...(c.sha ? { sha: c.sha } : {}),
+    subject: c.subject,
+    ...(c.added !== undefined ? { added: c.added } : {}),
+    ...(c.removed !== undefined ? { removed: c.removed } : {}),
+    when: shortAge(c.at, now)
+  }))
 }

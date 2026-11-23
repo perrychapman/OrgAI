@@ -2,7 +2,7 @@
 // search filters, day groups with their totals, per-conversation facts and the words of the result line. No React, no
 // DOM, no store, no clock (callers pass `now`). Every figure comes from the run summaries or records; an unknown stays
 // unknown (null), never 0.
-import type { AgentState, PlanStepStatus, RunSummary } from '@shared/types'
+import type { AgentInstance, AgentState, PlanStepStatus, RunSummary } from '@shared/types'
 import type { StatusWord } from './runStatus'
 
 /** The chips: what a conversation's newest session is doing or how it ended. */
@@ -258,6 +258,146 @@ export function stepTone(status: PlanStepStatus): StepTone {
     default:
       return 'pending'
   }
+}
+
+/** Whether a conversation's newest session is working or waiting on the user: the "Running now" scope. */
+export const isRunningNow = (word: string): boolean => word === 'Running' || word === 'Needs you'
+
+/**
+ * The two scope counts under the current filters. `fits` says the conversation passes kind, period and search; `bucket`
+ * is the status chip. "All runs" counts what the list would show with that scope, "Running now" what it would show
+ * if it were chosen, so each number matches its list.
+ */
+export function scopeCounts(items: readonly { word: string; bucket: HistoryBucket; fits: boolean }[], chip: 'all' | HistoryBucket): { all: number; running: number } {
+  let all = 0
+  let running = 0
+  for (const it of items) {
+    if (!it.fits || (chip !== 'all' && it.bucket !== chip)) continue
+    all++
+    if (isRunningNow(it.word)) running++
+  }
+  return { all, running }
+}
+
+/** Whether the outputs index is still being fetched, could not be fetched or is in the store. */
+export type OutputsPhase = 'loading' | 'failed' | 'ready'
+
+/** The "What it left" line when there is nothing to list yet (or nothing at all); null when files can be listed. */
+export function filesNote(phase: OutputsPhase, count: number): string | null {
+  if (phase === 'loading') return 'Checking files…'
+  if (phase === 'failed') return 'Could not load the files.'
+  return count === 0 ? 'No files registered.' : null
+}
+
+/** Shown beside "Run it again": what the new request does and does not take from the old run. */
+export const RERUN_NOT_CARRIED = 'Model, effort, permission mode, goal and images are not carried over: the run uses this project as it is set up now.'
+
+export type RerunPlan = { ok: true; text: string; mode: 'team' | 'ask' } | { ok: false; reason: string }
+
+/**
+ * What "Run it again" does: prefill the New run page of the run's own project with its request, sending nothing. The page
+ * applies every start guard (setup pending, a project that cannot start, the permission-mode confirmation). Refuses when
+ * the run is not repeatable or does not belong to the project on screen, so it can never land in another project.
+ */
+export function rerunPlan(run: Pick<RunSummary, 'kind' | 'quick' | 'prompt' | 'projectId' | 'team'>, selectedProjectId: string | null | undefined): RerunPlan {
+  if (run.kind !== 'work' || run.quick) return { ok: false, reason: 'Only a team run can be run again.' }
+  const text = run.prompt.trim()
+  if (!text) return { ok: false, reason: 'This run has no request to repeat.' }
+  if (!selectedProjectId) return { ok: false, reason: 'Open the project first.' }
+  if (run.projectId !== selectedProjectId) return { ok: false, reason: 'This run belongs to another project. Open that project to run it again.' }
+  return { ok: true, text, mode: run.team === 'single' ? 'ask' : 'team' }
+}
+
+// ---------- What the agents left (worktree facts) ----------
+
+export interface BranchLine {
+  /** Plain words, no counts the record does not hold. */
+  title: string
+  note: string
+}
+
+export interface BranchFacts {
+  /** Agents that worked in an isolated copy (a worktree). 0 = none did, or the run is not a code run. */
+  isolated: number
+  merged: number
+  /** Copies kept for the user or the orchestrator: held, in review, conflict, waiting on child copies. */
+  kept: number
+  conflict: number
+  active: number
+  /** Distinct file paths named by the copies that merged or are kept, in first-seen order. Line counts are not recorded. */
+  files: string[]
+}
+
+/** The merge facts of a run's agents, from each worktree's recorded status and changed files only. */
+export function branchFacts(agents: readonly Pick<AgentInstance, 'worktree'>[]): BranchFacts {
+  const out: BranchFacts = { isolated: 0, merged: 0, kept: 0, conflict: 0, active: 0, files: [] }
+  const seen = new Set<string>()
+  for (const a of agents) {
+    const w = a.worktree
+    if (!w) continue
+    out.isolated++
+    const s = w.status
+    if (s === 'merged') out.merged++
+    else if (s === 'conflict') {
+      out.kept++
+      out.conflict++
+    } else if (s === 'held' || s === 'review' || s === 'waiting-children') out.kept++
+    else if (s === 'active' || s === 'merging') out.active++
+    if (s === 'merged' || s === 'conflict' || s === 'held' || s === 'review' || s === 'waiting-children') {
+      for (const f of w.changedFiles ?? []) {
+        if (!seen.has(f)) {
+          seen.add(f)
+          out.files.push(f)
+        }
+      }
+    }
+  }
+  return out
+}
+
+/** "3 files" / "1 file". */
+export const filesWord = (n: number): string => `${n} ${n === 1 ? 'file' : 'files'}`
+
+/** The lines under "What it left" for the merge facts: nothing for facts that are not there. */
+export function branchLines(f: BranchFacts, fileCap = 5): BranchLine[] {
+  const lines: BranchLine[] = []
+  if (f.isolated === 0) return lines
+  if (f.merged > 0) lines.push({ title: `${f.merged} ${f.merged === 1 ? 'copy' : 'copies'} merged`, note: f.files.length > 0 ? `${filesWord(f.files.length)} changed` : 'no changed files recorded' })
+  if (f.conflict > 0) lines.push({ title: `${f.conflict} could not merge by itself`, note: 'kept, not merged' })
+  const heldOnly = f.kept - f.conflict
+  if (heldOnly > 0) lines.push({ title: `${heldOnly} ${heldOnly === 1 ? 'copy' : 'copies'} kept`, note: 'not merged' })
+  if (f.active > 0) lines.push({ title: `${f.active} still being worked on`, note: 'nothing merged yet' })
+  if (lines.length === 0) lines.push({ title: 'Nothing was changed in the project', note: '' })
+  for (const p of f.files.slice(0, fileCap)) lines.push({ title: p, note: '' })
+  if (f.files.length > fileCap) lines.push({ title: `${f.files.length - fileCap} more files`, note: '' })
+  return lines
+}
+
+/** The row's merge words for the result line, or '' when the record says nothing about merging. */
+export function mergeWord(f: BranchFacts): string {
+  if (f.isolated === 0) return ''
+  if (f.conflict > 0) return 'Merge needs you'
+  if (f.merged > 0 && f.kept === 0 && f.active === 0) return f.files.length > 0 ? `Merged · ${filesWord(f.files.length)} changed` : 'Merged'
+  if (f.kept > 0) return 'Kept, not merged'
+  return ''
+}
+
+// ---------- Retry ("Try again") ----------
+
+export type RetryPlan = { ok: true; request: string } | { ok: false; reason: string }
+
+/** Whether a failed conversation offers "Try again": its newest session ended in error and belongs to the project on screen. */
+export function retryPlan(run: Pick<RunSummary, 'status' | 'prompt' | 'projectId'>, selectedProjectId: string | null | undefined): RetryPlan {
+  if (run.status !== 'error') return { ok: false, reason: 'Only a failed run can be tried again.' }
+  if (!selectedProjectId || run.projectId !== selectedProjectId) return { ok: false, reason: 'Open this run’s project first.' }
+  return { ok: true, request: run.prompt.trim() }
+}
+
+/** An IPC refusal without Electron's wrapper. */
+export function refusalText(e: unknown, fallback: string): string {
+  const raw = e instanceof Error ? e.message : typeof e === 'string' ? e : ''
+  const t = raw.replace(/^Error invoking remote method '[^']*': (Error: )?/, '').trim()
+  return t || fallback
 }
 
 /** The plan summary or, failing that, the root agent's last result, one clipped paragraph. Empty when neither exists. */

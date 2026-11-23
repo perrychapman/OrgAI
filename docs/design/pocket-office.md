@@ -273,3 +273,11 @@ The generator ran successfully with Pillow; its `Image.getdata` deprecation warn
 Mock pre/post walkthroughs confirmed direct selection, keyboard Enter/Escape, optional directory access, Unicode names, empty and large teams, reduced motion and no outer page scroll at 1024 x 640 and 1600 x 1000 in both themes. Fresh large initialization uses 2x; growing a scene initialized in a compact window retains its 1x scale until Zoom or Fit is used. Measured contrast, screen-reader speech, 200% zoom, macOS, hidden/resume and mixed waiting/error/finished visuals were not verified in this pass. Dense floors can still require stage panning; appearance uniqueness beyond twelve people is not guaranteed.
 
 Future walkthrough coverage should include measured text/focus contrast, screen-reader speech, 200% zoom, hidden/resumed views, removal during delivery and mixed waiting/error/finished rooms. Atlas frame counts, paired sheet dimensions, palette color counts, transparency and bounds were checked against all three palettes.
+
+## UI overhaul chrome (2026-11-22)
+
+The Office board's chrome landed: a glass toolbar (Find a person as a drop-over roster, off-screen chips, a live Show
+filter All / Working / Waiting that dims people outside it and narrows Find), a zoom group over the stage's bottom left,
+and a Message log card (title, message count, Pause motion, the unchanged three-row strip with relative times). Needs you
+nameplates are amber. Scene logic, cues and reduced-motion rules are unchanged. Details, deviations and verification:
+`docs/design/ui-overhaul/impl-scenes.md`.

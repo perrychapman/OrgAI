@@ -10,29 +10,41 @@ describe('normalizeGit', () => {
     expect(normalizeGit(null)).toBeNull()
     expect(normalizeGit('x')).toBeNull()
     expect(normalizeGit({})).toBeNull()
-    expect(normalizeGit({ available: false, branch: 'main' })).toBeNull()
   })
-  it('keeps trusted fields only', () => {
+  it('maps the GitSummary shape and keeps trusted fields only', () => {
     const g = normalizeGit({
       branch: ' main ',
       defaultBranch: 'main',
-      lastCommit: { at: 5 },
       dirtyFiles: 3,
-      unmerged: { count: 2, oldestAt: 7 },
-      ahead: 1,
-      behind: -4,
-      commits: [{ subject: 'Fix', at: 9, added: 15, removed: 5 }, { subject: '', at: 1 }, { subject: 'No time' }, { subject: 'Odd', at: 2, added: 'x' }]
+      unmergedBranches: { count: 2, oldestAgeMs: 3000 },
+      upstream: { ahead: 1, behind: -4 },
+      generatedAt: 10_000,
+      recentCommits: [
+        { sha: 'abc1234', subject: 'Fix', at: 9, additions: 15, deletions: 5 },
+        { sha: 'zz', subject: '', at: 1 },
+        { sha: 'abc1235', subject: 'No time' },
+        { sha: 'not hex!', subject: 'Odd', at: 2, additions: 'x' }
+      ]
     })!
     expect(g.branch).toBe('main')
-    expect(g.lastMergeAt).toBe(5)
+    expect(g.lastMergeAt).toBe(9)
     expect(g.dirtyFiles).toBe(3)
-    expect(g.unmerged).toEqual({ count: 2, oldestAt: 7 })
+    expect(g.unmerged).toEqual({ count: 2, oldestAt: 7000 })
     expect(g.ahead).toBe(1)
     expect(g.behind).toBeUndefined()
     expect(g.commits).toEqual([
-      { subject: 'Fix', at: 9, added: 15, removed: 5 },
-      { subject: 'Odd', at: 2, added: 0, removed: 0 }
+      { sha: 'abc1234', subject: 'Fix', at: 9, added: 15, removed: 5 },
+      { subject: 'Odd', at: 2 }
     ])
+  })
+  it('makes hidden characters visible and clamps untrusted text', () => {
+    const g = normalizeGit({ branch: 'ma‮in', recentCommits: [{ subject: `x${'y'.repeat(400)}`, at: 1 }, { subject: 'a\nb​c', at: 2 }] })!
+    expect(g.branch).toBe('ma\\u202ein')
+    expect(g.commits![0].subject.length).toBe(200)
+    expect(g.commits![1].subject).toBe('a b\\u200bc')
+  })
+  it('leaves added and removed out when the repository did not say', () => {
+    expect(mergedRows({ commits: [{ subject: 'A', at: NOW }] }, NOW)[0]).not.toHaveProperty('added')
   })
 })
 
@@ -45,6 +57,16 @@ describe('repoStrip', () => {
       ['merge', '2 h ago'],
       ['branches', '3'],
       ['folder', '/work/app']
+    ])
+  })
+  it('says detached, the default branch, remote and uncommitted files only when answered', () => {
+    const items = repoStrip({ defaultBranch: 'main', ahead: 2, behind: 0, dirtyFiles: 0 }, '/w', NOW)
+    expect(items.map((i) => [i.key, i.value])).toEqual([
+      ['branch', 'detached'],
+      ['default', 'main'],
+      ['sync', '2 ahead'],
+      ['dirty', 'none'],
+      ['folder', '/w']
     ])
   })
 })

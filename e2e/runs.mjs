@@ -235,6 +235,77 @@ try {
     await page.locator('[data-testid=history-scope-clear]').click()
     check((await page.locator('.run-row').count()) === 2, 'Show all runs brings both rows back')
   }
+  // The scope counts follow the filters: a search that matches nothing leaves both at 0, clearing it brings the 2 back.
+  await page.locator('[data-testid=history-search]').fill('zzz-no-such-run')
+  await sleep(300)
+  const narrowScope = (await scopeBox.innerText()).replace(/\s+/g, ' ')
+  check(/All runs\s*·\s*0/.test(narrowScope) && /Running now\s*·\s*0/.test(narrowScope), 'History scope counts follow the search', narrowScope)
+  await page.locator('[data-testid=history-search]').fill('')
+  await sleep(300)
+  check(/All runs\s*·\s*2/.test((await scopeBox.innerText()).replace(/\s+/g, ' ')), 'History scope count comes back with the search cleared')
+  // The files section never calls an unloaded index empty.
+  await page.locator('[data-testid=history-left-note]').waitFor({ timeout: 5000 }).catch(() => {})
+  const leftNote = ((await page.locator('[data-testid=history-left-note]').first().innerText().catch(() => '')) || '').trim()
+  check(leftNote === '' || /^(No files registered\.|Checking files…|Could not load the files\.)$/.test(leftNote), 'What it left says files, not outputs', leftNote)
+
+  // The row agent strip is loaded lazily and never draws an empty strip as an answer: each row shows a strip, a loading
+  // or failed note, or nothing (no agents recorded).
+  await sleep(800)
+  const stripStates = await page.evaluate(() => [...document.querySelectorAll('tr.run-row')].map((r) => ({ strip: !!r.querySelector('[data-testid=history-row-strip]'), note: !!r.querySelector('[data-testid=history-row-strip-loading],[data-testid=history-row-strip-failed]') })))
+  check(stripStates.every((s) => !(s.strip && s.note)), 'a row never shows a strip and a loading note together', JSON.stringify(stripStates))
+  const stripLabels = await page.locator('[data-testid=history-row-strip]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
+  check(stripLabels.every((l) => /^Final state of \d+ agents?/.test(l ?? '')), 'row agent strips are named with the final state in words', JSON.stringify(stripLabels))
+  // What it left: merge facts or a plain "no merge recorded" / loading note, never a number the record does not hold.
+  const mergeBlock = ((await page.locator('[data-testid=history-left-branches],[data-testid=history-left-branches-note]').first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(mergeBlock === '' || !/[+−-]\d+\s*[+−-]\d+/.test(mergeBlock), 'What it left shows no invented line counts', mergeBlock)
+  // Try again exists only for a failed run: these two runs finished, so there is no button and nothing was sent.
+  check((await page.locator('[data-testid=history-detail-retry]').count()) === 0, 'no Try again on a finished run')
+
+  // Keyboard path: a row's title button selects it, Open opens it on the Live tab (the mouse shortcuts are extras).
+  const titleBtns = page.locator('button.hb-main')
+  await titleBtns.nth(1).focus()
+  await page.keyboard.press('Enter')
+  await sleep(300)
+  check((await titleBtns.nth(1).getAttribute('aria-current')) === 'true' && (await page.locator('[data-testid=history-detail]').count()) === 1, 'Enter on a row title button selects that run (keyboard path)')
+  await page.locator('.run-row .run-open').nth(1).focus()
+  await page.keyboard.press('Enter')
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await page.locator('[data-testid=run-meta]').count()) > 0 && (await page.locator('[data-testid=history]').count()) === 0, 'Enter on a row Open button opens the run on Live (keyboard path)')
+  await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
+  await page.locator('[data-testid=history-detail-again]').waitFor({ timeout: 5000 })
+
+  // Run it again (H1): it never starts a run by itself. It opens the New run page of the run's own project with the
+  // request filled in, so every start guard of that page applies and the user presses Start there.
+  const runCount = () => page.evaluate((id) => window.orgai.runs.list(id).then((r) => r.length), proj.id)
+  const runsBefore = await runCount()
+  const againNote = (await page.locator('[data-testid=history-again-note]').innerText()).replace(/\s+/g, ' ')
+  const detailTitle = (await page.locator('[data-testid=history-detail] .hb-detail-title').innerText()).replace(/\s+/g, ' ')
+  const requestWord = /First concurrent task/.test(detailTitle) ? 'First concurrent task' : 'Second concurrent task'
+  check(againNote.includes(NAME) && againNote.includes(requestWord), 'Run it again names the project and quotes the request', againNote.slice(0, 200))
+  check(/not carried over/.test(againNote) && /model/i.test(againNote) && /permission mode/.test(againNote), 'Run it again says what is not carried over', againNote.slice(-160))
+  // A held Enter: repeats do nothing, the key coming up acts once.
+  const again = page.locator('[data-testid=history-detail-again]')
+  await again.focus()
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.down('Enter')
+    await sleep(60)
+  }
+  check((await page.locator('.new-run').count()) === 0 && (await runCount()) === runsBefore, 'a held Enter on Run it again does nothing until the key comes up')
+  await page.keyboard.up('Enter')
+  await page.locator('.new-run').waitFor({ timeout: 5000 }).catch(() => {})
+  await sleep(1200)
+  check((await page.locator('.new-run').count()) === 1, 'Run it again opens the New run page')
+  check((await page.locator('.composer textarea').inputValue()).includes(requestWord), 'the New run page has the request filled in', await page.locator('.composer textarea').inputValue())
+  check((await runCount()) === runsBefore, 'Run it again sent nothing (the user presses Start)', `${runsBefore} -> ${await runCount()}`)
+  // A fast double click: still one page, one draft, no run.
+  await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
+  await page.locator('[data-testid=history-detail-again]').waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=history-detail-again]').dblclick()
+  await page.locator('.new-run').waitFor({ timeout: 5000 }).catch(() => {})
+  await sleep(1200)
+  const draftText = await page.locator('.composer textarea').inputValue()
+  check((await runCount()) === runsBefore, 'a double click on Run it again starts no run', `${runsBefore} -> ${await runCount()}`)
+  check(draftText.split(requestWord).length - 1 === 1, 'a double click on Run it again fills the request once', draftText)
 
   // A1: a pending request_mcp_install must render a card in the tray; denying it clears the card and the run goes on.
   fs.writeFileSync(scriptFile, JSON.stringify({

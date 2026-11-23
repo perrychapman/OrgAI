@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
 import { hiddenCharIn } from '../capabilities/sanitize'
-import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isReviewPolicy, isStaffingGoal, isStaffingMode, isVirtualProjectId } from '@shared/types'
+import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_MAX_AGENTS_PER_RUN_LIMIT, PROJECT_TEST_COMMAND_MAX_CHARS, ROLE_MAX_CONCURRENT_LIMIT, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isReviewPolicy, isStaffingGoal, isStaffingMode, isVirtualProjectId } from '@shared/types'
 import { cleanRequiredReports, cleanRoleStaffing, isConnectionId, isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
@@ -62,6 +62,14 @@ export function sanitizeRoleModels(
         changed = true
       }
     }
+    // Role.maxConcurrent / knowledgeWrite (UI overhaul) are dropped when invalid.
+    if (role && typeof role === 'object') {
+      const limited = cleanRoleLimits(role)
+      if (limited !== role) {
+        role = limited
+        changed = true
+      }
+    }
     if (!role || typeof role !== 'object' || acceptableRoleModel(role.model)) return role
     changed = true
     let connection: ConnectionId = 'anthropic'
@@ -89,6 +97,85 @@ export function sanitizeRoleModels(
     return next
   })
   return changed ? { project: { ...project, roles }, changed } : { project, changed }
+}
+
+/** A finite number above zero, else undefined (a spend cap). */
+function positiveCap(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+}
+
+/** An integer in lo..hi, else undefined (never rounded: a fractional count is a bad value, not a near miss). */
+function intInRange(v: unknown, lo: number, hi: number): number | undefined {
+  return typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi ? v : undefined
+}
+
+/**
+ * A plausible git branch name or undefined: trimmed, at most 200 characters, no hidden or control character, no leading
+ * '-' (it would read as a git option), none of git's refname bans (space, ~ ^ : ? * [ \, '..', '@{', '//', a leading or
+ * trailing '/' or '.', a component starting with '.', an '.lock' ending, the bare '@'). Whether the branch exists is
+ * checked where it is used (gitInfo.branches), not here.
+ */
+export function cleanMainBranch(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const t = raw.trim()
+  if (!t || t.length > 200 || t.startsWith('-') || hiddenCharIn(t)) return undefined
+  if (/[\s~^:?*[\\]/.test(t) || t.includes('..') || t.includes('@{') || t.includes('//') || t === '@') return undefined
+  if (t.startsWith('/') || t.endsWith('/') || t.endsWith('.') || t.endsWith('.lock')) return undefined
+  if (t.split('/').some((part) => part.startsWith('.') || part.endsWith('.lock'))) return undefined
+  return t
+}
+
+/** A one-line, non-empty, trimmed test command of at most PROJECT_TEST_COMMAND_MAX_CHARS characters, else undefined. */
+export function cleanTestCommand(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const t = raw.trim()
+  if (!t || t.length > PROJECT_TEST_COMMAND_MAX_CHARS || hiddenCharIn(t)) return undefined
+  return t
+}
+
+/**
+ * UI overhaul project fields (Limits, Merging, Branches): each kept only when valid, else dropped (never defaulted).
+ * Pure: returns `project` itself when nothing changes, a copy otherwise. See the field docs in shared/types.ts.
+ */
+export function cleanProjectLimits(project: Project): Project {
+  if (!project || typeof project !== 'object') return project
+  const rec = project as unknown as Record<string, unknown>
+  const rules: [key: string, clean: (v: unknown) => unknown][] = [
+    ['maxDailyUsd', positiveCap],
+    ['maxMonthlyUsd', positiveCap],
+    ['onSpendLimit', (v) => (v === 'pause' || v === 'stop' ? v : undefined)],
+    ['maxAgentsPerRun', (v) => intInRange(v, 1, PROJECT_MAX_AGENTS_PER_RUN_LIMIT)],
+    ['schedulesNearPlanLimit', (v) => (typeof v === 'boolean' ? v : undefined)],
+    ['mainBranch', cleanMainBranch],
+    ['requireTestsPass', (v) => (typeof v === 'boolean' ? v : undefined)],
+    ['testCommand', cleanTestCommand],
+    ['keepFailedBranchesDays', (v) => intInRange(v, 1, 365)]
+  ]
+  let next: Record<string, unknown> | null = null
+  for (const [key, clean] of rules) {
+    if (!Object.hasOwn(rec, key)) continue
+    const value = clean(rec[key])
+    if (value === rec[key]) continue
+    next ??= { ...rec }
+    if (value === undefined) delete next[key]
+    else next[key] = value
+  }
+  return next ? (next as unknown as Project) : project
+}
+
+/** Role.maxConcurrent (1..ROLE_MAX_CONCURRENT_LIMIT) and Role.knowledgeWrite (boolean), dropped when invalid. Pure. */
+export function cleanRoleLimits(role: Role): Role {
+  if (!role || typeof role !== 'object') return role
+  let next: Role = role
+  if (Object.hasOwn(role, 'maxConcurrent') && intInRange(role.maxConcurrent, 1, ROLE_MAX_CONCURRENT_LIMIT) !== role.maxConcurrent) {
+    const { maxConcurrent: _drop, ...rest } = next
+    next = rest as Role
+  }
+  if (Object.hasOwn(role, 'knowledgeWrite') && typeof role.knowledgeWrite !== 'boolean') {
+    const { knowledgeWrite: _drop, ...rest } = next
+    next = rest as Role
+  }
+  return next
 }
 
 /** projects.json format version. 2: subagent limits are optional (automatic when unset). */
@@ -430,6 +517,11 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
       delete next[key]
       changed = true
     }
+  }
+  const limited = cleanProjectLimits(next)
+  if (limited !== next) {
+    next = limited
+    changed = true
   }
   if ('client' in project) {
     const client = cleanClient(project.client)

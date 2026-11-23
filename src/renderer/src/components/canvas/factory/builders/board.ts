@@ -90,7 +90,7 @@ export function boardLamp(): ObjectKit {
 }
 
 /**
- * Colour of the 'lamp.mark' check: the dark panel colour on a done step (a dark check on the pale mint lens, 12:1 or more),
+ * Colour of the 'lamp.mark' check: the dark panel colour on a done step (a dark check on the green lens),
  * and the lens's own colour on every other state, so the check is invisible there. Both are unlit, so they match at any dimming.
  */
 export function boardLampMarkColour(
@@ -98,7 +98,8 @@ export function boardLampMarkColour(
   state: 'pending' | 'active' | 'done' | 'blocked' | 'skipped',
   tokens: FactoryTokenColours
 ): string {
-  return state === 'done' ? FACTORY_PALETTE[theme].roles.boardPanel : boardLampColour(theme, state, tokens)
+  // Near black, not the panel colour: the panel (#2a303e in light) is only 3:1 from the mid green of the light theme.
+  return state === 'done' ? '#05070a' : boardLampColour(theme, state, tokens)
 }
 
 function mix(a: string, b: string, t: number): string {
@@ -112,11 +113,11 @@ function mix(a: string, b: string, t: number): string {
  * Lens colour per step state. The lens is the only part of the lamp that changes, so each state differs from the next by
  * more than hue:
  *   pending, skipped   the off colour (dark theme: `lampOff` as is; light theme: `lampOff` sunk 45 percent towards the panel);
- *   active             the success token, full strength;
- *   done               the success token mixed 62 percent towards white (a pale mint), clearly lighter than active;
+ *   active             the working token (cyan), full strength: the same colour as the Running stack lamp;
+ *   done               the success token (green), full strength;
  *   blocked            the warning token (amber).
- * Active and done share a hue family by design (both are "going well"); lightness separates them in both themes (checked in
- * the tests). Slice 4 adds the shape cue: a done lamp also shows a dark check (the 'lamp.mark' part, boardLampMarkColour).
+ * Active (cyan) and done (green) differ by hue, and colour is never the only cue: a done lamp also shows a dark check (the
+ * 'lamp.mark' part, boardLampMarkColour), so state reads without colour in both themes.
  */
 export function boardLampColour(
   theme: FactoryTheme,
@@ -125,9 +126,9 @@ export function boardLampColour(
 ): string {
   switch (state) {
     case 'active':
-      return tokens.success
+      return tokens.working
     case 'done':
-      return mix(tokens.success, '#ffffff', 0.62)
+      return tokens.success
     case 'blocked':
       return tokens.warning
     default: {

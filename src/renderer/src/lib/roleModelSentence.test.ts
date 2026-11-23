@@ -10,13 +10,13 @@ const tiers = { top: 'opus-big', deep: 'opus', everyday: 'sonnet', fast: 'haiku'
 
 describe('roleModelSentence', () => {
   it('auto with an effort', () => {
-    expect(roleModelSentence({ choice: 'everyday', model: 'sonnet', mode: 'auto', effort: 'high' })).toBe('Runs on Everyday (sonnet). OrgAI chooses how much effort per task, up to high.')
+    expect(roleModelSentence({ choice: 'everyday', model: 'sonnet', mode: 'auto', effort: 'high' })).toBe('Runs on Standard (sonnet). OrgAI chooses how much effort per task, up to high.')
   })
   it('auto without an effort', () => {
-    expect(roleModelSentence({ choice: 'deep', model: 'opus', mode: 'auto' })).toBe('Runs on Deep (opus). OrgAI chooses how much effort per task.')
+    expect(roleModelSentence({ choice: 'deep', model: 'opus', mode: 'auto' })).toBe('Runs on Advanced (opus). OrgAI chooses how much effort per task.')
   })
   it('fixed with and without an effort', () => {
-    expect(roleModelSentence({ choice: 'top', model: 'big', mode: 'fixed', effort: 'max' })).toBe('Always runs on Top (big) at max effort.')
+    expect(roleModelSentence({ choice: 'top', model: 'big', mode: 'fixed', effort: 'max' })).toBe('Always runs on Most capable (big) at max effort.')
     expect(roleModelSentence({ choice: 'fast', model: 'haiku', mode: 'fixed' })).toBe('Always runs on Fast (haiku).')
   })
   it('leaves the parentheses out when the model is not known', () => {
@@ -38,7 +38,7 @@ describe('roleModelSentence', () => {
 describe('roleModelSentenceFor', () => {
   it('a tier role is automatic and goes up to its own effort', () => {
     const r = role({ effort: 'medium' })
-    expect(roleModelSentenceFor(project([root, r]), r, tiers)).toBe('Runs on Everyday (sonnet). OrgAI chooses how much effort per task, up to medium.')
+    expect(roleModelSentenceFor(project([root, r]), r, tiers)).toBe('Runs on Standard (sonnet). OrgAI chooses how much effort per task, up to medium.')
   })
   it('a staffing cap wins over the role effort', () => {
     const r = role({ effort: 'high', staffing: { mode: 'auto', maxEffort: 'low' } })
@@ -46,12 +46,12 @@ describe('roleModelSentenceFor', () => {
   })
   it('a fixed role and a fixed project read as always', () => {
     const r = role({ effort: 'high', staffing: { mode: 'fixed' } })
-    expect(roleModelSentenceFor(project([root, r]), r, tiers)).toBe('Always runs on Everyday (sonnet) at high effort.')
+    expect(roleModelSentenceFor(project([root, r]), r, tiers)).toBe('Always runs on Standard (sonnet) at high effort.')
     const plain = role()
-    expect(roleModelSentenceFor(project([root, plain], { staffing: 'fixed' }), plain, tiers)).toBe('Always runs on Everyday (sonnet).')
+    expect(roleModelSentenceFor(project([root, plain], { staffing: 'fixed' }), plain, tiers)).toBe('Always runs on Standard (sonnet).')
   })
   it('the root is always fixed', () => {
-    expect(roleModelSentenceFor(project([root]), { ...root, effort: 'high' }, tiers)).toBe('Always runs on Deep (opus) at high effort.')
+    expect(roleModelSentenceFor(project([root]), { ...root, effort: 'high' }, tiers)).toBe('Always runs on Advanced (opus) at high effort.')
   })
   it('an inheriting role names its manager', () => {
     const r = role({ model: 'inherit', tier: undefined })

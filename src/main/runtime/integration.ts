@@ -1,7 +1,8 @@
-import type { AgentInstance, MergeDecision, WorktreeInfo, WorktreeStatus } from '@shared/types'
+import type { AgentInstance, MergeReview, WorktreeInfo, WorktreeStatus } from '@shared/types'
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { INTEGRATE_TOOL } from './harnessTools'
-import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo } from './worktrees'
+import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision, type IntegrateOptions, type IntegrateResult } from './worktrees'
+import { runTestGate, testGateCommand } from './testGate'
 
 /**
  * The per-run worktree state machine, shared by every adapter whose writing reports work in git
@@ -52,7 +53,7 @@ function errorText(e: unknown): string {
 }
 
 /** A merge attempt that threw before git could answer: the branch stays pending, reported as a conflict. */
-function integrationFailure(info: WorktreeInfo, e: unknown): { info: WorktreeInfo; message: string } {
+function integrationFailure(info: WorktreeInfo, e: unknown): IntegrateResult {
   return {
     info: { ...info, status: 'conflict' },
     message: `The merge of ${info.branch} could not run (${errorText(e)}). Its changes are still on that branch.`
@@ -288,15 +289,30 @@ export class WorktreeIntegrator {
     // unwritable owner file). Callers fire and forget, so a throw would leave the worktree 'merging' for good and its
     // parent waiting forever: settle it as a conflict the orchestrator can retry with the integrate tool.
     const result = await this.exclusive(target.root, () =>
-      integrateWorktree(target.root, info, `${name}: ${brief}`.slice(0, 120), this.reviewGate(agentId, info, target.root))
+      integrateWorktree(target.root, info, `${name}: ${brief}`.slice(0, 120), this.reviewGate(agentId, info, target.root), this.optionsFor(target))
     ).catch((e: unknown) => integrationFailure(info, e))
     this.set(agentId, result.info)
     const level = result.info.status === 'conflict' ? 'warn' : 'info'
     this.log(level, `${name}: ${result.message}`)
-    if (target.parent) this.notifyNested(name, result.info, result.message, target.parent)
+    if (result.refused) this.notifyRefused(name, result.info, result.message, target.parent)
+    else if (target.parent) this.notifyNested(name, result.info, result.message, target.parent)
     else this.notifyMain(name, result.info, result.message)
     if (!target.parent && GONE.has(result.info.status)) await this.retarget(agentId)
     await this.settle(info.parentAgentId)
+  }
+
+  /** Project.mainBranch applies only to merges into the main checkout, never into a parent report's branch. */
+  private optionsFor(target: MergeTarget): IntegrateOptions {
+    const mainBranch = this.ctx.project.mainBranch?.trim()
+    return target.parent || !mainBranch ? {} : { mainBranch }
+  }
+
+  /** The test gate refused a merge: say so plainly. The branch is not merged and the harness will not merge it behind the user's setting. */
+  private notifyRefused(name: string, info: WorktreeInfo, message: string, parent?: MergeTarget['parent']): void {
+    const into = parent ? ` into ${parent.name}'s branch ${parent.branch}` : ''
+    this.host.notify(
+      `Harness: ${name}'s report was NOT merged${into}. ${message} Its changes are not in the checkout; do not build on them and do not merge branch ${info.branch} yourself.`
+    )
   }
 
   /** Messages for a report that merged (or not) into the main checkout. */
@@ -389,7 +405,7 @@ export class WorktreeIntegrator {
     const name = owner?.name ?? (ownerId ? ownerId : undefined)
     const brief = ownerId ? this.briefs.get(ownerId) ?? owner?.activity ?? '' : wt.branch
     const result = await this.exclusive(target.root, () =>
-      integrateWorktree(target.root, info, `${name ?? 'report'}: ${brief}`.slice(0, 120), this.reviewGate(ownerId ?? null, info, target.root))
+      integrateWorktree(target.root, info, `${name ?? 'report'}: ${brief}`.slice(0, 120), this.reviewGate(ownerId ?? null, info, target.root), this.optionsFor(target))
     ).catch((e: unknown) => integrationFailure(info, e))
     if (ownerId) this.set(ownerId, result.info)
     this.log(result.info.status === 'conflict' ? 'warn' : 'info', `${name ?? wt.branch}: ${result.message}`)
@@ -407,11 +423,19 @@ export class WorktreeIntegrator {
     agentId: string | null,
     info: WorktreeInfo,
     targetRoot: string = this.root
-  ): ((changedFiles: string[]) => Promise<MergeDecision>) | undefined {
-    if (!this.ctx.project.reviewMerges) return undefined
+  ): ((changedFiles: string[]) => Promise<GateDecision>) | undefined {
+    const testCommand = testGateCommand(this.ctx.project)
+    if (!this.ctx.project.reviewMerges && !testCommand) return undefined
     return async (changedFiles) => {
       const owner = agentId ? this.host.agent(agentId) : undefined
       const ownerName = owner?.name ?? agentId ?? undefined
+      let checks: NonNullable<MergeReview['checks']> = { tests: 'unknown', review: 'unknown' }
+      if (testCommand) {
+        const gate = await this.runTests(ownerName ?? info.branch, info, testCommand)
+        if (gate.refusal) return gate.refusal
+        checks = { tests: 'passed', testDetail: gate.detail, review: 'unknown' }
+      }
+      if (!this.ctx.project.reviewMerges) return { behavior: 'merge' }
       if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
       const diff = await diffWorktree(targetRoot, info.branch)
       const into = targetRoot === this.root ? '' : ` into ${info.parentBranch ?? targetRoot}`
@@ -423,11 +447,37 @@ export class WorktreeIntegrator {
         path: info.path,
         changedFiles: diff.changedFiles.length ? diff.changedFiles : changedFiles,
         stat: diff.stat,
-        patch: diff.patch
+        patch: diff.patch,
+        checks
       })
       if (agentId && decision.behavior === 'merge') this.set(agentId, { ...info, status: 'merging', changedFiles })
       return decision
     }
+  }
+
+  /**
+   * The test gate (Project.requireTestsPass + testCommand): run the command in the finished copy's directory before it is
+   * merged. A pass returns its detail; a non-zero exit or a timeout returns the refusal integrateWorktree turns into a
+   * kept copy (status 'conflict'), after a warn line in the run log. Runs outside every lock (tests can take minutes).
+   */
+  private async runTests(
+    ownerName: string,
+    info: WorktreeInfo,
+    command: string
+  ): Promise<{ detail: string; refusal?: GateDecision }> {
+    this.log('info', `${ownerName}: running the project's tests in ${info.path} before merging ${info.branch}.`)
+    const result = await runTestGate(command, info.path)
+    if (result.outcome === 'passed') {
+      this.log('info', `${ownerName}: tests passed before merging ${info.branch}.`)
+      return { detail: result.detail }
+    }
+    const why = result.outcome === 'timeout' ? 'the tests timed out' : result.exitCode === null ? 'the tests could not complete' : `the tests failed (exit code ${result.exitCode})`
+    const message =
+      `Not merged: ${why}, and this project requires its tests to pass first. Branch ${info.branch} is kept as it is at ${info.path}. ` +
+      `Fix what the tests report there, then call ${INTEGRATE_TOOL} again.`
+    // The refusal itself is logged at warn by the caller once integrateWorktree has answered.
+    this.log('info', `${ownerName}: test output (end):\n${result.detail}`)
+    return { detail: result.detail, refusal: { behavior: 'refuse', reason: 'tests', message } }
   }
 
   /**

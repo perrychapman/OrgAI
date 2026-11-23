@@ -6,10 +6,9 @@ Providers, Tools, Skills, Templates. Renderer only; tokens from ov-foundation (m
 ## The frame (all boards)
 
 - **One settings menu** (`components/settings/SettingsNav.tsx`, the boards' `snav`): a glass panel with an "App" group
-  and a "Project: <name>" / "Engagement: <name>" group. App settings and a project's Settings tab stay two views (the
-  shell owns routing), so each page shows its own panes as a native tablist (roving tabindex, arrows, Home/End) and the
-  other page's panes as plain buttons that navigate there. The project group in App settings follows the selected
-  project and is hidden for Chat / the helpers or before a project exists. Narrow widths: a scrolling strip.
+  and a "Project: <name>" / "Engagement: <name>" group. (Part 2 below made this one view: both groups are tablists and
+  every pane shows in place.) The project group follows the selected project and is hidden for Chat / the helpers or
+  before a project exists. Narrow widths: a scrolling strip.
 - **Pane ids are the atlas ids**, so every deep link still lands. New renderer-only pane `appearance`
   (`lib/settingsMenu.ts` `appSettingsPaneFor` maps the atlas `appearance` and `canvas` sections, and the Motion
   surface, to it).
@@ -49,21 +48,14 @@ Providers, Tools, Skills, Templates. Renderer only; tokens from ov-foundation (m
 - **About and updates**: Updates first (the card takes the accent border when a newer version is waiting; release
   notes stay plain text), then About OrgAI (version, maker, platform, data and logs folders), then Help (Ask OrgAI
   about itself, Keyboard shortcuts).
-- **Providers / Tools / Skills / Templates**: existing sections restyled to glass in the wide column, plain-language
-  titles ("Your providers", "Services", "Your own tools (advanced)", "Your skills"), Tools helper / Skills helper
-  entry points ("Ask the Tools helper", "Ask the Skills helper").
+- **Providers / Tools / Skills / Templates**: plain-language titles ("Your providers", "Services", "Your own tools
+  (advanced)", "Your skills"), Tools helper / Skills helper entry points. Part 2 rebuilt them as galleries with a
+  detail panel (below).
 
 ## Deviations from the boards and why
 
-- Two views, one menu (see the frame). A true single Settings view needs App.tsx routing (ov-shell).
-- The Providers card grid with a detail aside, the Tools / Skills / Templates gallery-with-aside layout and the
-  "Fast / Standard / Most capable" tier columns were not rebuilt: the subagent limit blocked handing them to UI
-  Engineers and the lead did the frame, permissions, limits, appearance and about. The existing cards and galleries
-  (connector tiles with category chips and search already exist) carry the glass look. The app has four tiers (Top,
-  Deep, Everyday, Fast), not three; the e2e and the model selects depend on those names.
+- (Part 1 only, since resolved by part 2: two views, the galleries not rebuilt, isolation left in Permissions.)
 - Permissions: Unattended is "Recommended" (the app's recommendation), not Auto-accept edits as drawn.
-- Isolation and merge review stay in Permissions > Advanced > Runs rather than moving to Branches (permissions e2e and
-  deep links depend on them there).
 
 ## Needs runtime (sent to ov-runtime)
 
@@ -89,3 +81,122 @@ new menu (self-help breadcrumbs).
 - Atlas path text (shared) still names the old panes; `e2e/self-help.mjs` asserts it.
 - `RunActions.tsx` ("App settings > General") and `TeamAssistantTray.tsx` comments use old names (other leads).
 - No UX walkthrough of the changed flow yet; no screen reader pass; macOS not checked.
+
+## Part 2 (lead ov-settings-2, 2026-11-22)
+
+### Built
+
+- **One Settings view.** `AppSettingsView` shows both menu groups as native tablists (`SettingsNav` `groups`; testids
+  `settings-tab-<app|project>-<pane>`) and renders the project's panes in place (`ProjectSettingsPanes.tsx`). The
+  project Settings tab (`views/SettingsView.tsx`, still routed by App.tsx unchanged) embeds the same view, opening on
+  the stored project pane and without its own topbar. App.tsx was not touched; ov-shell agreed. In the embedded view
+  App deep links are left alone (they navigate to the App settings view), so a caller must `setView('appSettings')`.
+- **Shared gallery** `components/settings/SettingsGallery.tsx`: tiles are native buttons (aria-pressed, aria-controls
+  the aside) in one roving tab stop (arrows, Home, End), sections with actions and footnotes, search and filter chips
+  with a polite count, a sticky glass aside (static under 820 px of window height or a narrow column, scrolls inside
+  when taller than the window), Detail parts (header, note, can / cannot list, facts, chips, actions).
+- **AI providers** (Providers board): a tile per connection (how it signs in, Default, projects using it, model count,
+  status in words; "Needs attention" breathes), a dashed "Add a proxy" tile, the selected connection's full card in the
+  aside (`ConnectionCard` / `ProxyCard` `embedded`: always open, no collapse), then "Model tiers on <provider>": all
+  four tiers with plain names (Top = Most capable, Deep = Deep thinking, Everyday = Standard, Fast = Fast), each with
+  the app tier word, what it is for, the exact model id it resolves to (automatic or mapped) and how many roles in
+  your projects use it there. Editing stays in the card's tier editor.
+- **Tools and services** (Tools board): the services gallery keeps its tiles, chips, search, ranked order and dialogs
+  (other e2e drive them) and gains the detail panel beside it, following the focused or clicked tile: state note,
+  "The team can / could" and "cannot" (`connectors/toolCapabilities.ts`: the service's description, the variant's
+  read-only declaration worded as enforced by the service not OrgAI, "can" only when connected and used by a project),
+  sign-in expiry only when the entry needs attention, preset notes behind "Good to know", projects and roles that use
+  it (Role grants through `mcpServersForRole`), the tile's action and "Ask the Tools helper". Presets and "Your own
+  tools" stay below as before.
+- **Skills** (Skills board): tiles per library skill (source, file count, in use or not, a warning when it carries
+  scripts), filters In use / Not used yet, a dashed "Write a skill" tile, and a detail panel with a plain-text preview
+  of the instructions (first 1,200 characters, says when cut, bidi controls shown as a replacement mark, re-read after
+  an edit), projects and roles that use it, Edit, Remove (focus moves to New skill and a status says so).
+- **Templates** (Templates board): tiles per saved template (kind, role count, saved date), kind chips when both kinds
+  exist, a detail panel with the role names, what a template keeps, Start a new project and Remove.
+- **Permission mode cards**: arrowing previews a mode (dashed card, "not saved yet" bar, the effects table captioned
+  "(not saved)"); Enter, Space, a pointer click or "Use <mode>" saves; "Keep <mode>" drops the preview; folding More
+  options drops a preview hidden there. Bypass still asks first on every save path.
+- **Branches**: "Where work happens" (engagements: "Separate copies", only once opted in) holds worktree isolation and
+  merge review, moved from Permissions > Advanced (`WorkCopiesSection.tsx`, same fields and rules).
+
+### Runtime-backed settings (ov-runtime branch worktree-agent-af7cf20682e2c8be9, merged with git merge)
+
+- **General**: Notifications gains "When a team needs me", "When a run finishes", "When a schedule finds something"
+  (under the master switch, disabled while it is off) and "Play a sound" (off by default). New section "While OrgAI
+  runs": "Open OrgAI when I sign in", "When I close the window" (Keep running / Quit), "Keep the computer awake during
+  runs". Main stores and applies each (store/settings.ts, appBehaviour.ts, notifications.ts).
+- **Play a sound**: `lib/sound.ts` (pure `chimeDecision`, WebAudio two-note chime, no asset, no network) and
+  `lib/useAttentionSound.ts`, mounted once in App.tsx: chimes when a new decision key appears in any run, never for
+  decisions already waiting at start or when the switch turns on, at most once per 4 s. `<html data-chime-count>`
+  mirrors the count for e2e. Each window that renders App chimes for its own runs (a run window too).
+- **Appearance** "Panels and text": See-through panels, Text size (Small / Default / Large), Spacing (Comfortable /
+  Compact), Activity dots in the sidebar. `lib/theme.ts` writes `data-glass='off'`, `data-text-size`,
+  `data-density='compact'`, `data-activity-dots='off'` (only for non-default values, before first paint from the
+  cache); `tokens.css` adds attribute-scoped blocks (glass off = opaque surfaces, no blur; text ramp +/-; compact
+  control heights and middle spacing). `noMotion` sets the existing `data-reduce-motion`; the Motion control keeps its
+  two choices because Off and Always reduce behave the same under that rule. Sidebar keeps a quiet dot when activity
+  dots are off (counts stay).
+- **Branches** (code projects) "Before anything reaches main": Main branch (from `gitInfo.branches`, detected default
+  first), Tests must pass, Test command (one line, saved on blur or Enter), Keep branches of failed runs for. Main
+  enforces: the merge test gate in integration.ts, retention in maintenance.ts.
+- **About** Help: Report a problem (opens the prefilled new-issue page), Details for support (copied), Licences.
+- **Templates**: built-in charts in "Comes with OrgAI" (read only, test id `template-builtin`, no Remove), "Used N
+  times" from `appliedCount`, Duplicate on every template.
+- **Tools**: the test result marks each tool "Reads only" / "Can change or delete" from the server's MCP annotations
+  when it gives them, with a one-line summary that says nothing enforces them.
+- **Providers**: the plan window closest to its limit and its reset time per plan sign-in (`usageByConnection`).
+- **Skills**: Updated date; the preview re-reads on `updatedAt`.
+
+### Deviations
+
+- Tools: the board's one mixed gallery would replace the services dialog that presets.mjs and team.mjs drive; the
+  panel sits beside the existing tiles instead, and custom servers stay in "Your own tools (advanced)".
+- Providers: the signed-in account and "updated N ago" stay in each card's status line; the plan limit and its reset
+  show on the tile; no cost words per tier (a proxy's mapping makes them unreliable).
+- Not built (ov-runtime: no main support, by decision): Language, Download updates by themselves (the consent model
+  never downloads on its own), Name new branches (the SDK names worktree branches), Ask before using a more capable
+  model, size of finished copies, Skills Duplicate and Export, "Let schedules run when I am near the limit" (no
+  near-limit skip of scheduled runs exists to switch), "Dates look like" (main stores it; no renderer date formatting
+  reads it yet, so no control ships), Show the welcome tour again (About board; onboarding is not a settings file).
+- Motion "Off" (`noMotion`) is not offered separately: by rule it uses the Reduce motion switch, so it would behave
+  exactly like "Always reduce".
+- Day / month caps and the run-size "Most agents in one run" sit at rest only for metered projects; on a plan sign-in
+  they are in Advanced (the at-rest tab-stop budget of the Limits pane, permissions.mjs).
+- Built-in templates make the new-project form show its setup choices on every fresh profile (orchestrator decision);
+  `e2e/lib.mjs` `pickSetup` drives either the checkbox or the choices.
+
+### Verified
+
+- typecheck, unit tests (new `toolCapabilities.test.ts`, every curated connector checked for host names as
+  capabilities), build; e2e connections, connectors, presets, skills, engagement2, permissions (keyboard preview and
+  Enter save, isolation on Branches), maintenance on the mock adapter. Screenshots of AI providers and Tools at
+  1600x1000 dark / light looked at.
+- Reviewer (set2-review): approve, no Critical or High; M1-M8 fixed (M9 is `KitSection.tsx`, reported to its owner),
+  L1, L2, L4, L5, L6 fixed.
+- Runtime-backed part: unit tests `sound.test.ts` (first observation, loaded runs, rate limit, off), `theme.test.ts`
+  (attributes), `planLimit.test.ts`, `toolCapabilities.test.ts` (`toolSummary`); e2e connections.mjs (Appearance
+  attributes after a change and after a reload, defaults remove them, Play a sound off and no chime, General rows
+  save, built-in templates read only, Duplicate and remove), permissions.mjs (Main branch Automatic first, Tests must
+  pass and Keep branches save). Reviewer (set2-review2): its High (caps shown while project spend was the stub) is
+  handled by holding the caps back; Mediums M1-M7 fixed in the UI (M2's copy now says merges go untested without a command; the main-side refusal
+  is requested from ov-runtime); Lows L1, L2, L5, L6, L9, L10 fixed.
+- Final run on dev 3b0efe71 + this branch: typecheck clean; unit suite 15323 passed, 6 failed (Windows symlink and
+  CLI timing tests in src/cli and src/main/runtime, failing on the unchanged base too); build; e2e connections,
+  connectors, presets, skills, permissions, maintenance, project-connection, multi-provider, engagement2 all passed.
+
+### Open
+
+- Waiting on ov-runtime (its branch conflicts with dev in src/main/ipc.ts): the real `projectSpend` (then flip
+  `PERIOD_CAPS_LIVE` in LimitsSection.tsx to show day / month caps, at-cap behaviour and Warn me at; the rows and
+  their e2e are already written), `maxAgentsPerRun` (row not yet added: Advanced > Runs and agents), the main-side
+  refusal of a merge when "Tests must pass" is on with an empty command, and MCP tool annotations from probe.ts (the
+  test panel shows them once present).
+- The attention chime plays in every window that renders App (a run window too).
+
+- `e2e/layout.mjs` clicks `label.seg-item` "Dark" in Colour mode, which part 1's picture cards replaced; it fails on
+  dev independent of part 2 (reported to the orchestrator).
+- `KitSection.tsx` "Open connectors" dispatches an App deep link without `setView` (reported).
+- Low items left: gallery section and detail headings are h3 like their section title (L3); `dimmed` / `trailing` on
+  gallery items are unused (a trailing control would add a Tab stop per tile).
+- No UX walkthrough of part 2, no screen reader pass, narrow (1024x640) screenshots of Skills and Templates not looked at.

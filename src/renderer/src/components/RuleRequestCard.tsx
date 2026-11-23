@@ -46,6 +46,7 @@ export default function RuleRequestCard({ runId, request, who, onDecide }: Props
       runId={runId}
       who={who}
       agentId={request.agentId}
+      waitingSince={request.createdAt}
       title={rulesTitle(request.rules, risky)}
       focusDetails={risky > 0}
       headerExtra={risky > 0 ? <Badge tone="danger">{risky === 1 ? 'Broad rule' : `${risky} broad rules`}</Badge> : undefined}

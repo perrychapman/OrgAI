@@ -51,7 +51,7 @@ function readTheme(): FactoryTheme {
 function readTokens(): FactoryTokenColours {
   const s = getComputedStyle(document.documentElement)
   const v = (name: string, fallback: string): string => s.getPropertyValue(name).trim() || fallback
-  return { success: v('--success', '#22c58b'), warning: v('--warning', '#f5a524'), danger: v('--danger', '#ff6b6b'), accentText: v('--accent-text', '#a592ff') }
+  return { success: v('--success', '#22c58b'), working: v('--working', '#4cc9f0'),warning: v('--warning', '#f5a524'), danger: v('--danger', '#ff6b6b'), accentText: v('--accent-text', '#a592ff') }
 }
 
 export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {

@@ -1,7 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useId } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { Project } from '@shared/types'
 import { DEFAULT_KEEP_RUNS } from '@shared/types'
+import { SegmentedControl } from '../ui/SegmentedControl'
 import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { projectMetering } from '../../lib/limits'
@@ -25,6 +26,107 @@ const PLAN_GUARD_OPTIONS = [
 
 /** Concurrency choices; a saved value outside the list is added. */
 const CONCURRENCY_CHOICES = [1, 2, 4, 8, 12, 16, 24, 32]
+
+/**
+ * A dollar amount typed freely and saved on blur or Enter (so "0.5" can be typed): empty, zero or not a number = no
+ * limit (undefined).
+ */
+function UsdInput({ id, label, describedBy, testId, value, onCommit }: { id: string; label: string; describedBy: string; testId: string; value: number | undefined; onCommit: (v: number | undefined) => void }): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = (): void => {
+    if (draft === null) return
+    const n = Number(draft)
+    const next = draft.trim() && Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : undefined
+    if (next !== value) onCommit(next)
+    setDraft(null)
+  }
+  return (
+    <Input
+      id={id}
+      aria-label={label}
+      aria-describedby={describedBy}
+      data-testid={testId}
+      type="number"
+      min={0}
+      step={0.5}
+      value={draft ?? (value ?? '')}
+      placeholder="No limit"
+      onChange={setDraft}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+      }}
+    />
+  )
+}
+
+/**
+ * Day / month caps and the spend warning show only once main measures project spend (runtime/projectSpend.ts). On
+ * this base it is still the contract stub (spend always 0), so a cap could never bite: the rows stay hidden until the
+ * runtime branch with the real projectSpend is merged, then this flips to true.
+ */
+const PERIOD_CAPS_LIVE = false
+
+const WARN_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: '50', label: '50% of a limit' },
+  { value: '80', label: '80% of a limit' },
+  { value: '90', label: '90% of a limit' }
+]
+
+/**
+ * "Warn me at" (AppSettings.spendWarnPercent, app-wide): read and written through settings directly, since this pane
+ * belongs to a project. One notice per run and limit once spending reaches the share.
+ */
+function SpendWarnRow(): ReactElement {
+  const [value, setValue] = useState<number | null | undefined>(undefined)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    window.orgai.settings
+      .get()
+      .then((s) => live && setValue(s.spendWarnPercent ?? null))
+      .catch(() => live && setValue(null))
+    const off = window.orgai.onSettingsChanged((s) => setValue(s.spendWarnPercent ?? null))
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+  const save = async (v: string): Promise<void> => {
+    const pct = v === 'off' ? null : Number(v)
+    const before = value
+    setValue(pct)
+    setError(null)
+    try {
+      const s = await window.orgai.settings.get()
+      const { dataDir: _d, appVersion: _v, ...settings } = s
+      await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...settings, spendWarnPercent: pct }))
+    } catch (e) {
+      setValue(before)
+      setError((e as Error).message)
+    }
+  }
+  const options = value != null && !WARN_OPTIONS.some((o) => o.value === String(value)) ? [...WARN_OPTIONS, { value: String(value), label: `${value}% of a limit` }] : WARN_OPTIONS
+  return (
+    <SettingRow
+      id="spend-warn-row"
+      title="Warn me at"
+      description={error ?? 'A notice in the run when spending reaches this share of a limit. Applies to every project.'}
+      width="select"
+      control={
+        <Select
+          label="Warn me at"
+          describedBy={settingDescId('spend-warn-row')}
+          value={value == null ? 'off' : String(value)}
+          options={options}
+          disabled={value === undefined}
+          onChange={(v) => void save(v)}
+        />
+      }
+    />
+  )
+}
 
 /** Limits pane (config-review spec 4.3): a cost cap on metered projects or the plan guard line on a plan; the rest is Advanced. */
 export function LimitsSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
@@ -114,6 +216,54 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
     </>
   )
 
+  // Day and month caps, what a live run does at a cap, and the app-wide warning: at rest for metered projects, in
+  // Advanced on a plan sign-in (where spend is an estimate, not a bill). RunManager enforces them (spendGuard.ts).
+  const periodCard = (
+    <SettingsCard>
+      {(
+        [
+          ['maxDailyUsd', 'One day', 'day'],
+          ['maxMonthlyUsd', 'One month', 'month']
+        ] as const
+      ).map(([key, title, word]) => (
+        <SettingRow
+          key={key}
+          id={row(key)}
+          title={title}
+          description={`Runs do not start, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it. Counts runs and schedules.`}
+          width="number"
+          control={
+            <UsdInput
+              id={`${uid}-${key}`}
+              label={`Spending limit for ${title.toLowerCase()}`}
+              describedBy={desc(key)}
+              testId={`limit-${word}-input`}
+              value={project[key]}
+              onCommit={(v) => patch({ [key]: v })}
+            />
+          }
+        />
+      ))}
+      <SettingRow
+        title="When a limit is reached"
+        description="Either way nothing is lost and you can continue. A paused run waits until the period resets or you raise the limit."
+        width="select"
+        control={
+          <SegmentedControl
+            label="When a limit is reached"
+            value={project.onSpendLimit ?? 'pause'}
+            options={[
+              { value: 'pause', label: 'Pause and ask me' },
+              { value: 'stop', label: 'Stop the run' }
+            ]}
+            onChange={(onSpendLimit) => patch({ onSpendLimit })}
+          />
+        }
+      />
+      <SpendWarnRow />
+    </SettingsCard>
+  )
+
   return (
     <>
       <SettingsSection id="settings-section-limits" title="Spending limits">
@@ -125,6 +275,12 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           </p>
         )}
       </SettingsSection>
+
+      {PERIOD_CAPS_LIVE && metered && (
+        <SettingsSection id="settings-section-period-limits" title="Per day and per month" description="Counts every run and schedule in this project." testId="period-limits-section">
+          {periodCard}
+        </SettingsSection>
+      )}
 
       <SettingsSection id="settings-section-run-size" title="How big a run can get">
         <SettingsCard>
@@ -164,6 +320,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
       </SettingsSection>
 
       <SettingsAdvanced paneKey="project-limits">
+        {PERIOD_CAPS_LIVE && !metered && <SettingsGroup title="Per day and per month">{periodCard}</SettingsGroup>}
         <StaffingSettings project={project} patch={patch} />
         <SettingsGroup title="Runs and agents">
           <SettingsCard>

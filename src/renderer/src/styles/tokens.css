@@ -1440,3 +1440,61 @@
     --text-faint: var(--text-tertiary);
   }
 }
+
+/* ---------- Appearance choices (Settings > Appearance; lib/theme.ts writes the attributes) ----------
+   Attribute-scoped overrides only: the three theme blocks above keep their token set. Each block reads the theme's own
+   values, so dark and light both follow. */
+
+/* See-through panels off: glass becomes the opaque surfaces (contrast as the surface checks in tokens.test.ts, never
+   lower than on glass) and nothing blurs. */
+:root[data-glass='off'] {
+  --glass: var(--surface-1);
+  --glass-strong: var(--surface-2);
+  --glass-line: var(--border-default);
+  --glass-blur: none;
+}
+
+/* Text size: the whole ramp steps by one pixel (small) or two (large); line heights follow. */
+:root[data-text-size='small'] {
+  --text-caption: 11px;
+  --text-caption-lh: 15px;
+  --text-small: 11px;
+  --text-small-lh: 16px;
+  --text-body: 12px;
+  --text-body-lh: 18px;
+  --text-title-sm: 13px;
+  --text-title-sm-lh: 18px;
+  --text-title: 15px;
+  --text-title-lh: 22px;
+  --text-title-lg: 19px;
+  --text-title-lg-lh: 26px;
+  --text-mono: 11px;
+  --text-mono-lh: 16px;
+}
+:root[data-text-size='large'] {
+  --text-caption: 13px;
+  --text-caption-lh: 18px;
+  --text-small: 14px;
+  --text-small-lh: 20px;
+  --text-body: 15px;
+  --text-body-lh: 23px;
+  --text-title-sm: 16px;
+  --text-title-sm-lh: 22px;
+  --text-title: 18px;
+  --text-title-lh: 26px;
+  --text-title-lg: 22px;
+  --text-title-lg-lh: 30px;
+  --text-mono: 14px;
+  --text-mono-lh: 20px;
+}
+
+/* Compact spacing: controls 4 px shorter and the middle spacing steps tighter (pointer targets stay at least 24 px). */
+:root[data-density='compact'] {
+  --control-sm: 24px;
+  --control-md: 28px;
+  --control-lg: 32px;
+  --space-3: 10px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+}

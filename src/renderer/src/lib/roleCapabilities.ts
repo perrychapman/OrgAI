@@ -185,3 +185,80 @@ export function roleSkillSplit<T extends Pick<SkillSpec, 'id'>>(skills: readonly
   const held = new Set(role.skills ?? [])
   return { granted: skills.filter((s) => held.has(s.id)), available: skills.filter((s) => !held.has(s.id)) }
 }
+
+// ---------- Role panel header, "What it can use" chips and where a role can work (UI overhaul, Team board) ----------
+
+type RoleRef = Pick<Role, 'id' | 'name' | 'reportsTo'>
+
+/**
+ * The group a role sits in on the chart: the name of the root's direct report whose subtree holds it (a direct report is
+ * its own group). The root leads the team and has no group name. A role cut off from the root falls back to its own name.
+ */
+export function roleGroupName(roles: readonly RoleRef[], role: RoleRef): string {
+  if (role.reportsTo === null) return 'Leads the team'
+  const byId = new Map(roles.map((r) => [r.id, r]))
+  let cur: RoleRef = role
+  const seen = new Set<string>()
+  while (cur.reportsTo !== null && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    const parent = byId.get(cur.reportsTo)
+    if (!parent || parent.reportsTo === null) return cur.name
+    cur = parent
+  }
+  return cur.name
+}
+
+/** How many groups the chart has: the root's direct reports that lead at least one role (the header's "in N groups"). */
+export function teamGroupCount(roles: readonly Pick<Role, 'id' | 'reportsTo'>[]): number {
+  const roots = new Set(roles.filter((r) => r.reportsTo === null).map((r) => r.id))
+  return roles.filter((r) => r.reportsTo !== null && roots.has(r.reportsTo) && roles.some((x) => x.reportsTo === r.id)).length
+}
+
+/** "Quality · reports to Lead reviewer"; "Leads the team" for the root. */
+export function roleSubline(roles: readonly RoleRef[], role: RoleRef): string {
+  if (role.reportsTo === null) return 'Leads the team'
+  const manager = roles.find((r) => r.id === role.reportsTo)
+  const group = roleGroupName(roles, role)
+  return manager ? `${group} · reports to ${manager.name}` : group
+}
+
+/** True when the role has neither Edit nor Write (it can read and run, but not change files). */
+export function cannotEditFiles(tools: readonly string[]): boolean {
+  return !tools.includes('Edit') && !tools.includes('Write')
+}
+
+export interface UseChip {
+  kind: 'tool' | 'service' | 'skill'
+  label: string
+}
+
+/**
+ * The chips of "What it can use": one per tool group the role has on (fully or partly), the names of the services it can
+ * reach and the names of its skills. A long list of services or skills ends in one "+N more" chip.
+ */
+export function roleUseChips(input: { toolGroupLabels: readonly string[]; services: readonly string[]; skills: readonly string[]; perKind?: number }): UseChip[] {
+  const cap = input.perKind ?? 3
+  const out: UseChip[] = input.toolGroupLabels.map((label) => ({ kind: 'tool' as const, label }))
+  for (const [kind, names] of [['service', input.services], ['skill', input.skills]] as const) {
+    for (const label of names.slice(0, cap)) out.push({ kind, label })
+    if (names.length > cap) out.push({ kind, label: `+${names.length - cap} more` })
+  }
+  return out
+}
+
+export interface WorkPlace {
+  /** "{project} (working folder)" or the reference folder's path. */
+  name: string
+  mode: 'Can write' | 'Read only'
+}
+
+/**
+ * "Where it can work" on an engagement: the project folder (writable when the role has Edit or Write) and each
+ * reference folder (always read only: every adapter refuses changes there).
+ */
+export function roleWorkPlaces(project: { name: string; referenceDirectories?: readonly string[] }, tools: readonly string[]): WorkPlace[] {
+  return [
+    { name: `${project.name} (working folder)`, mode: cannotEditFiles(tools) ? 'Read only' : 'Can write' },
+    ...(project.referenceDirectories ?? []).map((name) => ({ name, mode: 'Read only' as const }))
+  ]
+}

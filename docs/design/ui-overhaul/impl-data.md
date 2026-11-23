@@ -74,6 +74,34 @@ Deviations:
 - Run now, Edit, Delete and History stay on the row, not in the detail panel: e2e and the context menu expect them there.
 - The weekly cost and the last-runs bars wait for the runtime contract (below).
 
+## Run history (`History.dc.html` -> `components/RunHistory.tsx`, `components/history/`, `lib/runHistory.ts`, `styles/history.css`)
+
+Built, by what the data says:
+- Row agent strip (agents column, newest session of the conversation): one mark per agent from its final state, at most 16, plus "N failed" in words when any failed. The record comes from the store when it holds the agents, else from `runs.get`, fetched only once the row has been on screen (IntersectionObserver), three at a time, cached per run, status and end time (`useAgentStrip.ts`). Present: strip. Loading: "Checking agents…". Fetch failed: "Agents not loaded". No agents recorded: nothing drawn. The count above it stays "–" (unknown) when `usage` is missing.
+- "Scheduled" badge on a row when any session carries `scheduleId` (its name in the tooltip); "Open the schedule" in the detail is unchanged.
+- Row result line gains the merge words from the recorded worktrees ("Merged · 3 files changed", "Kept, not merged", "Merge needs you") for ended runs only.
+- "What it left": merge lines from `agents[].worktree` status and `changedFiles` (copies merged, kept, could not merge by itself, still being worked on, then up to 5 file paths). Loading: "Checking what was merged…"; failed: "What was merged could not be loaded."; nothing recorded: "No merge was recorded for this run." Registered files (outputs) stay below as before.
+- "Try again" on a failed conversation (newest session `error`, project on screen): the first press only opens an inline confirmation naming the project and the request; its own "Yes, try again" calls `runActions.retry({ runId })`. Enter acts on key-up (repeat ignored), a ref guard stops a double activation, Cancel takes the first focus, and a refusal is shown inline (`role="alert"`). On success the new run is opened.
+
+Deviations and unknowns:
+- Per-file added/removed counts and step durations are not recorded: none are shown, never "0".
+- "Undo the merge" and "Delete the branch" are not built in main and are not drawn.
+- `runs.retryRun` in main was a stub (throws "Retrying is not available yet.") when this was built, so the refusal path is what has been seen; a real retry is unverified.
+
+## Knowledge (`Knowledge.dc.html` -> `components/knowledge/`, `lib/knowledgeLimit.ts`)
+
+Built:
+- Glass panels for the list, detail and graph note; `KindMark` draws each item's kind.
+- Graph limit: above 75 drawn items (`CONNECTED_LIMIT_ABOVE`) the graph draws the 60 most connected (`CONNECTED_LIMIT`) and says "Showing the 60 most connected of N" (plus "and M you opened"); "Show all" draws everything and is kept as a per-project view preference. The list, search, filters and detail always keep every item. A graph at or under 75 says "Showing all N items" only when eligible, else nothing.
+- Pure logic (`connectionDegrees`, `mostConnected`, `restrictGraph`, `limitNote`) is unit tested.
+- The board's "working line": not found in the code when this section was written; treat it as not built.
+
+Deviations:
+- A local `KnowledgeChip` is used instead of the shared `Chip`.
+- The List view keeps its filter column.
+- "Recorded by" stays chips.
+- No "Used N times" line (no usage count is recorded).
+
 ## To-dos (no board)
 
 - Glass add panel and rows, a display-font title, and open/done count badges.

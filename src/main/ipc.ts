@@ -9,7 +9,7 @@ import { appSecretReason } from '@shared/view/secretNotices'
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { CliCommandResult, CliCommandStatus, FocusRunTarget, KitApplyResult, KitExportResult, KitImportPreview, SkillLibraryFolderInput, SkillLibraryInfo } from '@shared/types'
 import { registerOutputsIpc } from './outputsIpc'
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, OUTPUTS_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, OUTPUTS_IPC, OVERHAUL_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
 import type { FolderConfigTrustResult, TeamFilesActionResult, TeamFilesCommitResult } from '@shared/types'
 import type { ProjectCommitActivity } from '@shared/types'
 import { CommitActivityService } from './projects/commitActivity'
@@ -33,6 +33,7 @@ import type { HostActivityTrackerApi, HostDispatchEnv, HostServices } from './ho
 import { installCommandText, installTag, type CliInstallService } from './host/cliInstaller'
 import { UPDATES_IPC, type UpdateActionResult, type UpdateState } from '@shared/types'
 import { updateInstallArgs, type UpdateController } from './updater'
+import { registerOverhaulIpc } from './overhaulIpc'
 
 /**
  * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
@@ -185,7 +186,27 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [UPDATES_IPC.updatesCheck]: false,
   [UPDATES_IPC.updatesDownload]: true,
   [UPDATES_IPC.updatesInstall]: true,
-  [UPDATES_IPC.updatesOpenReleasePage]: false
+  [UPDATES_IPC.updatesOpenReleasePage]: false,
+  // UI overhaul channels (OVERHAUL_IPC, main/overhaulIpc.ts). Reads: estimate, costs, peekHistory (does not clear the
+  // unread count), spend, hold, git summary/branches, support details. Opening a dialog, the fixed issue URL or the
+  // licences file is not a mutation (same rule as projectsPickDir / appOpenPath). The rest change run or template state.
+  [OVERHAUL_IPC.runsEstimate]: false,
+  [OVERHAUL_IPC.schedulesCosts]: false,
+  [OVERHAUL_IPC.schedulesPeekHistory]: false,
+  [OVERHAUL_IPC.projectsSpend]: false,
+  [OVERHAUL_IPC.runsHold]: false,
+  [OVERHAUL_IPC.runsAddBudget]: true,
+  [OVERHAUL_IPC.runsRetry]: true,
+  [OVERHAUL_IPC.runsSkipReview]: true,
+  [OVERHAUL_IPC.runsMessageAgent]: true,
+  [OVERHAUL_IPC.runsStopAgent]: true,
+  [OVERHAUL_IPC.gitSummary]: false,
+  [OVERHAUL_IPC.gitBranches]: false,
+  [OVERHAUL_IPC.pickAgentFolder]: false,
+  [OVERHAUL_IPC.templatesDuplicate]: true,
+  [OVERHAUL_IPC.aboutSupportDetails]: false,
+  [OVERHAUL_IPC.aboutReportProblem]: false,
+  [OVERHAUL_IPC.aboutOpenLicences]: false
 }
 
 /**
@@ -333,6 +354,14 @@ export function registerIpc(services: IpcServices): void {
   if (services.repoClone) registerRepoIpc(activity, services.repoClone)
   registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly, watcher: services.outputWatcher })
   if (services.updates) registerUpdatesIpc(activity, services.updates)
+  // UI overhaul channels (desktop only; main/overhaulIpc.ts).
+  registerOverhaulIpc((channel, fn) => handleMutating(activity, channel, fn), handleReadOnly, {
+    projects,
+    runs: services.runs,
+    schedules: services.schedules,
+    templates: services.templates,
+    connections: services.connections
+  })
 }
 
 // ---- Desktop updater (updater.ts); desktop only ----

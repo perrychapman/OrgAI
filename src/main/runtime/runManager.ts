@@ -77,6 +77,12 @@ import type {
   RunRosterChange,
   RunSummary,
   SwitchRunModelInput,
+  AddRunBudgetInput,
+  MessageAgentInput,
+  RetryRunInput,
+  RunHold,
+  SkipReviewInput,
+  StopAgentResult,
   SwitchRunModelResult,
   SetRunPermissionModeInput,
   SetRunPermissionModeResult,
@@ -87,8 +93,8 @@ import type {
   UserQuestion,
   LiveRunChange
 } from '@shared/types'
-import { LIVE_RUN_CHANGE_WAIT_MS } from '@shared/types'
-import type { LiveChangeWhat } from '@shared/types'
+import { LIVE_RUN_CHANGE_WAIT_MS, AGENT_MESSAGE_MAX_CHARS } from '@shared/types'
+import type { LiveChangeWhat, ProjectSpend } from '@shared/types'
 import {
   applyGrantEdits,
   grantEditsOf,
@@ -166,8 +172,28 @@ import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity,
 import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overlaidByAcceptEdits, overridesWidening, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
-import { delegationPreflight, obligationsFor, subtreeFailed } from './delegation'
+import { delegationPreflight, hasValidReceipt, obligationsFor, subtreeFailed } from './delegation'
 import { DelegationLedger } from './delegationLedger'
+import { projectSpend } from './projectSpend'
+import {
+  addBudgetRefusal,
+  capPeriods,
+  capValue,
+  capsReached,
+  dueWarnings,
+  money,
+  raiseConversationCap,
+  spendLimitMode,
+  spendLimitReason,
+  startRefusal,
+  warnPercentOf,
+  warnText,
+  type CapReached,
+  type WarnItem,
+  type WarnScope
+} from './spendGuard'
+import { budgetHold, holdActionsFor, isLiveHoldKind, planHold, providerHold, sameHold, spendLimitHold, usageLimitHold, type HoldFacts } from './runHold'
+import { excludeRoles, excludedObligationProblems } from './excludeRoles'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
 import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
 import { DecisionIndex } from './decisionIndex'
@@ -632,6 +658,21 @@ interface ActiveRun {
   permissionModeChanging?: boolean
   /** teardown ran (it may be reached from both the finalizer and session.finished). */
   tornDown?: boolean
+  // ---------- UI overhaul: holds and spending limits ----------
+  /** Spend warnings already sent this run, one per scope (never repeated). */
+  warned: Set<WarnScope>
+  /** A spending limit (the project's daily / monthly cap or the run's own) already ended or paused this run. */
+  spendStopped?: boolean
+  /** Cost of the other runs of this run's model-handoff chain (a conversation budget); read once, on first need. */
+  priorChainUsd?: number
+  /** The full team and the ids left out of this run (StartRunInput.excludeRoleIds); the delegation preflight names what they broke. */
+  excluded?: { original: Role[]; removed: Set<string> }
+  /** adapter.start() rejected: a failed start is a provider / connection failure, unlike a folder check before it. */
+  startFailed?: boolean
+  /** When the run last got a successful answer (a cost report or an ok turn end), for RunHold.provider.lastOkAt. */
+  lastOkAt?: number
+  /** With finalizeExecRun: leave the run paused until `until` (a spending-limit pause) instead of finished. */
+  finalPause?: { until: number; reason: string }
 }
 
 /** A message_run message held for a run that is waiting on its user. */
@@ -659,6 +700,9 @@ export const RUN_MESSAGE_INBOUND_LIMIT = 100
 
 /** The most peer messages held for one run while it waits on its user; beyond this message_run answers 'busy'. */
 export const RUN_MESSAGE_QUEUE_LIMIT = 20
+
+/** runActions.skipReview: the harness's fixed sentence to the orchestrator (the user's own note follows it). */
+export const SKIP_REVIEW_TEXT = 'The user chose to skip review for the current change. Go ahead without the review step.'
 
 /**
  * How long one peer delivery may wait on the recipient session's receive(). A receive that never settles would
@@ -833,7 +877,7 @@ export interface RunManagerOptions {
    * Missing = the built-in roles use the 'deep' tier on the run's connection.
    */
   appSettings?: () => Pick<AppSettings, 'setupModel' | 'mcpAssistModel' | 'connections'> &
-    Partial<Pick<AppSettings, 'modelPrices' | 'communityPrices' | 'skillAssistModel' | 'quickRunModel'>>
+    Partial<Pick<AppSettings, 'modelPrices' | 'communityPrices' | 'skillAssistModel' | 'quickRunModel' | 'spendWarnPercent'>>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
   /**
@@ -1089,6 +1133,10 @@ export interface StartUserChoice {
   modelSelection?: { model: string; connection: ConnectionId }
   effort?: Effort
   permissionMode?: PermissionMode
+  /** UI overhaul (StartRunInput.excludeRoleIds): roles left out of this run, each with every role below it. Work runs with a team only. */
+  excludeRoleIds?: string[]
+  /** UI overhaul (StartRunInput.maxBudgetUsd): a per-run cap that can only narrow the project's (finite > 0). */
+  maxBudgetUsd?: number
 }
 
 /** Internal StartInput key: what continueRun carries from the run it continues (already vetted for the permission mode). */
@@ -1099,6 +1147,10 @@ interface CarriedChoices {
   rootEffort?: Effort
   /** A chosen permission mode that continueRun decided to carry. */
   permissionMode?: PermissionMode
+  /** The continued run's left-out roles (RunSummary.excludedRoleIds); ids that no longer exist are dropped. */
+  excludedRoleIds?: string[]
+  /** The continued run's own cap (RunSummary.runBudgetUsd), or what runActions.addBudget gave this continuation. */
+  runBudgetUsd?: number
   /** Lines logged on the new run right after it starts. */
   logs?: { level: 'info' | 'warn'; message: string }[]
 }
@@ -1110,7 +1162,12 @@ export interface StartChoiceRun {
   buildWorkspace?: string
   /** An exec run (overrides.execMode): it keeps the mode it started with. */
   exec: boolean
+  /** The single assistant (team 'single'): there is no team to leave anyone out of. */
+  single?: boolean
 }
+
+/** The largest per-run cap a start may ask for (a sanity bound; the project's own cap is what limits it). */
+const START_BUDGET_MAX_USD = 1_000_000
 
 /** The same text rule as switchModel's: non-empty, short, trimmed, no control characters. */
 const isChoiceText = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200 && v.trim() === v && !/[\x00-\x1f\x7f]/.test(v)
@@ -1147,6 +1204,23 @@ export function checkStartChoice(choice: StartUserChoice, run: StartChoiceRun, c
     }
     out.permissionMode = choice.permissionMode
   }
+  if (choice.maxBudgetUsd !== undefined) {
+    const v: unknown = choice.maxBudgetUsd
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > START_BUDGET_MAX_USD) throw new Error('Choose a spending limit above $0.')
+    if (run.exec) throw new Error('A headless run keeps the budget it was started with.')
+    if (run.kind !== 'work' || run.quick || run.buildWorkspace) throw new Error('A spending limit for one run applies to work runs on a project.')
+    out.maxBudgetUsd = v
+  }
+  if (choice.excludeRoleIds !== undefined) {
+    // Shape only here; start() checks the ids against the project's roles (unknown ids and the root are refused).
+    const ids: unknown = choice.excludeRoleIds
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || !id)) throw new Error('Choose which roles to leave out from the list of roles.')
+    if (ids.length) {
+      if (run.kind !== 'work' || run.quick || run.buildWorkspace) throw new Error('Roles can only be left out of a work run on a project.')
+      if (run.single) throw new Error('The single assistant has no team to leave anyone out of.')
+      out.excludeRoleIds = [...(ids as string[])]
+    }
+  }
   return out
 }
 
@@ -1159,6 +1233,8 @@ export function checkStartEffort(effort: Effort, adapter: ProviderId): void {
 const AUTO_RESUME = Symbol('autoResume')
 /** Internal ContinueRunOptions key: the schedule of a run RunManager's own auto-resume continues (never a user continuation). */
 const SCHEDULED_RESUME = Symbol('scheduledResume')
+/** Internal ContinueRunOptions key: runActions.addBudget's amount (set by RunManager.addBudget only, after its own checks). */
+const ADD_BUDGET = Symbol('addBudget')
 
 /** continueRun options (cli-spec 6.2(1)). */
 export interface ContinueRunOptions {
@@ -1174,6 +1250,8 @@ export interface ContinueRunOptions {
   [AUTO_RESUME]?: true
   /** Set only by RunManager's own auto-resume of a scheduled run: the continuation stays the schedule's (ScheduleService tracks it). */
   [SCHEDULED_RESUME]?: { id: string; name: string }
+  /** Set only by RunManager.addBudget: the continuation's own cap is `usd`; a conversation budget is raised by it (still within the project's cap). */
+  [ADD_BUDGET]?: { usd: number }
 }
 
 /** Narrowing overrides a continuation always keeps (goal never widens: picks stay inside the roles' ceilings). */
@@ -1763,6 +1841,8 @@ export class RunManager {
     if (project.id === QUICK_PROJECT_ID && (kind !== 'work' || !quick)) throw new Error('Only a quick run can run on the quick project.')
     if (quick && project.id !== QUICK_PROJECT_ID) throw new Error('Quick run details belong to the quick project only.')
     if (buildWorkspace && kind !== 'mcp-assist') throw new Error('A build workspace belongs to an MCP assistant run.')
+    // UI overhaul: the project's daily / monthly caps, read live. A refusal leaves no run (nothing is stored).
+    this.assertSpendAllowed(project, !!quick || !!buildWorkspace)
     // Team files: the folder is checked first (a pulled change is gated), so the run starts on the last approved team.
     let teamWarning: string | undefined
     if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
@@ -1799,10 +1879,31 @@ export class RunManager {
     // ---- The desktop user's start-time choices (userChoice). Every check below runs before `summary` is created, so a
     // refusal leaves no run: nothing is stored and nothing is in this.runs. Model first (it settles the adapter), then
     // the effort against that adapter, the permission mode, and the price of an explicitly chosen model under a cap.
-    const choiceRun: StartChoiceRun = { kind, ...(quick ? { quick } : {}), ...(buildWorkspace ? { buildWorkspace } : {}), exec: !!overrides?.execMode }
+    const choiceRun: StartChoiceRun = { kind, ...(quick ? { quick } : {}), ...(buildWorkspace ? { buildWorkspace } : {}), exec: !!overrides?.execMode, ...(team === 'single' ? { single: true } : {}) }
     const chosen = userChoice ? checkStartChoice(userChoice, choiceRun, this.options.catalog?.() ?? []) : undefined
     // An explicit choice wins over the single assistant's quick-run model settled above.
     if (chosen?.modelSelection) modelSelection = chosen.modelSelection
+    // UI overhaul, roles left out ("Who will work on it"): the user's choice is refused when it names an unknown role or the
+    // root; a continuation carries the earlier choice and drops ids that are gone. The roles go before the adapter is chosen,
+    // so every spawn gate, preflight and bridge sees the team as it runs.
+    let excludedInfo: ActiveRun['excluded']
+    let excludedIds: string[] | undefined
+    const askedRoles = chosen?.excludeRoleIds ?? (kind === 'work' && !quick && !buildWorkspace && team !== 'single' ? carried?.excludedRoleIds : undefined)
+    if (askedRoles?.length) {
+      const result = excludeRoles(project.roles, askedRoles, { lenient: !chosen?.excludeRoleIds })
+      if (result.ids.length) {
+        excludedInfo = { original: project.roles, removed: result.removed }
+        excludedIds = result.ids
+        project = { ...project, roles: result.roles }
+      }
+    }
+    // UI overhaul, the run's own cap: it can only narrow the project's. A continuation carries it (or the amount the user added).
+    let runBudgetUsd: number | undefined
+    const askedBudget = chosen?.maxBudgetUsd ?? (kind === 'work' && !quick && !buildWorkspace && !overrides?.execMode ? capValue(carried?.runBudgetUsd) : undefined)
+    if (askedBudget !== undefined) {
+      runBudgetUsd = Math.min(askedBudget, projectBudgetUsd(project) ?? Infinity)
+      project = { ...project, maxBudgetUsd: runBudgetUsd }
+    }
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
     if (modelSelection) {
       const selected = this.options.catalog?.().find((m) => m.id === modelSelection.model && m.connection === modelSelection.connection)
@@ -1885,6 +1986,8 @@ export class RunManager {
     if (recordedMode) summary.permissionMode = recordedMode
     if (chosenMode) summary.permissionModeChosen = true
     if (rootEffort) summary.rootEffort = rootEffort
+    if (excludedIds?.length) summary.excludedRoleIds = excludedIds
+    if (runBudgetUsd !== undefined) summary.runBudgetUsd = runBudgetUsd
     const exec = !!overrides?.execMode
     // Team evolution: stored-project work runs only (never setup, quick, single-assistant or virtual-project runs).
     const evolveMode: EvolveStrategy | true | undefined =
@@ -1935,7 +2038,9 @@ export class RunManager {
       autoDenials: 0,
       policyTimers: new Map(),
       chainPriorCostUsd: overrides?.execChainId ? this.chainPriorCost(project.id, overrides.execChainId, summary.id) : 0,
-      priceChecked: new Set()
+      priceChecked: new Set(),
+      warned: new Set(),
+      ...(excludedInfo ? { excluded: excludedInfo } : {})
     }
     if (bridging.bridged.length) {
       active.bridgedAgents = new Map()
@@ -1945,6 +2050,8 @@ export class RunManager {
     // Only the automatic resume of a waitForReset chain is the same invocation; nothing else re-applies the grant.
     if (allowWidening && overrides?.execMode && overrides.waitForReset) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
+    // The run this one continues is no longer waiting on the user: its hold ends with the continuation (RunHold).
+    if (resumedFrom) this.clearHold(resumedFrom)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
     const pricingFor = (on: ConnectionId): PricingContext => {
@@ -1959,6 +2066,8 @@ export class RunManager {
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
       if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode' || raw.type === 'run.roster' || raw.type === 'run.liveChange') return
+      // Holds and spending warnings are RunManager's alone (an adapter can neither set nor clear them).
+      if (raw.type === 'run.hold' || raw.type === 'run.spendWarning') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
       // and broadcast, then the agent goes out again with its new count.
@@ -2087,6 +2196,9 @@ export class RunManager {
       // engine decides which runs it measures). A run the user stopped or interrupted (held until their next message),
       // or one ended by quitting, gets none.
       if ((outcome === 'finished' || outcome === 'failed') && !active.userStopped && !active.held && !this.quitting && active.evolve) this.startEvolvePass(active)
+      // UI overhaul: what the run is waiting on (RunHold), then the spending limits (caps, the run's own cap, warnings).
+      this.holdAfterEvent(active, e)
+      if (e.type === 'agent.upsert' || e.type === 'run.cost') this.checkSpend(active)
       if (exec) this.execEventSeen(active, e)
       else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
@@ -3293,6 +3405,10 @@ export class RunManager {
       active.opening = opening
       try {
         active.session = await opening
+      } catch (err) {
+        // The adapter could not open its session (binary, sign-in, connection): a provider failure, not a local check.
+        active.startFailed = true
+        throw err
       } finally {
         this.startsInFlight.delete(opening)
         active.opening = undefined
@@ -3376,6 +3492,12 @@ export class RunManager {
     }
     const cost = Math.max(a.summary.usage?.costUsd ?? 0, a.summary.usage?.providerCostUsd ?? 0)
     if (a.chainPriorCostUsd + cost >= budget) {
+      // A desktop run on a conversation budget (model handoff) waits on the user: the hold lets them add budget.
+      if (!a.summary.overrides?.execMode) {
+        const total = a.summary.conversationBudgetUsd
+        if (total !== undefined) this.setBudgetHold(a, 'conversation', total, this.priorChainUsd(a) + cost)
+        else this.setBudgetHold(a, 'run', budget, cost)
+      }
       a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
       void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
     }
@@ -3393,6 +3515,8 @@ export class RunManager {
     const obligations = obligationsFor(roles, strict)
     const root = roles.find((r) => r.reportsTo === null) ?? roles[0]
     const problems = delegationPreflight(roles, obligations, effectiveSubagentLimits({ ...project, roles }), adapterId as 'claude' | 'codex' | 'mock', bridged)
+    // Roles the user left out of this run: an obligation that pointed at one is a preflight problem, never silently dropped.
+    if (a.excluded) problems.push(...excludedObligationProblems(a.excluded.original, a.excluded.removed, strict))
     const ledger = new DelegationLedger(
       { obligations, strict, problems },
       {
@@ -3537,6 +3661,9 @@ export class RunManager {
     if (typeof e?.turnGen === 'number' && Number.isFinite(e.turnGen)) a.rootTurnGen = e.turnGen
     a.lastTurnEnd = e
     a.activityGen++
+    if (e.ok) a.lastOkAt = Date.now()
+    // UI overhaul: a desktop run whose own cap ended the turn (the provider's budget error) stops and waits for the user.
+    if (e.errorSubtype === 'error_max_budget_usd' && !a.summary.overrides?.execMode && !a.finalizing) this.budgetReached(a)
     if (!a.summary.overrides?.execMode || a.finalizing) return
     const runId = a.summary.id
     if (e.errorSubtype === 'error_max_budget_usd') {
@@ -3664,11 +3791,13 @@ export class RunManager {
    * (EXEC_TITLE_JOIN_MS), flushes usage, writes the final status, execOutcome and endedBy, persists, and broadcasts
    * exactly one run.finalized. RunManager never calls stop() for policy, budget or completion finishes.
    */
-  finalizeExecRun(runId: string, outcome: ExecOutcome, opts: { endedBy?: RunEndedBy } = {}): Promise<void> {
+  finalizeExecRun(runId: string, outcome: ExecOutcome, opts: { endedBy?: RunEndedBy; pause?: { until: number; reason: string } } = {}): Promise<void> {
     const a = this.runs.get(runId)
     if (!a) return Promise.resolve()
     if (a.finalizing) return a.finalizing
     a.finalOutcome = outcome
+    // A spending-limit pause (outcome 'rate-limited' on a run that is not an exec run): paused until the period resets, never auto-resumed.
+    if (opts.pause) a.finalPause = opts.pause
     const endedBy = opts.endedBy !== undefined ? opts.endedBy : defaultEndedBy(outcome)
     const run = this.runFinalizer(a, outcome, endedBy)
       .catch((err: unknown) => log.warn(`Run ${runId}: finalizing failed: ${(err as Error)?.message ?? err}`))
@@ -3712,7 +3841,13 @@ export class RunManager {
       const status = outcome === 'failed' || outcome === 'auth-error' ? 'error' : outcome === 'rate-limited' ? 'paused' : 'finished'
       const error =
         status === 'error' ? a.adapterError || s.error || (a.lastTurnEnd?.errorSubtype ? `The turn ended with ${logText(a.lastTurnEnd.errorSubtype)}.` : 'The run failed.') : undefined
-      this.finalEmit(a, { type: 'run.status', runId: s.id, status, ...(error ? { error } : {}), ...(status === 'paused' ? { autoResume: false } : {}) })
+      this.finalEmit(a, {
+        type: 'run.status',
+        runId: s.id,
+        status,
+        ...(error ? { error } : {}),
+        ...(status === 'paused' ? { autoResume: false, ...(a.finalPause ? { pausedUntil: a.finalPause.until, pauseReason: a.finalPause.reason } : {}) } : {})
+      })
     }
     this.closeTimers(a)
     this.refreshUsage(a, true)
@@ -4909,6 +5044,11 @@ export class RunManager {
     delete request.maxScope
     delete request.workingFolder
     delete request.workingFolderScratch
+    // UI overhaul: when the card was raised is RunManager's (first sight). priorAllows ("allowed N times before") needs a
+    // per-project counter of repeated allows that does not exist yet: whatever an adapter sent is dropped, so it stays
+    // absent (unknown), never a guess.
+    delete request.priorAllows
+    request.requestedAt = Date.now()
     const quick = active.summary.quick
     if (quick && !quick.allowEdits && isQuickWriteTool(request.toolName)) request.quickReadOnly = true
     if (request.referenceFolder) request.maxScope = 'once'
@@ -5363,7 +5503,7 @@ export class RunManager {
     active: ActiveRun,
     req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>
   ): Promise<MergeDecision> {
-    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
+    const review: MergeReview = { ...req, id: newId('merge'), runId: active.summary.id, createdAt: Date.now(), revision: 1, checks: this.mergeChecks(active, req) }
     return new Promise((resolve) => {
       active.pendingMerges.set(review.id, { review, resolve })
       this.broadcast({ type: 'merge.request', runId: active.summary.id, review })
@@ -5631,6 +5771,363 @@ export class RunManager {
     return { run: updated, applied: !active || ['finished', 'error', 'paused'].includes(run.status) ? false : true, ...(!active || ['finished', 'error', 'paused'].includes(run.status) ? { reason: 'Model will be used when the run continues.' } : {}) }
   }
 
+  // ---------- UI overhaul run actions (desktop only, main/overhaulIpc.ts; docs/design/ui-overhaul/impl-runtime.md) ----------
+  // Nothing here widens a cap or waives a gate: every action goes through the existing paths (continueRun, send) and their
+  // checks, and the pure decisions live in runHold.ts, spendGuard.ts and excludeRoles.ts.
+
+  /**
+   * The run's hold (RunSummary.hold), or null. `actions` are worked out now (is the session open, is a daily / monthly cap
+   * reached, can the run continue), so they list only what main accepts at this moment.
+   */
+  holdOf(runId: string): RunHold | null {
+    const s = this.summary(runId)
+    if (!s?.hold) return null
+    return { ...structuredClone(s.hold), actions: holdActionsFor(s.hold.kind, this.holdFacts(s)) }
+  }
+
+  /**
+   * runs:addBudget. Desktop only. Continues an ended run held on 'budget' with `addUsd` as the continuation's own cap
+   * (a conversation budget of a model handoff is raised by it for this chain). Refused, in plain words, when the run is
+   * live or not held on its budget, when `addUsd` is above the project's per-run cap or above what is left of the daily or
+   * monthly cap, or when the project's cap leaves a conversation chain nothing more to spend. Goes through continueRun, so
+   * every continuation check applies (session already open, chain budget, permission carry rules, the caps at start).
+   */
+  async addBudget(input: AddRunBudgetInput): Promise<RunSummary> {
+    this.refuseWhileQuitting()
+    const from = typeof input?.runId === 'string' ? this.summary(input.runId) : null
+    if (!from) throw new Error('Run not found')
+    if (LIVE_STATUSES.has(from.status)) throw new Error('This run is still working. You can add budget once it has stopped.')
+    if (from.hold?.kind !== 'budget') throw new Error('This run did not stop on its spending limit, so there is nothing to add to.')
+    const addUsd: unknown = input.addUsd
+    return this.withResumeLease(async () => {
+      const project = await this.continueProject(from)
+      const projectCapUsd = projectBudgetUsd(project)
+      const spend = this.spendNow(this.liveCapProject(from.projectId, !!from.quick || !!from.buildWorkspace, project))
+      const refusal = addBudgetRefusal({ addUsd, ...(projectCapUsd !== undefined ? { projectCapUsd } : {}), ...(spend ? { spend } : {}) })
+      if (refusal) throw new Error(refusal)
+      const usd = addUsd as number
+      if (from.conversationBudgetUsd !== undefined) {
+        const spentUsd = this.chainOf(from).reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd ?? 0), 0)
+        const raised = raiseConversationCap({ conversationUsd: from.conversationBudgetUsd, addUsd: usd, spentUsd, ...(projectCapUsd !== undefined ? { projectCapUsd } : {}) })
+        if ('refusal' in raised) throw new Error(raised.refusal)
+      }
+      const text = typeof input.text === 'string' && input.text.trim() ? input.text : RESUME_TEXT
+      return this.continueRun(project, from.id, text, undefined, { desktop: true, [ADD_BUDGET]: { usd } })
+    })
+  }
+
+  /** runs:retry. Desktop only. Continues an ended run (error, stopped or held) with `text` or the harness's resume message; continueRun's checks apply. */
+  async retryRun(input: RetryRunInput): Promise<RunSummary> {
+    this.refuseWhileQuitting()
+    const from = typeof input?.runId === 'string' ? this.summary(input.runId) : null
+    if (!from) throw new Error('Run not found')
+    const text = typeof input.text === 'string' && input.text.trim() ? input.text : RESUME_TEXT
+    return this.withResumeLease(async () => this.continueRun(await this.continueProject(from), from.id, text, undefined, { desktop: true }))
+  }
+
+  /**
+   * runs:skipReview. Desktop only. Tells a live run's orchestrator, in a fixed sentence plus the user's note, to go ahead
+   * without the review step for the current change. It is sent like the user's own message (send(), every gate of it) and
+   * logged as the user's decision. It never touches the delegation ledger, the review policy or merge review: a required
+   * review is still recorded as missing and a merge still asks.
+   */
+  async skipReview(input: SkipReviewInput): Promise<void> {
+    this.refuseWhileQuitting()
+    const runId = typeof input?.runId === 'string' ? input.runId : ''
+    const active = this.runs.get(runId)
+    if (!active?.session || !isOpenStatus(active.summary.status)) throw new Error('This run is not working, so there is no review to skip.')
+    const note = typeof input.note === 'string' ? input.note.trim() : ''
+    await this.send(runId, note ? `${SKIP_REVIEW_TEXT}\n\nNote from the user: ${note}` : SKIP_REVIEW_TEXT)
+    active.emit({ type: 'log', runId, level: 'info', message: 'You chose to skip review.' })
+  }
+
+  /**
+   * runs:messageAgent. Desktop only. A message for one agent of a live run, delivered to the orchestrator through send()
+   * (same gates) as "Message from the user for <name> (<handle or id>): <text>", so it relays it. For the orchestrator
+   * itself the text is just sent.
+   */
+  async messageAgent(input: MessageAgentInput): Promise<void> {
+    this.refuseWhileQuitting()
+    const text = typeof input?.text === 'string' ? input.text.trim() : ''
+    if (!text) throw new Error('Nothing to send')
+    if (text.length > AGENT_MESSAGE_MAX_CHARS) throw new Error('That message is too long.')
+    const runId = typeof input.runId === 'string' ? input.runId : ''
+    const active = this.runs.get(runId)
+    if (!active?.session || !isOpenStatus(active.summary.status)) throw new Error('This run is not working, so it cannot take a message. Continue it first.')
+    if (input.agentId === ROOT_AGENT_ID) return this.send(runId, text)
+    const agent = typeof input.agentId === 'string' ? active.record.agents[input.agentId] : undefined
+    if (!agent) throw new Error('That agent is not in this run.')
+    if (agent.parentId === null) return this.send(runId, text)
+    await this.send(runId, `Message from the user for ${logText(agent.name)} (${logText(agent.handle ?? agent.id)}): ${text}`)
+  }
+
+  /** runs:stopAgent. Desktop only. Stops one report of a live run (never the orchestrator) when its adapter can. */
+  async stopAgent(input: { runId: string; agentId: string }): Promise<StopAgentResult> {
+    const active = typeof input?.runId === 'string' ? this.runs.get(input.runId) : undefined
+    if (!active) return { stopped: false, reason: 'That run is not working.' }
+    const agent = typeof input.agentId === 'string' ? active.record.agents[input.agentId] : undefined
+    if (!agent) return { stopped: false, reason: 'That agent is not in this run.' }
+    if (agent.id === ROOT_AGENT_ID || agent.parentId === null) return { stopped: false, reason: 'The orchestrator cannot be stopped on its own. End the session instead.' }
+    const session = active.session
+    if (!session?.stopAgent) return { stopped: false, reason: 'This provider cannot stop one agent; interrupt the run instead.' }
+    try {
+      return (await session.stopAgent(agent.id)) ? { stopped: true } : { stopped: false, reason: 'That agent has already finished or cannot be stopped now.' }
+    } catch (e) {
+      log.warn(`Run ${active.summary.id}: stopping agent ${logText(agent.id)} failed: ${(e as Error)?.message ?? e}`)
+      return { stopped: false, reason: 'The provider could not stop that agent.' }
+    }
+  }
+
+  // ---------- UI overhaul: holds and spending limits (the private side) ----------
+
+  /** The project a continuation runs as: the run's own (Chat, build session) or the stored one, a setup run re-profiled like setup:start. */
+  private async continueProject(from: RunSummary): Promise<Project> {
+    const current = this.projectOfRun(from)
+    if (!current) throw new Error('Project not found')
+    return from.kind === 'setup' ? await this.setup.prepare(current) : current
+  }
+
+  /** The stored project whose daily / monthly caps apply, read live (a Chat, a build session and a virtual project have none). */
+  private liveCapProject(projectId: string, quickLike: boolean, fallback?: Project): Project | undefined {
+    if (quickLike || isVirtualProjectId(projectId)) return undefined
+    try {
+      return this.options.resolveProject?.(projectId) ?? fallback
+    } catch {
+      // The store cannot be read now: the project as the run last had it still carries its caps.
+      return fallback
+    }
+  }
+
+  private capsOn(p: Project | undefined): p is Project {
+    return !!p && (capValue(p.maxDailyUsd) !== undefined || capValue(p.maxMonthlyUsd) !== undefined)
+  }
+
+  /** Every run of the project for the spend totals: stored summaries, live ones (their current usage) replacing their stored copy. */
+  private spendRuns(projectId: string): RunSummary[] {
+    const byId = new Map<string, RunSummary>()
+    for (const r of this.store.list(projectId)) byId.set(r.id, r)
+    for (const a of this.runs.values()) if (a.summary.projectId === projectId) byId.set(a.summary.id, a.summary)
+    return [...byId.values()]
+  }
+
+  /** The project's spend today and this month, only when it has a cap to compare with (no work otherwise). */
+  private spendNow(p: Project | undefined, now: number = Date.now()): ProjectSpend | undefined {
+    if (!this.capsOn(p)) return undefined
+    return projectSpend(p, this.spendRuns(p.id), now)
+  }
+
+  /** Refuse (before any run exists) when the project's daily or monthly cap is already reached. */
+  private assertSpendAllowed(project: Project, quickLike: boolean): void {
+    const refusal = startRefusal(this.spendNow(this.liveCapProject(project.id, quickLike, project)))
+    if (refusal) throw new Error(refusal)
+  }
+
+  private runCostUsd(s: RunSummary): number {
+    const v = Math.max(s.usage?.costUsd ?? 0, s.usage?.providerCostUsd ?? 0, 0)
+    return Number.isFinite(v) ? v : 0
+  }
+
+  /** What the other runs of a model-handoff chain cost (a conversation budget is one total over the chain). Read once. */
+  private priorChainUsd(a: ActiveRun): number {
+    if (a.priorChainUsd !== undefined) return a.priorChainUsd
+    const prev = a.summary.resumedFrom ? this.summary(a.summary.resumedFrom) : null
+    let sum = 0
+    if (prev) for (const r of this.chainOf(prev)) if (r.id !== a.summary.id) sum += Math.max(0, r.usage?.costUsd ?? r.totalCostUsd ?? 0)
+    a.priorChainUsd = sum
+    return sum
+  }
+
+  /** What decides a hold's actions now. */
+  private holdFacts(s: RunSummary): HoldFacts {
+    const quickLike = !!s.quick || !!s.buildWorkspace
+    const spend = this.spendNow(this.liveCapProject(s.projectId, quickLike, this.runs.get(s.id)?.liveProject?.()))
+    return { live: isOpenStatus(s.status), paused: s.status === 'paused', continuable: !!(s.sessionId || s.modelSelection), capReached: !!spend && capsReached(spend).length > 0 }
+  }
+
+  /** Store and broadcast a hold (unchanged holds send nothing; the same kind keeps when it began). */
+  private setHold(a: ActiveRun, hold: RunHold): void {
+    const cur = a.summary.hold
+    const next = cur && cur.kind === hold.kind ? { ...hold, since: cur.since } : hold
+    if (sameHold(cur, next)) return
+    a.summary.hold = next
+    try {
+      this.store.upsert(a.summary)
+    } catch (e) {
+      log.warn(`Run ${a.summary.id}: could not persist the hold: ${(e as Error).message}`)
+    }
+    this.broadcast({ type: 'run.hold', runId: a.summary.id, hold: structuredClone(next) })
+  }
+
+  /** The run no longer waits on the user (it continues, or a continuation started). Live or stored. */
+  private clearHold(runId: string): void {
+    const a = this.runs.get(runId)
+    const stored = a ? undefined : this.store.get(runId)
+    if (!(a ? a.summary.hold : stored?.hold)) return
+    if (a) {
+      delete a.summary.hold
+      this.store.upsert(a.summary)
+    } else if (stored) {
+      const { hold: _hold, ...rest } = stored
+      this.store.upsert(rest)
+    }
+    this.broadcast({ type: 'run.hold', runId, hold: null })
+  }
+
+  /** The run ended: the actions of its hold are those of an ended run now. */
+  private refreshHoldActions(a: ActiveRun): void {
+    const cur = a.summary.hold
+    if (!cur) return
+    const actions = holdActionsFor(cur.kind, this.holdFacts(a.summary))
+    if (actions.join() !== cur.actions.join()) this.setHold(a, { ...cur, actions })
+  }
+
+  private setBudgetHold(a: ActiveRun, scope: 'run' | 'conversation', limitUsd: number, spentUsd: number): void {
+    this.setHold(a, budgetHold({ scope, limitUsd, spentUsd, since: Date.now(), facts: this.holdFacts(a.summary) }))
+  }
+
+  /** The blocked plan (and the failed agent behind it) as a hold; cleared when the plan is no longer blocked. */
+  private syncPlanHold(a: ActiveRun): void {
+    const s = a.summary
+    const cur = s.hold
+    // A budget, spending-limit, usage or provider hold outranks the plan's.
+    if (cur && !isLiveHoldKind(cur.kind)) return
+    const next = planHold({ plan: a.record.plan, agents: Object.values(a.record.agents), rootId: ROOT_AGENT_ID, since: Date.now(), facts: this.holdFacts(s) })
+    if (next) this.setHold(a, next)
+    else if (cur) this.clearHold(s.id)
+  }
+
+  /** The provider ended the turn on the run's own cap (or the model-handoff conversation cap): hold on it, then end the run. */
+  private budgetReached(a: ActiveRun): void {
+    const s = a.summary
+    if (a.spendStopped) return
+    const cost = this.runCostUsd(s)
+    const own = s.runBudgetUsd ?? (a.ctx ? projectBudgetUsd(a.ctx.project) : undefined)
+    if (s.conversationBudgetUsd !== undefined) this.setBudgetHold(a, 'conversation', s.conversationBudgetUsd, this.priorChainUsd(a) + cost)
+    else if (own !== undefined) this.setBudgetHold(a, 'run', own, cost)
+    else return
+    a.spendStopped = true
+    a.emit({ type: 'log', runId: s.id, level: 'warn', message: "The run used all of its spending limit and stopped. You can add budget to continue." })
+    void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
+  }
+
+  /**
+   * The run's holds after an event (never for a headless exec run): a blocked plan, the end of the run (a provider error, a
+   * budget error the session ended on, a usage-limit pause), and the lift when the run works again or the user ended it.
+   */
+  private holdAfterEvent(a: ActiveRun, e: RunEvent): void {
+    if (a.summary.overrides?.execMode) return
+    if (e.type === 'run.cost') {
+      a.lastOkAt = Date.now()
+      return
+    }
+    // Only a session that is open: a carried plan the continuation starts with is not a new block.
+    if (e.type === 'plan.updated' || (e.type === 'agent.upsert' && a.record.plan?.status === 'blocked')) {
+      if (a.session && isOpenStatus(a.summary.status)) this.syncPlanHold(a)
+      return
+    }
+    if (e.type !== 'run.status') return
+    const s = a.summary
+    if (e.status === 'running') {
+      if (s.hold && isLiveHoldKind(s.hold.kind)) this.clearHold(s.id)
+      return
+    }
+    if (e.status !== 'finished' && e.status !== 'error' && e.status !== 'paused') return
+    // The user ended the session (or the app is closing): nothing is waiting on them.
+    if (a.userStopped) {
+      this.clearHold(s.id)
+      return
+    }
+    if (!s.hold) {
+      const since = Date.now()
+      const facts = this.holdFacts(s)
+      if (e.status === 'paused') {
+        if (!a.finalPause) this.setHold(a, usageLimitHold({ since, facts }))
+      } else if (a.lastTurnEnd?.errorSubtype === 'error_max_budget_usd') {
+        this.budgetReached(a)
+      } else if (e.status === 'error' && (a.session || a.startFailed)) {
+        const auth = !!a.lastTurnEnd?.isAuthError || isAuthFailure({ text: e.error, isError: true })
+        this.setHold(a, providerHold({ ...(s.connection ? { connection: s.connection } : {}), auth, ...(a.lastOkAt !== undefined ? { lastOkAt: a.lastOkAt } : {}), since, facts }))
+      } else if (e.status === 'finished') {
+        this.syncPlanHold(a)
+      }
+    }
+    this.refreshHoldActions(a)
+  }
+
+  /**
+   * After each cost or agent update: the project's daily / monthly caps, the run's own cap, and the spend warning
+   * (AppSettings.spendWarnPercent). The project and the settings are read now, so a cap changed mid-run applies at the
+   * next check. A reached cap: Project.onSpendLimit 'stop' ends the run (as a budget end: endedBy 'budget', it reads
+   * Finished), the default 'pause' leaves it paused until the period resets without an auto-resume. Either way the run
+   * holds on 'spend-limit'. A headless exec run always stops (nobody can wait for a reset).
+   */
+  private checkSpend(a: ActiveRun): void {
+    const s = a.summary
+    if (a.spendStopped || a.finalizing || a.tornDown || a.outcome !== undefined) return
+    if (s.status === 'finished' || s.status === 'error' || s.status === 'paused' || s.status === 'stopping') return
+    const exec = !!s.overrides?.execMode
+    const percent = warnPercentOf(this.options.appSettings?.().spendWarnPercent)
+    const project = this.liveCapProject(s.projectId, !!s.quick || !!s.buildWorkspace, a.liveProject?.())
+    const ownCap = !exec && s.conversationBudgetUsd === undefined ? s.runBudgetUsd : undefined
+    const spend = this.spendNow(project)
+    if (!spend && ownCap === undefined && percent === undefined) return
+    const cost = this.runCostUsd(s)
+    const reached = spend ? capsReached(spend)[0] : undefined
+    if (reached && project) return this.spendLimitStop(a, reached, project)
+    // The per-run cap the user chose (main enforces it too: a provider that does not enforce a budget still stops here).
+    if (ownCap !== undefined && cost >= ownCap) {
+      this.setBudgetHold(a, 'run', ownCap, cost)
+      a.spendStopped = true
+      a.emit({ type: 'log', runId: s.id, level: 'warn', message: `The run used all of its spending limit (${money(ownCap)}) and stopped. You can add budget to continue.` })
+      void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
+      return
+    }
+    if (percent === undefined) return
+    const items: WarnItem[] = []
+    if (!exec) {
+      if (s.conversationBudgetUsd !== undefined) items.push({ scope: 'conversation', limitUsd: s.conversationBudgetUsd, spentUsd: this.priorChainUsd(a) + cost })
+      else {
+        const limit = s.runBudgetUsd ?? (a.ctx ? projectBudgetUsd(a.ctx.project) : undefined)
+        if (limit !== undefined) items.push({ scope: 'run', limitUsd: limit, spentUsd: cost })
+      }
+    }
+    if (spend) for (const c of capPeriods(spend)) items.push({ scope: c.scope, limitUsd: c.limitUsd, spentUsd: c.spentUsd })
+    for (const warning of dueWarnings(items, percent, a.warned, Date.now())) {
+      a.warned.add(warning.scope)
+      this.broadcast({ type: 'run.spendWarning', runId: s.id, warning })
+      a.emit({ type: 'log', runId: s.id, level: 'warn', message: warnText(warning) })
+    }
+  }
+
+  /** A daily / monthly cap was reached while the run is live: hold on it and end or pause the run (see checkSpend). */
+  private spendLimitStop(a: ActiveRun, cap: CapReached, project: Project): void {
+    const s = a.summary
+    a.spendStopped = true
+    const exec = !!s.overrides?.execMode
+    const mode = spendLimitMode(project.onSpendLimit, exec)
+    const reason = spendLimitReason(cap, mode)
+    if (!exec) this.setHold(a, spendLimitHold({ cap, reason, since: Date.now(), facts: this.holdFacts(s) }))
+    a.emit({ type: 'log', runId: s.id, level: 'warn', message: reason })
+    if (mode === 'stop') void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
+    else void this.finalizeExecRun(s.id, 'rate-limited', { pause: { until: cap.resetsAt, reason } })
+  }
+
+  /** What a held merge or permission card is judged by: the delegation ledger's receipts for the agent under review. */
+  private mergeChecks(a: ActiveRun, req: Omit<MergeReview, 'id' | 'runId' | 'createdAt'>): NonNullable<MergeReview['checks']> {
+    const given = req.checks
+    const tests = given?.tests === 'passed' || given?.tests === 'failed' ? given.tests : 'unknown'
+    const detail = typeof given?.testDetail === 'string' ? clampText(given.testDetail, 500) : ''
+    // review: 'reported' when a report of a role this agent must report to delivered a valid receipt for it; main's own
+    // reading of the ledger, never what an adapter sent.
+    let review: 'reported' | 'none' | 'unknown' = 'unknown'
+    if (a.ledger) {
+      const state = a.ledger.snapshot()
+      const required = state.agents[req.agentId]?.required ?? []
+      review = required.some((roleId) => hasValidReceipt(state, req.agentId, roleId)) ? 'reported' : 'none'
+    }
+    return { tests, ...(detail ? { testDetail: detail } : {}), review }
+  }
+
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     this.refuseWhileQuitting()
     const active = this.runs.get(runId)
@@ -5853,6 +6350,9 @@ export class RunManager {
     const prompt = text.trim()
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(prompt, images)) throw new Error('Nothing to send')
+    // UI overhaul: a continuation, an auto-resume included, is refused at the project's daily / monthly cap before anything
+    // (a paused predecessor's hand-over, a timer) changes.
+    this.assertSpendAllowed(project, !!from.quick || !!from.buildWorkspace)
 
     // One live run per provider session: two runs resuming one session would interleave in it.
     const chain = this.chainOf(from)
@@ -5877,6 +6377,9 @@ export class RunManager {
     const overrides = continuedOverrides(target.overrides ?? from.overrides, switching ? { ...opts, exec: !!target.overrides?.execMode } : opts, project)
     // A new provider session must not regain the conversation's already spent desktop budget.
     let carriedBudget = target.conversationBudgetUsd
+    // runActions.addBudget on a model-handoff chain: its total cap is raised by the amount (the project's cap still bounds it below).
+    const add = opts[ADD_BUDGET]
+    if (add && carriedBudget !== undefined) carriedBudget += add.usd
     if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
       // A carried override is already the remaining allowance, whereas the stored conversation cap and the
       // current project cap describe total spend. Never subtract the chain from a remaining allowance twice.
@@ -5910,6 +6413,13 @@ export class RunManager {
       if (allowed && (trusted || canNarrowPermissionMode(project.permissionMode, chosenMode))) carried.permissionMode = chosenMode
       else carried.logs = [{ level: 'info', message: "The per-run permission mode was not carried; the project's mode applies." }]
     }
+    // UI overhaul: the roles left out and the run's own cap carry on (start() drops ids that are gone and still takes the
+    // lower of the cap and the project's); runActions.addBudget replaces the cap with the amount added.
+    const leftOut = Array.isArray(target.excludedRoleIds) ? target.excludedRoleIds.filter((id): id is string => typeof id === 'string' && !!id).slice(0, 200) : []
+    if (leftOut.length && target.kind === 'work') carried.excludedRoleIds = leftOut
+    const ownCap = add ? add.usd : capValue(target.runBudgetUsd)
+    if (ownCap !== undefined && target.kind === 'work') carried.runBudgetUsd = ownCap
+    if (add) carried.logs = [...(carried.logs ?? []), { level: 'info', message: `You added ${money(add.usd)} to this run's budget.` }]
     for (const r of target.id === from.id ? [from] : [target, from]) {
       if (r.status !== 'paused') continue
       this.clearResume(r.id)
@@ -5919,14 +6429,14 @@ export class RunManager {
       this.broadcast(withEndFacts({ type: 'run.status', runId: done.id, status: 'finished', pausedUntil: done.pausedUntil, pauseReason: done.pauseReason, autoResume: false }, done))
       if (strand) this.broadcastFinalized(done, 'interrupted')
     }
-    return this.start({
+    const next = await this.start({
       project,
       prompt,
       images,
       kind: target.kind,
       ...(overrides ? { overrides } : {}),
       ...(opts.allowWidening ? { allowWidening: true } : {}),
-      ...(carried.rootEffort || carried.permissionMode || carried.logs ? { [CARRIED_CHOICES]: carried } : {}),
+      ...(carried.rootEffort || carried.permissionMode || carried.logs || carried.excludedRoleIds || carried.runBudgetUsd !== undefined ? { [CARRIED_CHOICES]: carried } : {}),
       // The harness's own resume message is not a new task: keep the title of the run it continues.
       // A follow-up is titled with the task it continues as context, so it stays recognisable.
       ...(prompt === RESUME_TEXT.trim() && target.title
@@ -5952,6 +6462,9 @@ export class RunManager {
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }
         : {})
     })
+    // start() ended the hold of the run it continues (target); the run it was asked about may differ.
+    if (from.id !== target.id) this.clearHold(from.id)
+    return next
   }
 
   /** Every run of `from`'s session chain (see sessionChain), with live runs' current summaries. */

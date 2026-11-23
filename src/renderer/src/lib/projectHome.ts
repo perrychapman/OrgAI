@@ -1,4 +1,4 @@
-import type { AgentInstance, PermissionMode, RunPlan, RunSummary, Schedule, TodoItem, UsageOverview } from '@shared/types'
+import type { AgentInstance, PermissionMode, ProjectSpend, RunPlan, RunSummary, Schedule, TodoItem, UsageOverview } from '@shared/types'
 import { formatDate } from '@shared/view/dates'
 import { formatUsdCompact, runCostInput, costView, type CostInput } from '@shared/view/cost'
 import { lastResultText } from '@shared/view/schedules'
@@ -133,6 +133,35 @@ export interface MonthSpend {
   typicalText: string | null
   /** Runs whose cost the figure leaves out. */
   unknownRuns: number
+  /** "of $200.00 a month" when the project has a monthly cap (projectSpend only). */
+  limitText?: string
+  /** "on course for about $90.00" once the month has enough days (projectSpend only). */
+  projectionText?: string
+}
+
+/**
+ * The month figure from `runInsights.projectSpend` (recorded spend, caps, projection), with the typical-run line of the
+ * usage overview. Unknown stays "unknown": a month whose runs all lack a price is never $0, and a partly unknown month
+ * is a lower bound ("$12.00+"). null when the project has no run this month or the answer is missing (the caller then
+ * uses `monthSpend`).
+ */
+export function monthSpendFrom(spend: Pick<ProjectSpend, 'month' | 'maxMonthlyUsd' | 'monthProjectionUsd'> | null | undefined, overview?: Parameters<typeof monthSpend>[0]): MonthSpend | null {
+  const m = spend?.month
+  if (!m || !Number.isFinite(m.spentUsd) || !(m.runs > 0)) return null
+  const typical = monthSpend(overview)
+  const allUnknown = m.unknownRuns >= m.runs && m.spentUsd === 0
+  const partial = m.unknownRuns > 0 && !allUnknown
+  const text = allUnknown ? 'unknown' : `${formatUsdCompact(m.spentUsd)}${partial ? '+' : ''}`
+  return {
+    text,
+    title: allUnknown ? 'No run this month has a known price' : partial ? 'At least this much; some runs have no known price' : 'Estimated from recorded usage',
+    runs: m.runs,
+    typicalUsd: typical?.typicalUsd ?? null,
+    typicalText: typical?.typicalText ?? null,
+    unknownRuns: m.unknownRuns,
+    ...(typeof spend?.maxMonthlyUsd === 'number' && spend.maxMonthlyUsd > 0 ? { limitText: `of ${formatUsdCompact(spend.maxMonthlyUsd)} a month` } : {}),
+    ...(typeof spend?.monthProjectionUsd === 'number' && !allUnknown ? { projectionText: `on course for about ${formatUsdCompact(spend.monthProjectionUsd)}` } : {})
+  }
 }
 
 /** First millisecond of the local calendar month holding `now`. */
@@ -170,9 +199,13 @@ export function monthSpend(overview: Pick<UsageOverview, 'totals' | 'matchedRuns
     .filter((r) => (r.kind === 'work' || r.kind === undefined) && r.usage.costUsd !== null && !r.usage.costPartial && r.usage.costUsd > 0)
     .map((r) => r.usage.costUsd as number)
   const typicalUsd = priced.length >= TYPICAL_MIN_RUNS ? median(priced) : null
+  // "Nothing recorded" with runs matched is a true zero only when every run's cost is known; a run whose cost is unknown
+  // (or a total with no figure at all) reads "unknown", never $0.
+  const trueZero = total.empty && overview.totals.costUsd === 0 && !(overview.costUnknownRuns > 0)
+  const unknownCost = costView({ costUsd: null, costSource: 'unknown' }, { compact: true })
   return {
-    text: total.empty ? '$0.00' : total.text,
-    title: total.title,
+    text: total.empty ? (trueZero ? '$0.00' : unknownCost.text) : total.text,
+    title: total.empty && !trueZero ? unknownCost.title : total.title,
     runs: overview.matchedRuns,
     typicalUsd,
     typicalText: typicalUsd === null ? null : formatUsdCompact(typicalUsd),
@@ -247,6 +280,14 @@ export function teamSummary(roles: readonly TeamRoleIn[]): TeamSummary {
     ]
   }
   return { roleCount: roles.length, groups: shown.map((g) => ({ ...g, colors: g.colors.slice(0, TEAM_SQUARES_MAX) })) }
+}
+
+/**
+ * A role colour is data from a team file (a hand edit, an import, an agent): only a hex colour reaches an inline style;
+ * anything else draws as a neutral token colour.
+ */
+export function safeSquareColor(color: unknown): string {
+  return typeof color === 'string' && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color.trim()) ? color.trim() : 'var(--border-strong)'
 }
 
 /** "12 roles · asks before risky actions". */

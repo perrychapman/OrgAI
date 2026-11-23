@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { waitingItems } from './needsYou'
 import {
+  ENTER_DWELL_MS,
+  FRESH_GUARD,
   INBOX_READ_CAP,
   NO_FILTERS,
   afterAnswerText,
@@ -9,6 +11,11 @@ import {
   buildFinished,
   buildWaiting,
   filterCounts,
+  guardArrive,
+  guardPress,
+  guardRelease,
+  guardReset,
+  guardSwallows,
   nextSelection,
   projectOptions,
   readReadIds,
@@ -190,6 +197,54 @@ describe('selection', () => {
   })
 })
 
+describe('activation guard', () => {
+  it('never lets a repeating key press anything, even with nothing blocked', () => {
+    expect(guardSwallows(FRESH_GUARD, 'Enter', true, 1000)).toBe(true)
+    expect(guardSwallows(FRESH_GUARD, ' ', true, 1000)).toBe(true)
+    expect(guardSwallows(FRESH_GUARD, 'Enter', false, 1000)).toBe(false)
+    expect(guardSwallows(FRESH_GUARD, 'ArrowDown', true, 1000)).toBe(false)
+  })
+  it('tracks only a non-repeating press of a guarded key as held', () => {
+    expect(guardPress(FRESH_GUARD, 'Enter', true)).toBe(FRESH_GUARD)
+    expect(guardPress(FRESH_GUARD, 'j', false)).toBe(FRESH_GUARD)
+    expect(guardPress(FRESH_GUARD, 'Enter', false).held).toEqual(['Enter'])
+  })
+  it('blocks the key that was down when focus arrived until its keyup', () => {
+    const down = guardPress(FRESH_GUARD, 'Enter', false)
+    const arrived = guardArrive(down, 1000)
+    expect(guardSwallows(arrived, 'Enter', false, 1001)).toBe(true)
+    expect(guardSwallows(arrived, ' ', false, 1001)).toBe(false)
+    const up = guardRelease(arrived, 'Enter')
+    expect(guardSwallows(up, 'Enter', false, 1002)).toBe(false)
+  })
+  it('lets a key through that went down after focus arrived (a deliberate press)', () => {
+    const arrived = guardArrive(FRESH_GUARD, 1000)
+    const later = guardPress(arrived, 'Enter', false)
+    expect(guardSwallows(later, 'Enter', false, 1100)).toBe(false)
+    expect(guardSwallows(later, 'Enter', true, 1100)).toBe(true)
+  })
+  it('holds a fresh press for the dwell after Enter moved focus, then lets it through', () => {
+    const arrived = guardArrive(guardRelease(guardPress(FRESH_GUARD, 'Enter', false), 'Enter'), 5000, ENTER_DWELL_MS)
+    expect(guardSwallows(arrived, 'Enter', false, 5000 + ENTER_DWELL_MS - 1)).toBe(true)
+    expect(guardSwallows(arrived, 'Enter', false, 5000 + ENTER_DWELL_MS)).toBe(false)
+  })
+  it('forgets everything when the window loses focus (a keyup may never come)', () => {
+    const arrived = guardArrive(guardPress(FRESH_GUARD, 'Enter', false), 1000)
+    expect(guardSwallows(guardReset(), 'Enter', false, 1001)).toBe(false)
+    expect(guardSwallows(arrived, 'Enter', false, 1001)).toBe(true)
+  })
+  it('a held then doubled Enter on a row answers nothing, a release and a fresh press does', () => {
+    let g = guardPress(FRESH_GUARD, 'Enter', false)
+    g = guardArrive(g, 1000, ENTER_DWELL_MS) // focus moved to the action by this Enter
+    expect(guardSwallows(g, 'Enter', true, 1050)).toBe(true) // auto-repeat
+    expect(guardSwallows(g, 'Enter', false, 1100)).toBe(true) // a second keydown with no keyup
+    g = guardRelease(g, 'Enter')
+    expect(guardSwallows(g, 'Enter', false, 1200)).toBe(true) // rapid second tap, inside the dwell
+    g = guardPress(g, 'Enter', false)
+    expect(guardSwallows(g, 'Enter', false, 1000 + ENTER_DWELL_MS + 1)).toBe(false) // deliberate press
+  })
+})
+
 describe('words', () => {
   it('writes the summary', () => {
     expect(summaryText(4, 3)).toBe('4 waiting on you · 3 finished')
@@ -214,6 +269,29 @@ describe('words', () => {
     const item = buildWaiting({ runs: [run('r1', 'p1', 1, { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Bash', input: { command: 'npm test' } }] })], teamItems: [], projectName: names })[0]
     expect(rowName(item, '2 min')).toBe(`Permission: ${item.title}, Implementer 2, Notes API, run started 2 min ago`)
     expect(rowName(item, 'just now')).toContain('run started just now')
+  })
+  it('times a decision by when it was raised and says "waiting"', () => {
+    const item = buildWaiting({ runs: [run('r1', 'p1', 1, { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Bash', requestedAt: 5000 }] })], teamItems: [], projectName: names })[0]
+    expect(item).toMatchObject({ at: 5000, atSource: 'decision' })
+    expect(rowName(item, '2 min')).toBe(`Permission: ${item.title}, Implementer 2, Notes API, waiting 2 min`)
+    expect(rowName(item, 'just now')).toContain('waiting just now')
+  })
+  it('sorts by decision time across runs, falling back to the run start, team items last', () => {
+    const list = buildWaiting({
+      runs: [
+        // An old run whose question was only asked late.
+        run('old', 'p1', 100, { questions: [{ id: 'q', agentId: 'a2', question: 'Late?', createdAt: 9000 }] }),
+        // A newer run whose permission has waited longer.
+        run('new', 'p2', 5000, { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Bash', requestedAt: 6000 }] }),
+        // No decision time: the run start (7000) is used.
+        run('bare', 'p2', 7000, { mcpInstalls: [{ id: 'i', agentId: 'a1' }] })
+      ],
+      teamItems: [{ key: 'team:p1', projectId: 'p1', projectName: 'Notes API', state: 'pending' as const, label: 'Team files' }],
+      projectName: names
+    })
+    expect(list.map((i) => i.id)).toEqual(['w:new/p', 'w:bare/i', 'w:old/q', 't:team:p1'])
+    expect(list.map((i) => i.atSource)).toEqual(['decision', 'run', 'decision', 'none'])
+    expect(rowName(list[1], '3 min')).toContain('run started 3 min ago')
   })
 })
 

@@ -81,7 +81,7 @@
   height: var(--space-2);
   border-radius: 50%;
   background: var(--eng);
-  box-shadow: 0 0 0 3px var(--eng-soft);
+  box-shadow: 0 0 0 calc(var(--space-0h) * 1.5) var(--eng-soft);
 }
 .knowledge-live-dot[data-breathe] {
   animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
@@ -479,13 +479,13 @@
   padding-top: var(--space-1h);
 }
 .knowledge-detail-mark .knowledge-kind-mark {
-  width: 20px;
-  height: 20px;
-  box-shadow: 0 0 22px -4px var(--kind-ink, var(--text-tertiary));
+  width: var(--space-5);
+  height: var(--space-5);
+  box-shadow: 0 0 var(--space-5) calc(-1 * var(--space-1)) var(--kind-ink, var(--text-tertiary));
 }
 .knowledge-detail-mark .knowledge-kind-mark[data-mark='ring'],
 .knowledge-detail-mark .knowledge-kind-mark[data-mark='ring-dot'] {
-  border-width: 3px;
+  border-width: calc(var(--space-0h) * 1.5);
 }
 .knowledge-detail-prov {
   margin: 0;

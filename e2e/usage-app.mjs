@@ -4,7 +4,7 @@
 // one announcement per action), keyboard (spend plot, project rows, efficiency grid), states (filtered-empty, Kind chip),
 // layout at 1024x640 and 1600x1000 in both themes, and a live run with the page open. Seeds through the IPC
 // (runs.start / runs.startQuick), so it never drives the composer. A check that cannot be driven logs SKIP with a reason.
-import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep, pickSetup } from './lib.mjs'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -147,8 +147,7 @@ async function createEngagement(name, dir) {
   await form.getByLabel('Name', { exact: true }).fill(name)
   await T('new-project-client').fill('Acme Corp')
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
-  const arch = form.locator('[data-testid=architect-setup]')
-  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+  await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
 }

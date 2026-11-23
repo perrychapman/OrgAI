@@ -175,6 +175,8 @@ export interface FactoryMaterials {
 /** Status token colours read by the engine through getComputedStyle (section 4.3: lamps and the selection ring). */
 export interface FactoryTokenColours {
   success: string
+  /** --working (cyan): the Running lamp and the active plan step. */
+  working: string
   warning: string
   danger: string
   accentText: string
