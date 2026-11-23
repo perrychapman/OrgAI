@@ -420,12 +420,14 @@ try {
       await sleep(200)
       check((await page.locator('[data-testid=permissions-summary-toggle]').getAttribute('aria-expanded')) === 'false', `the Rules and folders summary starts hidden ${tag} ${theme}`)
       const fit = await scrollFits()
-      if (w === 1024) check(fit.sh <= fit.ch, `Permissions at rest needs no scrolling ${tag} ${theme}`, JSON.stringify(fit))
-      // (5) tab stops at rest.
+      // ui-overhaul: the mode is a card group with its effects table, so the pane may scroll; the cards are in view.
+      const cards = await page.locator('[data-testid=permission-mode-cards]').boundingBox()
+      check(!!cards && cards.y + cards.height <= h, `the mode cards are in view at rest ${tag} ${theme}`, JSON.stringify({ fit, cards }))
+      // (5) tab stops at rest: the mode group (one stop), More options, the rules summary and Advanced.
       const perm = await tabStops()
-      check(perm.length <= 3, `Permissions has at most 3 tab stops at rest ${tag} ${theme}`, perm.join(' | '))
+      check(perm.length <= 4, `Permissions has at most 4 tab stops at rest ${tag} ${theme}`, perm.join(' | '))
       await shot(`pane-permissions-${tag}-${theme}`)
-      await paneTab('General')
+      await paneTab('Basics')
       const gen = await tabStops()
       if (anyConnected) check(gen.length <= 4, `General has at most 4 tab stops at rest ${tag} ${theme}`, gen.join(' | '))
       else log(`SKIP General tab stop count ${tag} ${theme}: no connection connected (the Connection section adds links), saw ${gen.length}`)
@@ -433,11 +435,12 @@ try {
       check((await wd.getAttribute('title')) === repo && (await page.locator('input[aria-label="Working directory"]').count()) === 0, `the working directory is a read-only path with the full path in its title ${tag} ${theme}`)
       await shot(`pane-general-${tag}-${theme}`)
       // (4) subscription project: plan guard line, no percent input at rest.
-      await paneTab('Limits')
+      await paneTab('Spending limits')
       await setAdvanced('project-limits', false)
       await sleep(200)
       const lim = await tabStops()
-      check(lim.length <= 2, `Limits has at most 2 tab stops at rest ${tag} ${theme}`, lim.join(' | '))
+      // ui-overhaul Limits board: "See where it went", the two run-size selects and Advanced.
+      check(lim.length <= 4, `Limits has at most 4 tab stops at rest ${tag} ${theme}`, lim.join(' | '))
       check((await page.locator('[data-testid=plan-guard-line]').count()) === 1, `Limits shows the plan guard line on a subscription project ${tag} ${theme}`)
       check((await page.locator('[role=tabpanel] input[type=number]:visible').count()) === 0, `no number input is visible at rest on a subscription project ${tag} ${theme}`)
       // N2: the line says only what runs: no five-hour promise unless the share is set.
@@ -449,7 +452,7 @@ try {
 
   // N2: with a five-hour share set the line names it; cleared again afterwards.
   {
-    await paneTab('Limits')
+    await paneTab('Spending limits')
     await setAdvanced('project-limits', true)
     const share = page.getByLabel('Stop at a share of the five-hour window (%)', { exact: true })
     await share.fill('30')
@@ -466,7 +469,7 @@ try {
   // checked in connections.mjs), and a closed one stays closed.
   {
     for (const pane of ['project-limits', 'project-permissions']) {
-      const name = pane === 'project-limits' ? 'Limits' : 'Permissions'
+      const name = pane === 'project-limits' ? 'Spending limits' : 'Permissions'
       await paneTab(name)
       await setAdvanced(pane, true)
       await sleep(300)
@@ -485,8 +488,32 @@ try {
   // N8: one short-name table for the permission mode on both settings pages.
   {
     await paneTab('Permissions')
-    const projectModes = await page.locator('[role=tabpanel] select').first().locator('option').allTextContents()
-    check(projectModes.includes('Ask for everything risky') && projectModes.includes('Auto-accept edits'), 'the project mode select uses the shared short names', projectModes.join(' | '))
+    const projectModes = await page.locator('[data-testid=permission-mode-cards] .perm-card-mode').allTextContents()
+    check(projectModes.includes('Ask for everything risky') && projectModes.includes('Auto-accept edits'), 'the project mode cards use the shared short names', projectModes.join(' | '))
+    // ui-overhaul mode cards: a pick saves, the effects table follows, More options toggles, Bypass asks first.
+    const before = (await findProject(page, NAME))?.permissionMode
+    const card = (m) => page.locator(`[data-testid=permission-mode-card][data-mode=${m}]`)
+    const target = before === 'acceptEdits' ? 'default' : 'acceptEdits'
+    await card(target).click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.permissionMode === target, `clicking a mode card saves ${target}`)
+    check((await card(target).locator('.perm-card-current').count()) === 1, 'the chosen card says Current')
+    const firstCell = (await page.locator('[data-testid=permission-mode-effects] td').first().innerText()).trim()
+    check(firstCell === (target === 'acceptEdits' ? 'Goes ahead' : 'Asks first'), 'the effects table follows the mode', firstCell)
+    const more = page.locator('[data-testid=permission-mode-more]')
+    check((await more.getAttribute('aria-expanded')) === 'false' && (await card('bypassPermissions').count()) === 0, 'More options starts closed')
+    await more.click()
+    check((await more.getAttribute('aria-expanded')) === 'true' && (await card('bypassPermissions').count()) === 1, 'More options shows the other modes')
+    await card('bypassPermissions').click()
+    const confirmBtn = page.locator('[data-testid=permission-bypass-confirm]')
+    await confirmBtn.waitFor({ timeout: 5000 }).catch(() => {})
+    check(await confirmBtn.isVisible(), 'Skip all checks asks for confirmation')
+    await page.keyboard.press('Escape')
+    await sleep(500)
+    check((await findProject(page, NAME))?.permissionMode === target, 'cancelling the confirmation keeps the mode')
+    await card(before ?? 'auto').click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.permissionMode === (before ?? 'auto'), 'the mode is restored')
   }
 
   // N10: with worktrees off, the review switch says why it is disabled.
@@ -539,7 +566,7 @@ try {
       for (const theme of ['dark', 'light']) {
         await setTheme(theme)
         const tag = `${w}x${h} ${theme}`
-        await paneTab('Limits')
+        await paneTab('Spending limits')
         for (const open of [false, true]) {
           await setAdvanced('project-limits', open)
           await sleep(200)

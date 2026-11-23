@@ -163,7 +163,7 @@ async function fullFlow(w, h, theme) {
 async function maintenanceReview() {
   await page.locator('[data-testid=tab-settings]').click()
   const btn = page.locator('[data-testid=maintenance-org-review]')
-  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
+  await page.getByRole('tab', { name: 'Branches', exact: true }).click()
   await btn.waitFor({ timeout: 10_000 })
   await btn.click()
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 20_000 })

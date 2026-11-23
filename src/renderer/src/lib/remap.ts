@@ -114,8 +114,8 @@ export function tierMappingLines(
     const text = model
       ? `${label}: ${model}`
       : count > 0
-        ? `${label} is not mapped on ${connectionName}, so ${count === 1 ? 'the role' : 'roles'} on ${label} ${count === 1 ? 'keeps its' : 'keep their'} current model. To change that, pick a ${label} model under Model tiers on its card in App settings > Connections.`
-        : `${label} is not mapped on ${connectionName}. No role uses it; pick a model under Model tiers on its card in App settings > Connections if you want one.`
+        ? `${label} is not mapped on ${connectionName}, so ${count === 1 ? 'the role' : 'roles'} on ${label} ${count === 1 ? 'keeps its' : 'keep their'} current model. To change that, pick a ${label} model under Model tiers on its card in Settings > AI providers.`
+        : `${label} is not mapped on ${connectionName}. No role uses it; pick a model under Model tiers on its card in Settings > AI providers if you want one.`
     return { tier, tierLabel: label, model, roles: count, text }
   })
 }

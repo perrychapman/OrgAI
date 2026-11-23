@@ -187,7 +187,7 @@ try {
 
   // Remove the template in App settings.
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Templates and kit', exact: true }).click()
+  await page.getByRole('tab', { name: 'Templates', exact: true }).click()
   await page.locator('[data-testid=template-row]').first().waitFor({ state: 'visible' })
   await page.locator('[data-testid=template-remove]').first().click()
   await page.getByRole('button', { name: 'Remove template', exact: true }).click()
@@ -223,7 +223,7 @@ try {
 
   // ======== 3. Plan ========
   await openProject(page, A)
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   const planSection = page.locator('[data-testid=engagement-plan-section]')
   await planSection.waitFor({ state: 'visible' })
   await page.locator('[data-testid=engagement-plan-write]').click()
@@ -390,7 +390,7 @@ try {
       await setSize(w, h)
       await setTheme(theme)
       await openProject(page, A)
-      await openSettingsPane('General')
+      await openSettingsPane('Basics')
       await page.locator('[data-testid=engagement-plan-section]').scrollIntoViewIfNeeded()
       check((await inView('[data-testid=engagement-plan-view]')) === true, `${tag}: the plan view sits inside the window`)
       const sh = await windowShift(page)
