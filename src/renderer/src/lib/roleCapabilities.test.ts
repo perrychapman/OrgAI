@@ -154,6 +154,12 @@ describe('panel header and chips', () => {
     expect(roleGroupName(roles, roles[2])).toBe('Lead reviewer')
     expect(roleGroupName(roles, roles[3])).toBe('Lead reviewer')
   })
+  it('counts groups: root reports that lead someone', async () => {
+    const { teamGroupCount } = await import('./roleCapabilities')
+    expect(teamGroupCount(roles)).toBe(1)
+    expect(teamGroupCount([...roles, { id: 'x', name: 'Solo', reportsTo: 'o' }])).toBe(1)
+    expect(teamGroupCount([roles[0]])).toBe(0)
+  })
   it('words the subline', () => {
     expect(roleSubline(roles, roles[0])).toBe('Leads the team')
     expect(roleSubline(roles, roles[2])).toBe('Lead reviewer \u00b7 reports to Lead reviewer')

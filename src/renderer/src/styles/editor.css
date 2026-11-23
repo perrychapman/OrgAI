@@ -104,6 +104,103 @@
   background: color-mix(in oklab, var(--role) 24%, var(--canvas-node-bg));
   color: var(--canvas-node-text);
 }
+
+/* UI overhaul (Team board; one family with Live's AgentNode, agreed with ov-run): a glass card, a filled rounded-square
+ * avatar, and selection as the accent wash with a ring and a soft glow. No backdrop-filter on nodes (many on screen);
+ * the stage already sits on the ground. The 4 px leading bar stays as the selection cue that does not depend on colour. */
+.role-node[data-style='card'] {
+  background: var(--glass-strong);
+  border-color: var(--glass-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+  transition:
+    border-color var(--dur-fast) var(--ease-out, ease),
+    box-shadow var(--dur-fast) var(--ease-out, ease),
+    background-color var(--dur-fast) var(--ease-out, ease),
+    transform var(--dur-fast) var(--ease-out, ease);
+}
+.role-node[data-style='card'] .avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  /* Role colours are bright; darkened toward black so white initials keep contrast on every one. */
+  background: color-mix(in oklab, var(--role) 58%, black);
+  color: var(--text-on-accent);
+  box-shadow: none;
+  font-size: var(--text-caption);
+}
+.role-node[data-style='card'] .name {
+  font-family: var(--font-display, inherit);
+}
+.role-node[data-style='card'] .chip {
+  background: var(--field-bg);
+  border-color: transparent;
+}
+.react-flow__node:hover > .role-node[data-style='card']:not(.selected) {
+  transform: translateY(-2px);
+  box-shadow: var(--elev-2);
+}
+.role-node[data-style='card'].selected {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--glass-strong);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 24px -8px var(--accent), var(--elev-2);
+}
+.role-node[data-style='card'].selected::before {
+  background: var(--accent);
+}
+.team-editor[data-kind='engagement'] .role-node[data-style='card'].selected {
+  background: linear-gradient(var(--eng-soft), var(--eng-soft)), var(--glass-strong);
+  border-color: var(--eng);
+  box-shadow: inset 0 0 0 1px var(--eng), 0 0 24px -8px var(--eng), var(--elev-2);
+}
+.team-editor[data-kind='engagement'] .role-node[data-style='card'].selected::before {
+  background: var(--eng);
+}
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node:hover > .role-node[data-style='card']:not(.selected) {
+    transform: none;
+  }
+}
+:root[data-reduce-motion='on'] .react-flow__node:hover > .role-node[data-style='card']:not(.selected) {
+  transform: none;
+}
+
+/* The selected role's quick actions (NodeToolbar, rendered above the node). */
+.role-node-toolbar-row {
+  display: flex;
+  gap: var(--space-0h);
+  padding: var(--space-0h);
+  border-radius: var(--radius-md);
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-2);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.role-node-toolbar-row > button {
+  all: unset;
+  box-sizing: border-box;
+  height: var(--control-sm);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium, 500);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+.role-node-toolbar-row > button:hover {
+  background: var(--field-bg);
+}
+.role-node-toolbar-row > button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.role-node-toolbar-row > button.is-danger {
+  color: var(--danger-text);
+}
 .role-node[data-style='compact'] {
   box-sizing: border-box;
   width: 160px;

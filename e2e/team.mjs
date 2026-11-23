@@ -771,8 +771,8 @@ async function sectionNodeMenu(page) {
   await menu.waitFor({ timeout: 5000 })
   check((await menu.getAttribute('aria-label')) === 'Actions for Reviewer', 'the node menu is named for the role', await menu.getAttribute('aria-label'))
   check(
-    (await menu.locator('[role=menuitem]').allInnerTexts()).map((t) => t.trim()).join('|') === 'Edit role|Add a report|Remove role',
-    'the node menu offers Edit role, Add a report and Remove role'
+    (await menu.locator('[role=menuitem]').allInnerTexts()).map((t) => t.trim()).join('|') === 'Edit role|Add a report|Duplicate role|Remove role',
+    'the node menu offers Edit role, Add a report, Duplicate role and Remove role'
   )
   check((await page.locator('[data-testid=role-menu-remove]').getAttribute('aria-disabled')) !== 'true', 'Remove role is enabled on a non-root role')
   await page.keyboard.press('Escape')
@@ -801,6 +801,26 @@ async function sectionNodeMenu(page) {
   const after = (await findProject(page, NAME)).roles
   const added = after.filter((r) => !before.some((b) => b.id === r.id))
   check(added.length === 1 && added[0].reportsTo === reviewerId, 'Add a report adds a role reporting to that role', JSON.stringify(added.map((r) => r.reportsTo)))
+
+  // UI overhaul (Team board): the selected role's toolbar. Duplicate adds "{name} copy" beside it; Undo takes it back.
+  const reviewer = before.find((r) => r.name === 'Reviewer')
+  await node.click()
+  const toolbar = page.locator('[data-testid=role-node-toolbar] [role=toolbar]')
+  await toolbar.waitFor({ timeout: 5000 })
+  check((await toolbar.getAttribute('aria-label')) === 'Actions for Reviewer', 'the selected role shows its action toolbar', await toolbar.getAttribute('aria-label'))
+  const beforeDup = (await findProject(page, NAME)).roles
+  await page.locator('[data-testid=role-node-duplicate]').click()
+  await sleep(500)
+  const afterDup = (await findProject(page, NAME)).roles
+  const copy = afterDup.find((r) => !beforeDup.some((b) => b.id === r.id))
+  check(
+    !!copy && copy.name === 'Reviewer copy' && copy.reportsTo === reviewer?.reportsTo && copy.prompt === reviewer?.prompt && copy.slug !== reviewer?.slug,
+    'Duplicate adds "Reviewer copy" under the same manager with the same instructions and its own ID',
+    JSON.stringify(copy && { name: copy.name, reportsTo: copy.reportsTo, slug: copy.slug })
+  )
+  await page.locator('[data-testid=team-notice-undo]').click()
+  await sleep(400)
+  check((await findProject(page, NAME)).roles.length === beforeDup.length, 'Undo removes the duplicate')
 
   const rootName = before.find((r) => r.reportsTo === null)?.name
   await page.locator('.react-flow__node', { hasText: rootName }).first().click({ button: 'right' })

@@ -208,6 +208,12 @@ export function roleGroupName(roles: readonly RoleRef[], role: RoleRef): string 
   return cur.name
 }
 
+/** How many groups the chart has: the root's direct reports that lead at least one role (the header's "in N groups"). */
+export function teamGroupCount(roles: readonly Pick<Role, 'id' | 'reportsTo'>[]): number {
+  const roots = new Set(roles.filter((r) => r.reportsTo === null).map((r) => r.id))
+  return roles.filter((r) => r.reportsTo !== null && roots.has(r.reportsTo) && roles.some((x) => x.reportsTo === r.id)).length
+}
+
 /** "Quality · reports to Lead reviewer"; "Leads the team" for the root. */
 export function roleSubline(roles: readonly RoleRef[], role: RoleRef): string {
   if (role.reportsTo === null) return 'Leads the team'
