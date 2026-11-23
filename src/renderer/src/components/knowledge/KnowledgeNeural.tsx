@@ -52,7 +52,12 @@ export interface KnowledgeNeuralProps {
   /** The graph was just switched to from the list: it enters with the view swap. */
   enter?: boolean
   projectId: string
+  /** What the canvas draws: the whole graph, or its most connected items when the limit applies (lib/knowledgeLimit.ts). */
   graph: KnowledgeGraphData
+  /** Every item id of the whole graph: an item the limit reveals is not "new", so it does not fire. */
+  knownIds?: ReadonlySet<string>
+  /** The note about the limit beside the graph, and its one action ("Show all"); absent for a small graph. */
+  limit?: { text: string; action?: { label: string; onClick: () => void } }
   /** Null until the first answer, or when the read failed: sizes then come from live edges. */
   inferred: KnowledgeInferredResult | null
   /** The list's filter, shared: filtered-out nodes dim and never move. */
@@ -361,14 +366,18 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
 
   // The data: new nodes scale in and fire; the rest never moves.
   const prevIds = useRef<Set<string> | null>(null)
+  const prevKnown = useRef<ReadonlySet<string> | null>(null)
   useEffect(() => {
     const engine = engineRef.current
     if (!engine) return
     engine.setData(model, projectId, filter.showRetired)
     const prev = prevIds.current
+    const known = prevKnown.current
     prevIds.current = new Set(model.ids)
+    prevKnown.current = props.knownIds ?? null
     if (prev && prev.size > 0) {
-      const fresh = model.ids.filter((id) => !prev.has(id))
+      // Only items the graph did not have before are new; the limit revealing one that was always there is not.
+      const fresh = model.ids.filter((id) => !prev.has(id) && !known?.has(id))
       if (fresh.length > 0 && fresh.length <= 50) {
         engine.fire(
           fresh.map((id) => model.index.get(id)!),
@@ -744,6 +753,18 @@ function NeuralInner(props: KnowledgeNeuralProps): ReactElement {
           </p>
         )}
       </div>
+      {props.limit && (
+        <div className="neural-limit glass" data-testid="knowledge-limit">
+          <span className="neural-limit-text" data-testid="knowledge-limit-note">
+            {props.limit.text}
+          </span>
+          {props.limit.action && (
+            <Button size="sm" testId="knowledge-limit-action" onClick={props.limit.action.onClick}>
+              {props.limit.action.label}
+            </Button>
+          )}
+        </div>
+      )}
       <div className="neural-controls">
         <IconButton icon={ZoomOut} label="Zoom out" testId="knowledge-neural-zoom-out" onClick={() => engineRef.current?.zoomBy(0.8)} />
         <IconButton icon={ZoomIn} label="Zoom in" testId="knowledge-neural-zoom-in" onClick={() => engineRef.current?.zoomBy(1.25)} />
