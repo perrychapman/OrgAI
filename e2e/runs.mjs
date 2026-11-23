@@ -1189,6 +1189,43 @@ try {
   check((await chatDivider.count()) === 1, 'the continued chat shows a continuation divider')
   await shot('chat-relaunch-continued')
   await endSession(page)
+
+  // A decision card must never take focus from the composer the user just sent from: type, Enter, a permission arrives
+  // (about a second later on the mock, after the composer was emptied by the Send). Focus stays in the composer, nothing is
+  // answered, and the card is still waiting and reachable by Tab.
+  await openProject(page, NAME)
+  await projectTab(page, 'Live').click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await startOnPage('Focus guard first turn')
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await sleep(1500)
+  await endSession(page)
+  const guardTa = page.locator('.composer textarea').first()
+  await guardTa.fill('Focus guard second turn [mock:fatigue]')
+  await guardTa.press('Enter')
+  const guardCard = page.locator('.decision-card').first()
+  await guardCard.waitFor({ timeout: 20_000 })
+  await sleep(700)
+  const guardFocus = await page.evaluate(() => {
+    const a = document.activeElement
+    return { tag: a?.tagName, inComposer: !!a?.closest('.composer'), inCard: !!a?.closest('.decision-card'), label: (a?.textContent || '').trim().slice(0, 30) }
+  })
+  check(guardFocus.tag === 'TEXTAREA' && guardFocus.inComposer && !guardFocus.inCard, 'a permission card that arrives right after Send leaves focus in the composer', JSON.stringify(guardFocus))
+  check((await page.locator('.decision-card').count()) >= 1 && (await guardCard.isVisible()), 'the permission card is still waiting: nothing was answered')
+  // Typing goes on in the composer, not into the card, and a held Enter never reaches the card.
+  await guardTa.pressSequentially('abc')
+  check((await guardTa.inputValue()) === 'abc', 'typing after the card arrived still goes to the composer')
+  await guardTa.fill('')
+  await guardTa.focus()
+  let reached = false
+  for (let i = 0; i < 40 && !reached; i++) {
+    await page.keyboard.press('Shift+Tab')
+    reached = await page.evaluate(() => !!document.activeElement?.closest('.decision-card'))
+  }
+  check(reached, 'the waiting card is reachable by Shift+Tab from the composer (the user moves focus, the card never does)')
+  await shot('focus-guard')
+  await endSession(page)
 } catch (e) {
   check(false, 'runs e2e ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})
