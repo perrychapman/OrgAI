@@ -196,6 +196,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             </div>
           )}
         </div>
+        {!compact && <span className="state-dot" aria-hidden="true" />}
       </div>}
       {!compact && (
         <>

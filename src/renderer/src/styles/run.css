@@ -2,15 +2,82 @@
 
 .agent-node {
   width: 240px;
-  background: var(--canvas-node-bg);
+  /* The glass family shared with the Team editor's role node. No backdrop-filter: a live chart can hold 121 nodes. */
+  background: var(--glass-strong, var(--canvas-node-bg));
   color: var(--canvas-node-text);
   font-family: var(--canvas-node-font);
-  border: 1px solid var(--canvas-node-border);
+  border: 1px solid var(--glass-line, var(--canvas-node-border));
   border-radius: var(--radius-lg);
   padding: 11px 12px 10px;
   box-shadow: var(--elev-1);
-  transition: border-color var(--dur-base), box-shadow var(--dur-base), opacity var(--dur-base);
+  transition: border-color var(--dur-base), box-shadow var(--dur-base), opacity var(--dur-base), background-color var(--dur-base),
+    transform var(--dur-fast) var(--ease-out);
   position: relative;
+}
+.agent-node[data-style='card']:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--elev-2);
+}
+/* The state dot (card style): cyan working, amber waiting, green done, red failed, neutral queued. Shape and the state words stay too. */
+.agent-node .state-dot {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+}
+.agent-node.state-thinking .state-dot,
+.agent-node.state-tool .state-dot,
+.agent-node.state-delegating .state-dot,
+.agent-node.state-starting .state-dot {
+  background: var(--working);
+  box-shadow: 0 0 0 3px var(--working-soft);
+}
+.agent-node.state-waiting .state-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-soft);
+}
+.agent-node.state-done .state-dot {
+  background: var(--success);
+}
+.agent-node.state-error .state-dot {
+  background: var(--danger);
+}
+/* The pulse is the board's expanding ring (a-pulse), only on the first 12 working nodes; waiting always breathes. Compositor-cheap: the ring is a box-shadow on a 9 px dot. */
+[data-breathe].state-thinking .state-dot,
+[data-breathe].state-tool .state-dot,
+[data-breathe].state-delegating .state-dot,
+[data-breathe].state-starting .state-dot {
+  animation: node-pulse var(--dur-pulse) var(--ease-out) infinite;
+  animation-delay: calc(var(--i, 0) * 150ms);
+}
+.agent-node.state-waiting .state-dot {
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+}
+@keyframes node-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--working) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-node[data-style='card']:hover {
+    transform: none;
+  }
+  .agent-node .state-dot {
+    animation: none !important;
+  }
+}
+:root[data-reduce-motion='on'] .agent-node[data-style='card']:hover {
+  transform: none;
+}
+:root[data-reduce-motion='on'] .agent-node .state-dot {
+  animation: none !important;
 }
 /* Keyboard focus is the outline (2 px, 3 px out). Selection is drawn after the state rules below, so it wins over them. */
 .react-flow__node:focus-visible > .agent-node,
@@ -18,11 +85,13 @@
   outline: 2px solid var(--canvas-focus-ring);
   outline-offset: 3px;
 }
-.agent-node.state-done {
-  border-color: var(--border-subtle);
+/* Done: dimmed, green dot. Selection restores full strength. */
+.agent-node.state-done:not(.selected) {
+  opacity: 0.75;
 }
 .agent-node.state-error {
   border-color: var(--danger);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--glass-strong, var(--canvas-node-bg));
 }
 /* Ended without a result: quiet dim, the tooltip says why. Selection restores full strength. */
 .agent-node.no-result:not(.selected) {
@@ -34,46 +103,40 @@
 }
 .agent-node.state-waiting {
   border-color: var(--warning);
+  background: linear-gradient(var(--warning-soft), var(--warning-soft)), var(--glass-strong, var(--canvas-node-bg));
   box-shadow: var(--halo-warning), var(--elev-1);
 }
 .agent-node.state-thinking,
 .agent-node.state-tool,
 .agent-node.state-delegating,
 .agent-node.state-starting {
+  border-color: var(--working);
   box-shadow: var(--glow-working), var(--elev-1);
 }
 
 /* Selected beats every state colour (done, error, waiting, no result): a role-colour border plus an inner 1px line, and
  * a shape cue that does not depend on colour, so it never reads as keyboard focus (the outline) even when the role
  * colour equals the accent. Card: a 4 px bar on the leading edge, inside the padding. Name tag: a 3 px border. */
-.agent-node[data-style='card'].selected,
 .agent-node[data-style='compact'].selected {
   border-color: var(--role);
   box-shadow: inset 0 0 0 1px var(--role), var(--elev-2);
 }
-.agent-node[data-style='card'].selected::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: var(--space-2);
-  bottom: var(--space-2);
-  width: 4px;
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: var(--role);
-  pointer-events: none;
+/* Card: accent tint, accent border and a 3 px ring (a shape cue as well as colour), distinct from the focus outline. */
+.agent-node[data-style='card'].selected {
+  border-color: var(--accent);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--glass-strong, var(--canvas-node-bg));
+  box-shadow: 0 0 0 3px var(--accent-soft-border), var(--elev-2);
 }
 .agent-node[data-style='compact'].selected {
   box-shadow: inset 0 0 0 2px var(--role), var(--elev-2);
 }
 /* A waiting agent keeps its halo and a working one its glow under the selection line. */
-.agent-node[data-style='card'].selected.state-waiting {
-  box-shadow: inset 0 0 0 1px var(--role), var(--halo-warning), var(--elev-2);
-}
+.agent-node[data-style='card'].selected.state-waiting,
 .agent-node[data-style='card'].selected.state-thinking,
 .agent-node[data-style='card'].selected.state-tool,
 .agent-node[data-style='card'].selected.state-delegating,
 .agent-node[data-style='card'].selected.state-starting {
-  box-shadow: inset 0 0 0 1px var(--role), var(--glow-working), var(--elev-2);
+  border-color: var(--accent);
 }
 .agent-node[data-style='compact'].selected.state-waiting {
   box-shadow: inset 0 0 0 2px var(--role), var(--halo-warning), var(--elev-2);
@@ -100,6 +163,42 @@
   width: 40px;
   height: 40px;
   font-size: var(--text-body);
+}
+/* Card: a 30 px rounded square in the role colour with white initials; the state dot replaces the ring. */
+.agent-node[data-style='card'] .avatar-wrap,
+.agent-node[data-style='card'] .avatar {
+  width: 30px;
+  height: 30px;
+}
+.agent-node[data-style='card'] .avatar {
+  border-radius: var(--radius-md);
+  background: var(--role);
+  color: var(--text-on-accent);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.agent-node[data-style='card'] .ring {
+  display: none;
+}
+.agent-node[data-style='card'] .badge {
+  right: -5px;
+  bottom: -5px;
+}
+.agent-node[data-style='card'] .name {
+  font-size: 13.5px;
+}
+/* The orchestrator card: a larger look, as on the board. */
+.agent-node[data-style='card'].is-root {
+  padding: 13px 14px 12px;
+  border-color: var(--accent-soft-border);
+}
+.agent-node[data-style='card'].is-root .avatar-wrap,
+.agent-node[data-style='card'].is-root .avatar {
+  width: 36px;
+  height: 36px;
+}
+.agent-node[data-style='card'].is-root .name {
+  font-size: var(--text-title-sm);
 }
 .agent-node .ring {
   position: absolute;
@@ -275,7 +374,11 @@
 :root[data-reduce-motion='on'] [data-breathe] .activity.working::before {
   animation: none;
 }
+.agent-node[data-style='card'] .activity.working::before {
+  display: none;
+}
 .agent-node .foot {
+  font-variant-numeric: tabular-nums;
   display: flex;
   justify-content: space-between;
   margin-top: 8px;
