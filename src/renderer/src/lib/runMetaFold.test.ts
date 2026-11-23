@@ -21,6 +21,15 @@ describe('run header fold', () => {
     ])
   })
 
+  it('passes a chip title and screen-reader text through', () => {
+    const items = listFolded(
+      [{ t: 'Recorded 8 changes' }],
+      () => true,
+      (k) => ({ label: k.t, interactive: true, testId: 'run-meta-recorded', title: 'What the team recorded', srText: '(4 items; opens Knowledge)' })
+    )
+    expect(items[0]).toMatchObject({ title: 'What the team recorded', srText: '(4 items; opens Knowledge)' })
+  })
+
   it('past the burst limit the guard settles once with the latest answer, then skips', () => {
     const guard = createFoldGuard(6, 200)
     const answers = [1000, 1010, 1020, 1030, 1040, 1050].map((t) => guard(t))

@@ -58,10 +58,14 @@ interface FoldState {
 
 /** The menu item for one folded chip. */
 function describeChip(c: HTMLElement): Omit<FoldedItem, 'idx'> {
+  const btn = c.tagName === 'BUTTON' ? c : c.querySelector('button')
+  const sr = (c.querySelector('.sr-only')?.textContent ?? '').replace(/\s+/g, ' ').trim()
   return {
     label: chipText(c),
     interactive: isActionChip(c),
-    testId: (c.tagName === 'BUTTON' ? c : c.querySelector('button'))?.getAttribute('data-testid') ?? c.getAttribute('data-testid') ?? undefined
+    testId: btn?.getAttribute('data-testid') ?? c.getAttribute('data-testid') ?? undefined,
+    title: btn?.getAttribute('title') ?? c.getAttribute('title') ?? undefined,
+    srText: sr || undefined
   }
 }
 
@@ -496,6 +500,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
                       type="button"
                       className="run-meta-more-item"
                       data-testid={f.testId}
+                      title={f.title}
                       onClick={() => {
                         close()
                         const target = lineRef.current?.children[f.idx] as HTMLElement | undefined
@@ -504,9 +509,12 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
                       }}
                     >
                       {f.label}
+                      {f.srText && <span className="sr-only"> {f.srText}</span>}
                     </button>
                   ) : (
-                    <span className="run-meta-more-text">{f.label}</span>
+                    <span className="run-meta-more-text" title={f.title}>
+                      {f.label}
+                    </span>
                   )}
                 </li>
               ))}
