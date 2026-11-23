@@ -678,10 +678,8 @@ try {
     await page.evaluate((id) => window.orgai.runs.stop(id), ended.id)
     await waitStatus(ended.id, ['finished'])
     const ev = await openRunWindow(ended)
-    await ev.locator(T('run-meta-permission')).waitFor({ timeout: 10_000 }).catch(async (e) => {
-      console.log('DBG', await ev.evaluate(() => { const m = document.querySelector('[data-testid=run-meta]'); return { w: innerWidth, h: innerHeight, meta: m && { cw: m.clientWidth, sw: m.scrollWidth, html: m.outerHTML.slice(0, 3000) }, more: document.querySelector('[data-testid=run-meta-more]')?.textContent } }))
-      throw e
-    })
+    // The permission chip never folds into the "more" menu: it is visible (icon at least) at the run window's default width.
+    await ev.locator(T('run-meta-permission')).waitFor({ state: 'visible', timeout: 10_000 })
     check(/^Next message:\s*Plan only/.test(await text(ev, T('run-meta-permission'))) && (await ev.locator(T('run-meta-permission')).getAttribute('data-next')) === 'true', '10 an ended run\'s RunMeta reads "Next message: Plan only", like the chip', await text(ev, T('run-meta-permission')))
 
     await page.evaluate((id) => window.orgai.runs.stop(id), ended.id).catch(() => {})

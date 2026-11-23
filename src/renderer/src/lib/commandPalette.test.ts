@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPaletteItems, flatten, PER_GROUP_IDLE, rankItems, resultsPhrase, scoreItem, sectionsFor, stepIndex, wordScore, type PaletteInput } from './commandPalette'
+import { buildPaletteItems, clampActive, fieldsOnToggle, flatten, PER_GROUP_IDLE, rankItems, resultsPhrase, scoreItem, sectionsFor, stepIndex, wordScore, type PaletteInput } from './commandPalette'
 
 const input = (over: Partial<PaletteInput> = {}): PaletteInput => ({
   projects: [
@@ -107,6 +107,33 @@ describe('sectionsFor', () => {
     const s = sectionsFor(buildPaletteItems(input()), 'notes')
     expect(s).toHaveLength(1)
     expect(s[0].group).toBeNull()
+  })
+})
+
+describe('typing a project name, then Enter', () => {
+  const many = input({
+    projects: [
+      { id: 'p1', name: 'E2E layout (test)', kind: 'code' },
+      { id: 'p2', name: 'E2E layout new idea (test)', kind: 'code' },
+      { id: 'p3', name: 'Notes API', kind: 'code' }
+    ]
+  })
+  it('ranks the project that was typed first, whatever the order of the list', () => {
+    const flat = flatten(sectionsFor(buildPaletteItems(many), 'e2e layout (test)'))
+    expect(flat[0].id).toBe('project:p1')
+    expect(flatten(sectionsFor(buildPaletteItems(many), 'e2e layout new'))[0].id).toBe('project:p2')
+  })
+  it('opens with an empty search and the first row, even right after a search that was left in the field', () => {
+    expect(fieldsOnToggle({ query: 'usag', active: 3 }, false, true)).toEqual({ query: '', active: 0 })
+    // Closing, or a render that did not change `open`, keeps what is typed (the exit fades the same content).
+    expect(fieldsOnToggle({ query: 'usag', active: 3 }, true, false)).toEqual({ query: 'usag', active: 3 })
+    expect(fieldsOnToggle({ query: 'usag', active: 3 }, true, true)).toEqual({ query: 'usag', active: 3 })
+  })
+  it('never points the highlight at nothing when the list shrank under it', () => {
+    expect(clampActive(7, 2)).toBe(1)
+    expect(clampActive(0, 3)).toBe(0)
+    expect(clampActive(-1, 3)).toBe(0)
+    expect(clampActive(5, 0)).toBe(-1)
   })
 })
 

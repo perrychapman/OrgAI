@@ -661,8 +661,22 @@ try {
   const head = ((await page.locator('[data-testid=run-strip] .run-tab[aria-selected=true] .run-tab-title').first().innerText()) || '').replace(/\s+/g, ' ').trim()
   check(head === TITLE, 'the active run tab shows the title', head)
   check((await page.locator('.run-header').count()) === 0, 'the 44 px run header is gone (strip + toolbar)')
-  const metaText = ((await page.locator('[data-testid=run-meta]').innerText()) || '').toLowerCase()
-  check(!metaText.includes('add tests') && /agent/.test(metaText), 'the metadata line shows facts, not the prompt', metaText.slice(0, 120))
+  // The facts are the row's visible chips plus the ones folded into its "more" menu (RunMeta folds what does not fit; the
+  // agent count shows when there is room, and the status always shows).
+  const metaRow = ((await page.locator('[data-testid=run-meta]').innerText()) || '').toLowerCase()
+  const moreBtn = page.locator('[data-testid=run-meta-more]')
+  let metaFolded = ''
+  let moreName = ''
+  if (await moreBtn.isVisible().catch(() => false)) {
+    moreName = (await moreBtn.getAttribute('aria-label').catch(() => '')) ?? ''
+    await moreBtn.click()
+    metaFolded = ((await page.locator('[data-testid=run-meta-more-panel]').innerText().catch(() => '')) || '').toLowerCase()
+    await page.keyboard.press('Escape')
+    await page.locator('[data-testid=run-meta-more-panel]').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {})
+  }
+  const metaText = `${metaRow} ${metaFolded}`
+  check(!metaText.includes('add tests') && /agent/.test(metaText) && metaRow.trim().length > 0, 'the metadata line shows facts (row plus its "more" menu), not the prompt', `${metaRow.replace(/\s+/g, ' ').slice(0, 80)} || ${moreName} || ${metaFolded.replace(/\s+/g, ' ').slice(0, 80)}`)
+  check((await page.locator('[data-testid=run-meta-status]').isVisible()) && (/^\d+ more details? about this run$/.test(moreName) || !moreName), 'the row keeps the status visible and names how many facts the "more" menu holds', moreName)
   await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: 15_000 }).catch(() => {})
   const sbToggle = page.locator('.sidebar button.nav-chevron').first()
   if ((await sbToggle.getAttribute('aria-expanded')) !== 'true') await sbToggle.click()

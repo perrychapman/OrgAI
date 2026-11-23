@@ -21,6 +21,19 @@ page.setDefaultTimeout(10_000)
 
 const T = (id) => page.locator(`[data-testid=${id}]`)
 const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await page.locator(sel).first().isVisible())
+// A run header chip that is a button may sit in the header's "more" menu (RunMeta folds what does not fit); the menu item
+// carries the same test id and does the same thing. Returns the visible one, opening the menu first when the chip is folded.
+const metaChip = async (id) => {
+  const chip = page.locator(`[data-testid=${id}]:visible`)
+  if ((await chip.count()) === 0) {
+    const more = T('run-meta-more')
+    if (await more.isVisible().catch(() => false)) await more.click()
+  }
+  return chip.first()
+}
+const closeMetaMenu = async () => {
+  if (await T('run-meta-more-panel').isVisible().catch(() => false)) await page.keyboard.press('Escape')
+}
 const row = (name) => T('schedule-row').filter({ has: page.locator('.schedule-row-name', { hasText: name }) })
 /** Poll `fn` until it returns a truthy value (returned) or the deadline passes (null). */
 async function until(fn, ms = 20_000, every = 250) {
@@ -202,12 +215,13 @@ try {
   await rowA.locator('[data-testid=schedule-history-open]').first().click()
   await page.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
   check(await visible('[data-testid=run-meta]'), '3 Open run opens the run view')
-  const metaLabel = clean(await T('run-meta-scheduled').innerText().catch(() => ''))
+  const metaLabel = clean(await (await metaChip('run-meta-scheduled')).innerText().catch(() => ''))
+  await closeMetaMenu()
   check(metaLabel.includes('Scheduled: E2E nightly team'), '3 the run meta shows "Scheduled: <schedule name>"', metaLabel)
   const runSummaryA = await page.evaluate((id) => window.orgai.schedules.history(id).then((h) => h.find((x) => x.runId)?.runId).then((rid) => window.orgai.runs.get(rid)), idA)
   check(runSummaryA?.summary?.scheduleId === idA && runSummaryA.summary.scheduleName === 'E2E nightly team', '3 the run summary carries scheduleId and scheduleName', JSON.stringify({ id: runSummaryA?.summary?.scheduleId, name: runSummaryA?.summary?.scheduleName }))
   await shot('scheduled-run')
-  await T('run-meta-scheduled').click()
+  await (await metaChip('run-meta-scheduled')).click()
   await T('schedules-view').waitFor({ timeout: 10_000 }).catch(() => {})
   check(await visible('[data-testid=schedules-view]'), '3 the run meta label opens the Schedules page')
   const focusedRow = await until(async () => page.evaluate(() => document.activeElement?.closest('[data-testid=schedule-row]')?.getAttribute('data-schedule-id')), 5000)
@@ -290,8 +304,10 @@ try {
     await rowB.locator('[data-testid=schedule-history-open]').first().waitFor({ timeout: 10_000 }).catch(() => {})
     await rowB.locator('[data-testid=schedule-history-open]').first().click()
     await page.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
-    check(await visible('[data-testid=run-meta-scheduled]'), '5 the Chat run meta shows the Scheduled label')
-    check(/Scheduled: E2E chat ask/.test(clean(await T('run-meta-scheduled').innerText().catch(() => ''))), '5 the label names the Chat schedule')
+    const chatChip = await metaChip('run-meta-scheduled')
+    check(await chatChip.isVisible().catch(() => false), '5 the Chat run meta shows the Scheduled label (in the row or its "more" menu)')
+    check(/Scheduled: E2E chat ask/.test(clean(await chatChip.innerText().catch(() => ''))), '5 the label names the Chat schedule')
+    await closeMetaMenu()
     await shot('chat-scheduled-run')
   }
   await endSession(page).catch(() => {})

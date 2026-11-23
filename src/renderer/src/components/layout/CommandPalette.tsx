@@ -7,6 +7,8 @@ import { ASSISTANT_ORDER, assistantLabel } from '../../lib/assistants'
 import { clientOf } from '../../lib/clientGroups'
 import {
   buildPaletteItems,
+  clampActive,
+  fieldsOnToggle,
   flatten,
   resultsPhrase,
   sectionsFor,
@@ -146,6 +148,14 @@ export default function CommandPalette({
   const exit = useExitPresence(open)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
+  // Opening starts clean in the same render that sees `open` change (see fieldsOnToggle), not in an effect.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    const next = fieldsOnToggle({ query, active }, wasOpen, open)
+    if (next.query !== query) setQuery(next.query)
+    if (next.active !== active) setActive(next.active)
+  }
   const skipRestore = useRef(false)
   const items = useMemo(() => (open ? buildPaletteItems(snapshotInput(tabs, activeView)) : []), [open, tabs, activeView])
   const sections = useMemo(() => sectionsFor(items, query), [items, query])
@@ -157,8 +167,6 @@ export default function CommandPalette({
     if (!el || !open) return undefined
     const opener = document.activeElement as HTMLElement | null
     skipRestore.current = false
-    setQuery('')
-    setActive(0)
     if (!el.open) el.showModal()
     inputRef.current?.focus()
     return () => {
@@ -190,7 +198,8 @@ export default function CommandPalette({
     window.setTimeout(() => document.getElementById('main-content')?.focus({ preventScroll: true }), 60)
   }
   const optionId = (id: string): string => `${listId}-${id}`
-  const activeItem = flat[active]
+  const activeIndex = clampActive(active, flat.length)
+  const activeItem = flat[activeIndex]
   const typed = query.trim()
 
   return (
@@ -245,7 +254,7 @@ export default function CommandPalette({
             {sections.map((sec, si) => {
               const rows = sec.items.map((item) => {
                 const index = flat.indexOf(item)
-                const selected = index === active
+                const selected = index === activeIndex
                 const Glyph = item.target.type === 'assistant' ? (HELPER_ICONS[item.target.id] ?? ICONS[item.icon]) : ICONS[item.icon]
                 return (
                   <div
