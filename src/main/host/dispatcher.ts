@@ -231,6 +231,7 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
+import { desktopOnlyProjectChanges, desktopOnlyProjectMessage } from './projectSaveGuard'
 import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
 import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
@@ -607,6 +608,12 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     // A copy: nothing the save or its ingest does to the stored object may reach the comparison.
     const stored = ctx.surface === 'desktop' && typeof project?.id === 'string' ? projects.get(project.id) : null
     const before = stored ? structuredClone(stored) : null
+    // Spend and command settings (daily / monthly caps, test gate, schedules near the plan limit) are widened in the window only.
+    if (ctx.surface !== 'desktop' && typeof project?.id === 'string') {
+      const current = projects.get(project.id)
+      const refused = current ? desktopOnlyProjectChanges(current, project) : []
+      if (refused.length) throw new HostRpcFailure('scope_denied', desktopOnlyProjectMessage(refused))
+    }
     const saved = projects.saveFromRenderer(project)
     // Sync for any other surface (and when there is nothing to compare against), exactly as before.
     if (!before) return saved
@@ -1023,9 +1030,13 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
     if (!p) throw new Error('Project not found')
     return p
   }
-  handle(IPC.templatesList, (): OrgTemplateInfo[] => templates.list())
+  // The window's (and the CLI's) list leads with the two built-in starting teams (read-only); remove answers the same list.
+  handle(IPC.templatesList, (): OrgTemplateInfo[] => templates.listWithBuiltIns())
   handle(IPC.templatesSaveFromProject, (_e, input: unknown): OrgTemplateInfo => templates.saveFromProject(templateEngagementArgs.saveTemplate(input)))
-  handle(IPC.templatesRemove, (_e, id: unknown): OrgTemplateInfo[] => templates.remove(templateEngagementArgs.templateId(id)))
+  handle(IPC.templatesRemove, (_e, id: unknown): OrgTemplateInfo[] => {
+    templates.remove(templateEngagementArgs.templateId(id))
+    return templates.listWithBuiltIns()
+  })
   handle(IPC.templatesApply, (_e, input: unknown): AgentImportApplyResult => templates.apply(templateEngagementArgs.applyTemplate(input)))
 
   handle(IPC.projectsEngagementDocument, (_e, id: unknown): EngagementDocumentInfo => {
