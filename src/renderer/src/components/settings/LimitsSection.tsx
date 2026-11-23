@@ -1,7 +1,9 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useState } from 'react'
-import type { Project } from '@shared/types'
-import { DEFAULT_KEEP_RUNS } from '@shared/types'
+import type { Project, ProjectSpend, ProjectSpendPeriod } from '@shared/types'
+import { DEFAULT_KEEP_RUNS, PROJECT_MAX_AGENTS_PER_RUN_LIMIT } from '@shared/types'
+import { formatUsd } from '../../lib/cost'
+import { Switch } from '../ui/Switch'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
@@ -61,11 +63,64 @@ function UsdInput({ id, label, describedBy, testId, value, onCommit }: { id: str
 }
 
 /**
- * Day / month caps and the spend warning show only once main measures project spend (runtime/projectSpend.ts). On
- * this base it is still the contract stub (spend always 0), so a cap could never bite: the rows stay hidden until the
- * runtime branch with the real projectSpend is merged, then this flips to true.
+ * Day / month caps and the spend warning. Main measures project spend (runInsights.projectSpend) and enforces the caps
+ * (runtime/spendGuard.ts: no start at a cap, a live run pauses or stops per onSpendLimit), so the rows are live.
  */
-const PERIOD_CAPS_LIVE = false
+const PERIOD_CAPS_LIVE = true
+
+/** "Spent so far: $1.20" for a period; runs without a known price are said, never counted as $0. */
+function spentText(p: ProjectSpendPeriod | undefined, failed: boolean): string {
+  if (failed) return 'Spend so far is not available.'
+  if (!p) return 'Measuring spend so far…'
+  const unknown = p.unknownRuns > 0 ? ` ${p.unknownRuns} ${p.unknownRuns === 1 ? 'run has' : 'runs have'} no known price and ${p.unknownRuns === 1 ? 'is' : 'are'} not counted.` : ''
+  if (p.spentUsd <= 0 && p.unknownRuns > 0) return `Spend so far is unknown.${unknown}`
+  return `Spent so far: ${p.unknownRuns > 0 ? 'at least ' : ''}${formatUsd(p.spentUsd)}.${unknown}`
+}
+
+/**
+ * "Most agents in one run" (Project.maxAgentsPerRun): off = no total cap. Main counts per run session, so a continued
+ * run starts a fresh count; the copy says so.
+ */
+function AgentsPerRunRow({ project, patch, rowId }: { project: Project; patch: (p: Partial<Project>) => void; rowId: string }): ReactElement {
+  const on = project.maxAgentsPerRun !== undefined
+  return (
+    <>
+      <SettingRow
+        id={rowId}
+        title="Limit how many agents one run starts"
+        description="Counts every agent a run starts, not the first one. Counted per run session: continuing an ended run starts a new count. Off means no total limit."
+        control={
+          <Switch
+            checked={on}
+            label="Limit how many agents one run starts"
+            testId="agents-per-run-switch"
+            describedBy={settingDescId(rowId)}
+            onChange={(v) => patch({ maxAgentsPerRun: v ? 20 : undefined })}
+          />
+        }
+      />
+      {on && (
+        <SettingRow
+          id={`${rowId}-n`}
+          title="Most agents in one run"
+          description={`From 1 to ${PROJECT_MAX_AGENTS_PER_RUN_LIMIT}. A run that reaches it cannot start more agents.`}
+          width="number"
+          control={
+            <ClampedNumber
+              id={`${rowId}-input`}
+              label="Most agents in one run"
+              describedBy={settingDescId(`${rowId}-n`)}
+              min={1}
+              max={PROJECT_MAX_AGENTS_PER_RUN_LIMIT}
+              value={project.maxAgentsPerRun ?? 20}
+              onCommit={(n) => patch({ maxAgentsPerRun: n })}
+            />
+          }
+        />
+      )}
+    </>
+  )
+}
 
 const WARN_OPTIONS = [
   { value: 'off', label: 'Off' },
@@ -146,6 +201,21 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
   ]
   const concurrencyValues = limits.explicit.concurrency && !CONCURRENCY_CHOICES.includes(limits.concurrency) ? [...CONCURRENCY_CHOICES, limits.concurrency].sort((a, b) => a - b) : CONCURRENCY_CHOICES
   const concurrencyOptions = [{ value: 'auto', label: `Automatic (${auto.concurrency})` }, ...concurrencyValues.map((n) => ({ value: String(n), label: String(n) }))]
+
+  const [spend, setSpend] = useState<ProjectSpend | null>(null)
+  const [spendFailed, setSpendFailed] = useState(false)
+  useEffect(() => {
+    let live = true
+    setSpend(null)
+    setSpendFailed(false)
+    window.orgai.runInsights
+      .projectSpend(project.id)
+      .then((v) => live && setSpend(v))
+      .catch(() => live && setSpendFailed(true))
+    return () => {
+      live = false
+    }
+  }, [project.id, project.maxDailyUsd, project.maxMonthlyUsd])
 
   const costRow = (): ReactElement => (
     <SettingRow
@@ -230,7 +300,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           key={key}
           id={row(key)}
           title={title}
-          description={`Runs do not start, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it. Counts runs and schedules.`}
+          description={`Runs do not start, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it. Counts runs and schedules. ${spentText(spend?.[word], spendFailed)}`}
           width="number"
           control={
             <UsdInput
@@ -325,6 +395,21 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         <SettingsGroup title="Runs and agents">
           <SettingsCard>
             {planRows}
+            <AgentsPerRunRow project={project} patch={patch} rowId={row('agents')} />
+            <SettingRow
+              id={row('stronger')}
+              title="Ask before using a more capable model"
+              description="When automatic staffing would put an agent on a stronger model than its role normally uses, you are asked first. Say no and it keeps the usual one."
+              control={
+                <Switch
+                  checked={project.askBeforeStrongerModel === true}
+                  label="Ask before using a more capable model"
+                  testId="ask-stronger-switch"
+                  describedBy={desc('stronger')}
+                  onChange={(v) => patch({ askBeforeStrongerModel: v ? true : undefined })}
+                />
+              }
+            />
             <SettingRow
               id={row('keep')}
               title={copy.keepRuns.label}
