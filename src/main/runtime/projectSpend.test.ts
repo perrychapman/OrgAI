@@ -38,6 +38,32 @@ describe('projectSpend', () => {
     expect(s.maxDailyUsd).toBe(5)
     expect(s.maxMonthlyUsd).toBeUndefined()
   })
+  it('counts a run that began before midnight and ended today toward today (and the month)', () => {
+    const b = periodBounds(now)
+    const across = { ...r(b.dayFrom - 3_600_000, 3), endedAt: b.dayFrom + 3_600_000 }
+    const s = projectSpend(p, [across], now)
+    expect(s.day).toMatchObject({ spentUsd: 3, runs: 1 })
+    expect(capPeriods(s)[0]).toMatchObject({ spentUsd: 3 })
+  })
+  it('counts a still-open run that began yesterday toward today, and a run ended before today not', () => {
+    const b = periodBounds(now)
+    const open = { ...r(b.dayFrom - 7_200_000, 2), status: 'running' as const }
+    const old = { ...r(b.dayFrom - 7_200_000, 9), endedAt: b.dayFrom - 3_600_000 }
+    const s = projectSpend(p, [open, old], now)
+    expect(s.day).toMatchObject({ spentUsd: 2, runs: 1 })
+  })
+  it('counts a run that began last month and ended this month toward both months', () => {
+    const b = periodBounds(now)
+    const across = { ...r(b.monthFrom - 3_600_000, 4), endedAt: b.monthFrom + 3_600_000 }
+    const s = projectSpend(p, [across], now)
+    expect(s.month).toMatchObject({ spentUsd: 4, runs: 1 })
+    const lastMonth = projectSpend(p, [across], b.monthFrom - 1000)
+    expect(lastMonth.month).toMatchObject({ spentUsd: 4, runs: 1 })
+  })
+  it('does not count a run starting at or after the period end', () => {
+    const b = periodBounds(now)
+    expect(projectSpend(p, [r(b.dayUntil, 5)], now).day.runs).toBe(0)
+  })
   it('counts unknown-cost runs apart from the spend', () => {
     const s = projectSpend(p, [r(now, null), r(now, 2)], now)
     expect(s.day).toMatchObject({ spentUsd: 2, runs: 2, unknownRuns: 1 })

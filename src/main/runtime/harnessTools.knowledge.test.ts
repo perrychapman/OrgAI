@@ -288,8 +288,23 @@ describe('engagement_knowledge: Role.knowledgeWrite (UI overhaul)', () => {
     expect(await t.call(writes[0])).toMatch(/^REFUSED: the Lead role /)
     expect(await t.call(writes[0], { agentId: 'root' })).toMatch(/^REFUSED: the Lead role /)
     expect(kg.callers).toEqual([])
-    // A subagent whose role cannot be resolved is not guessed to be the root.
+    // A subagent whose role cannot be resolved is not guessed to be the root, but fails closed while any role is read only (M6).
+    expect(await t.call(writes[0], { agentId: 'a9' })).toMatch(/^REFUSED: this caller's role could not be identified/)
+    expect(kg.callers).toEqual([])
+  })
+
+  it('lets an unresolved caller write when no role of the project is read only (M6)', async () => {
+    const kg = seeded()
+    const t = tool(ctxFor(rolesWith({}), kg))
     expect(await t.call(writes[0], { agentId: 'a9' })).toBe('Merged into existing entity (kn_1): 1 fact added.')
+  })
+
+  it('refuses an unresolved caller on an engagement when any role is read only, and not on a code project (M6)', () => {
+    const roles = rolesWith({ 'r-rev': false })
+    const engagement = { project: project({ kind: 'engagement', roles }), roles }
+    expect(knowledgeWriteRefusal(engagement, { agentId: 'a9' })).toMatch(/^REFUSED/)
+    expect(knowledgeWriteRefusal(engagement, { agentId: 'a9', roleId: 'r-gone' })).toMatch(/^REFUSED/)
+    expect(knowledgeWriteRefusal({ project: project({ roles }), roles }, { agentId: 'a9' })).toBeNull()
   })
 
   it('does not touch code projects', () => {

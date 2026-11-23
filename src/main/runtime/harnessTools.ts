@@ -2774,14 +2774,19 @@ function resolveForLink(graph: KnowledgeGraph, ref: string, what: 'from' | 'to')
 
 /**
  * UI overhaul: on an engagement, a role with `knowledgeWrite === false` may read the knowledge graph but not change it.
- * Returns the refusal text for the caller's role, or null when the write may go on (missing or true, a code project,
- * or a caller whose role cannot be resolved). Enforced at call time, so it holds on every adapter.
+ * Returns the refusal text for the caller's role, or null when the write may go on (missing or true, or a code project).
+ * Fails closed (M6): a caller whose role cannot be resolved is refused when any role of the project is set to read only,
+ * because the write could be that role's. Enforced at call time, so it holds on every adapter.
  */
 export function knowledgeWriteRefusal(ctx: Pick<RuntimeContext, 'project' | 'roles'>, caller: HarnessToolCaller): string | null {
   if (projectKindOf(ctx.project) !== 'engagement') return null
   const roleId = callerRoleId(ctx, caller)
   const role = roleId ? ctx.roles.find((r) => r.id === roleId) : undefined
-  if (role?.knowledgeWrite !== false) return null
+  if (!role) {
+    if (!ctx.roles.some((r) => r.knowledgeWrite === false)) return null
+    return 'REFUSED: this caller\'s role could not be identified, and a role of this project is set to read the knowledge graph without changing it, so the write is not allowed. Search and get still work; pass what you learned to a role that records knowledge, or tell the user.'
+  }
+  if (role.knowledgeWrite !== false) return null
   return `REFUSED: ${role.name ? `the ${knowledgeField(role.name, 80)} role` : 'this role'} is set to read the knowledge graph without changing it. Search and get still work; pass what you learned to a role that records knowledge, or tell the user.`
 }
 
