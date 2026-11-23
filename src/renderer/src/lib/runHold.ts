@@ -1,8 +1,13 @@
-import type { RunPlan, RunSummary } from '@shared/types'
+import type { RunHold as MainRunHold, RunHoldAction, RunHoldKind, RunPlan, RunSummary } from '@shared/types'
+import { connectionLabel } from './connectionLabel'
 import { formatUntil } from './layout'
+import { money } from './usage'
 
-/** What stopped a run, as the "what stopped the run" card shows it. Pure; the card owns actions and the clock. */
-export type HoldKind = 'usage-limit' | 'plan-blocked' | 'failed' | 'budget' | 'provider' | 'agent-failed'
+/**
+ * What stopped a run, as the "what stopped the run" card shows it. Pure; the card owns actions and the clock.
+ * The six kinds come from main (`RunSummary.hold`); 'failed' is the fallback for an ended run with an error and no hold.
+ */
+export type HoldKind = RunHoldKind | 'failed'
 export type HoldTone = 'waiting' | 'retrying' | 'failed'
 
 export interface HoldFact {
@@ -10,7 +15,7 @@ export interface HoldFact {
   value: string
 }
 
-export interface RunHold {
+export interface RunHoldView {
   kind: HoldKind
   /** The state pill word. */
   word: string
@@ -20,39 +25,118 @@ export interface RunHold {
   facts: HoldFact[]
   /** The reassurance at the right of the pill. */
   safe: string
+  /** Exactly the actions main accepts (hold.actions); derived from the old summary fields when main sent no hold. */
+  actions: RunHoldAction[]
+  /** The run's own limit in USD for kind 'budget' / 'spend-limit' (the amount field's default). */
+  limitUsd?: number
 }
 
-/** Data the runtime will supply for the kinds that do not come from the summary today. */
 export interface HoldExtras {
   /** Wall clock for "in 12m"; defaults to Date.now(). */
   now?: number
   /** True while the run's session is open (a failure only holds a run that is no longer open). */
   sessionOpen?: boolean
-  budget?: { spentUsd: number; capUsd: number; reason?: string }
-  provider?: { name: string; reason: string; retryAt?: number; retrying?: boolean }
-  agentFailed?: { agent: string; reason: string; model?: string }
 }
 
-type SummaryFields = Pick<RunSummary, 'status' | 'pausedUntil' | 'pauseReason' | 'autoResume' | 'error'>
+type SummaryFields = Pick<RunSummary, 'status' | 'pausedUntil' | 'pauseReason' | 'autoResume' | 'error'> & { hold?: MainRunHold }
 type PlanFields = Pick<RunPlan, 'status' | 'blockedReason'>
 
 const SAFE = 'Nothing is lost while it waits'
-const usd = (n: number): string => `$${n.toFixed(2)}`
 const clock = (at: number): string => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+const day = (at: number): string => new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
-/** What holds the run, or null. Order: a usage-limit pause, then runtime holds, then a blocked plan, then a failure. */
-export function holdOf(summary: SummaryFields | undefined | null, plan?: PlanFields | null, extras: HoldExtras = {}): RunHold | null {
+const SCOPE_WORDS: Record<NonNullable<MainRunHold['budget']>['scope'], string> = {
+  run: 'for this run',
+  conversation: 'for this conversation',
+  day: 'for today',
+  month: 'for this month'
+}
+
+function usageFacts(summary: SummaryFields, now: number): HoldFact[] {
+  const facts: HoldFact[] = []
+  const until = summary.pausedUntil
+  if (until) {
+    facts.push({ label: summary.autoResume ? 'Resumes at' : 'Resets at', value: clock(until) })
+    facts.push({ label: 'In', value: formatUntil(until, now) })
+  }
+  facts.push({ label: 'Auto-resume', value: summary.autoResume ? 'On' : 'Off' })
+  return facts
+}
+
+function fromHold(h: MainRunHold, summary: SummaryFields, now: number): RunHoldView {
+  const since: HoldFact = { label: 'Since', value: day(h.since) }
+  switch (h.kind) {
+    case 'budget':
+    case 'spend-limit': {
+      const b = h.budget
+      const facts: HoldFact[] = []
+      let title = h.kind === 'budget' ? 'Paused at the spending limit' : 'Paused at the project spending limit'
+      if (b) {
+        title = `Paused at the ${money(b.limitUsd)} limit ${SCOPE_WORDS[b.scope]}`
+        facts.push({ label: 'Spent', value: money(b.spentUsd) }, { label: 'Limit', value: money(b.limitUsd) })
+        if (b.resetsAt) facts.push({ label: 'Resets', value: day(b.resetsAt) })
+      }
+      facts.push(since)
+      return { kind: h.kind, word: 'Paused', tone: 'waiting', title, text: h.reason, facts, safe: SAFE, actions: h.actions, limitUsd: b?.limitUsd }
+    }
+    case 'usage-limit':
+      return {
+        kind: h.kind,
+        word: 'Paused',
+        tone: 'waiting',
+        title: 'Waiting for your plan limit to reset',
+        text: h.reason,
+        facts: [...usageFacts(summary, now), since],
+        safe: SAFE,
+        actions: h.actions
+      }
+    case 'provider': {
+      const p = h.provider
+      const facts: HoldFact[] = []
+      if (p?.connection) facts.push({ label: 'Connection', value: connectionLabel(p.connection) })
+      if (p?.lastOkAt) facts.push({ label: 'Last worked', value: day(p.lastOkAt) })
+      if (p?.error) facts.push({ label: 'Last answer', value: p.error })
+      facts.push(since)
+      return {
+        kind: h.kind,
+        word: 'Waiting',
+        tone: 'waiting',
+        title: p?.connection ? `Can't reach ${connectionLabel(p.connection)}` : "Can't reach the provider",
+        text: h.reason,
+        facts,
+        safe: SAFE,
+        actions: h.actions
+      }
+    }
+    case 'agent-failed': {
+      const f = h.failed
+      const facts: HoldFact[] = []
+      if (f?.name) facts.push({ label: 'Agent', value: f.name })
+      if (f?.costUsd !== undefined) facts.push({ label: 'Cost', value: money(f.costUsd) })
+      facts.push(since)
+      return { kind: h.kind, word: 'Failed', tone: 'failed', title: `${f?.name ?? 'An agent'} failed`, text: h.reason, facts, safe: 'The rest of the run is kept', actions: h.actions }
+    }
+    case 'plan-blocked':
+      return {
+        kind: h.kind,
+        word: 'Waiting',
+        tone: 'waiting',
+        title: 'The orchestrator needs your decision',
+        text: h.plan?.blockedReason ?? h.reason,
+        facts: [since],
+        safe: 'Automatic continues are stopped',
+        actions: h.actions
+      }
+  }
+}
+
+/** What holds the run, or null. Main's `summary.hold` first; without one: a usage-limit pause, a blocked plan, then a failure. */
+export function holdOf(summary: SummaryFields | undefined | null, plan?: PlanFields | null, extras: HoldExtras = {}): RunHoldView | null {
   if (!summary) return null
   const now = extras.now ?? Date.now()
+  if (summary.hold) return fromHold(summary.hold, summary, now)
 
   if (summary.status === 'paused') {
-    const until = summary.pausedUntil
-    const facts: HoldFact[] = []
-    if (until) {
-      facts.push({ label: summary.autoResume ? 'Resumes at' : 'Resets at', value: clock(until) })
-      facts.push({ label: 'In', value: formatUntil(until, now) })
-    }
-    facts.push({ label: 'Auto-resume', value: summary.autoResume ? 'On' : 'Off' })
     return {
       kind: 'usage-limit',
       word: 'Paused',
@@ -61,47 +145,10 @@ export function holdOf(summary: SummaryFields | undefined | null, plan?: PlanFie
       text: `${summary.pauseReason ?? 'The plan usage limit was reached.'} Only this run is paused; your other runs keep running unaffected.${
         summary.autoResume ? '' : ' Auto-resume is off. Continue it when you are ready.'
       }`,
-      facts,
-      safe: SAFE
+      facts: usageFacts(summary, now),
+      safe: SAFE,
+      actions: ['resume', 'switchModel', 'end']
     }
-  }
-
-  if (extras.budget) {
-    const { spentUsd, capUsd, reason } = extras.budget
-    return {
-      kind: 'budget',
-      word: 'Paused',
-      tone: 'waiting',
-      title: 'The spending limit was reached',
-      text: reason ?? 'The run stopped before it went over its spending limit.',
-      facts: [
-        { label: 'Spent', value: usd(spentUsd) },
-        { label: 'Limit', value: usd(capUsd) }
-      ],
-      safe: SAFE
-    }
-  }
-
-  if (extras.provider) {
-    const p = extras.provider
-    const facts: HoldFact[] = [{ label: 'Provider', value: p.name }]
-    if (p.retryAt) facts.push({ label: 'Next try in', value: formatUntil(p.retryAt, now) })
-    return {
-      kind: 'provider',
-      word: p.retrying ? 'Retrying' : 'Waiting',
-      tone: p.retrying ? 'retrying' : 'waiting',
-      title: `${p.name} is not answering`,
-      text: p.reason,
-      facts,
-      safe: SAFE
-    }
-  }
-
-  if (extras.agentFailed) {
-    const a = extras.agentFailed
-    const facts: HoldFact[] = [{ label: 'Agent', value: a.agent }]
-    if (a.model) facts.push({ label: 'Model', value: a.model })
-    return { kind: 'agent-failed', word: 'Failed', tone: 'failed', title: `${a.agent} could not finish`, text: a.reason, facts, safe: 'The rest of the run is kept' }
   }
 
   if (plan?.status === 'blocked') {
@@ -112,12 +159,13 @@ export function holdOf(summary: SummaryFields | undefined | null, plan?: PlanFie
       title: 'The orchestrator needs your decision',
       text: plan.blockedReason ?? 'It marked the plan blocked.',
       facts: [],
-      safe: 'Automatic continues are stopped'
+      safe: 'Automatic continues are stopped',
+      actions: []
     }
   }
 
   if (!extras.sessionOpen && summary.error) {
-    return { kind: 'failed', word: 'Failed', tone: 'failed', title: 'This run failed', text: summary.error, facts: [], safe: 'Your work so far is kept' }
+    return { kind: 'failed', word: 'Failed', tone: 'failed', title: 'This run failed', text: summary.error, facts: [], safe: 'Your work so far is kept', actions: [] }
   }
 
   return null
