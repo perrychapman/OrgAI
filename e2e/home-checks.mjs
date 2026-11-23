@@ -218,11 +218,17 @@ export async function engagementHomeChecks({ app, page, shot, name, client, purp
   check((await ask.getAttribute('aria-pressed')) === 'true' && (await team.getAttribute('aria-pressed')) === 'false', `${tag}: choosing One assistant flips aria-pressed`)
   check(/One assistant/.test(await page.locator('[data-testid=eng-start] .eng-note').innerText()), `${tag}: the note under the box follows the mode`)
   await page.locator('[data-testid=eng-start-text]').fill('What did we agree on the kickoff call?')
+  const stickyModes = () => page.evaluate(() => JSON.stringify(Object.keys(localStorage).filter((k) => k.startsWith('orgai.newRunMode.')).sort().map((k) => [k, localStorage.getItem(k)])))
+  const stickyBefore = await stickyModes()
   await page.locator('[data-testid=eng-start-button]').click()
   const composer = page.locator('.composer textarea').first()
   await composer.waitFor({ state: 'visible', timeout: 10_000 })
   check((await composer.inputValue()).includes('What did we agree on the kickoff call?'), `${tag}: Start opens New run with the text`)
   check(/Ask/.test(await page.locator('[data-testid=new-run-mode]').innerText().catch(() => '')) || (await page.locator('[data-testid=new-run-ask-lead]').count()) === 1, `${tag}: New run opens in Ask mode`)
+  // The Ask choice is a one-shot for this opening (store newRunMode): the sticky Team / Ask choice in storage is untouched,
+  // right away and after the page has settled, and the one-shot is used up.
+  await sleep(600)
+  check((await stickyModes()) === stickyBefore, `${tag}: Start from Home leaves the sticky New run mode in storage unchanged`, `${stickyBefore} -> ${await stickyModes()}`)
   await openHome(page)
   await team.click()
 

@@ -9,25 +9,46 @@
   backdrop-filter: var(--glass-blur, none);
 }
 
-/* The wide page: a task column and, beside it, who will work on it. Narrow windows stack them. */
+/* The wide page: a task column and, beside it, who will work on it. NewRunPage measures the width and sets
+   nr-cols--side (two columns, the aside carries the one Start) or nr-cols--stack (one column, the composer keeps Start).
+   The composer element holds the aside, so both are laid out as one: .composer--with-side draws no box of its own
+   (display: contents), its field is the task card and its aside is a sibling of the task column's items. */
 .new-run-inner--wide {
   width: min(100%, calc(var(--space-16) * 16));
 }
 .nr-cols {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: center;
-  gap: var(--space-5);
   min-width: 0;
 }
 .nr-main {
-  flex: 999 1 calc(var(--space-16) * 7);
-  max-width: calc(var(--space-16) * 11);
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  min-width: 0;
+}
+.nr-cols--stack .nr-main {
+  max-width: calc(var(--space-16) * 11);
+  margin-inline: auto;
+}
+.nr-cols--side {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(calc(var(--space-16) * 5), calc(var(--space-16) * 6));
+  column-gap: var(--space-5);
+  align-items: start;
+}
+.nr-cols--side .nr-main,
+.nr-cols--side .composer--with-side {
+  display: contents;
+}
+/* Rows have no gap, so the aside can span rows without leaving blank rows behind; each item brings its own space. */
+.nr-cols--side .nr-main > :not(.composer),
+.nr-cols--side .composer--with-side > .composer-field {
+  grid-column: 1;
+  min-width: 0;
+  margin-block-end: var(--space-4);
+}
+.nr-cols--side .nr-aside {
+  grid-column: 2;
+  grid-row: 1 / span 99;
 }
 .nr-heading {
   margin: 0;
@@ -48,13 +69,34 @@
   text-wrap: pretty;
 }
 
-/* The task card: the shared composer, as a strong glass card. */
-.new-run-inner .nr-main .composer {
+/* The task card, one column: the shared composer, as a strong glass card. */
+.new-run-inner .nr-main .composer:not(.composer--with-side) {
   background: var(--glass-strong, var(--surface-2));
   border: 1px solid var(--glass-line, var(--border-default));
   border-radius: var(--radius-xl);
   -webkit-backdrop-filter: var(--glass-blur, none);
   backdrop-filter: var(--glass-blur, none);
+}
+/* The task card, two columns: the composer's field is the card (the composer itself draws no box, it holds the aside). */
+.composer.composer--with-side {
+  display: contents;
+}
+.composer--with-side > .composer-field {
+  container: composer / inline-size;
+  padding: var(--space-3);
+  background: var(--glass-strong, var(--surface-2));
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-1);
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+}
+.composer--with-side:has(textarea:focus-visible) > .composer-field {
+  border-color: var(--focus-ring);
+}
+.composer--with-side.drag > .composer-field {
+  outline: 2px dashed var(--accent);
+  outline-offset: calc(-1 * var(--space-1));
 }
 
 /* Settings: one glass tile each, in a grid that wraps. */
@@ -210,8 +252,6 @@
 
 /* Who will work on it. */
 .nr-aside {
-  flex: 1 1 calc(var(--space-16) * 5);
-  max-width: calc(var(--space-16) * 6);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -262,6 +302,31 @@
 }
 .nr-who__row--group {
   margin-inline-start: var(--space-4);
+  transition: opacity var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+.nr-who__row--group.is-off {
+  opacity: 0.75;
+  background: transparent;
+  border-color: var(--border-default);
+}
+/* The native checkbox and its text fill the row; the role's colour stays on the mark beside it. */
+.nr-who__row .checkbox {
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: flex-start;
+}
+.nr-who__row .checkbox-text {
+  min-width: 0;
+}
+.nr-who__row .checkbox-label {
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.nr-who__row .checkbox-desc {
+  overflow-wrap: anywhere;
+}
+.nr-who__row .checkbox.is-disabled {
+  color: var(--text-primary);
 }
 .nr-who__mark {
   flex: none;
@@ -329,8 +394,44 @@
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
 }
-.nr-estimate[data-state='unknown'] dd {
+.nr-estimate[data-state='unknown'] dd,
+.nr-estimate[data-state='loading'] dd {
   color: var(--text-secondary);
+}
+/* The page's one Start: full width, the key hint beside its label. */
+.nr-start {
+  width: 100%;
+  min-height: var(--control-lg);
+  justify-content: center;
+  gap: var(--space-2);
+  box-shadow: var(--glow, none);
+}
+.nr-schedule {
+  width: 100%;
+  justify-content: center;
+}
+
+/* Spending limit field inside its tile. */
+.nr-limit {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.nr-limit__field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+  width: 100%;
+}
+.nr-limit__unit {
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+.nr-limit__field .input {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--control-sm);
 }
 
 /* A short window: tighter gaps so the start button stays in view. */
@@ -438,6 +539,7 @@
 /* The entrance is a rise, and only for people who have not asked for less motion. */
 @media (prefers-reduced-motion: reduce) {
   .nr-tile,
+  .nr-who__row--group,
   .nr-pickup__row,
   .assist-example {
     transition: none;

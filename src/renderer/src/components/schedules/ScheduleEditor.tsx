@@ -73,12 +73,15 @@ const TIMING_FIELD: Record<TimingPreset, string> = {
 export default function ScheduleEditor({
   open,
   editing,
+  initial,
   onClose,
   onSaved
 }: {
   open: boolean
   /** The schedule being edited; null = a new one. */
   editing: Schedule | null
+  /** A new schedule's starting values (the New run page's "Save as a schedule instead"). Ignored when editing. */
+  initial?: { projectId?: string; prompt?: string; single?: boolean }
   onClose: () => void
   onSaved: (saved: Schedule, created: boolean) => void
 }): ReactElement {
@@ -102,7 +105,17 @@ export default function ScheduleEditor({
     const t = Date.now()
     setNow(t)
     const pid = selected && !isVirtualProjectId(selected) && projects.some((p) => p.id === selected) ? selected : projects[0]?.id
-    setForm(editing ? scheduleToForm(editing, t) : newScheduleForm({ projectId: pid, now: t }))
+    const start = initial?.projectId && projects.some((p) => p.id === initial.projectId) ? initial.projectId : pid
+    const prompt = initial?.prompt?.slice(0, SCHEDULE_PROMPT_MAX_CHARS) ?? ''
+    setForm(
+      editing
+        ? scheduleToForm(editing, t)
+        : {
+            ...newScheduleForm({ projectId: start, now: t }),
+            ...(prompt ? { prompt, name: prompt.split('\n')[0].trim().slice(0, SCHEDULE_NAME_MAX_CHARS) } : {}),
+            ...(initial?.single ? { single: true } : {})
+          }
+    )
     setTried(false)
     setSaveError(null)
     setPickError(null)

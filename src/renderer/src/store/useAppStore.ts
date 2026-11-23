@@ -541,7 +541,15 @@ interface AppState {
   applyTemplate(projectId: string, template: Pick<OrgTemplateInfo, 'id' | 'name'>): Promise<void>
 
   /** `team: 'single'` starts an Ask run (one assistant, conversation layout). */
-  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam; goal?: StaffingGoal } & Pick<StartRunInput, 'modelSelection' | 'effort' | 'permissionMode'>): Promise<void>
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam; goal?: StaffingGoal } & Pick<StartRunInput, 'modelSelection' | 'effort' | 'permissionMode' | 'excludeRoleIds' | 'maxBudgetUsd'>): Promise<void>
+  /**
+   * One-shot: the Team / Ask mode the next New run page opens in (set by a caller such as Home's Start, read once by
+   * NewRunPage on open via takeNewRunMode, then cleared). Never persisted; the page's sticky mode is left alone.
+   */
+  newRunMode: { projectId: string; mode: 'team' | 'ask' } | null
+  setNewRunMode(projectId: string, mode: 'team' | 'ask' | null): void
+  /** Reads and clears the one-shot mode for `projectId` (null when none is set for it). */
+  takeNewRunMode(projectId: string): 'team' | 'ask' | null
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Start the MCP assistant run (kind 'mcp-assist') for the selected project and show it. */
@@ -1917,7 +1925,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Start-time choices (run settings row): main refuses a bad one before a run exists, the page keeps the draft.
       ...(opts?.modelSelection ? { modelSelection: opts.modelSelection } : {}),
       ...(opts?.effort ? { effort: opts.effort } : {}),
-      ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {})
+      ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+      ...(opts?.excludeRoleIds && opts.excludeRoleIds.length > 0 ? { excludeRoleIds: opts.excludeRoleIds } : {}),
+      ...(opts?.maxBudgetUsd !== undefined ? { maxBudgetUsd: opts.maxBudgetUsd } : {})
     })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
@@ -2060,6 +2070,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async cancelAutoResume(runId) {
     await window.orgai.runs.cancelAutoResume(runId)
+  },
+
+  newRunMode: null,
+  setNewRunMode(projectId, mode) {
+    set({ newRunMode: mode ? { projectId, mode } : null })
+  },
+  takeNewRunMode(projectId) {
+    const one = get().newRunMode
+    if (!one) return null
+    set({ newRunMode: null })
+    return one.projectId === projectId ? one.mode : null
   },
 
   composerFocusToken: 0,

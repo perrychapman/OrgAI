@@ -157,8 +157,8 @@ try {
   const pillBox = await page.locator('[data-testid=project-folder]').boundingBox()
   const vw = await page.evaluate(() => window.innerWidth)
   check(!!pillBox && pillBox.x + pillBox.width <= vw, 'folder name fits in the window', JSON.stringify(pillBox))
-  const heading = await page.locator('.new-run h2').innerText({ timeout: 5000 }).catch(() => '')
-  check(/something to do/i.test(heading), 'empty state invites a first task', heading)
+  const heading = await page.locator('.new-run h2').first().innerText({ timeout: 5000 }).catch(() => '')
+  check(/something to do|What should the team do/i.test(heading), 'empty state invites a first task', heading)
   check((await page.locator('.composer textarea').count()) === 1, 'composer is present')
   await shot('live-long-path')
 
@@ -201,7 +201,10 @@ try {
   check((await page.getByRole('button', { name: 'Remove image 1' }).count()) === 1, 'thumbnail has a "Remove image 1" button')
   const cm = await page.evaluate(() => {
     const f = document.querySelector('.composer-field')?.getBoundingClientRect()
-    const c = document.querySelector('.composer')?.getBoundingClientRect()
+    const comp = document.querySelector('.composer')
+    // The two-column New run page lays the composer out with display: contents (its field is the card, its aside is the
+    // second column): then the field is the box that must stay inside the window.
+    const c = getComputedStyle(comp).display === 'contents' ? { left: 0, right: window.innerWidth } : comp?.getBoundingClientRect()
     return { f: f && [f.left, f.right], c: c && [c.left, c.right] }
   })
   check(!!cm.f && !!cm.c && cm.f[0] >= cm.c[0] - 0.5 && cm.f[1] <= cm.c[1] + 0.5, 'composer-field stays inside the composer', JSON.stringify(cm))
