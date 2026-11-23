@@ -5,7 +5,7 @@ import type { EngagementNote, KnowledgeGraph, KnowledgeInferredLink, KnowledgeNo
 import { KNOWLEDGE_NAME_MAX_CHARS, KNOWLEDGE_SUMMARY_MAX_CHARS } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import type { KnowledgeItem, RunFacts } from '../../lib/knowledge'
-import { historyLines, itemOrigin, itemRetired, keyWords, kindLabel, splitHistoryLine } from '../../lib/knowledge'
+import { historyLines, itemOrigin, itemRetired, itemSource, keyWords, kindLabel, provenanceLine, splitHistoryLine } from '../../lib/knowledge'
 import { aliasesText, kindsInUse, parseAliases } from '../../lib/knowledgeList'
 import { cleanIpcError } from '../../lib/ipcError'
 import { formatFullDateTime } from '../../lib/dates'
@@ -13,6 +13,7 @@ import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { InlineField } from './InlineField'
+import { KindMark } from './KindMark'
 import { KnowledgeFacts } from './KnowledgeFacts'
 import { KnowledgeNotesLinks } from './KnowledgeNotesLinks'
 import { KnowledgePossible } from './KnowledgePossible'
@@ -164,15 +165,27 @@ export function KnowledgeDetail({
     </span>
   )
 
+  // Who added it and when, in the head (the History section below keeps the full lines).
+  const provenance = (
+    <p className="knowledge-detail-prov" data-testid="knowledge-detail-prov">
+      {provenanceLine(itemSource(item), runs)}
+    </p>
+  )
   if (item.type === 'note') {
     const note = item.note
     return (
       <div key={bodyKey} className={bodyClass} data-testid="knowledge-detail-body" data-id={item.id} id="knowledge-detail-body" tabIndex={-1}>
         <header className="knowledge-detail-head">
-          <h2 id={DETAIL_HEADING_ID} className="knowledge-detail-name" data-testid="knowledge-detail-name" tabIndex={-1} onKeyDown={onHeadingKey}>
-            {name}
-          </h2>
+          <div className="knowledge-detail-titlerow">
+            <span className="knowledge-detail-mark">
+              <KindMark kind="note" />
+            </span>
+            <h2 id={DETAIL_HEADING_ID} className="knowledge-detail-name" data-testid="knowledge-detail-name" tabIndex={-1} onKeyDown={onHeadingKey}>
+              {name}
+            </h2>
+          </div>
           {badges}
+          {provenance}
         </header>
         {note.excerpt && <p className="knowledge-detail-excerpt">{note.excerpt}</p>}
         <p className="knowledge-quiet">
@@ -207,10 +220,16 @@ export function KnowledgeDetail({
   return (
     <div className="knowledge-detail-body" data-testid="knowledge-detail-body" data-id={item.id} id="knowledge-detail-body" tabIndex={-1}>
       <header className="knowledge-detail-head">
-        <h2 id={DETAIL_HEADING_ID} className="knowledge-detail-name" data-testid="knowledge-detail-name" tabIndex={-1} onKeyDown={onHeadingKey}>
-          <InlineField label="Edit name" value={node.name} maxLength={KNOWLEDGE_NAME_MAX_CHARS} inputTestId="knowledge-name-input" restTestId="knowledge-name" onSave={(v) => (v ? saved({ name: v }) : Promise.resolve('Give the item a name.'))} />
-        </h2>
+        <div className="knowledge-detail-titlerow">
+          <span className="knowledge-detail-mark">
+            <KindMark kind={node.kind} />
+          </span>
+          <h2 id={DETAIL_HEADING_ID} className="knowledge-detail-name" data-testid="knowledge-detail-name" tabIndex={-1} onKeyDown={onHeadingKey}>
+            <InlineField label="Edit name" value={node.name} maxLength={KNOWLEDGE_NAME_MAX_CHARS} inputTestId="knowledge-name-input" restTestId="knowledge-name" onSave={(v) => (v ? saved({ name: v }) : Promise.resolve('Give the item a name.'))} />
+          </h2>
+        </div>
         {badges}
+        {provenance}
       </header>
       <dl className="knowledge-detail-fields">
         <dt>Kind</dt>

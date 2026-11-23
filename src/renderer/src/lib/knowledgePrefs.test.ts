@@ -8,6 +8,7 @@ describe('clearKnowledgePrefs', () => {
       ['orgai.knowledgeView.p1', 'graph'],
       ['orgai.knowledgeRetired.p1', 'on'],
       ['orgai.knowledgeInferred.p1', 'on'],
+      ['orgai.knowledgeLimit.p1', 'all'],
       [layoutKey('p1'), '{}'],
       ['orgai.knowledgeInferred.p2', 'on'],
       [layoutKey('p2'), '{}']

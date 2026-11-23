@@ -7,6 +7,10 @@
   min-height: 0;
   overflow: clip;
   background: var(--neural-field);
+  /* A framed panel on the ambient ground, like the other Knowledge surfaces. */
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-2);
   container-type: inline-size;
   container-name: neural;
 }
@@ -108,11 +112,13 @@
   overflow: hidden;
   box-sizing: border-box;
   padding: 10px 12px;
-  background: var(--surface-2);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--text-primary);
-  /* Transparent normally; forced colours draw it, since the shadow disappears there. */
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  /* Forced colours draw the edge, since the shadow disappears there. */
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
   box-shadow: var(--elev-2);
   pointer-events: none;
   visibility: hidden;
@@ -203,9 +209,11 @@
   gap: var(--space-3);
   padding: 6px 8px 6px 12px;
   max-width: calc(100% - 24px);
-  background: var(--surface-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
   box-shadow: var(--elev-2);
   color: var(--text-primary);
   font-size: var(--text-caption);
@@ -237,9 +245,32 @@
   gap: 4px;
 }
 .neural-controls .icon-btn {
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
   color: var(--text-primary);
+}
+
+/* "Showing the 60 most connected of 212 [Show all]": a note about the view, top left (the skip links open over it). */
+.neural-limit {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: calc(100% - var(--space-6));
+  padding: var(--space-1h) var(--space-2) var(--space-1h) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.neural-limit-text {
+  min-width: 0;
 }
 .neural-legend-row {
   position: absolute;
@@ -256,8 +287,10 @@
 }
 .neural-legend-row > .btn,
 .neural-legend-row > button {
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
   color: var(--text-primary);
 }
 .neural-size-note {

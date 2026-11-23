@@ -1362,6 +1362,14 @@ export class NeuralEngine {
         ctx.drawImage(this.sprite(rgb, !dark), x - hr, y - hr, hr * 2, hr * 2)
         ctx.globalCompositeOperation = 'source-over'
       }
+      // The selected node glows in its own colour (the overhaul's selected-node look): a wider, stronger halo, static.
+      if (i === this.selected && a0 > dim + 0.001 && spec.halos !== 0) {
+        const gr = Math.max(r * 4, r + 18)
+        ctx.globalAlpha = Math.min(1, th.haloOpacity * 2.2) * a
+        ctx.globalCompositeOperation = th.composite
+        ctx.drawImage(this.sprite(rgb, !dark), x - gr, y - gr, gr * 2, gr * 2)
+        ctx.globalCompositeOperation = 'source-over'
+      }
       ctx.globalAlpha = a
       const mark = kindMark(nd.kind)
       if (mark === 'solid') {
@@ -1416,6 +1424,15 @@ export class NeuralEngine {
       }
       const isSel = i === this.selected
       const isMatch = !!em && em.searching && em.kept[i] === 1
+      if (isSel) {
+        // A gap in the field colour between the disc and its ring, as on the board.
+        ctx.globalAlpha = 1
+        ctx.lineWidth = 2
+        ctx.strokeStyle = rgbCss(th.field)
+        ctx.beginPath()
+        ctx.arc(x, y, r + 2, 0, Math.PI * 2)
+        ctx.stroke()
+      }
       if (isSel || isMatch) {
         ctx.globalAlpha = 1
         ctx.lineWidth = 2

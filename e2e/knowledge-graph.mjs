@@ -729,6 +729,64 @@ try {
   check(gone, 'the engagement is forgotten')
   const leftOver = await page.evaluate((id) => Object.keys(localStorage).filter((k) => k.startsWith('orgai.knowledge') && k.endsWith(id)), lastKeys)
   check(leftOver.length === 0, 'forgetting clears its Knowledge keys from localStorage', JSON.stringify(leftOver))
+
+  // ======== 16. A big graph shows its most connected items; "Show all" and the other views keep everything ========
+  const wfLimit = path.join(base, 'limit')
+  fs.mkdirSync(wfLimit, { recursive: true })
+  const limitName = 'E2E Neural limit (orgai test)'
+  const limitProject = await createEngagement({ name: limitName, dir: wfLimit })
+  const limitIds = await page.evaluate(async (id) => {
+    const ids = []
+    for (let i = 0; i < 100; i++) ids.push((await window.orgai.knowledge.saveNode({ projectId: id, kind: 'person', name: `Limit item ${String(i).padStart(3, '0')}` })).id)
+    // Item 000 is linked to items 001..030: it is the most connected; 031..099 have no relations.
+    for (let i = 1; i <= 30; i++) await window.orgai.knowledge.saveEdge({ projectId: id, from: ids[0], to: ids[i], relation: 'knows' })
+    return ids
+  }, limitProject.id)
+  await openProject(page, limitName)
+  await openKnowledgeTab()
+  await openGraph()
+  await settled()
+  const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
+  const status = async () => clean(await page.locator('[data-testid=knowledge-status]').innerText())
+  const limitNote = () => page.locator('[data-testid=knowledge-limit-note]')
+  const limitAction = () => page.locator('[data-testid=knowledge-limit-action]')
+  check(await until(async () => (await num('data-drawn')) === 60, 8000), 'a graph of 100 items draws its 60 most connected', String(await attr('data-drawn')))
+  check(clean(await limitNote().innerText()) === 'Showing the 60 most connected of 100', 'the note says "Showing the 60 most connected of 100"', clean(await limitNote().innerText()))
+  check(clean(await limitAction().innerText()) === 'Show all', 'the one action is Show all')
+  check((await page.locator(`[data-testid=knowledge-node][data-id="${limitIds[0]}"]`).count()) === 1, 'the most connected item is drawn')
+  check((await page.locator(`[data-testid=knowledge-node][data-id="${limitIds[99]}"]`).count()) === 0, 'an unlinked, late item is not drawn')
+  check((await page.locator('[data-testid=knowledge-count]').innerText()).includes('100 of 100'), 'the count line still counts every item', clean(await page.locator('[data-testid=knowledge-count]').innerText()))
+  await shot('40-limit-1600-dark')
+  // The list, search and the detail pane keep everything.
+  await openList()
+  check((await page.locator('[data-testid=knowledge-count]').innerText()).includes('100 of 100'), 'the list counts all 100 items')
+  await page.locator('[data-testid=knowledge-search]').fill('Limit item 099')
+  await until(async () => (await page.locator('[data-testid=knowledge-row]').count()) === 1, 4000)
+  await page.locator('[data-testid=knowledge-row]').first().click()
+  check(await until(async () => clean(await page.locator('[data-testid=knowledge-detail-name]').innerText()).includes('Limit item 099'), 4000), 'search finds an item outside the limit and its detail opens')
+  await page.locator('[data-testid=knowledge-search]').fill('')
+  await sleep(500)
+  await openGraph()
+  await settled()
+  check(await until(async () => (await page.locator(`[data-testid=knowledge-node][data-id="${limitIds[99]}"]`).count()) === 1, 6000), 'the selected item outside the limit is drawn')
+  check(await until(async () => clean(await limitNote().innerText()) === 'Showing the 60 most connected of 100, and 1 you opened', 4000), 'the note counts the item the user opened', clean(await limitNote().innerText()))
+  // Searching lifts the limit: the user is looking for something specific.
+  await page.locator('[data-testid=knowledge-search]').fill('Limit item 08')
+  check(await until(async () => (await num('data-drawn')) === 100, 6000), 'a search draws every item (the matches light up)', String(await attr('data-drawn')))
+  check(/while you search or filter/.test(await limitNote().innerText()) && (await limitAction().count()) === 0, 'while searching the note says so and offers no action')
+  await page.locator('[data-testid=knowledge-search]').fill('')
+  check(await until(async () => (await num('data-drawn')) === 61, 6000), 'clearing the search brings the limit back', String(await attr('data-drawn')))
+  // Show all: everything is drawn, the choice is a per-project view preference, and the button reads back.
+  await limitAction().click()
+  check(await until(async () => (await num('data-drawn')) === 100, 8000), 'Show all draws all 100 items', String(await attr('data-drawn')))
+  check(await until(async () => (await status()) === 'Showing all 100 items.', 4000), 'Show all is announced', await status())
+  check(clean(await limitAction().innerText()) === 'Show the 60 most connected' && clean(await limitNote().innerText()) === 'Showing all 100 items', 'the note and the action read back')
+  check((await page.evaluate((id) => localStorage.getItem(`orgai.knowledgeLimit.${id}`), limitProject.id)) === 'all', 'the choice is stored per project')
+  check((await page.locator('[data-testid=knowledge-limit-action]').evaluate((el) => document.activeElement === el)), 'focus stays on the button')
+  await limitAction().click()
+  check(await until(async () => (await num('data-drawn')) === 61, 8000), 'the button limits the graph again (the opened item stays)', String(await attr('data-drawn')))
+  // A small graph has no note at all (the 67-item graph above never limited).
+  await noPageScroll('1600x1000 limit')
 } catch (e) {
   console.error(e)
   process.exitCode = 1
