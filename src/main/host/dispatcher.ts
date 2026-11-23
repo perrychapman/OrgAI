@@ -1346,7 +1346,7 @@ function registerMcpIpc(
       }
       // The terminal's own host: the server as mcp:list answers it now, read before the save under the same lock
       // (hostChange.ts terminalUpsertField).
-      const shown = before && ctx.surface === 'inproc' ? mcp.list(input.projectId).find((s) => s.spec.id === input.spec.id)?.spec : undefined
+      const shown = before && ctx.surface === 'inproc' ? mcp.list(input.projectId).find((s) => s.spec.id === input.spec?.id)?.spec : undefined
       const result = mcp.upsert(input)
       if (!before) return { result }
       if (ctx.surface === 'inproc') {

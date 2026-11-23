@@ -421,6 +421,15 @@ describe("the terminal's own orgai process: an MCP or skill save the user typed"
     expect(order).toEqual(['lock', 'read', 'save', 'unlock', 'live'])
   })
 
+  it('an inproc mcp:upsert with no spec reaches the service validation, not a TypeError of the dispatcher', async () => {
+    const r = rig()
+    vi.mocked(r.services.mcp.upsert).mockImplementationOnce(() => {
+      throw new Error('spec is required')
+    })
+    await expect((async () => r.call(IPC.mcpUpsert, { projectId: P }, INPROC))()).rejects.toThrow('spec is required')
+    expect(r.calls).toHaveLength(0)
+  })
+
   it('mcp:upsert that differs from the listed server in `enabled` alone passes that one field', async () => {
     const r = rig()
     await r.call(IPC.mcpUpsert, { projectId: P, spec: { ...server('mcp_old', 'old-srv'), enabled: false } }, INPROC)
