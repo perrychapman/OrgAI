@@ -2,7 +2,7 @@
 // (AgentFocus: opened from the side panel and by double click, Escape returns focus to the opener), in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, finish, launch, makeFixtureRepo, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, finish, findProject, launch, makeFixtureRepo, projectTab, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E run hold (orgai test)'
@@ -38,12 +38,75 @@ try {
   const add = hold.getByRole('button', { name: /Add and continue/ })
   if ((await add.count()) > 0) {
     await add.click()
-    const dlg = page.locator('[role=dialog], [role=alertdialog]')
+    const dlg = page.locator('dialog[open]')
     await dlg.waitFor({ timeout: 5000 }).catch(() => {})
     check((await dlg.count()) > 0, 'adding budget asks for an explicit confirmation')
     await page.keyboard.press('Escape')
     await sleep(300)
   }
+
+  // ---- Conversation dock: the composer lives in the dock; hiding keeps everything mounted; the toolbar button shows it again.
+  const geo = () => page.evaluate(() => {
+    const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom) } }
+    return { panel: r('.run-body > .side-panel'), composer: r('.run-body > .live-composer-region'), hold: r('[data-testid=run-hold]'), stage: r('.frame-stage'), dock: document.querySelector('.run-body')?.getAttribute('data-dock') }
+  })
+  const scrollEnd = () => page.evaluate(() => {
+    const tp = [...document.querySelectorAll('.run-body > .side-panel [role=tabpanel]')].find((e) => e.scrollHeight > e.clientHeight + 4 && e.offsetParent !== null) ?? document.querySelector('.run-body > .side-panel [role=tabpanel]')
+    return tp ? Math.round(tp.scrollHeight - tp.scrollTop - tp.clientHeight) : null
+  })
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(800)
+    const g = await geo()
+    check(g.dock === 'open' && !!g.panel && !!g.composer && g.composer.l >= g.panel.l - 1 && g.composer.t >= g.panel.b - 1, `the dock is open with the composer in it (${w}x${h})`, JSON.stringify(g))
+    check(!!g.hold && !!g.panel && g.hold.r <= g.panel.l + 1, `the hold card is not covered by the dock (${w}x${h})`, JSON.stringify(g))
+    check(!!g.panel && g.panel.r - g.panel.l <= 480 && (g.panel.r - g.panel.l) / w < 0.45, `the dock is a compact column (${w}x${h})`, JSON.stringify(g))
+    check((await scrollEnd()) !== null && (await scrollEnd()) <= 2, `the conversation opens at the newest message (${w}x${h})`, String(await scrollEnd()))
+    await shot(`dock-open-${w}`)
+  }
+  // Hide: a draft, the model switch element and its focus survive; focus moves to the toolbar button; decisions stay on the stage.
+  const draft = page.locator('.composer textarea')
+  await draft.fill('A draft that must survive hiding the dock')
+  await page.evaluate(() => { document.querySelector('[data-testid=live-settings-bar]').__keep = 'same node' })
+  await page.getByRole('button', { name: /^Hide run panel/ }).click()
+  await sleep(700)
+  let gh = await geo()
+  check(gh.dock === 'hidden' && (await page.locator('[data-testid=dock-show]').isVisible()), 'hiding the dock shows the Conversation button in the canvas toolbar', JSON.stringify(gh))
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'dock-show'), 'focus moves to the Conversation button after Hide')
+  check(!(await page.locator('.composer textarea').isVisible()), 'the composer is not drawn while the dock is hidden')
+  check((await page.locator('[data-testid=run-hold]').isVisible()) && !!gh.stage && gh.stage.r - gh.stage.l > 900 * 0.6, 'the hold card stays on the stage and the stage takes the width', JSON.stringify(gh))
+  check((await page.locator('[data-testid=live-settings-bar]').count()) === 1 && (await page.evaluate(() => document.querySelector('[data-testid=live-settings-bar]').__keep)) === 'same node', 'the model switch row stays the same mounted element while hidden')
+  await shot('dock-hidden-1600')
+  // Show by keyboard: Enter on the button puts focus in the composer with the draft intact; by mouse focus stays put.
+  await page.locator('[data-testid=dock-show]').focus()
+  await page.keyboard.press('Enter')
+  await sleep(700)
+  check((await geo()).dock === 'open', 'Enter on the Conversation button shows the dock')
+  check(await page.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && !!document.activeElement.closest('.live-composer-region')), 'a keyboard show moves focus to the composer')
+  check((await page.locator('.composer textarea').inputValue()) === 'A draft that must survive hiding the dock', 'the draft survived hide and show')
+  check((await page.evaluate(() => document.querySelector('[data-testid=live-settings-bar]').__keep)) === 'same node', 'the model switch row was not remounted by hide and show')
+  check((await scrollEnd()) !== null && (await scrollEnd()) <= 2, 'the conversation is at the newest message after hide and show', String(await scrollEnd()))
+  await page.getByRole('button', { name: /^Hide run panel/ }).click()
+  await sleep(500)
+  await page.locator('[data-testid=dock-show]').click()
+  await sleep(600)
+  check(await page.evaluate(() => document.activeElement?.tagName !== 'TEXTAREA'), 'a mouse show leaves focus where the click put it')
+  // Reduced motion: the dock appears at its end state, no slide.
+  await page.evaluate(() => document.documentElement.setAttribute('data-reduce-motion', 'on'))
+  await page.getByRole('button', { name: /^Hide run panel/ }).click()
+  await sleep(150)
+  check((await geo()).dock === 'hidden', 'reduced motion: hidden at once')
+  await page.locator('[data-testid=dock-show]').click()
+  await sleep(150)
+  check((await geo()).dock === 'open', 'reduced motion: shown at once')
+  await page.evaluate(() => document.documentElement.removeAttribute('data-reduce-motion'))
+  await draft.fill('')
+  // The plan and Find reach their tabs even with the dock hidden.
+  await page.getByRole('button', { name: /^Hide run panel/ }).click()
+  await sleep(500)
+  await page.locator('[data-testid=find-agent]').click()
+  await sleep(700)
+  check((await geo()).dock === 'open', 'Find an agent shows a hidden dock')
 
   // ---- One-agent view.
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
@@ -65,6 +128,55 @@ try {
   check((await page.locator('.agent-focus').count()) === 0 && (await page.locator('.react-flow').count()) === 1, 'Escape closes the one-agent view')
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'agent-focus-open'), 'focus returns to the button that opened it')
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+
+  // ---- Budget stop: needs the project's per-run cap (set through the project's Settings, Spending limits).
+  await projectTab(page, 'Settings').click()
+  await page.getByRole('tab', { name: 'Spending limits', exact: true }).click()
+  await page.locator('.settings-pane-title').waitFor({ timeout: 10_000 })
+  await page.evaluate(() => { const d = document.querySelector('details[data-testid=settings-advanced][data-pane="project-limits"]'); if (d) d.open = true })
+  const cap = page.getByLabel('Estimated-cost cap per run')
+  await cap.waitFor({ timeout: 10_000 })
+  await cap.fill('1')
+  await sleep(900)
+  check((await findProject(page, NAME))?.maxBudgetUsd === 1, 'the per-run cost cap of $1 saved through Settings')
+  await projectTab(page, 'Live').click()
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 10_000 })
+  await start('Work until the limit [mock:budget-stop]')
+  await hold.waitFor({ timeout: 30_000 })
+  check((await hold.getAttribute('data-kind')) === 'budget', 'the hold card names the spending limit', String(await hold.getAttribute('data-kind')))
+  const choose = hold.getByRole('radio', { name: /Add to the limit/ })
+  if (await choose.count()) await choose.check()
+  const addBtn = hold.getByRole('button', { name: /^Add and continue/ })
+  const dlg = page.locator('dialog[open]')
+  // Cancel adds nothing; the held Enter (key repeat) lands on Cancel and cannot confirm.
+  await addBtn.focus()
+  await page.keyboard.down('Enter')
+  await dlg.first().waitFor({ timeout: 5000 })
+  check(await page.evaluate(() => /^Cancel$/.test(document.activeElement?.textContent?.trim() ?? '')), 'the add-budget confirmation opens with focus on Cancel')
+  await page.keyboard.down('Enter')
+  await page.keyboard.up('Enter')
+  await sleep(500)
+  check((await dlg.count()) === 0 && (await hold.count()) === 1 && (await hold.getAttribute('data-kind')) === 'budget', 'a held Enter cannot confirm: nothing was added and the hold stays')
+  await addBtn.click()
+  await dlg.first().waitFor({ timeout: 5000 })
+  await dlg.first().getByRole('button', { name: 'Cancel' }).click()
+  await sleep(400)
+  check((await hold.count()) === 1, 'Cancel adds nothing and the run stays held')
+  // A refusal from main shows inline: $5 is more than the $1 the project allows for one run.
+  await hold.getByLabel('Add to this run’s limit').fill('5')
+  await addBtn.click()
+  await page.locator('[data-testid=run-hold-confirm]').click()
+  await hold.locator('.run-hold-error').waitFor({ timeout: 10_000 })
+  check(/more than this project allows|project/i.test(await hold.locator('.run-hold-error').innerText()), 'a refusal from main shows inline in the card', await hold.locator('.run-hold-error').innerText())
+  check((await hold.count()) === 1, 'the refused amount did not continue the run')
+  // A confirmed amount within the cap continues the run.
+  await hold.getByLabel('Add to this run’s limit').fill('0.5')
+  await addBtn.click()
+  await page.locator('[data-testid=run-hold-confirm]').click()
+  await page.locator('[data-testid=run-hold][data-kind=budget]').waitFor({ state: 'detached', timeout: 20_000 }).catch(() => {})
+  check((await page.locator('[data-testid=run-hold][data-kind=budget]').count()) === 0, 'a confirmed amount continues the run and the hold goes')
+  await shot('budget-continued')
   finish('run-hold')
 } finally {
   await cleanup(app, page, NAME)

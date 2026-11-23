@@ -210,7 +210,7 @@ export function SidePanel({
     if (!hideClicked.current || !isCollapsed) return
     hideClicked.current = false
     if (hideFocus) {
-      hideFocus()
+      requestAnimationFrame(hideFocus)
       return
     }
     const active = document.activeElement

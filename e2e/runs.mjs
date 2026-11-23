@@ -130,7 +130,7 @@ try {
     })
     check(!!tm.tray && !!tm.stage && tm.tray.t >= tm.stage.b - 0.5 && tm.tray.l <= tm.stage.l + 0.5, 'the tray sits under the stage at 1024x640', JSON.stringify(tm))
     check(!!tm.frame && !!tm.stage && (tm.stage.b - tm.stage.t) >= 0.55 * (tm.frame.b - tm.frame.t) - 1, 'the stage keeps at least 55 percent of the frame with the tray open', JSON.stringify(tm))
-    check(tm.compact === 'true', 'the tray is compact (data-compact) in a frame under 480 px high', String(tm.compact))
+    check(tm.compact === 'true', 'the tray is compact (data-compact) in a frame under 570 px high', String(tm.compact))
     check(tm.btnBottom === undefined || tm.btnBottom <= tm.ih + 0.5, 'the card action row is reachable inside the window at 1024x640', String(tm.btnBottom))
     log('chrome above the canvas at 1024x640 (px from window top to stage):', Math.round(tm.stage?.t ?? 0), 'stage', `${Math.round((tm.stage?.r ?? 0) - (tm.stage?.l ?? 0))}x${Math.round((tm.stage?.b ?? 0) - (tm.stage?.t ?? 0))}`)
     await shot('tray-1024x640')
@@ -379,7 +379,8 @@ try {
     for (let i = 0; i < 3; i++) {
       const isOpen = (await page.locator('.side-panel').first().getAttribute('data-collapsed')) === 'false'
       if (isOpen === open) break
-      await panelToggle().click().catch(() => {})
+      if (open) await page.locator('[data-testid=dock-show]').click().catch(() => {})
+      else await page.getByRole('button', { name: /^Hide run panel/ }).click().catch(() => {})
       await sleep(500)
     }
   }
@@ -481,7 +482,7 @@ try {
       const g2 = await geo()
       check(g2.stage >= 279, 'dragged to max at 1024 the canvas stage keeps at least 280 px', JSON.stringify(g2))
       check(g2.panel >= g1.panel && Math.abs(g2.gap) <= 2, 'dragged to max the panel only grows and the canvas still meets it', JSON.stringify(g2))
-      check(g2.panel < 480 || g2.composerInPanel, 'a panel of 480 px or more holds the composer below its content', JSON.stringify(g2))
+      check(g2.composerInPanel, 'the dock holds the composer below its content at every width', JSON.stringify(g2))
       await shot('side-panel-max-1024')
       // A large window: no 640 px cap, the composer moves into the panel column, the toolbar does not overflow.
       await setSize(1800, 1000)
@@ -502,7 +503,7 @@ try {
         await shot('side-panel-wide-1800')
         await handle.dblclick()
         await sleep(200)
-        check(!(await geo()).composerInPanel, 'back at the default width the composer sits under the canvas')
+        check((await geo()).composerInPanel, 'back at the default width the composer is still in the dock')
         // Crossing 480 px by one arrow step moves the composer into the panel column without re-zooming the canvas.
         const scaleOf = () => page.evaluate(() => { const m = /scale\(([\d.]+)\)/.exec(document.querySelector('.react-flow__viewport')?.style.transform ?? ''); return m ? Number(m[1]) : 0 })
         await handle.focus()
@@ -520,8 +521,8 @@ try {
           await sleep(700)
           const gy = await geo()
           const z1 = await scaleOf()
-          check(!gx.composerInPanel && gy.composerInPanel, 'one arrow step across 480 px moves the composer into the panel column', JSON.stringify({ gx, gy }))
-          check(z0 > 0 && Math.abs(z1 - z0) < 0.005, 'the canvas keeps the same zoom (no refit) when the composer moves into the panel', `${z0} -> ${z1}`)
+          check(gx.composerInPanel && gy.composerInPanel, 'one arrow step across 480 px keeps the composer in the dock', JSON.stringify({ gx, gy }))
+          check(z0 > 0 && Math.abs(z1 - z0) < 0.005, 'the canvas keeps the same zoom (no refit) when the composer stays in the dock', `${z0} -> ${z1}`)
         } else check(false, 'could not stop the panel just under 480 px with arrow keys', JSON.stringify(gx))
         await handle.dblclick()
         await sleep(200)
@@ -556,7 +557,7 @@ try {
   ts = await trayState()
   check(ts.overflow <= 0 && !ts.overlap, 'chips do not overflow at 1424x881 (panel open)', JSON.stringify(ts))
   check(!!ts.tray && !!ts.stage && ts.tray.t >= ts.stage.b - 0.5, 'the tray is under the stage at 1424 with the panel open', JSON.stringify(ts))
-  await panelToggle().click().catch(() => {})
+  await setPanel(false)
   await sleep(600)
   ts = await trayState()
   check(!!ts.tray && !!ts.stage && ts.tray.t >= ts.stage.b - 0.5, 'collapsing the side panel at 1424 keeps the tray under the stage', JSON.stringify(ts))
@@ -817,7 +818,7 @@ try {
   check(/Continued/.test((await divider.innerText().catch(() => '')) || ''), 'the feed shows a Continued divider')
   check((await page.getByText('Chain first turn').count()) > 0, 'the feed still shows the earlier turn')
   check((await page.getByText('Continued from run').count()) === 0, 'no "Continued from run" harness row is shown')
-  check(await page.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && !!document.activeElement.closest('.composer')), 'focus stays in the composer after Send')
+  check(await page.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && !!document.activeElement.closest('.composer')), 'focus stays in the composer after Send', await page.evaluate(() => { const a = document.activeElement; return a ? a.tagName + '.' + a.className + ' ' + (a.textContent || '').slice(0, 30) : 'none' }))
   await shot('chain-continued')
   await endSession(page)
 

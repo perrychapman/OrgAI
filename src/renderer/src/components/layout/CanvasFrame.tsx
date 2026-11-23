@@ -4,7 +4,7 @@ import { beginLayoutMotion } from '../../lib/layoutMotion'
 import { exitProps, tokenMs, useExitPresence } from '../../lib/useExitPresence'
 
 /** Frame height under which the tray's cards switch to their compact layout (data-compact on section.frame-tray). */
-export const COMPACT_FRAME_HEIGHT = 480
+export const COMPACT_FRAME_HEIGHT = 570
 /**
  * A compact frame stays compact until it is this much taller than the threshold. An expanded proposal folds the composer
  * under the frame, which grows the frame by up to ~60 px; without the margin that growth would end compact mode, unfold

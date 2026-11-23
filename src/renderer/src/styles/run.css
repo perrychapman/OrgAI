@@ -493,20 +493,22 @@
 }
 .run-body[data-dock='open'] > .side-panel {
   grid-row: 1;
-  margin: var(--space-2) var(--space-3) 0 0;
+  margin: var(--space-2) 0 0 0;
   background: var(--glass-strong);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-line);
   border-bottom: 0;
-  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  border-radius: var(--radius-xl) 0 0 0;
+  border-right: 0;
   box-shadow: var(--elev-1);
 }
 .run-body[data-dock='open'] > .live-composer-region {
   grid-column: 2;
-  margin: 0 var(--space-3) var(--space-2) 0;
+  margin: 0 0 var(--space-2) 0;
   border-top: 1px solid var(--border-default);
-  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  border-radius: 0 0 0 var(--radius-xl);
+  border-right: 0;
 }
 /* Hidden: the stage has the whole width. The panel stays mounted (its tabs, the picker, the draft and focus state survive)
    but is not drawn or focusable; the composer region stays mounted the same way. */
@@ -1176,4 +1178,15 @@
 .run-act-end {
   display: inline-flex;
   margin-left: var(--space-2);
+}
+
+/* In the dock the settings row is one scrolling line, so the feed keeps its height (the chips are still ordinary buttons in Tab order). */
+.run-body[data-dock='open'] .live-composer-bar .run-settings-row {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: var(--space-0h);
+}
+.run-body[data-dock='open'] .live-composer-bar .run-settings-row > * {
+  flex: 0 0 auto;
 }
