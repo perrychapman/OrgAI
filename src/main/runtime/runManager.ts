@@ -144,7 +144,7 @@ import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, RUN_TITLE_MAX_CHARS, PERMISSION_MODE_OPTIONS, isBuiltinConnectionId, isEffort, isPermissionMode, runPermissionModeChoices, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, RUN_TITLE_MAX_CHARS, PERMISSION_MODE_OPTIONS, isBuiltinConnectionId, isEffort, isModelTier, isPermissionMode, runPermissionModeChoices, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
 import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
@@ -201,6 +201,7 @@ import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { allowCountKey, allowCountOf, bumpAllowCount } from './allowCounter'
 import { readStaffingProfile, recordRunInStaffingProfile, staffingProfileApplies } from '../store/staffingProfile'
 import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
@@ -672,6 +673,8 @@ interface ActiveRun {
   startFailed?: boolean
   /** When the run last got a successful answer (a cost report or an ok turn end), for RunHold.provider.lastOkAt. */
   lastOkAt?: number
+  /** The last provider retry attempt reported (provider.retry) since an answer last arrived: RunHold.provider.tries. */
+  providerTries?: number
   /** With finalizeExecRun: leave the run paused until `until` (a spending-limit pause) instead of finished. */
   finalPause?: { until: number; reason: string }
 }
@@ -703,7 +706,20 @@ export const RUN_MESSAGE_INBOUND_LIMIT = 100
 export const RUN_MESSAGE_QUEUE_LIMIT = 20
 
 /** runActions.skipReview: the harness's fixed sentence to the orchestrator (the user's own note follows it). */
-export const SKIP_REVIEW_TEXT = 'The user chose to skip review for the current change. Go ahead without the review step.'
+/** The most characters of an agent's brief that retryAgent repeats to the orchestrator. */
+export const RETRY_AGENT_BRIEF_CHARS = 2000
+
+/** An agent's brief (untrusted model text) for a sentence we send: control characters out (line breaks kept), cut with an ellipsis. Empty when absent. */
+function cleanBrief(brief: unknown): string {
+  if (typeof brief !== 'string') return ''
+  const text = brief.split('\n').map((l) => l.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')).join('\n').trim()
+  return text.length > RETRY_AGENT_BRIEF_CHARS ? `${text.slice(0, RETRY_AGENT_BRIEF_CHARS - 1).trimEnd()}…` : text
+}
+
+/** The largest provider retry attempt number kept in RunSummary.providerRetry / RunHold.provider.tries. */
+export const PROVIDER_RETRY_ATTEMPT_MAX = 1000
+
+export const SKIP_REVIEW_TEXT ='The user chose to skip review for the current change. Go ahead without the review step.'
 
 /**
  * How long one peer delivery may wait on the recipient session's receive(). A receive that never settles would
@@ -2069,6 +2085,11 @@ export class RunManager {
       if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode' || raw.type === 'run.roster' || raw.type === 'run.liveChange') return
       // Holds and spending warnings are RunManager's alone (an adapter can neither set nor clear them).
       if (raw.type === 'run.hold' || raw.type === 'run.spendWarning') return
+      // The provider is retrying (adapters): RunSummary.providerRetry follows it; the event is rebuilt, never passed through.
+      if (raw.type === 'provider.retry') {
+        this.noteProviderRetry(active, raw)
+        return
+      }
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
       // and broadcast, then the agent goes out again with its new count.
@@ -2145,6 +2166,8 @@ export class RunManager {
         if (closing) {
           summary.endedAt = now
           this.endAcceptEditsGrant(active)
+          // The run ended: nothing is retrying any more (the attempt count stays for a provider hold set just below).
+          this.clearProviderRetry(active, { keepTries: true, persist: false })
         }
         // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
         if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
@@ -2177,6 +2200,10 @@ export class RunManager {
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      // The provider answered again: a retry in progress is over (a user or harness line is not an answer).
+      if ((active.providerTries !== undefined || summary.providerRetry) && (e.type === 'run.cost' || (e.type === 'transcript' && e.entry.source !== 'harness' && e.entry.block.kind !== 'user' && e.entry.block.kind !== 'system'))) {
+        this.clearProviderRetry(active, { keepTries: false, persist: true })
+      }
       // A removed agent never reports: its ledger entry is ended (spec 5.2).
       if (e.type === 'agent.remove' && active.ledger) {
         active.ledger.ended(e.agentId)
@@ -3662,7 +3689,10 @@ export class RunManager {
     if (typeof e?.turnGen === 'number' && Number.isFinite(e.turnGen)) a.rootTurnGen = e.turnGen
     a.lastTurnEnd = e
     a.activityGen++
-    if (e.ok) a.lastOkAt = Date.now()
+    if (e.ok) {
+      a.lastOkAt = Date.now()
+      this.clearProviderRetry(a, { keepTries: false, persist: true })
+    }
     // UI overhaul: a desktop run whose own cap ended the turn (the provider's budget error) stops and waits for the user.
     if (e.errorSubtype === 'error_max_budget_usd' && !a.summary.overrides?.execMode && !a.finalizing) this.budgetReached(a)
     if (!a.summary.overrides?.execMode || a.finalizing) return
@@ -5045,10 +5075,12 @@ export class RunManager {
     delete request.maxScope
     delete request.workingFolder
     delete request.workingFolderScratch
-    // UI overhaul: when the card was raised is RunManager's (first sight). priorAllows ("allowed N times before") needs a
-    // per-project counter of repeated allows that does not exist yet: whatever an adapter sent is dropped, so it stays
-    // absent (unknown), never a guess.
+    // UI overhaul: when the card was raised is RunManager's (first sight). priorAllows ("allowed N times before") is read
+    // from the project's allow counter (allowCounter.ts); whatever an adapter sent is dropped first, so it stays absent
+    // (unknown) when the key has no record, the call has no rule key, or the project is virtual / a Chat. Never a guess.
     delete request.priorAllows
+    const prior = this.priorAllowsOf(active.summary, request)
+    if (prior !== undefined) request.priorAllows = prior
     request.requestedAt = Date.now()
     const quick = active.summary.quick
     if (quick && !quick.allowEdits && isQuickWriteTool(request.toolName)) request.quickReadOnly = true
@@ -5071,6 +5103,27 @@ export class RunManager {
       this.broadcast({ type: 'permission.request', runId: active.summary.id, request })
       this.cardCreated(active, 'permission', request.id, request)
     })
+  }
+
+  /**
+   * The allow-counter key of a permission card and the project it counts under, or null when nothing is counted: no data
+   * folder, a virtual project or Chat (no stored project), a reference-folder call (allow once only, never a rule), or a
+   * call no rule covers (allowCounter.ts allowCountKey).
+   */
+  private allowCounterKey(s: RunSummary, request: PermissionRequest): string | null {
+    if (!this.options.dataDir || isVirtualProjectId(s.projectId) || s.quick || request.referenceFolder) return null
+    return allowCountKey(request.toolName, request.input, request.suggestions)
+  }
+
+  /** PermissionRequest.priorAllows: the project's earlier user "Allow once" answers for this call's key; undefined = unknown. */
+  private priorAllowsOf(s: RunSummary, request: PermissionRequest): number | undefined {
+    const key = this.allowCounterKey(s, request)
+    return key && this.options.dataDir ? allowCountOf(this.options.dataDir, s.projectId, key) : undefined
+  }
+
+  private countAllowOnce(s: RunSummary, request: PermissionRequest): void {
+    const key = this.allowCounterKey(s, request)
+    if (key && this.options.dataDir) bumpAllowCount(this.options.dataDir, s.projectId, key)
   }
 
   /** Quick runs and build sessions never save anything into their folder (isTrustRestrictedRun, plus the quick project). */
@@ -5100,6 +5153,9 @@ export class RunManager {
     }
     const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
     this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
+    // "You have allowed this N times": only the user's own Allow once on the desktop counts (not a session or project grant,
+    // not a deny, not a policy, a peer's or an exec host's answer).
+    if (narrowed?.behavior === 'allow' && (narrowed.scope ?? 'once') === 'once' && opts.decidedBy?.surface === 'desktop') this.countAllowOnce(active.summary, pending.request)
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
     this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(narrowed?.behavior === 'allow' && narrowed.scope ? { scope: narrowed.scope } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
@@ -5862,10 +5918,33 @@ export class RunManager {
     await this.send(runId, `Message from the user for ${logText(agent.name)} (${logText(agent.handle ?? agent.id)}): ${text}`)
   }
 
-  /** runs:retryAgent. Desktop only. CONTRACT STUB (batch 2): implemented by the Runtime Engineer who owns runManager.ts. */
+  /**
+   * runs:retryAgent. Desktop only. Asks a live run's orchestrator, in a fixed sentence, to give a failed or stopped report's
+   * task to a new agent of the same role (optionally on `tier`). Sent like the user's own message (send(), every gate of it):
+   * it starts nothing itself, so staffing (runtime/staffing.ts) still clamps the new agent's tier and effort when the
+   * orchestrator spawns it, and the delegation, spawn and spend limits all apply. The agent's brief is untrusted model text:
+   * stripped of control characters and cut to RETRY_AGENT_BRIEF_CHARS. Refused, in plain words, for a run that is not
+   * working, an unknown agent, the orchestrator, an agent still working or one that finished its work, and an unknown tier.
+   */
   async retryAgent(input: RetryAgentInput): Promise<void> {
-    void input
-    throw new Error('Retrying one agent is not available yet.')
+    this.refuseWhileQuitting()
+    const runId = typeof input?.runId === 'string' ? input.runId : ''
+    const active = this.runs.get(runId)
+    if (!active?.session || !isOpenStatus(active.summary.status)) throw new Error('This run is not working, so it cannot start another agent. Continue it first.')
+    const agent = typeof input.agentId === 'string' ? active.record.agents[input.agentId] : undefined
+    if (!agent) throw new Error('That agent is not in this run.')
+    if (agent.id === ROOT_AGENT_ID || agent.parentId === null) throw new Error('The orchestrator cannot be retried. Send it a message instead.')
+    if (isLiveAgent(agent)) throw new Error('That agent is still working. Stop it first, or wait for it to finish.')
+    const stopped = agent.state === 'done' && /^(stopped|interrupted)/i.test(agent.activity)
+    if (agent.state !== 'error' && !stopped) throw new Error('That agent finished its work, so there is nothing to retry.')
+    const tier: unknown = input.tier
+    if (tier !== undefined && !isModelTier(tier)) throw new Error('That model tier is not known.')
+    const project = active.liveProject?.() ?? active.ctx?.project
+    const roleName = (agent.roleId ? project?.roles.find((r) => r.id === agent.roleId)?.name : undefined) ?? agent.roleSlug
+    const name = logText(agent.name) || 'the agent'
+    const brief = cleanBrief(agent.brief)
+    await this.send(runId, `The user asks you to give ${name}'s task to a new ${logText(roleName) || 'replacement'} agent${tier ? `, on the ${tier} tier` : ''}.${brief ? ` Its brief was: ${brief}` : ''}`)
+    active.emit({ type: 'log', runId, level: 'info', message: `You asked to retry ${name}.` })
   }
 
   /** runs:stopAgent. Desktop only. Stops one report of a live run (never the orchestrator) when its adapter can. */
@@ -5965,6 +6044,56 @@ export class RunManager {
     this.broadcast({ type: 'run.hold', runId: a.summary.id, hold: structuredClone(next) })
   }
 
+  /**
+   * An adapter's provider.retry (the SDK or app-server is retrying a failed call): RunSummary.providerRetry holds the
+   * attempt, when the next try is due (when known), when the trouble began and the run's connection. `ok: true` clears it.
+   * Values are rebuilt here (attempt 1..PROVIDER_RETRY_ATTEMPT_MAX, a finite positive nextTryAt); nothing the adapter sent
+   * beyond that reaches the summary or the renderer. Only a live session is tracked (an ended run has no retry to show).
+   */
+  private noteProviderRetry(a: ActiveRun, raw: Extract<RunEvent, { type: 'provider.retry' }>): void {
+    const s = a.summary
+    if (s.status === 'finished' || s.status === 'error' || s.status === 'paused' || s.status === 'stopping') return
+    if (raw.ok === true) {
+      this.clearProviderRetry(a, { keepTries: false, persist: true })
+      return
+    }
+    const rawAttempt: unknown = raw.attempt
+    if (typeof rawAttempt !== 'number' || !Number.isFinite(rawAttempt) || rawAttempt < 1) return
+    const attempt = Math.min(PROVIDER_RETRY_ATTEMPT_MAX, Math.floor(rawAttempt))
+    const rawNext: unknown = raw.nextTryAt
+    const nextTryAt = typeof rawNext === 'number' && Number.isFinite(rawNext) && rawNext > 0 ? Math.floor(rawNext) : undefined
+    a.providerTries = attempt
+    const cur = s.providerRetry
+    if (cur && cur.attempt === attempt && cur.nextTryAt === nextTryAt) return
+    s.providerRetry = { attempt, ...(nextTryAt !== undefined ? { nextTryAt } : {}), since: cur?.since ?? Date.now(), ...(s.connection ? { connection: s.connection } : {}) }
+    try {
+      this.store.upsert(s)
+    } catch (e) {
+      log.warn(`Run ${s.id}: could not persist the provider retry: ${(e as Error).message}`)
+    }
+    this.broadcast({ type: 'provider.retry', runId: s.id, attempt, ...(nextTryAt !== undefined ? { nextTryAt } : {}) })
+  }
+
+  /**
+   * The provider answered, or the run ended: RunSummary.providerRetry goes (the renderer is told with `ok: true`). At run end
+   * `keepTries` leaves the attempt count for the provider hold the same status may set; an answer forgets it.
+   */
+  private clearProviderRetry(a: ActiveRun, opts: { keepTries: boolean; persist: boolean }): void {
+    const s = a.summary
+    if (!opts.keepTries) a.providerTries = undefined
+    const cur = s.providerRetry
+    if (!cur) return
+    delete s.providerRetry
+    if (opts.persist) {
+      try {
+        this.store.upsert(s)
+      } catch (e) {
+        log.warn(`Run ${s.id}: could not persist the end of the provider retry: ${(e as Error).message}`)
+      }
+    }
+    this.broadcast({ type: 'provider.retry', runId: s.id, attempt: cur.attempt, ok: true })
+  }
+
   /** The run no longer waits on the user (it continues, or a continuation started). Live or stored. */
   private clearHold(runId: string): void {
     const a = this.runs.get(runId)
@@ -6053,7 +6182,7 @@ export class RunManager {
         this.budgetReached(a)
       } else if (e.status === 'error' && (a.session || a.startFailed)) {
         const auth = !!a.lastTurnEnd?.isAuthError || isAuthFailure({ text: e.error, isError: true })
-        this.setHold(a, providerHold({ ...(s.connection ? { connection: s.connection } : {}), auth, ...(a.lastOkAt !== undefined ? { lastOkAt: a.lastOkAt } : {}), since, facts }))
+        this.setHold(a, providerHold({ ...(s.connection ? { connection: s.connection } : {}), auth, ...(a.lastOkAt !== undefined ? { lastOkAt: a.lastOkAt } : {}), ...(a.providerTries !== undefined ? { tries: a.providerTries } : {}), since, facts }))
       } else if (e.status === 'finished') {
         this.syncPlanHold(a)
       }
