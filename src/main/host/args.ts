@@ -100,6 +100,7 @@ import { isSafeId, projectKindOf } from '../../shared/defaults'
 import { stripSettingsInfo } from '../appInfo'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { harnessProject as buildHarnessProject } from '../mcp/assist'
+import { isBuiltinTemplateId } from '../setup/builtinTemplates'
 import { scratchDirFor, validateQuickFolder } from '../quick/scratch'
 import { sanitizeImages } from '../runtime/attachments'
 import { runOverridesArgs } from '../runtime/runOverrides'
@@ -294,7 +295,9 @@ export const templateEngagementArgs = {
     return storedIdArg(input)
   },
   templateId(input: unknown): string {
-    if (!isSafeId(input)) throw new Error('Template not found')
+    // A saved template's id, or one of the two built-in starting teams ('builtin:code' / 'builtin:engagement'; the
+    // colon is not in the safe id alphabet, so they are named exactly).
+    if (!isSafeId(input) && !isBuiltinTemplateId(input)) throw new Error('Template not found')
     return input
   },
   saveTemplate(input: unknown): OrgTemplateSaveInput {
