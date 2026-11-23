@@ -4,6 +4,7 @@ import { RUN_ADD_BUDGET_MAX_USD, type RunHoldAction } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { useAnnounceOnce, useFrameAnnounce } from '../layout/CanvasFrame'
 import { holdOf } from '../../lib/runHold'
 import { money } from '../../lib/usage'
 import '../../styles/run-hold.css'
@@ -68,6 +69,10 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   }, [])
 
   const hold = holdOf(summary, plan, { now, sessionOpen })
+  // One polite line when a hold appears, through the frame's announcer. The same hold is never said twice (a remounted
+  // card stays quiet); without a frame the head keeps its own status role.
+  const announcer = useFrameAnnounce()
+  useAnnounceOnce(`run-hold:${runId}:${hold?.kind ?? ''}`, hold ? `${hold.word}. ${hold.title}` : null)
   if (!hold) return null
 
   const act = async (fn: () => Promise<void> | void): Promise<void> => {
@@ -121,7 +126,11 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
           () => addBudget(runId, parsed)
         )
       case 'retry':
-        return void act(() => retryRun(runId))
+        // A new provider turn spends: ask first, like adding budget. Focus starts on Cancel; the in-flight guard drops a repeat.
+        return void confirmed(
+          { title: `${o.label}?`, body: kind === 'provider' ? 'This starts a new turn with the same connection and model, and it can spend. Anything already done is kept.' : 'This picks the run up where it stopped by starting a new turn, and it can spend. Anything already done is kept.', confirmLabel: o.label, confirmTestId: 'run-hold-confirm' },
+          () => retryRun(runId)
+        )
       case 'switchModel':
         setHintShown(!sessionOpen)
         return onSwitchModel?.()
@@ -141,7 +150,7 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   return (
     <>
     <section className={rootClass} aria-labelledby={titleId} data-testid="run-hold" data-kind={kind} data-tone={hold.tone}>
-      <div className="run-hold-head" role="status">
+      <div className="run-hold-head" role={announcer ? undefined : 'status'}>
         <span className="run-hold-pill" data-tone={hold.tone}>
           <span className={hold.tone === 'failed' ? 'run-hold-dot' : hold.tone === 'retrying' ? 'run-hold-dot motion-pulse' : 'run-hold-dot motion-breathe'} aria-hidden="true" />
           {hold.word}

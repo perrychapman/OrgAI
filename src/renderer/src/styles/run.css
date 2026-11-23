@@ -485,6 +485,42 @@
   grid-column: 2;
   border-left: 1px solid var(--border-default);
 }
+/* Conversation dock (UI overhaul board "Run"): the run panel and the composer are one glass card in the right column and
+   the canvas takes the stage beside it. data-dock is set by LiveRunView: open, hidden (the toolbar's Conversation button
+   shows it again) or rail (no room for the dock: the old rail and the composer under the canvas). */
+.run-body[data-dock='open'] > .canvas-frame {
+  grid-row: 1 / span 2;
+}
+.run-body[data-dock='open'] > .side-panel {
+  grid-row: 1;
+  margin: var(--space-2) var(--space-3) 0 0;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-bottom: 0;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  box-shadow: var(--elev-1);
+}
+.run-body[data-dock='open'] > .live-composer-region {
+  grid-column: 2;
+  margin: 0 var(--space-3) var(--space-2) 0;
+  border-top: 1px solid var(--border-default);
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+}
+/* Hidden: the stage has the whole width. The panel stays mounted (its tabs, the picker, the draft and focus state survive)
+   but is not drawn or focusable; the composer region stays mounted the same way. */
+.run-body.run-body[data-dock='hidden'] {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+.run-body[data-dock='hidden'] > .side-panel {
+  visibility: hidden;
+  border: 0;
+  min-width: 0;
+}
+.run-body[data-dock='hidden'] > .live-composer-region {
+  display: none;
+}
 .live-panel {
   flex: 1;
   min-height: 0;

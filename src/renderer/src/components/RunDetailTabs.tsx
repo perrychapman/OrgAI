@@ -62,6 +62,10 @@ export function openAgentFinder(): void {
   useAppStore.getState().setSideTab('agents')
   for (const l of [...finderListeners]) l()
 }
+/** Runs `l` whenever "Find an agent" is asked for (the run view shows its hidden dock first). Returns the unsubscribe. */
+export function onAgentFinder(l: () => void): () => void {
+  return subscribeFinder(l)
+}
 function subscribeFinder(l: () => void): () => void {
   finderListeners.add(l)
   return () => finderListeners.delete(l)
