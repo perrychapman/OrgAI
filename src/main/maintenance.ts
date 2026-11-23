@@ -1,11 +1,30 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { removeOrgaiIfEmpty, removeTeamFolderFiles } from './teamFiles/disk'
-import type { MaintenanceResult, PendingWorktree, Project, WorktreeDiff } from '@shared/types'
+import type { MaintenanceResult, PendingWorktree, Project, RunRecord, RunSummary, WorktreeDiff } from '@shared/types'
 import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
-import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine, UnfinishedGitStateError } from './runtime/worktrees'
+import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine, UnfinishedGitStateError, type GateDecision } from './runtime/worktrees'
+import { runTestGate, testGateCommand } from './runtime/testGate'
+
+const DAY_MS = 24 * 60 * 60 * 1000
+/** Run statuses after which nothing of the run is live and it will not resume by itself. */
+const ENDED_RUN: ReadonlySet<RunSummary['status']> = new Set<RunSummary['status']>(['finished', 'error'])
+
+/** What the retention sweep needs to know about runs (RunStore satisfies it). */
+export interface MaintenanceRuns {
+  list(projectId: string): RunSummary[]
+  getRecord(runId: string): RunRecord | null
+}
+
+export interface MaintenanceDeps {
+  runs?: MaintenanceRuns
+  /** True while RunManager has a live run of the project (extra to the stored status). */
+  hasLiveRun?: (projectId: string) => boolean
+  now?: () => number
+  log?: (message: string) => void
+}
 
 /**
  * Cleanup that happens outside a run: leftover report branches, and removing OrgAI's
@@ -15,7 +34,8 @@ export class MaintenanceService {
   /** `teamFiles.markRemoved` keeps the team files from coming back on a later save (teamFiles:enable turns them on again). */
   constructor(
     private projects: ProjectStore,
-    private teamFiles?: { markRemoved(projectId: string): void }
+    private teamFiles?: { markRemoved(projectId: string): void },
+    private deps: MaintenanceDeps = {}
   ) {}
 
   private project(id: string): Project {
@@ -43,8 +63,94 @@ export class MaintenanceService {
 
   async integrateWorktree(projectId: string, branch: string): Promise<MaintenanceResult> {
     const { root, wt } = await this.find(projectId, branch)
-    const result = await integrateWorktree(root, { path: wt.path, branch: wt.branch, status: 'merging' }, `${wt.lastSubject ?? 'Leftover report'} (integrated from maintenance)`)
+    const project = this.project(projectId)
+    // The same gates as an integration inside a run: the project's test command, and where merges land.
+    const command = testGateCommand(project)
+    const gate = command
+      ? async (): Promise<GateDecision> => {
+          const run = await runTestGate(command, wt.path)
+          return run.outcome === 'passed'
+            ? { behavior: 'merge' }
+            : { behavior: 'refuse', reason: 'tests', message: `Not merged: the project's tests ${run.outcome === 'timeout' ? 'timed out' : 'failed'}, and this project requires them to pass first. ${wt.branch} is kept at ${wt.path}.\n${run.detail}` }
+        }
+      : undefined
+    const mainBranch = project.mainBranch?.trim()
+    const result = await integrateWorktree(
+      root,
+      { path: wt.path, branch: wt.branch, status: 'merging' },
+      `${wt.lastSubject ?? 'Leftover report'} (integrated from maintenance)`,
+      gate,
+      mainBranch ? { mainBranch } : {}
+    )
     return { ok: result.info.status === 'merged' || result.info.status === 'empty', message: result.message }
+  }
+
+  /**
+   * Project.keepFailedBranchesDays: remove the finished copies (worktrees) of failed work once their last activity is
+   * older than N days, through the same discardWorktree a user discard uses (so it refuses over an unfinished git
+   * operation too). A copy goes only when every one of these holds; anything unknown keeps it:
+   * - the project is a code project in a git repository with keepFailedBranchesDays set;
+   * - no run of the project is live (stored status other than finished / error, or RunManager says so), so a copy a live
+   *   run might still integrate is never touched;
+   * - a stored run record of the project names the copy's agent, that run ended, and the agent's copy either could not be
+   *   merged (status 'conflict': a conflict or a refused test gate), was discarded but left behind ('removed'), or the
+   *   agent failed ('error'). Held, in-review, active and unowned copies are never removed;
+   * - the copy has no uncommitted file, and the newest of its last commit, its run's end and its folder's change is
+   *   older than N days.
+   * There is no periodic sweep in the app: the host calls this once at start. Returns the removed branch names.
+   */
+  async sweepFinishedCopies(): Promise<string[]> {
+    const removed: string[] = []
+    const runs = this.deps.runs
+    if (!runs) return removed
+    const now = (this.deps.now ?? Date.now)()
+    for (const project of this.projects.list()) {
+      const days = project.keepFailedBranchesDays
+      if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 365) continue
+      if (!writesToProjectFolder(project) || !isGitRepo(project.path)) continue
+      try {
+        const summaries = runs.list(project.id)
+        if (this.deps.hasLiveRun?.(project.id) || summaries.some((s) => !ENDED_RUN.has(s.status))) continue
+        const pending = await inspectPending(project.path)
+        if (!pending.length) continue
+        // agent id -> its run and its copy's last recorded state.
+        const owners = new Map<string, { run: RunSummary; failed: boolean }>()
+        for (const run of summaries) {
+          const record = runs.getRecord(run.id)
+          for (const [agentId, agent] of Object.entries(record?.agents ?? {})) {
+            const status = agent.worktree?.status
+            if (!status) continue
+            const failed = status === 'conflict' || status === 'removed' || (agent.state === 'error' && status !== 'held' && status !== 'review')
+            const prev = owners.get(agentId)
+            // The newest run that knows the agent wins; a later one that did not fail keeps the copy.
+            if (!prev || run.startedAt >= prev.run.startedAt) owners.set(agentId, { run, failed })
+          }
+        }
+        for (const wt of pending) {
+          const owner = owners.get(wt.agentId)
+          if (!owner?.failed || wt.uncommittedFiles > 0) continue
+          let folderChanged = 0
+          try {
+            if (wt.exists) folderChanged = statSync(wt.path).mtimeMs
+          } catch {
+            /* unreadable: the other two clocks decide */
+          }
+          const last = Math.max(wt.lastCommitAt ?? 0, owner.run.endedAt ?? owner.run.startedAt, folderChanged)
+          if (!last || now - last < days * DAY_MS) continue
+          try {
+            await discardWorktree(project.path, wt)
+            removed.push(wt.branch)
+            this.deps.log?.(`Removed the finished copy ${wt.branch} of ${project.name}: its work failed and it was idle for more than ${days} day${days === 1 ? '' : 's'}.`)
+          } catch (e) {
+            // An unfinished git operation (or any git failure): keep it, try again at the next start.
+            if (!(e instanceof UnfinishedGitStateError)) this.deps.log?.(`Kept ${wt.branch}: could not remove it (${e instanceof Error ? e.message : String(e)}).`)
+          }
+        }
+      } catch (e) {
+        this.deps.log?.(`Retention sweep skipped ${project.name}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    return removed
   }
 
   async discardWorktree(projectId: string, branch: string): Promise<MaintenanceResult> {

@@ -6,7 +6,11 @@ import { effectiveNodeStyle } from './canvas'
  * Applies AppearanceSettings to <html>. What it sets (consumed by CSS and by canvas views through useCssVar):
  *   data-theme            'dark' | 'light' (system is resolved here with matchMedia)
  *   --accent (+ hover/active/text/on-accent) inline, only when the accent differs from the default (the designed token values stay otherwise)
- *   data-reduce-motion    'on' when AppearanceSettings.reduceMotion is 'on' (absent otherwise); global.css honours it like prefers-reduced-motion
+ *   data-reduce-motion    'on' when AppearanceSettings.reduceMotion is 'on' or noMotion is true (absent otherwise); global.css honours it like prefers-reduced-motion
+ *   data-glass            'off' when AppearanceSettings.glass is false (tokens.css swaps glass for opaque surfaces)
+ *   data-text-size        'small' | 'large' (absent = default; tokens.css scales the text ramp)
+ *   data-density          'compact' (absent = comfortable; tokens.css tightens control heights and spacing)
+ *   data-activity-dots    'off' when sidebarActivityDots is false (Sidebar also leaves the dots out)
  *   data-canvas-pattern   a CanvasPattern ('dots' | 'grid' | 'none' | 'blueprint' | 'paper' | 'isometric' | 'circuit' | 'terminal' | 'starfield')
  *   data-canvas-tint      'on' | 'off'    (off sets --canvas-wash-opacity to 0 in tokens.css)
  *   data-canvas-edges     'curved' | 'orthogonal' | 'straight'
@@ -67,8 +71,18 @@ export function applyAppearance(a: AppearanceSettings, prefersDark: boolean, roo
   root.dataset.theme = theme
   for (const name of ACCENT_VARS) root.style.removeProperty(name)
   for (const [k, v] of Object.entries(accentVars(a.accent, theme))) root.style.setProperty(k, v)
-  if (a.reduceMotion === 'on') root.dataset.reduceMotion = 'on'
+  // Motion Off (noMotion) uses the same switch as Reduce motion, so every surface that honours one honours both.
+  if (a.reduceMotion === 'on' || a.noMotion === true) root.dataset.reduceMotion = 'on'
   else delete root.dataset.reduceMotion
+  // UI overhaul Appearance: attributes appear only for a non-default choice (tokens.css scopes its overrides to them).
+  if (a.glass === false) root.dataset.glass = 'off'
+  else delete root.dataset.glass
+  if (a.textSize === 'small' || a.textSize === 'large') root.dataset.textSize = a.textSize
+  else delete root.dataset.textSize
+  if (a.density === 'compact') root.dataset.density = 'compact'
+  else delete root.dataset.density
+  if (a.sidebarActivityDots === false) root.dataset.activityDots = 'off'
+  else delete root.dataset.activityDots
   const c = a.canvas
   root.dataset.canvasPresentation = c.presentation ?? 'graph'
   root.dataset.canvasScenePalette = c.scenePalette ?? DEFAULT_APPEARANCE.canvas.scenePalette
@@ -135,10 +149,26 @@ function reapply(): void {
   applyAppearance(current, query?.matches ?? true)
 }
 
+const listeners = new Set<() => void>()
+
 /** Apply new appearance settings now (the settings view calls this for instant preview). */
 export function setAppearance(a: AppearanceSettings): void {
   current = a
   reapply()
+  for (const l of listeners) l()
+}
+
+/** The appearance in force (for useSyncExternalStore readers such as the sidebar's activity dots). */
+export function currentAppearance(): AppearanceSettings {
+  return current
+}
+
+/** Called after every appearance change; returns the unsubscribe. */
+export function subscribeAppearance(cb: () => void): () => void {
+  listeners.add(cb)
+  return () => {
+    listeners.delete(cb)
+  }
 }
 
 /**

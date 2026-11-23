@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
-import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode } from '@shared/types'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode, Project } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS, isVirtualProjectId } from '@shared/types'
 import { DEFAULT_APPEARANCE, projectKindOf } from '@shared/defaults'
 import { cleanDisplayName, DISPLAY_NAME_MAX_CHARS } from '@shared/displayName'
@@ -14,8 +14,10 @@ import { CopyButton } from '../components/ui/CopyButton'
 import { Input } from '../components/ui/Input'
 import { SettingRow, settingDescId } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
-import type { SettingsNavLink, SettingsNavOtherGroup } from '../components/settings/SettingsNav'
+import type { SettingsNavGroup } from '../components/settings/SettingsNav'
+import { ProjectSettingsPanes } from '../components/settings/ProjectSettingsPanes'
 import { AppearanceSection } from '../components/settings/AppearanceSection'
 import { SettingsSearch } from '../components/settings/SettingsSearch'
 import { APP_MENU_PANES, APPEARANCE_PANE, appSettingsPaneFor, projectMenuPanes } from '../lib/settingsMenu'
@@ -29,13 +31,21 @@ import { connectionLabel } from '../lib/connectionLabel'
 import { PERMISSION_MODE_TRADEOFF } from '../lib/permissionCopy'
 import { modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
-import { ADVANCED_SECTIONS, APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, focusPaneHeading, takeAppSettingsSection, clearTeamOrigin } from '../lib/settingsTarget'
+import {
+  ADVANCED_SECTIONS,
+  APP_SETTINGS_PANES,
+  APP_SETTINGS_SECTIONS,
+  PROJECT_SECTION_EVENT,
+  focusPaneHeading,
+  normalizeProjectPane,
+  takeAppSettingsSection,
+  clearTeamOrigin,
+  type ProjectSettingsPane
+} from '../lib/settingsTarget'
 import { scrollWithin } from '../lib/scrollWithin'
 import ConnectionsPanel from '../components/connections/ConnectionsPanel'
 import { ModelPricesSection } from '../components/settings/ModelPricesSection'
-import { ConnectorGallery } from '../components/connectors/ConnectorGallery'
-import PresetsSection from '../components/connectors/PresetsSection'
-import McpLibrarySection from '../components/mcp/McpLibrarySection'
+import ToolsPane from '../components/connectors/ToolsPane'
 import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
@@ -57,25 +67,77 @@ const MAKER_URL = 'https://cybridsoftware.com'
 const WIDE_PANES = new Set<string>([APP_SETTINGS_PANES.connections, APP_SETTINGS_PANES.mcpLibrary, APP_SETTINGS_PANES.skillLibrary, APP_SETTINGS_PANES.kit])
 
 /**
- * The Project group of the shared settings menu, for the project the user last selected (none for Chat and the other
- * virtual projects, or before any project exists). Each entry opens that project's Settings tab on the pane.
+ * The project whose panes the one Settings view shows in its Project group: the embedding project tab's project, else
+ * the project the user last selected (none for Chat and the other virtual projects, or before any project exists).
  */
-function useProjectMenuGroup(): SettingsNavOtherGroup | undefined {
-  const projectId = useAppStore((s) => s.selectedProjectId)
-  const project = useAppStore((s) => (s.selectedProjectId && !isVirtualProjectId(s.selectedProjectId) ? s.projects.find((p) => p.id === s.selectedProjectId) : undefined))
-  if (!projectId || !project) return undefined
-  const engagement = projectKindOf(project) === 'engagement'
-  const links: SettingsNavLink[] = projectMenuPanes(engagement).map((p) => ({
-    id: `project-${p.id}`,
-    label: p.label,
-    onOpen: () => {
-      const st = useAppStore.getState()
-      st.setProjectSettingsPane(project.id, p.id)
-      st.setView('settings')
+function useMenuProject(embedded: Project | undefined): Project | undefined {
+  const selected = useAppStore((s) => (s.selectedProjectId && !isVirtualProjectId(s.selectedProjectId) ? s.projects.find((p) => p.id === s.selectedProjectId) : undefined))
+  return embedded ?? selected
+}
+
+/**
+ * About board "Report a problem", "Details for support" and "Licences". Report opens the project's new-issue page in
+ * the browser (version and platform only; nothing is sent until you submit there); support details are copied (no
+ * project content); the licences file opens in the system viewer.
+ */
+function SupportRows({ onError }: { onError: (e: string | null) => void }): ReactElement {
+  const [copied, setCopied] = useState(false)
+  const copyDetails = async (): Promise<void> => {
+    try {
+      const d = await window.orgai.about.supportDetails()
+      await navigator.clipboard.writeText(d.text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (e) {
+      onError((e as Error).message)
     }
-  }))
-  const heading = `${engagement ? 'Engagement' : 'Project'}: ${project.name}`
-  return { heading, label: `${heading} settings`, links, position: 'after' }
+  }
+  return (
+    <>
+      <SettingRow
+        id="report-problem-row"
+        title="Report a problem"
+        description="Opens a new issue page in your browser with the version and system filled in. Nothing is sent until you submit it there."
+        control={
+          <Button size="sm" testId="about-report" onClick={() => void window.orgai.about.reportProblem().catch((e: Error) => onError(e.message))}>
+            Report
+          </Button>
+        }
+      />
+      <SettingRow
+        id="support-details-row"
+        title="Details for support"
+        description="Version, system and provider status. No project content."
+        control={
+          <Button size="sm" testId="about-support-copy" onClick={() => void copyDetails()}>
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
+        }
+      />
+      <p className="sr-only" role="status" aria-live="polite">
+        {copied ? 'Support details copied' : ''}
+      </p>
+      <SettingRow
+        id="licences-row"
+        title="Licences"
+        description="Licences of Electron and Chromium, which OrgAI is built on."
+        control={
+          <Button
+            size="sm"
+            testId="about-licences"
+            onClick={() =>
+              void window.orgai.about
+                .openLicences()
+                .then((err) => onError(err || null))
+                .catch((e: Error) => onError(e.message))
+            }
+          >
+            View
+          </Button>
+        }
+      />
+    </>
+  )
 }
 
 function stripInfo(info: AppSettingsInfo): AppSettings {
@@ -151,10 +213,31 @@ function DisplayNameRow({ stored, onSaved }: { stored: string | undefined; onSav
   )
 }
 
-export default function AppSettingsView(): ReactElement {
+/**
+ * The one Settings view (ui-overhaul settings boards): App panes and the current project's panes in one menu, shown in
+ * place. Rendered as the App settings view, and embedded (`project`) as a project's Settings tab, where it opens on the
+ * project's remembered pane and leaves out its own topbar (the project's topbar is above it).
+ */
+export default function AppSettingsView({ project: embedded }: { project?: Project } = {}): ReactElement {
   const [info, setInfo] = useState<AppSettingsInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const projectGroup = useProjectMenuGroup()
+  const menuProject = useMenuProject(embedded)
+  const [scope, setScope] = useState<'app' | 'project'>(embedded ? 'project' : 'app')
+  const storedProjectPane = useAppStore((s) => (menuProject ? s.projectSettingsPane[menuProject.id] : undefined))
+  const projectPane: ProjectSettingsPane = normalizeProjectPane(storedProjectPane)
+  // A project pane chosen from elsewhere (a deep link sets the store's pane) shows that pane.
+  const seenProjectPane = useRef(storedProjectPane)
+  useEffect(() => {
+    if (seenProjectPane.current === storedProjectPane) return
+    seenProjectPane.current = storedProjectPane
+    setScope('project')
+  }, [storedProjectPane])
+  useEffect(() => {
+    const toProject = (): void => setScope('project')
+    window.addEventListener(PROJECT_SECTION_EVENT, toProject)
+    return () => window.removeEventListener(PROJECT_SECTION_EVENT, toProject)
+  }, [])
+  const showProject = scope === 'project' && !!menuProject
   // Set by a deep link; the first render that has the page loaded moves focus to the pane heading or the target.
   const pendingFocus = useRef<{ section?: string } | null>(null)
   const [focusTick, setFocusTick] = useState(0)
@@ -169,17 +252,22 @@ export default function AppSettingsView(): ReactElement {
   // Deferred and checked against the view so StrictMode's simulated remount (dev) keeps it.
   useEffect(
     () => () => {
+      if (embedded) return
       setTimeout(() => {
         if (useAppStore.getState().view !== 'appSettings') clearTeamOrigin()
       }, 0)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   )
   // A jump from elsewhere ("App settings > Connections") opens the pane that holds its section.
   useEffect(() => {
+    // Embedded in a project tab, App deep links are left for the App settings view they navigate to.
+    if (embedded) return undefined
     const take = (): void => {
       const target = takeAppSettingsSection()
       if (target) {
+        setScope('app')
         // A removed id (the old Defaults pane or its rows) opens General.
         setPane(appSettingsPaneFor(target) ?? APP_SETTINGS_PANES.general)
         pendingFocus.current = { section: ADVANCED_SECTIONS[target] || target === APP_SETTINGS_SECTIONS.canvas ? target : undefined }
@@ -190,10 +278,14 @@ export default function AppSettingsView(): ReactElement {
     // A jump requested while this page is already open (the MCP assistant dialog's model link).
     window.addEventListener('orgai:settings-section', take)
     return () => window.removeEventListener('orgai:settings-section', take)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   // "Open in library" lands on the MCP library pane; the section there then scrolls to the entry.
   useEffect(() => {
-    if (mcpFocus?.kind === 'library') setPane(APP_SETTINGS_PANES.mcpLibrary)
+    if (mcpFocus?.kind === 'library' && !embedded) {
+      setScope('app')
+      setPane(APP_SETTINGS_PANES.mcpLibrary)
+    }
   }, [mcpFocus])
   const ready = info !== null
   useEffect(() => {
@@ -300,9 +392,11 @@ export default function AppSettingsView(): ReactElement {
   if (!info) {
     return (
       <>
-        <div className="topbar">
-          <h1>Settings</h1>
-        </div>
+        {!embedded && (
+          <div className="topbar">
+            <h1>Settings</h1>
+          </div>
+        )}
         <div className={`settings-loading${error ? ' is-error' : ''}`}>{error ?? 'Loading…'}</div>
       </>
     )
@@ -340,6 +434,8 @@ export default function AppSettingsView(): ReactElement {
   }
 
   const defaultConnLabel = connectionLabel(defaultConn)
+  // Main writes the login item only for a packaged Windows or macOS install (appBehaviour.ts); elsewhere the switch is off with a reason.
+  const loginCapable = !!appInfo?.packaged && (appInfo.platform === 'win32' || appInfo.platform === 'darwin')
   const openPane = (id: string): void => setPane(id)
 
   /** Tiers (with what each resolves to on the effective default connection), then the exact models. */
@@ -354,33 +450,51 @@ export default function AppSettingsView(): ReactElement {
     />
   )
 
+  const engagement = menuProject ? projectKindOf(menuProject) === 'engagement' : false
+  const projectHeading = menuProject ? `${engagement ? 'Engagement' : 'Project'}: ${menuProject.name}` : ''
+  const groups: SettingsNavGroup[] = [
+    { key: 'app', heading: 'App', label: 'App settings sections', items: [...APP_MENU_PANES] },
+    ...(menuProject ? [{ key: 'project', heading: projectHeading, label: `${projectHeading} settings sections`, items: projectMenuPanes(engagement) }] : [])
+  ]
+  // Only app panes render below when the project group is not showing.
+  const appPane = showProject ? null : pane
+
   return (
     <>
-      <div className="topbar settings-topbar">
-        <h1>Settings</h1>
-        <SettingsSearch />
-        <div className="spacer" />
-        <span className="settings-autosave muted">Changes save as you make them</span>
-        <SaveIndicator />
-      </div>
-      <AppNavigateBanner />
+      {!embedded && (
+        <div className="topbar settings-topbar">
+          <h1>Settings</h1>
+          <SettingsSearch />
+          <div className="spacer" />
+          <span className="settings-autosave muted">Changes save as you make them</span>
+          <SaveIndicator />
+        </div>
+      )}
+      {!embedded && <AppNavigateBanner />}
       <SettingsPage
-        idBase="app-settings"
-        label="App settings sections"
-        panes={[...APP_MENU_PANES]}
-        active={pane}
-        onSelect={setPane}
-        scope="App"
-        navHeading="App"
-        other={projectGroup}
-        wide={WIDE_PANES.has(pane)}
+        idBase={embedded ? 'project-settings' : 'app-settings'}
+        groups={groups}
+        active={showProject ? { group: 'project', pane: projectPane } : { group: 'app', pane }}
+        onSelect={(group, id) => {
+          if (group === 'project' && menuProject) {
+            setScope('project')
+            seenProjectPane.current = id
+            useAppStore.getState().setProjectSettingsPane(menuProject.id, id)
+          } else {
+            setScope('app')
+            setPane(id)
+          }
+        }}
+        scope={showProject ? projectHeading : 'App'}
+        wide={!showProject && WIDE_PANES.has(pane)}
       >
         {error && (
           <p className="field-error" role="alert">
             {error}
           </p>
         )}
-        {pane === 'general' && (
+        {showProject && menuProject && <ProjectSettingsPanes project={menuProject} pane={projectPane} />}
+        {appPane === 'general' && (
           <>
             <SettingsSection id="app-settings-about-you" title="About you" testId="appsettings-section-about-you">
               <SettingsCard>
@@ -398,6 +512,93 @@ export default function AppSettingsView(): ReactElement {
                       label="Notify me when a run needs attention or finishes"
                       testId="notifications-switch"
                       onChange={(notifications) => patch({ notifications }, true)}
+                    />
+                  }
+                />
+                {(
+                  [
+                    ['notifyNeedsMe', 'When a team needs me', 'A permission, a question or a review is waiting, a turn ends waiting for your reply, or a plan limit pauses a run.'],
+                    ['notifyRunFinished', 'When a run finishes', undefined],
+                    ['notifyScheduleFindings', 'When a schedule finds something', 'Quiet when there is nothing to report.']
+                  ] as const
+                ).map(([key, title, description]) => (
+                  <SettingRow
+                    key={key}
+                    id={`notify-${key}-row`}
+                    title={title}
+                    description={info.notifications === false ? 'Turn on notifications above first.' : description}
+                    control={
+                      <Switch
+                        checked={info.notifications !== false && info[key] !== false}
+                        disabled={info.notifications === false}
+                        label={title}
+                        testId={`${key}-switch`}
+                        describedBy={settingDescId(`notify-${key}-row`)}
+                        onChange={(v) => patch({ [key]: v }, true)}
+                      />
+                    }
+                  />
+                ))}
+                <SettingRow
+                  id="play-sound-row"
+                  title="Play a sound"
+                  description="A short chime in OrgAI when a new decision starts waiting on you."
+                  control={
+                    <Switch
+                      checked={info.playSound === true}
+                      label="Play a sound"
+                      testId="play-sound-switch"
+                      describedBy={settingDescId('play-sound-row')}
+                      onChange={(playSound) => patch({ playSound }, true)}
+                    />
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
+            <SettingsSection id="appsettings-section-running" title="While OrgAI runs" testId="appsettings-section-running">
+              <SettingsCard>
+                <SettingRow
+                  id="open-at-login-row"
+                  title="Open OrgAI when I sign in"
+                  description={loginCapable ? 'So schedules can run without you opening it.' : 'Only an installed OrgAI on Windows or macOS can open at sign-in.'}
+                  control={
+                    <Switch
+                      disabled={!loginCapable}
+                      checked={loginCapable && info.openAtLogin === true}
+                      label="Open OrgAI when I sign in"
+                      testId="open-at-login-switch"
+                      describedBy={settingDescId('open-at-login-row')}
+                      onChange={(openAtLogin) => patch({ openAtLogin }, true)}
+                    />
+                  }
+                />
+                <SettingRow
+                  title="When I close the window"
+                  description="Runs and schedules need OrgAI to keep running. Keep running hides the window while they are live; opening OrgAI again shows it. Quit still asks first while a run is working."
+                  width="select"
+                  control={
+                    <SegmentedControl
+                      label="When I close the window"
+                      value={info.closeBehavior ?? 'quit'}
+                      options={[
+                        { value: 'keepRunning', label: 'Keep running' },
+                        { value: 'quit', label: 'Quit' }
+                      ]}
+                      onChange={(closeBehavior) => patch({ closeBehavior }, true)}
+                    />
+                  }
+                />
+                <SettingRow
+                  id="keep-awake-row"
+                  title="Keep the computer awake during runs"
+                  description="Only while a team is working."
+                  control={
+                    <Switch
+                      checked={info.keepAwakeDuringRuns === true}
+                      label="Keep the computer awake during runs"
+                      testId="keep-awake-switch"
+                      describedBy={settingDescId('keep-awake-row')}
+                      onChange={(keepAwakeDuringRuns) => patch({ keepAwakeDuringRuns }, true)}
                     />
                   }
                 />
@@ -528,13 +729,13 @@ export default function AppSettingsView(): ReactElement {
             </SettingsAdvanced>
           </>
         )}
-        {pane === APPEARANCE_PANE && (
+        {appPane === APPEARANCE_PANE && (
           <>
             <AppearanceSection appearance={appearance} onChange={(p) => patchAppearance(p)} />
             <CanvasSection canvas={appearance.canvas} onChange={(canvas) => patchAppearance({}, canvas)} />
           </>
         )}
-        {pane === 'connections' && (
+        {appPane === 'connections' && (
           <>
             <ConnectionsPanel />
             <SettingsAdvanced paneKey="app-connections">
@@ -560,20 +761,14 @@ export default function AppSettingsView(): ReactElement {
             </SettingsAdvanced>
           </>
         )}
-        {pane === 'mcp-library' && (
-          <>
-            <ConnectorGallery />
-            <PresetsSection />
-            <McpLibrarySection />
-          </>
-        )}
-        {pane === 'skill-library' && <SkillLibrarySection />}
-        {pane === 'kit' && <TemplatesSection />}
-        {pane === 'kit' && <KitSection />}
-        {pane === 'about' && appInfo && (
+        {appPane === 'mcp-library' && <ToolsPane />}
+        {appPane === 'skill-library' && <SkillLibrarySection />}
+        {appPane === 'kit' && <TemplatesSection />}
+        {appPane === 'kit' && <KitSection />}
+        {appPane === 'about' && appInfo && (
           <UpdatesSection autoCheck={info.autoUpdateCheck !== false} onAutoCheckChange={(autoUpdateCheck) => patch({ autoUpdateCheck }, true)} />
         )}
-        {pane === 'about' && appInfo && (
+        {appPane === 'about' && appInfo && (
           <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About OrgAI" testId="about-block">
             <SettingsCard>
               <dl className="about-list">
@@ -626,7 +821,7 @@ export default function AppSettingsView(): ReactElement {
             </SettingsCard>
           </SettingsSection>
         )}
-        {pane === 'about' && appInfo && (
+        {appPane === 'about' && appInfo && (
           <SettingsSection id="appsettings-section-help" title="Help" testId="about-help">
             <SettingsCard>
               <SettingRow
@@ -648,6 +843,7 @@ export default function AppSettingsView(): ReactElement {
                   </Button>
                 }
               />
+              <SupportRows onError={setError} />
             </SettingsCard>
           </SettingsSection>
         )}

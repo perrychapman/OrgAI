@@ -32,7 +32,36 @@
 /* The Connectors pane uses the width it has: the settings column stops at 720 px elsewhere, which would leave a 1600 px
    window two columns wide. The grid itself steps 1 / 2 / 3 columns on the column's own width. */
 .settings-col:has(.connectors-body) {
-  max-width: 1120px;
+  max-width: 1240px;
+}
+/* Tools board: the gallery shares the row with the detail panel, so the grid fills by tile width, not the column's. */
+.connectors-gallery .connector-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+}
+.connectors-gallery .settings-gallery-main {
+  gap: var(--space-4);
+}
+.connector-tile {
+  cursor: default;
+}
+.connectors-gallery .connector-tile.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.connector-detail-signin {
+  color: var(--text-secondary);
+}
+.settings-detail-hint {
+  margin: 0;
+  font-size: var(--text-small);
+}
+.settings-detail-help {
+  align-self: flex-start;
+}
+@media (forced-colors: active) {
+  .connectors-gallery .connector-tile.is-selected {
+    outline: 2px solid Highlight;
+  }
 }
 @container settings-col (min-width: 560px) {
   .connector-grid {

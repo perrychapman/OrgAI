@@ -5,7 +5,7 @@
 // clients, collapse state, rail dividers, tile and topbar client). Run at 1600x1000 and 1024x640, dark and light.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, createProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, sleep, windowShift } from './lib.mjs'
+import { TMP, check, createProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, sleep, windowShift, pickSetup } from './lib.mjs'
 import { engagementHomeChecks } from './home-checks.mjs'
 
 process.env.ORGAI_MOCK = '1'
@@ -58,15 +58,15 @@ async function createEngagement({ name, client, dir, refs = [] }) {
     await form.locator('[data-testid=new-project-ref-input]').fill(r)
     await form.locator('[data-testid=new-project-ref-add]').click()
   }
-  const arch = form.locator('[data-testid=architect-setup]')
-  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+  await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
   return findProject(page, name)
 }
 const openSettingsPane = async (pane) => {
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: pane, exact: true }).click()
+  // The pane is "Branches" on code projects and "Maintenance" on engagements (settings overhaul).
+  await page.getByRole('tab', { name: pane === 'Maintenance' ? /^(Branches|Maintenance)$/ : pane, exact: pane !== 'Maintenance' }).click()
   await sleep(300)
 }
 /** Poll the saved project until its client matches (the save is debounced), up to 10 s. */

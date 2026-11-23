@@ -6,7 +6,7 @@
 // and empties the graph; the forget confirm counts recorded items. Both sizes and themes, with screenshots.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { SHOTS_DIR, TMP, check, deleteProject, endSession, findProject, finish, launch, openProject, openProjectForm, gotoProjects, projectTab, relaunch, screenshot, sleep, windowShift } from './lib.mjs'
+import { SHOTS_DIR, TMP, check, deleteProject, endSession, findProject, finish, launch, openProject, openProjectForm, gotoProjects, projectTab, relaunch, screenshot, sleep, windowShift, pickSetup } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-knrun-'))
@@ -64,8 +64,7 @@ async function createEngagement({ name, dir }) {
   await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
   await form.getByLabel('Name', { exact: true }).fill(name)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
-  const arch = form.locator('[data-testid=architect-setup]')
-  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+  await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
   return findProject(page, name)

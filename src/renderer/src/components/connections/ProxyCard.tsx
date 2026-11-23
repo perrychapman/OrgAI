@@ -41,9 +41,12 @@ export default function ProxyCard({
   focusToken,
   onFocused,
   onRemoved,
-  existingNames
+  existingNames,
+  embedded
 }: {
   info: ConnectionInfo
+  /** Shown in the AI providers detail panel: always open, no collapse button. */
+  embedded?: boolean
   open: boolean
   onToggle: () => void
   /** Set to this card's id by the panel to move focus to the card's name once (after Add). */
@@ -324,7 +327,7 @@ export default function ProxyCard({
             Connect
           </Button>
         )}
-        <IconButton icon={open ? ChevronDown : ChevronRight} label={open ? `Collapse ${name}` : `Expand ${name}`} size="sm" expanded={open} onClick={onToggle} testId="proxy-toggle" />
+        {!embedded && <IconButton icon={open ? ChevronDown : ChevronRight} label={open ? `Collapse ${name}` : `Expand ${name}`} size="sm" expanded={open} onClick={onToggle} testId="proxy-toggle" />}
       </header>
       {open && (
         <>

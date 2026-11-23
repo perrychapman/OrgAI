@@ -301,7 +301,17 @@ describe('appearance', () => {
   it('keeps valid values and falls back field by field', () => {
     expect(
       normalizeAppearance({ theme: 'light', accent: '#22C58B', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { presentation: 'graph', scenePalette: 'color', pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
+    ).toEqual({
+      theme: 'light',
+      accent: '#22c58b',
+      canvas: { presentation: 'graph', scenePalette: 'color', pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true },
+      reduceMotion: 'on',
+      noMotion: false,
+      glass: true,
+      textSize: 'default',
+      density: 'comfortable',
+      sidebarActivityDots: true
+    })
     expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3, layout: 'spiral', nodeStyle: 'blob' }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
     expect(normalizeAppearance({ theme: 'system', accent: '#AbC' })).toMatchObject({ theme: 'system', accent: '#aabbcc' })
     expect(normalizeAppearance('nonsense')).toEqual(DEFAULT_APPEARANCE)
@@ -351,8 +361,130 @@ describe('appearance', () => {
   })
 })
 
+describe('UI overhaul appearance fields', () => {
+  it('defaults to the pre-overhaul look when missing', () => {
+    expect(normalizeAppearance({})).toMatchObject({ noMotion: false, glass: true, textSize: 'default', density: 'comfortable', sidebarActivityDots: true })
+    expect(DEFAULT_APPEARANCE).toMatchObject({ noMotion: false, glass: true, textSize: 'default', density: 'comfortable', sidebarActivityDots: true })
+  })
+
+  it('keeps valid values', () => {
+    expect(normalizeAppearance({ noMotion: true, glass: false, textSize: 'large', density: 'compact', sidebarActivityDots: false })).toMatchObject({
+      noMotion: true,
+      glass: false,
+      textSize: 'large',
+      density: 'compact',
+      sidebarActivityDots: false
+    })
+    expect(normalizeAppearance({ textSize: 'small' }).textSize).toBe('small')
+  })
+
+  it('falls back field by field on invalid values', () => {
+    expect(normalizeAppearance({ noMotion: 'yes', glass: 0, textSize: 'huge', density: 'tight', sidebarActivityDots: null })).toMatchObject({
+      noMotion: false,
+      glass: true,
+      textSize: 'default',
+      density: 'comfortable',
+      sidebarActivityDots: true
+    })
+  })
+})
+
+describe('UI overhaul app settings', () => {
+  const defaults = {
+    playSound: false,
+    spendWarnPercent: null,
+    openAtLogin: false,
+    closeBehavior: 'quit',
+    keepAwakeDuringRuns: false,
+    notifyNeedsMe: true,
+    notifyRunFinished: true,
+    notifyScheduleFindings: true,
+    dateFormat: 'd MMM yyyy'
+  }
+
+  it('writes explicit contract defaults for settings saved before the fields existed', () => {
+    expect(normalizeSettings(null)).toMatchObject(defaults)
+    expect(normalizeSettings({ notifications: false })).toMatchObject(defaults)
+  })
+
+  it('keeps valid values', () => {
+    const s = normalizeSettings({
+      playSound: true,
+      spendWarnPercent: 80,
+      openAtLogin: true,
+      closeBehavior: 'keepRunning',
+      keepAwakeDuringRuns: true,
+      notifyNeedsMe: false,
+      notifyRunFinished: false,
+      notifyScheduleFindings: false,
+      dateFormat: 'yyyy-MM-dd'
+    })
+    expect(s).toMatchObject({
+      playSound: true,
+      spendWarnPercent: 80,
+      openAtLogin: true,
+      closeBehavior: 'keepRunning',
+      keepAwakeDuringRuns: true,
+      notifyNeedsMe: false,
+      notifyRunFinished: false,
+      notifyScheduleFindings: false,
+      dateFormat: 'yyyy-MM-dd'
+    })
+    expect(normalizeSettings(JSON.parse(JSON.stringify(s)))).toEqual(s)
+  })
+
+  it('accepts spendWarnPercent only as an integer from 50 to 99', () => {
+    for (const v of [50, 80, 99]) expect(normalizeSettings({ spendWarnPercent: v }).spendWarnPercent).toBe(v)
+    for (const v of [49, 100, 0, -80, 80.5, NaN, Infinity, '80', null, undefined, {}, true]) {
+      expect(normalizeSettings({ spendWarnPercent: v as never }).spendWarnPercent).toBeNull()
+    }
+  })
+
+  it('falls back to the defaults on invalid values', () => {
+    const junk = {
+      playSound: 'yes',
+      openAtLogin: 1,
+      closeBehavior: 'minimize',
+      keepAwakeDuringRuns: 'true',
+      notifyNeedsMe: 'no',
+      notifyRunFinished: 0,
+      notifyScheduleFindings: null,
+      dateFormat: 'dd/MM/yyyy'
+    }
+    // A non-boolean notify switch is not an explicit off: it stays on.
+    expect(normalizeSettings(junk as never)).toMatchObject(defaults)
+  })
+
+  it('keeps stored values when a partial save leaves the fields out, and null turns the warning off', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-settings-'))
+    try {
+      const store = new SettingsStore(dir)
+      store.set({ ...store.get(), playSound: true, spendWarnPercent: 80, closeBehavior: 'keepRunning', notifyRunFinished: false, dateFormat: 'MMM d, yyyy' })
+      const {
+        playSound: _a,
+        spendWarnPercent: _b,
+        openAtLogin: _c,
+        closeBehavior: _d,
+        keepAwakeDuringRuns: _e,
+        notifyNeedsMe: _f,
+        notifyRunFinished: _g,
+        notifyScheduleFindings: _h,
+        dateFormat: _i,
+        ...older
+      } = store.get()
+      store.set(older)
+      expect(store.get()).toMatchObject({ playSound: true, spendWarnPercent: 80, closeBehavior: 'keepRunning', notifyRunFinished: false, dateFormat: 'MMM d, yyyy' })
+      store.set({ ...store.get(), spendWarnPercent: null })
+      expect(store.get().spendWarnPercent).toBeNull()
+      expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).settings).toMatchObject({ spendWarnPercent: null, playSound: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('SettingsStore', () => {
-  const tmp = (): string => mkdtempSync(join(tmpdir(), 'orgai-settings-'))
+  const tmp =(): string => mkdtempSync(join(tmpdir(), 'orgai-settings-'))
 
   it('migrates an old settings.json and keeps the stored appearance when a caller leaves it out', () => {
     const dir = tmp()

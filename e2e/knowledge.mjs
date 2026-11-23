@@ -6,7 +6,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TMP, check, createProject, deleteProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, removeFixture, sleep, windowShift } from './lib.mjs'
+import { TMP, check, createProject, deleteProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, removeFixture, sleep, windowShift, pickSetup } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-knowledge-'))
@@ -84,8 +84,7 @@ async function createEngagement({ name, client, dir }) {
   await form.getByLabel('Name', { exact: true }).fill(name)
   if (client) await form.locator('[data-testid=new-project-client]').fill(client)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
-  const arch = form.locator('[data-testid=architect-setup]')
-  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+  await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
   return findProject(page, name)

@@ -32,7 +32,7 @@ export function CustomBadge({ info }: { info: ConnectorInfo }): ReactElement {
 }
 
 /** One service in the gallery: logo, name, one line, and one badge plus one button. */
-export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: () => void }): ReactElement {
+export function ConnectorTile({ info, onOpen, selected }: { info: ConnectorInfo; onOpen: () => void; selected?: boolean }): ReactElement {
   const def = info.connector
   const isCustom = isCustomConnector(info)
   const ease = infoEase(info)
@@ -43,7 +43,7 @@ export function ConnectorTile({ info, onOpen }: { info: ConnectorInfo; onOpen: (
   const account = rawAccount ? clampText(rawAccount, 200) : undefined
   return (
     <li
-      className="connector-tile"
+      className={`connector-tile${selected ? ' is-selected' : ''}`}
       data-testid="connector-tile"
       data-connector={def.id}
       data-state={info.state}

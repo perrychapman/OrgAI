@@ -514,12 +514,36 @@ try {
     await card(before ?? 'auto').click()
     await sleep(700)
     check((await findProject(page, NAME))?.permissionMode === (before ?? 'auto'), 'the mode is restored')
+    // Arrowing through the cards previews a mode without saving it; Enter saves, "Keep" drops the preview.
+    const saved = (await findProject(page, NAME))?.permissionMode
+    await card(saved).locator('input').focus()
+    await page.keyboard.press(saved === 'default' ? 'ArrowRight' : 'ArrowLeft')
+    await sleep(700)
+    const arrowed = await page.evaluate(() => document.activeElement?.getAttribute('value'))
+    check((await findProject(page, NAME))?.permissionMode === saved && arrowed !== saved, 'arrowing to another mode card does not save it', `${saved} -> ${arrowed}`)
+    check(await page.locator('[data-testid=permission-mode-pending]').isVisible(), 'the arrowed-to mode says it is not saved yet')
+    await page.locator('[data-testid=permission-mode-keep]').click()
+    await sleep(300)
+    check((await page.locator('[data-testid=permission-mode-pending]').count()) === 0 && (await findProject(page, NAME))?.permissionMode === saved, 'Keep drops the preview')
+    await card(saved).locator('input').focus()
+    await page.keyboard.press(saved === 'default' ? 'ArrowRight' : 'ArrowLeft')
+    await page.keyboard.press('Enter')
+    await sleep(700)
+    check((await findProject(page, NAME))?.permissionMode === arrowed, 'Enter saves the arrowed-to mode', String(arrowed))
+    await card(saved).click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.permissionMode === saved, 'the mode is restored after the keyboard check')
   }
 
-  // N10: with worktrees off, the review switch says why it is disabled.
+  // N10: with worktrees off, the review switch says why it is disabled. Both rows live on the Branches pane now
+  // (Branches board "Where work happens"), no longer in Permissions > Advanced.
   {
     await paneTab('Permissions')
     await setAdvanced('project-permissions', true)
+    check((await page.getByRole('switch', { name: 'Isolate writers in worktrees', exact: true }).count()) === 0, 'worktree isolation is no longer in Permissions > Advanced')
+    await setAdvanced('project-permissions', false)
+    await paneTab('Branches')
+    await page.locator('[data-testid=work-copies-section]').waitFor({ timeout: 5000 }).catch(() => {})
     const iso = page.getByRole('switch', { name: 'Isolate writers in worktrees', exact: true })
     if ((await iso.count()) && (await iso.isEnabled())) {
       const wasOn = (await iso.getAttribute('aria-checked')) === 'true'
@@ -534,7 +558,44 @@ try {
       if (wasOn) await iso.click()
       await sleep(300)
     } else check(true, 'worktree isolation is not switchable here; the N10 check was skipped')
-    await setAdvanced('project-permissions', false)
+    // Branches board rules (code projects): main branch list from git, tests gate and failed-branch retention save.
+    const rules = page.locator('[data-testid=branch-rules-section]')
+    if (await rules.count()) {
+      const mainSel = rules.getByRole('combobox', { name: 'Main branch', exact: true })
+      await page.waitForFunction(() => !document.querySelector('[data-testid=branch-rules-section] select')?.disabled, null, { timeout: 8000 }).catch(() => {})
+      const opts = await mainSel.locator('option').allTextContents()
+      check(opts.length >= 1 && /^Automatic/.test(opts[0]), 'Main branch offers Automatic (the detected default) first', opts.join(' | '))
+      const tests = page.locator('[data-testid=require-tests-switch]')
+      const wasTests = (await tests.getAttribute('aria-checked')) === 'true'
+      await tests.click()
+      await sleep(700)
+      check((await findProject(page, NAME))?.requireTestsPass === !wasTests, 'Tests must pass saves to the project')
+      await tests.click()
+      await sleep(700)
+      const keep = rules.getByRole('combobox', { name: 'Keep branches of failed runs for', exact: true })
+      await keep.selectOption('7')
+      await sleep(700)
+      check((await findProject(page, NAME))?.keepFailedBranchesDays === 7, 'Keep branches of failed runs saves the days')
+      await keep.selectOption('')
+      await sleep(700)
+    } else check(true, 'not a code project here; the Branches rules check was skipped')
+
+    // Day and month caps (Limits board): at rest when metered, in Advanced on a plan; saved to the project.
+    await paneTab('Spending limits')
+    if (!(await page.locator('[data-testid=limit-day-input]').isVisible().catch(() => false))) await setAdvanced('project-limits', true)
+    await page.locator('[data-testid=limit-day-input]').fill('12.5')
+    await page.locator('[data-testid=limit-day-input]').press('Enter')
+    await sleep(800)
+    check((await findProject(page, NAME))?.maxDailyUsd === 12.5, 'a day limit (with cents) saves to the project')
+    await page.getByRole('radiogroup', { name: 'When a limit is reached' }).locator('label', { hasText: 'Stop the run' }).click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.onSpendLimit === 'stop', '"Stop the run" saves')
+    await page.getByRole('radiogroup', { name: 'When a limit is reached' }).locator('label', { hasText: 'Pause and ask me' }).click()
+    await page.locator('[data-testid=limit-day-input]').fill('')
+    await page.locator('[data-testid=limit-day-input]').press('Enter')
+    await sleep(800)
+    check((await findProject(page, NAME))?.maxDailyUsd === undefined, 'clearing the day limit removes it')
+    await setAdvanced('project-limits', false)
   }
 
   // N6: the Team tab reaches the Team assistant select in one click (Permissions > Advanced, select focused).
