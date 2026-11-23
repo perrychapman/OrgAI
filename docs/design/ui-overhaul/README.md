@@ -1,8 +1,9 @@
 # UI/UX overhaul: design mockups and handoff
 
-Status: design only, 2026-11-22. **No app code has been changed.** These are mockups for a full redesign of the
-renderer, approved in direction by the owner ("Alright I like it"). The next step is to turn them into a plan and
-implement them; nothing here is wired to the app.
+Status: the design is implemented on dev (2026-11-23); `STATUS.md` says, board by board, what is built, partly built or not
+built and what is unverified. This folder keeps the design handoff as written on 2026-11-22: mockups for a full redesign
+of the renderer, approved in direction by the owner ("Alright I like it"). The boards are the source of the design, not a
+description of the app; `impl-*.md` say what was built.
 
 Published canvas (private to the owner): https://claude.ai/artifact/5uExK86oRbF6u7PqnyqHFL
 

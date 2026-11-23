@@ -135,3 +135,19 @@ M7 (panel header truncated and see-through), M8 (chart small at 1024x640 because
 - Screen-reader speech of the node toolbar, tier radios and chips; the zoom readout is not announced (aria-live off).
 - Performance of glass on charts with many roles was not measured (nodes deliberately have no backdrop-filter).
 - The provenance date depends on run history the renderer has loaded for the project.
+
+## Since the first pass (read on dev 2026-11-23)
+
+- The "UX walk" section above is partly out of date. Fixed since (the Medium round and the finish round): the selected-role
+  toolbar stays inside the visible chart (right-aligned or below the role when needed) and is the next Tab stop after its role;
+  Escape on a role keeps focus on it; a new or duplicated role is panned into view (two passes); Add group opens "Add group
+  lead"; the header shows a compact Theme control at 1024; the chart may zoom out below React Flow's default; the engagement
+  header carries the latest change's Undo; the import dialog and Tools and services links were reworded.
+- Still true: the Theme dropdown has one item (M3). Not re-checked: H1 (the "Review with the Architect" confirm clipping its
+  cost sentence) and the Lows.
+- The Team assistant tray remembers the user's last fold choice across tab switches in memory (`lastFold`); a restart follows
+  the window size and results again.
+- Role cards: avatar contrast has a unit test (`roleAvatarContrast.test.ts`), which closes the "contrast not measured" Low L2 for
+  the avatar mix only.
+- From another surface (terminal, TUI, headless policy), approving an org chart card that drops or replaces a role carrying
+  `maxConcurrent` or `knowledgeWrite: false` is refused as a revise (`impl-runtime.md`).
