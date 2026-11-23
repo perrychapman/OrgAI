@@ -579,6 +579,21 @@ try {
       await keep.selectOption('')
       await sleep(700)
     } else check(true, 'not a code project here; the Branches rules check was skipped')
+
+    // Day and month caps (Limits board): at rest when metered, in Advanced on a plan; saved to the project.
+    await paneTab('Spending limits')
+    if (!(await page.locator('[data-testid=limit-day-input]').isVisible().catch(() => false))) await setAdvanced('project-limits', true)
+    await page.locator('[data-testid=limit-day-input]').fill('12')
+    await sleep(800)
+    check((await findProject(page, NAME))?.maxDailyUsd === 12, 'a day limit saves to the project')
+    await page.getByRole('radiogroup', { name: 'When a limit is reached' }).locator('label', { hasText: 'Stop the run' }).click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.onSpendLimit === 'stop', '"Stop the run" saves')
+    await page.getByRole('radiogroup', { name: 'When a limit is reached' }).locator('label', { hasText: 'Pause and ask me' }).click()
+    await page.locator('[data-testid=limit-day-input]').fill('')
+    await sleep(800)
+    check((await findProject(page, NAME))?.maxDailyUsd === undefined, 'clearing the day limit removes it')
+    await setAdvanced('project-limits', false)
   }
 
   // N6: the Team tab reaches the Team assistant select in one click (Permissions > Advanced, select focused).

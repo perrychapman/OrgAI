@@ -1,9 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useState } from 'react'
 import type { Project } from '@shared/types'
-import { DEFAULT_KEEP_RUNS, PROJECT_MAX_AGENTS_PER_RUN_LIMIT } from '@shared/types'
+import { DEFAULT_KEEP_RUNS } from '@shared/types'
 import { SegmentedControl } from '../ui/SegmentedControl'
-import { Switch } from '../ui/Switch'
 import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { projectMetering } from '../../lib/limits'
@@ -171,22 +170,63 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           />
         }
       />
+      {costRow()}
+    </>
+  )
+
+  // Day and month caps, what a live run does at a cap, and the app-wide warning: at rest for metered projects, in
+  // Advanced on a plan sign-in (where spend is an estimate, not a bill). RunManager enforces them (spendGuard.ts).
+  const periodCard = (
+    <SettingsCard>
+      {(
+        [
+          ['maxDailyUsd', 'One day', 'day'],
+          ['maxMonthlyUsd', 'One month', 'month']
+        ] as const
+      ).map(([key, title, word]) => (
+        <SettingRow
+          key={key}
+          id={row(key)}
+          title={title}
+          description={`Runs do not start, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it. Counts runs and schedules.`}
+          width="number"
+          control={
+            <Input
+              id={`${uid}-${key}`}
+              aria-label={`Spending limit for ${title.toLowerCase()}`}
+              aria-describedby={desc(key)}
+              data-testid={`limit-${word}-input`}
+              type="number"
+              min={0}
+              step={1}
+              value={project[key] ?? ''}
+              placeholder="No limit"
+              onChange={(v) => {
+                const n = Number(v)
+                patch({ [key]: v && Number.isFinite(n) && n > 0 ? n : undefined })
+              }}
+            />
+          }
+        />
+      ))}
       <SettingRow
-        id={row('sched')}
-        title="Let schedules run when I am near the plan limit"
-        description="Off skips a scheduled run while the plan window is at or above the share above."
+        title="When a limit is reached"
+        description="Either way nothing is lost and you can continue. A paused run waits until the period resets or you raise the limit."
+        width="select"
         control={
-          <Switch
-            checked={project.schedulesNearPlanLimit === true}
-            label="Let schedules run when I am near the plan limit"
-            testId="schedules-near-limit-switch"
-            describedBy={desc('sched')}
-            onChange={(schedulesNearPlanLimit) => patch({ schedulesNearPlanLimit })}
+          <SegmentedControl
+            label="When a limit is reached"
+            value={project.onSpendLimit ?? 'pause'}
+            options={[
+              { value: 'pause', label: 'Pause and ask me' },
+              { value: 'stop', label: 'Stop the run' }
+            ]}
+            onChange={(onSpendLimit) => patch({ onSpendLimit })}
           />
         }
       />
-      {costRow()}
-    </>
+      <SpendWarnRow />
+    </SettingsCard>
   )
 
   return (
@@ -201,58 +241,11 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         )}
       </SettingsSection>
 
-      <SettingsSection id="settings-section-period-limits" title="Per day and per month" description="Counts every run and schedule in this project." testId="period-limits-section">
-        <SettingsCard>
-          {(
-            [
-              ['maxDailyUsd', 'One day', 'day'],
-              ['maxMonthlyUsd', 'One month', 'month']
-            ] as const
-          ).map(([key, title, word]) => (
-            <SettingRow
-              key={key}
-              id={row(key)}
-              title={title}
-              description={`Runs stop starting, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it.`}
-              width="number"
-              control={
-                <Input
-                  id={`${uid}-${key}`}
-                  aria-label={`Spending limit for ${title.toLowerCase()}`}
-                  aria-describedby={desc(key)}
-                  data-testid={`limit-${word}-input`}
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={project[key] ?? ''}
-                  placeholder="No limit"
-                  onChange={(v) => {
-                    const n = Number(v)
-                    patch({ [key]: v && Number.isFinite(n) && n > 0 ? n : undefined })
-                  }}
-                />
-              }
-            />
-          ))}
-          <SettingRow
-            title="When a limit is reached"
-            description="Either way nothing is lost and you can continue. A paused run waits until the period resets or you raise the limit."
-            width="select"
-            control={
-              <SegmentedControl
-                label="When a limit is reached"
-                value={project.onSpendLimit ?? 'pause'}
-                options={[
-                  { value: 'pause', label: 'Pause and ask me' },
-                  { value: 'stop', label: 'Stop the run' }
-                ]}
-                onChange={(onSpendLimit) => patch({ onSpendLimit })}
-              />
-            }
-          />
-          <SpendWarnRow />
-        </SettingsCard>
-      </SettingsSection>
+      {metered && (
+        <SettingsSection id="settings-section-period-limits" title="Per day and per month" description="Counts every run and schedule in this project." testId="period-limits-section">
+          {periodCard}
+        </SettingsSection>
+      )}
 
       <SettingsSection id="settings-section-run-size" title="How big a run can get">
         <SettingsCard>
@@ -288,34 +281,11 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
               />
             }
           />
-          <SettingRow
-            id={row('agents')}
-            title="Most agents in one run"
-            description="Counts every agent a run starts, not the lead. Further starts are refused."
-            width="number"
-            control={
-              <Input
-                id={`${uid}-agents`}
-                aria-label="Most agents in one run"
-                aria-describedby={desc('agents')}
-                data-testid="max-agents-input"
-                type="number"
-                min={1}
-                max={PROJECT_MAX_AGENTS_PER_RUN_LIMIT}
-                step={1}
-                value={project.maxAgentsPerRun ?? ''}
-                placeholder="No limit"
-                onChange={(v) => {
-                  const n = Math.round(Number(v))
-                  patch({ maxAgentsPerRun: v && Number.isFinite(n) && n >= 1 ? Math.min(PROJECT_MAX_AGENTS_PER_RUN_LIMIT, n) : undefined })
-                }}
-              />
-            }
-          />
         </SettingsCard>
       </SettingsSection>
 
       <SettingsAdvanced paneKey="project-limits">
+        {!metered && <SettingsGroup title="Per day and per month">{periodCard}</SettingsGroup>}
         <StaffingSettings project={project} patch={patch} />
         <SettingsGroup title="Runs and agents">
           <SettingsCard>
