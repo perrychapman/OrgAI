@@ -198,6 +198,11 @@ export class ScheduleService {
   }
 
   /** Newest first; clears the schedule's unread count (skipped silently while the store is read-only). */
+  /** UI overhaul (schedules:peekHistory): the history without clearing the unread count. */
+  peekHistory(scheduleId: string): ScheduleHistoryEntry[] {
+    return this.deps.store.history(scheduleId)
+  }
+
   history(scheduleId: string): ScheduleHistoryEntry[] {
     const s = this.deps.store.get(scheduleId)
     if (!s) throw new Error('That schedule no longer exists.')

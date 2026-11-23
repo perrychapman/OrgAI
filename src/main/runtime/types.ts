@@ -889,6 +889,12 @@ export interface RuntimeSession {
   /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
   switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
   /**
+   * UI overhaul (runs:stopAgent, desktop only): stop one running report (never the root) and its own reports. Resolve
+   * true when the adapter stopped it (its agent.upsert follows with a final state), false when it cannot (already ended,
+   * or the provider has no per-agent stop). Never throws for an unknown id (false). Absent = not supported.
+   */
+  stopAgent?(agentId: string): Promise<boolean>
+  /**
    * Change the live session's permission mode (RunManager.setPermissionMode, desktop runs:setPermissionMode only).
    * `mode` is already validated by RunManager (runPermissionModeChoices, never on setup-like or exec runs). The adapter
    * derives everything from the `mode` argument (its existing mapping, Claude: claudePermissionMode /

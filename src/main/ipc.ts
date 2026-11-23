@@ -33,6 +33,7 @@ import type { HostActivityTrackerApi, HostDispatchEnv, HostServices } from './ho
 import { installCommandText, installTag, type CliInstallService } from './host/cliInstaller'
 import { UPDATES_IPC, type UpdateActionResult, type UpdateState } from '@shared/types'
 import { updateInstallArgs, type UpdateController } from './updater'
+import { registerOverhaulIpc } from './overhaulIpc'
 
 /**
  * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
@@ -333,6 +334,14 @@ export function registerIpc(services: IpcServices): void {
   if (services.repoClone) registerRepoIpc(activity, services.repoClone)
   registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly, watcher: services.outputWatcher })
   if (services.updates) registerUpdatesIpc(activity, services.updates)
+  // UI overhaul channels (desktop only; main/overhaulIpc.ts).
+  registerOverhaulIpc((channel, fn) => handleMutating(activity, channel, fn), handleReadOnly, {
+    projects,
+    runs: services.runs,
+    schedules: services.schedules,
+    templates: services.templates,
+    connections: services.connections
+  })
 }
 
 // ---- Desktop updater (updater.ts); desktop only ----
