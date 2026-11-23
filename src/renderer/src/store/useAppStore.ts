@@ -561,6 +561,12 @@ interface AppState {
   continueRun(fromRunId: string, text: string, images?: ImageAttachment[]): Promise<void>
   /** A paused run: continue it now instead of at the usage window's reset. */
   resumeNow(runId: string): Promise<void>
+  /** A run held on its budget: continue it with `addUsd` more as the new run's limit; shows the continuation. */
+  addBudget(runId: string, addUsd: number): Promise<void>
+  /** An ended held run: continue it with the harness's resume message; shows the continuation. */
+  retryRun(runId: string): Promise<void>
+  /** A live run: tell the orchestrator to go ahead without the review step for this change. */
+  skipReview(runId: string, note?: string): Promise<void>
   /** A paused run: drop its auto-resume; it stays paused until the user continues it. */
   cancelAutoResume(runId: string): Promise<void>
   /** Bumped to ask the live view's composer to take focus (e.g. "Continue" in the Runs tab). */
@@ -2040,6 +2046,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     showContinuation(summary)
   },
 
+  async addBudget(runId, addUsd) {
+    showContinuation(await window.orgai.runActions.addBudget({ runId, addUsd }))
+  },
+
+  async retryRun(runId) {
+    showContinuation(await window.orgai.runActions.retry({ runId }))
+  },
+
+  async skipReview(runId, note) {
+    await window.orgai.runActions.skipReview({ runId, note })
+  },
+
   async cancelAutoResume(runId) {
     await window.orgai.runs.cancelAutoResume(runId)
   },
@@ -2373,6 +2391,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'plan.updated':
           run.plan = e.plan
           break
+        case 'run.hold': {
+          const { hold: _old, ...rest } = run.summary
+          run.summary = e.hold ? { ...rest, hold: e.hold } : rest
+          break
+        }
         case 'staffing.updated':
           run.staffing = e.staffing
           break
