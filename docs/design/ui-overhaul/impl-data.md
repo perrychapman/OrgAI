@@ -1,7 +1,8 @@
 # UI overhaul: data views implementation notes
 
 Lead: ov-data. Boards: Files, Knowledge, Usage, History, Schedules; To-dos (no board) in the same look.
-Status: in progress (this file is updated as each piece lands).
+Status: built; corrected against the code on dev 2026-11-23 (the corrections are marked "Corrected"). Unverified: screen
+reader speech, macOS and Linux, real data volumes, both themes and both sizes by eye for every screen.
 
 ## Files (`Files.dc.html` -> `views/OutputsView.tsx`, `components/outputs/`)
 
@@ -70,9 +71,15 @@ Built:
   - the shared `Switch`, named "<name>, on/off" (testid `schedule-toggle` kept), replaces Pause/Resume. The context menu still has Pause/Resume.
 - Detail panel (read-only): task text and facts When / Who / If it needs you / May change files / Spending limit, from real `Schedule` fields, plus a last-result note.
 
+- Corrected: the weekly cost and the last-runs bars are built. `ScheduleDetail.tsx` shows a "Weekly cost" fact and the last
+  runs from `runInsights.scheduleCosts` and `runInsights.scheduleHistory` (the peek channel, which does not clear
+  `unread`); the page header shows a weekly total. Loading and failed read "Weekly cost…" / "Weekly cost unavailable";
+  unknown stays unknown, never $0 (`useScheduleInsights`).
+
 Deviations:
 - Run now, Edit, Delete and History stay on the row, not in the detail panel: e2e and the context menu expect them there.
-- The weekly cost and the last-runs bars wait for the runtime contract (below).
+- "Let schedules run when I am near the limit" is not drawn: `Project.schedulesNearPlanLimit` is stored but main does not
+  skip scheduled runs near the plan limit (owner decision, STATUS.md).
 
 ## Run history (`History.dc.html` -> `components/RunHistory.tsx`, `components/history/`, `lib/runHistory.ts`, `styles/history.css`)
 
@@ -85,8 +92,12 @@ Built, by what the data says:
 
 Deviations and unknowns:
 - Per-file added/removed counts and step durations are not recorded: none are shown, never "0".
-- "Undo the merge" and "Delete the branch" are not built in main and are not drawn.
-- `runs.retryRun` in main was a stub (throws "Retrying is not available yet.") when this was built, so the refusal path is what has been seen; a real retry is unverified.
+- "Undo the merge" is not built (owner decision) and not drawn. Corrected: "Delete the branch" now exists in main
+  (`maintenanceExtra.deleteBranch`) and in Settings > Branches (`MaintenanceSection.tsx`); History still does not draw it.
+- Corrected: `runs.retryRun` in main was a stub when this was built; it is real now (`RunManager.retryRun`, desktop only,
+  `continueRun` with the harness's resume message and every check of it, behind `runActions.retry`). It has unit tests with
+  fake adapters; a retry on a live provider is unverified, and the inline confirmation has not been re-driven end to end
+  since.
 
 ## Knowledge (`Knowledge.dc.html` -> `components/knowledge/`, `lib/knowledgeLimit.ts`)
 
@@ -94,7 +105,11 @@ Built:
 - Glass panels for the list, detail and graph note; `KindMark` draws each item's kind.
 - Graph limit: above 75 drawn items (`CONNECTED_LIMIT_ABOVE`) the graph draws the 60 most connected (`CONNECTED_LIMIT`) and says "Showing the 60 most connected of N" (plus "and M you opened"); "Show all" draws everything and is kept as a per-project view preference. The list, search, filters and detail always keep every item. A graph at or under 75 says "Showing all N items" only when eligible, else nothing.
 - Pure logic (`connectionDegrees`, `mostConnected`, `restrictGraph`, `limitNote`) is unit tested.
-- The board's "working line": not found in the code when this section was written; treat it as not built.
+- Corrected: the board's "working line" is built. `KnowledgeView.tsx` renders `recording` (class `knowledge-live-text`) in its
+  toolbar, from `lib/knowledgeRecording.ts` (`recordingNow(items, summaries)` and `recordingText`): "The team is working"
+  while a run of this project is working, with " · N recorded in the current run" (or "the current runs") counting the
+  agent-written items of working runs; nothing is shown with no working run. The earlier "not found" came from searching
+  `components/knowledge` only; the line lives in the view and the lib. Unit tests: `knowledgeRecording.test.ts`.
 
 Deviations:
 - A local `KnowledgeChip` is used instead of the shared `Chip`.

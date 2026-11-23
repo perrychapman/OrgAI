@@ -67,6 +67,22 @@ confirmed it.
 - Reviewer: renderer approved; main first Block (an idle run with working reports counted as done, stale scheduler
   snapshot, start race, inherited bypass, misleading update card, catch-up freeze), fixed, recheck "Pass with Lows".
 
+## UI overhaul (2026-11-22; `docs/design/ui-overhaul/impl-runtime.md`, `impl-data.md`)
+
+- Cost and history reads (desktop only, `OVERHAUL_IPC`): `runInsights.scheduleCosts()` returns the per-schedule cost (the
+  median of the newest 7 history entries that have a cost; none known = `null`, never $0) and a weekly total from the
+  scheduler's own timing maths (`shared/schedule.ts compileScheduleTiming`); `runInsights.scheduleHistory(id)` reads the
+  history without clearing `unread`. Tests: `schedules/scheduleCost.test.ts`. The Schedules page (rows and detail) and the
+  project Home read them; loading and failure read "Weekly cost…" / "Weekly cost unavailable", unknown stays unknown.
+- A scheduled run is a run start of a stored project, so the daily and monthly caps (`runtime/spendGuard.ts`) apply to it
+  like any other start (checked by `spendGuard.test.ts`; a schedule firing under a reached cap is not driven end to end).
+- `Project.schedulesNearPlanLimit` is stored (desktop saves only, never turned on from another surface) but the scheduler
+  does not skip runs near the plan limit, so no control ships. Owner decision pending.
+- Notifications: `AppSettings.notifyScheduleFindings` gates the schedule notices, which today are failures and pauses.
+- Page: a week strip (`lib/schedulesBoard.ts`, at most 3 time chips a day then "+n more"), a per-row `Switch` named
+  "<name>, on/off" (testid `schedule-toggle` kept, the context menu still has Pause / Resume) and a read-only detail
+  (`ScheduleDetail.tsx`); Run now, Edit, Delete and History stay on the row.
+
 ## Open and unverified
 
 - The handover-grace sweep (`service.ts` `sweep()`, `HANDOVER_GRACE_MS`) was written after the last Reviewer recheck

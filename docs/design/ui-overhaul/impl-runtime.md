@@ -89,7 +89,8 @@ support for what the overhaul boards draw that the app did not have. The orchest
 - **Stop one agent:** Claude uses `Query.stopTask`, Codex uses `turn/interrupt` of the report's thread, and the mock
   always stops. Never the root. Returns `stopped: false` where unsupported.
 - **Spawn caps** (`runtime/spawnCaps.ts`): `Role.maxConcurrent` and `Project.maxAgentsPerRun`, read live. Approved but
-  unstarted spawns count. Gap: `bridge.ts delegate_agent` does not apply them.
+  unstarted spawns count. (First draft: `bridge.ts delegate_agent` did not apply them. Corrected: it does, see "Second
+  batch" and the code, `spawnCapRefusal` / `spawnAllowanceAfter` in `bridge.ts`.)
 - **Who may set spend and command fields.**
   - `projects:save` from the socket or the in-process CLI is refused when it would raise or remove a daily or monthly
     cap, change `onSpendLimit`, `requireTestsPass` or `testCommand`, or turn on `schedulesNearPlanLimit`
@@ -162,7 +163,8 @@ support for what the overhaul boards draw that the app did not have. The orchest
   - `deleteBranch` goes through the guarded git helpers. It refuses the current, default and main branch, branches in
     use by a live run, non-report branches, unfinished git state, and a branch with no copy that has unmerged commits.
   - `branchNamePattern` is validated and offered through `branchNameFor`. No live run applies it yet: Claude's SDK
-    names its branches, and the Codex call site is noted in `codexAgents.ts`. Worktree recognition still keys on
+    names its branches. Corrected: `branchNameFor` (`runtime/branchNames.ts`) has no caller outside its tests, and
+    `codexAgents.ts` carries no note about it (the first draft said it did). Worktree recognition still keys on
     `worktree-agent-`.
 
 ## Reviewer fixes (first pass blocked on H1)
@@ -226,6 +228,16 @@ support for what the overhaul boards draw that the app did not have. The orchest
 - **Owner decision needed.** autoDownload, undo merge, locale and `schedulesNearPlanLimit` (see "Needs owner
   decision").
 - **Not recorded today:** per-file +/- counts per run, plan step durations, and test or dependency health.
+
+## Checked against the code (2026-11-23)
+
+Read on dev: `OVERHAUL_IPC` has 22 channels, all in `DESKTOP_CHANNEL_MUTATES` (`overhaulIpc.test.ts`); `PERIOD_CAPS_LIVE`
+is `true` in the renderer; `runs.retryRun` is real; the merge gate refuses an empty test command
+(`integration.ts testGateMissingCommand`) and merges the recorded `branchTip`; `allowCounter.ts` hashes keys (version 2);
+`bridge.ts` applies the spawn caps; `projectSaveGuard.ts` also guards `maxAgentsPerRun`, `Role.maxConcurrent`,
+`knowledgeWrite`, `keepFailedBranchesDays`, `mainBranch`, `branchNamePattern` and `askBeforeStrongerModel` (narrowing only);
+`RunManager` drops adapter-sent `run.hold` / `run.spendWarning` and rebuilds `provider.retry`. Not changed by this check:
+every "Unverified" line below.
 
 ## Verification
 

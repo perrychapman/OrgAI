@@ -188,6 +188,11 @@ The launch check also runs (30 s after launch) when `autoUpdateCheck` is on; an 
 
 ## Open items
 
+- Owner decision (UI overhaul, 2026-11-22): the Settings > About and updates board draws "Download updates by themselves".
+  It would change the consent rule above (the app never downloads on its own), so no control, no `autoDownload` setting in
+  `AppSettings` and no main behaviour exist (the `autoDownload` in `updaterRuntime.ts` is electron-updater's own flag, kept false). The Updates card in the overhaul's About pane keeps check / download / install on the user's
+  request (`docs/design/ui-overhaul/impl-settings.md`).
+
 - A live update (check, download, install, relaunch) against a real published release: UNVERIFIED.
 - macOS auto-install needs a signed and notarized app; until then macOS stays 'manual'.
 - Linux AppImage auto-install is not offered (Linux is 'manual'); checks need `APPIMAGE` set, otherwise a check reports

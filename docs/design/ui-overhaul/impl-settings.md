@@ -155,10 +155,20 @@ new menu (self-help breadcrumbs).
 - Providers: the signed-in account and "updated N ago" stay in each card's status line; the plan limit and its reset
   show on the tile; no cost words per tier (a proxy's mapping makes them unreliable).
 - Not built (ov-runtime: no main support, by decision): Language, Download updates by themselves (the consent model
-  never downloads on its own), Name new branches (the SDK names worktree branches), Ask before using a more capable
-  model, size of finished copies, Skills Duplicate and Export, "Let schedules run when I am near the limit" (no
-  near-limit skip of scheduled runs exists to switch), "Dates look like" (main stores it; no renderer date formatting
-  reads it yet, so no control ships), Show the welcome tour again (About board; onboarding is not a settings file).
+  never downloads on its own), Name new branches (`Project.branchNamePattern` is validated in main but no live run applies
+  it: Claude's SDK names its branches), "Let schedules run when I am near the limit" (`schedulesNearPlanLimit` is stored;
+  no near-limit skip of scheduled runs exists to switch), "Dates look like" (main stores `dateFormat`; no renderer date
+  formatting reads it yet, so no control ships), Show the welcome tour again (About board; onboarding is not a settings
+  file).
+- Corrected 2026-11-23 (the first draft listed these as not built; they are built and live): "Ask before using a more
+  capable model" (`LimitsSection.tsx`, `Project.askBeforeStrongerModel`), "Most agents in one run"
+  (`maxAgentsPerRun`, copy says it counts per run session), the day and month caps with "When a limit is reached" and
+  "Warn me at" (`PERIOD_CAPS_LIVE` is `true`), the size of finished copies (`BranchRulesSection.tsx`,
+  `maintenanceExtra.finishedCopiesSize`), Delete branch (`MaintenanceSection.tsx`), and Skills Duplicate and Export
+  (`SkillsSection.tsx`, `skillsExtra`). Main now refuses every merge when "Tests must pass" is on and the command is empty
+  and the pane says so ("while this is empty, merges are refused because there is nothing to run"); the refusal is in
+  `integration.test.ts` and `testGate.test.ts`. The "Verified" and "Reviewer" lines below that say merges go untested
+  without a command are the old behaviour.
 - Motion "Off" (`noMotion`) is not offered separately: by rule it uses the Reduce motion switch, so it would behave
   exactly like "Always reduce".
 - Day / month caps and the run-size "Most agents in one run" sit at rest only for metered projects; on a plan sign-in
@@ -187,16 +197,15 @@ new menu (self-help breadcrumbs).
 
 ### Open
 
-- Waiting on ov-runtime (its branch conflicts with dev in src/main/ipc.ts): the real `projectSpend` (then flip
-  `PERIOD_CAPS_LIVE` in LimitsSection.tsx to show day / month caps, at-cap behaviour and Warn me at; the rows and
-  their e2e are already written), `maxAgentsPerRun` (row not yet added: Advanced > Runs and agents), the main-side
-  refusal of a merge when "Tests must pass" is on with an empty command, and MCP tool annotations from probe.ts (the
-  test panel shows them once present).
+- Resolved since this was written (checked in the code 2026-11-23): the real `projectSpend` landed and `PERIOD_CAPS_LIVE`
+  is `true` (day / month caps, at-cap behaviour and Warn me at show); `maxAgentsPerRun` has its row ("Most agents in one
+  run"); main refuses a merge when "Tests must pass" is on with an empty command; the test panel shows MCP tool
+  annotations when a server gives them.
 - The attention chime plays in every window that renders App (a run window too).
-
-- `e2e/layout.mjs` clicks `label.seg-item` "Dark" in Colour mode, which part 1's picture cards replaced; it fails on
-  dev independent of part 2 (reported to the orchestrator).
-- `KitSection.tsx` "Open connectors" dispatches an App deep link without `setView` (reported).
+- Resolved: `e2e/layout.mjs` no longer clicks `label.seg-item` (it was reported broken by the picture cards), and
+  `KitSection.tsx` "Open connectors" now calls `setView('appSettings')` before dispatching the deep link.
+- The atlas path text in `src/shared/view/atlas.ts` still names the old panes ("App settings > About > Updates" style);
+  `e2e/self-help.mjs` asserts the old text.
 - Low items left: gallery section and detail headings are h3 like their section title (L3); `dimmed` / `trailing` on
   gallery items are unused (a trailing control would add a Tab stop per tile).
 - No UX walkthrough of part 2, no screen reader pass, narrow (1024x640) screenshots of Skills and Templates not looked at.
