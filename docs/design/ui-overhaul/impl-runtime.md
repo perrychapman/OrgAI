@@ -145,8 +145,8 @@ support for what the overhaul boards draw that the app did not have. The orchest
   - Stored at `<data>/projects/<id>/allow-counts.json`: at most 500 keys, counts capped at 9999.
   - Absent when unknown.
 - **`askBeforeStrongerModel`** (`staffing.ts` gate, used by the Claude, Codex and mock spawn paths).
-  - Asks "Use a stronger model for <role>?". Only "Use it" uses the stronger tier; anything else keeps it. The Claude
-    wait ends after 580 s with keep.
+  - Asks "Use a stronger model for <role>?". Only "Use it" uses the stronger tier; anything else keeps it. The wait ends after 580 s
+    with keep and the card is cancelled (all three adapters).
   - Because `resolveStaffing` clamps to the role's tier, today it fires only on a retry escalation.
 - **`runActions.retryAgent`.** A user instruction to the orchestrator, sent through `send()`. Staffing still clamps the
   tier.
@@ -217,8 +217,38 @@ support for what the overhaul boards draw that the app did not have. The orchest
 - **L7.** A skill export folder never takes a Windows device name (`con`, `nul`, `com1`...).
 - **L8.** `deleteBranch` asks its refusal questions again under the repository lock; branch names compare case-insensitively
   on Windows and macOS.
-- **Report only.** L2: the stronger-model question stays pending after the Claude 580 s wait, and Codex and the mock have no
-  timeout (adapter work). L9: a loose `branchNamePattern` can make a user's branch count as a report branch for delete.
+- **Report only.** L2 (fixed by the Adapter Engineer, see "Adapter fixes"): the stronger-model question stayed pending after the
+  Claude 580 s wait, and Codex and the mock had no timeout. L9: a loose `branchNamePattern` can make a user's branch count as a report branch for delete.
+
+## Adapter fixes (stronger-model wait, budget and spawn-cap gaps)
+
+- **Stronger-model wait (L2).** `staffing.ts decideWithStrongerGate` owns one bounded wait for all three adapters
+  (`STRONGER_MODEL_ASK_TIMEOUT_MS`, 580 s, below the 600 s Claude PreToolUse hook timeout). On timeout the role's own tier is
+  kept, a run line says "no answer, kept the role's model", and the card is cancelled: `RuntimeContext.requestQuestion` takes an
+  optional `{ signal }`; aborting it makes RunManager cancel the card like a run end does (`question.resolved` with
+  `cancelled: true`, a `cancelled` tombstone), so it leaves the decision tray and Inbox and a late "Use it" is refused as not
+  pending. Checked with fake timers in `claudeProviderRetry.test.ts`, `codexStaffing.test.ts`, `mockProviderRetry.test.ts` and
+  through RunManager in `runManagerMockHold.test.ts`. The Codex tool-call timeout for `spawn_report` is not known (no
+  timeout is set in `codex.ts`); unverified live.
+- **Codex has no budget hold from the project cap alone (confirmed, not fixable in an adapter).** `codex.ts` never reads
+  `maxBudgetUsd` or `ctx.budgetUsd`. Claude gets its stop from the SDK (`error_max_budget_usd` -> `budgetReached`). In main,
+  `RunManager.checkSpend` enforces only `RunSummary.runBudgetUsd` (a per-run cap the user chose or a carried one) as `ownCap`;
+  `Project.maxBudgetUsd` alone is read only for the warning and for `budgetReached`. So on Codex (and for any adapter that
+  does not enforce a budget) a project cap alone never stops the run or raises a hold. Module that must change:
+  `runManager.ts checkSpend` (`ownCap` should fall back to `projectBudgetUsd(a.ctx.project)`). A decision that can change
+  spend: needs the Reviewer.
+- **Spawn caps and bridged children (confirmed, not fixable in an adapter).** `bridge.ts delegate_agent` counts the run's whole
+  record and hands a child a snapshot of what is left (`spawnAllowanceAfter`). Two leaks remain: the snapshot is not reduced by
+  agents spawned later, and a native spawn counts only the adapter's own `this.agents` / members (`claude.ts`,
+  `codexAgents.ts`, `mock.ts`), never bridged children, so with `maxAgentsPerRun` 3 a bridged child that starts 2 agents and then a
+  native spawn by the root reach 4. Modules that must change: `types.ts` (an optional `RuntimeContext` accessor for the run's
+  bridged agents), `runManager.ts` (provide it from the run record) and then the three adapters pass it as extra `agents` to
+  `spawnCapRefusal`. The decision stays in `spawnCaps.ts`.
+- **Mock markers.** `[mock:budget-stop]` and `[mock:provider-error]` reach `run.hold` through RunManager exactly as a real
+  adapter's end does (`runManagerMockHold.test.ts`): budget-stop holds on `budget` only when the run has a cap (per-run or
+  project), as on Claude; provider-error holds on `provider`. `[mock:stronger-model]` (work run, default script, first session)
+  fails a fast-tier report so the next spawn escalates; with `askBeforeStrongerModel` on, the "Use a stronger model for
+  <role>?" card appears.
 
 ## Not built, and why
 

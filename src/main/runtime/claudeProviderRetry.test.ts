@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RunPlan } from '@shared/types'
 import { ClaudeSession } from './claude'
-import { fakeCtx, project, role } from './testHelpers'
+import type { RuntimeContext } from './types'
+import { STRONGER_MODEL_ASK_TIMEOUT_MS } from './staffing'
+import { fakeCtx, fakeQuestion, project, role } from './testHelpers'
 
 // Two adapter behaviours of the UI overhaul, against the session's own handlers (no CLI, no tokens):
 // 1. `provider.retry` from the SDK's `api_retry` system message (SDKAPIRetryMessage: attempt, max_retries, retry_delay_ms,
@@ -98,8 +100,8 @@ describe('Claude askBeforeStrongerModel', () => {
   const opts = { signal: new AbortController().signal }
 
   /** A first report of step p1 (staffed fast / high) failed; the next spawn of the step is an escalation to everyday. */
-  async function afterFailedAttempt(answer: string[] | undefined, projectOver: Record<string, unknown>) {
-    const requestQuestion = vi.fn(async (_req: unknown) => ({ selected: answer ?? [] }))
+  async function afterFailedAttempt(answer: string[] | undefined, projectOver: Record<string, unknown>, custom?: RuntimeContext['requestQuestion'], secondCall?: (p: Promise<Record<string, any>>) => Promise<Record<string, any>>) {
+    const requestQuestion = vi.fn(custom ?? (async (_req: unknown) => ({ selected: answer ?? [] })))
     const { s, ctx } = session({ requestQuestion }, projectOver)
     const plan: RunPlan = {
       goal: 'Ship',
@@ -114,9 +116,32 @@ describe('Claude askBeforeStrongerModel', () => {
     expect(first.hookSpecificOutput?.updatedInput?.model).toBe('haiku')
     s.staffingStarted('t1', 'a1')
     s.staffingBook.ended('a1', { failed: true })
-    const second = await hook(spawnInput('t2'), 't2', opts)
+    const secondP = hook(spawnInput('t2'), 't2', opts)
+    const second = await (secondCall ? secondCall(secondP) : secondP)
     return { requestQuestion, second, s, ctx }
   }
+
+  it('on, no answer in STRONGER_MODEL_ASK_TIMEOUT_MS: keeps the tier, cancels the card, and a late answer does nothing', async () => {
+    const q = fakeQuestion()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const { second, ctx } = await afterFailedAttempt(undefined, { askBeforeStrongerModel: true }, q.request, async (p) => {
+        await vi.advanceTimersByTimeAsync(STRONGER_MODEL_ASK_TIMEOUT_MS)
+        return p
+      })
+      expect(q.cancelled).toBe(true)
+      expect(second.hookSpecificOutput?.updatedInput?.model).toBe('haiku')
+      expect(q.answerLate(['Use it'])).toBe(false)
+      expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('no answer'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the shared wait ends before the raised PreToolUse hook timeout', () => {
+    const hook = session({}, { askBeforeStrongerModel: true }).s.buildHooks().PreToolUse[0].timeout as number
+    expect(STRONGER_MODEL_ASK_TIMEOUT_MS).toBeLessThan(hook * 1000)
+  })
 
   it('off: the escalated retry runs without a question', async () => {
     const { requestQuestion, second } = await afterFailedAttempt(['Use it'], {})

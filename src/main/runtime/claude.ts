@@ -35,10 +35,15 @@ import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, 
 import type { PermissionDecision, PermissionMode, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, DEFAULT_MAX_AUTO_CONTINUES, KNOWLEDGE_RECALL_TOOL, READ_DOCUMENT_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingGoalOf, staffingModeOf, tierForModel } from '@shared/defaults'
-import { CLAUDE_TIER_ALIAS, decideWithStrongerGate, recordStaffing, roleModelTier, type StrongerModelCard } from './staffing'
+import { CLAUDE_TIER_ALIAS, STRONGER_MODEL_ASK_TIMEOUT_MS, decideWithStrongerGate, recordStaffing, roleModelTier } from './staffing'
 
-/** PreToolUse hook timeout (seconds) while Project.askBeforeStrongerModel is on: the spawn hook may wait for the user's answer. */
+/**
+ * PreToolUse hook timeout (seconds) while Project.askBeforeStrongerModel is on: the spawn hook may wait for the user's
+ * answer. The shared wait (STRONGER_MODEL_ASK_TIMEOUT_MS, staffing.ts) must end before it, so a hook timeout can never
+ * let the stronger spawn through.
+ */
 const STRONGER_MODEL_HOOK_TIMEOUT_S = 600
+if (STRONGER_MODEL_ASK_TIMEOUT_MS >= STRONGER_MODEL_HOOK_TIMEOUT_S * 1000) throw new Error('STRONGER_MODEL_ASK_TIMEOUT_MS must stay below the spawn hook timeout')
 import { StaffingBook } from './staffingBook'
 import { PermissionModeRefusal } from './permissionModeRefusal'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
@@ -2979,23 +2984,6 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
-   * The stronger-model question (Project.askBeforeStrongerModel) from inside the spawn hook. The hook's own timeout is
-   * raised to STRONGER_MODEL_HOOK_TIMEOUT_S when the project sets the option, and this wait ends a little before it
-   * with an empty answer (= keep the role's tier), so a hook timeout can never let the stronger spawn through.
-   */
-  private async askStrongerModel(card: StrongerModelCard): Promise<{ selected?: readonly string[] }> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<{ selected: string[] }>((resolve) => {
-      timer = setTimeout(() => resolve({ selected: [] }), (STRONGER_MODEL_HOOK_TIMEOUT_S - 20) * 1000)
-    })
-    try {
-      return await Promise.race([this.ctx.requestQuestion({ agentId: ROOT_ID, ...card }), timeout])
-    } finally {
-      if (timer) clearTimeout(timer)
-    }
-  }
-
-  /**
    * The model a spawn's `model: CLAUDE_TIER_ALIAS[tier]` makes the CLI run on this connection, or undefined when the
    * alias would not resolve to a model the connection serves. The connection's ANTHROPIC_DEFAULT_<ALIAS>_MODEL variable
    * when set; else on a proxy the tier's mapped model (the variables come only from that map: without it the CLI would
@@ -3072,7 +3060,7 @@ export class ClaudeSession implements RuntimeSession {
         })
       },
       cancel: () => this.staffingBook.cancel(key),
-      ask: (card) => this.askStrongerModel(card),
+      ask: (card, signal) => this.ctx.requestQuestion({ agentId: ROOT_ID, ...card }, { signal }),
       log: (level, text) => this.log(level, text)
     })
     const resolved = decision.resolved

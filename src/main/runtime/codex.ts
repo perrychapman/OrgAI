@@ -2611,7 +2611,7 @@ class CodexSession implements RuntimeSession {
         })
       },
       cancel: () => this.staffing.cancel(req.id),
-      ask: (card) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }),
+      ask: (card, signal) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }, { signal }),
       log: (level, text) => this.log(level, text)
     })
     // The model only when the tier changed, the effort only when the effort changed: an effort-only pick keeps the
