@@ -123,8 +123,9 @@
   width: 30px;
   height: 30px;
   border-radius: var(--radius-md);
-  /* Role colours are bright; darkened toward black so white initials keep contrast on every one. */
-  background: color-mix(in oklab, var(--role) 58%, black);
+  /* Role colours are bright: the avatar keeps 50% of the colour and the rest is the shade, so the white initials stay
+     above 4.5:1 on every ROLE_COLORS entry and on pure white (roleAvatarContrast.test.ts measures this percentage). */
+  background: color-mix(in oklab, var(--role) 50%, var(--role-shade, #000));
   color: var(--text-on-accent);
   box-shadow: none;
   font-size: var(--text-caption);

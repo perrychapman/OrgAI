@@ -102,6 +102,22 @@
 .team-header-groups {
   color: var(--text-secondary);
 }
+/* Engagement: the Team saves as you edit, so there is no Save button (EngagementTeam board). Goes first when narrow. */
+.team-header-saved {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+@container teamhdr (max-width: 900px) {
+  .team-header-saved {
+    display: none;
+  }
+}
 .team-editor[data-kind='engagement'] .team-header .btn.primary {
   background: var(--eng);
   border-color: var(--eng);

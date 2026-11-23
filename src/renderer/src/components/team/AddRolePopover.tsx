@@ -15,6 +15,8 @@ import { addHelperText, duplicateNameText, nameTaken } from '../../lib/teamNotic
 export interface AddRoleRequest {
   parentId: string
   n: number
+  /** Add group: the new role leads its own group, so the form says so (title, name and button). */
+  group?: boolean
 }
 
 export interface AddRolePopoverProps {
@@ -75,7 +77,8 @@ function AddRoleForm({ roles, selectedRoleId, request, onSubmit, consumed, close
   const helperId = `${uid}-helper`
   const errorId = `${uid}-error`
   const requestedNow = request && request.n > consumed.current ? request : null
-  const [name, setName] = useState(() => nextRoleName(roles))
+  const [group, setGroup] = useState(() => !!requestedNow?.group)
+  const [name, setName] = useState(() => nextRoleName(roles, requestedNow?.group ? 'New group' : 'New role'))
   const [parent, setParent] = useState<string | null>(() => defaultParentId(roles, selectedRoleId, requestedNow?.parentId ?? null))
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
@@ -86,6 +89,7 @@ function AddRoleForm({ roles, selectedRoleId, request, onSubmit, consumed, close
     if (!request || request.n <= consumed.current) return
     consumed.current = request.n
     setParent(defaultParentId(roles, selectedRoleId, request.parentId))
+    setGroup(!!request.group)
   }, [request, roles, selectedRoleId, consumed])
 
   // The suggested name arrives selected, so typing replaces it. The popover also focuses its first field; this keeps the selection.
@@ -133,7 +137,14 @@ function AddRoleForm({ roles, selectedRoleId, request, onSubmit, consumed, close
 
   return (
     <form className="add-role-form" onSubmit={(e) => void submit(e)} onKeyDown={onSelectKey} noValidate>
-      <h2 className="add-role-title">Add a role</h2>
+      <h2 className="add-role-title" data-testid="add-role-title">
+        {group && !empty ? 'Add a group lead' : 'Add a role'}
+      </h2>
+      {group && !empty && (
+        <p className="add-role-first" data-testid="add-role-group-note">
+          This role will lead its own group. Add its reports after.
+        </p>
+      )}
       <div className="field">
         <label htmlFor={nameId}>Name</label>
         <Input
@@ -186,7 +197,7 @@ function AddRoleForm({ roles, selectedRoleId, request, onSubmit, consumed, close
           Cancel
         </Button>
         <Button variant="primary" size="sm" type="submit" disabled={!valid} loading={busy} testId="add-role-submit">
-          {empty ? 'Add first role' : 'Add role'}
+          {empty ? 'Add first role' : group ? 'Add group lead' : 'Add role'}
         </Button>
       </div>
     </form>

@@ -134,7 +134,7 @@ export function teamSizeLine(before: number, after: number): string {
 }
 
 /**
- * The Level choices of an imported role: "inherit", one entry per tier named in plain words with the exact model id the
+ * The model choices of an imported role: "inherit", one entry per tier named in plain words with the exact model id the
  * connection maps it to, then the connection's catalog. The value is always what AgentImportChoice.model accepts.
  */
 export function levelOptions(
@@ -226,10 +226,16 @@ export function importGroups(preview: Pick<AgentImportPreview, 'roles' | 'items'
   return [make(top.id, top.name, top.color, [top, ...leaves]), ...trees.map((l) => make(l.id, l.name, l.color, subtree(l)))]
 }
 
-/** One line on what the chosen mode does to the chart, with counts. */
-export function modeLine(mode: AgentImportMode, imported: number, existing: number): string {
+/**
+ * One line on what the chosen mode does to the chart, with counts. `after` is the team size the preview ends with: in
+ * Replace the top role is kept, so the replaced count leaves it out and the line says so (the numbers add up).
+ */
+export function modeLine(mode: AgentImportMode, imported: number, existing: number, after?: number): string {
   const n = (c: number): string => `${c} role${c === 1 ? '' : 's'}`
-  return mode === 'replace' ? `Replaces your ${n(existing)} with these ${imported}.` : `Adds ${n(imported)} next to the ${existing} you have.`
+  if (mode !== 'replace') return `Adds ${n(imported)} next to the ${existing} you have.`
+  const kept = after === undefined ? 0 : Math.max(0, Math.min(existing, after - imported))
+  if (kept === 0) return `Replaces your ${n(existing)} with these ${imported}.`
+  return `Replaces ${n(existing - kept)} with these ${imported}. Your top role stays, so the team ends at ${n(after as number)}.`
 }
 
 const ELEVATED_TEXT: Record<string, string> = {

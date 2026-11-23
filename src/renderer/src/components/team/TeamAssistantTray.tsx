@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2, RefreshCw, Settings2, Sparkles, X } from 'lucide-react'
 import type { Project, TeamReview } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_SESSION, useTeamAssistantStore, useTeamReviewSummary, type CardState, type TeamSession } from '../../store/teamAssistant'
@@ -32,6 +32,7 @@ import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
+import { Input } from '../ui/Input'
 import { openProjectSettings } from '../../lib/openProjectSettings'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { Select } from '../ui/Select'
@@ -83,11 +84,37 @@ export default function TeamAssistantTray({
 }): ReactElement {
   const hasResults = useTeamAssistantStore((s) => !!s.sessions[project.id]?.result)
   const trayPhase = hasResults ? 'results' : 'recommend'
+  // On a short window the tray is one line (the Ask bar): the recommendations fold away so the chart keeps its room
+  // (review M8). A role's "Ask the Team assistant" opens them. Elsewhere, and whenever results exist, they are open.
+  const short = useShortWindow()
+  const [more, setMore] = useState<boolean | null>(null)
+  // Results with something to show (a recommendation or a gap) keep the pane open; an empty check does not.
+  const hasCards = useTeamAssistantStore((s) => {
+    const r = s.sessions[project.id]?.result
+    return !!r && (r.recommendations.length > 0 || r.gaps.length > 0)
+  })
+  const open = more ?? (!short || hasCards)
+  useEffect(() => {
+    const expand = (): void => setMore(true)
+    window.addEventListener(TEAM_ASSISTANT_EXPAND, expand)
+    return () => window.removeEventListener(TEAM_ASSISTANT_EXPAND, expand)
+  }, [])
   return (
     <div className="team-assistant" data-testid="team-assistant" data-mode="recommend" data-tray-phase={trayPhase}>
       <div className="team-tray-head">
         <h2>Team assistant</h2>
         <div className="grow" />
+        <button
+          type="button"
+          className="btn ghost sm"
+          onClick={() => setMore(!open)}
+          aria-expanded={open}
+          aria-controls="team-mode-pane"
+          data-testid="team-assistant-more"
+        >
+          <Icon icon={open ? ChevronUp : ChevronDown} size="sm" />
+          {open ? 'Hide recommendations' : 'Recommend tools and skills'}
+        </button>
         {/* The Off / Free checks / AI suggestions select lives in Project settings > Permissions > Advanced (ux-review-config-2 N6). */}
         <IconButton
           icon={Settings2}
@@ -100,11 +127,28 @@ export default function TeamAssistantTray({
       <AskBar project={project} />
       {/* An open org change session is always pointed at here (walk H1); the notice row says it too. */}
       <OrgChangePointer project={project} />
-      <div className="team-mode-pane">
+      <div className="team-mode-pane" id="team-mode-pane" hidden={!open}>
         <RecommendPane project={project} scope={scope} active onDesign={onOpenArchitect} />
       </div>
     </div>
   )
+}
+
+/** Window event that unfolds the tray's recommendations (the role panel's "Ask the Team assistant"). */
+export const TEAM_ASSISTANT_EXPAND = 'orgai:team-assistant-expand'
+
+/** True while the window is short (the 1024 x 640 laptop size): the tray folds to its Ask bar. */
+function useShortWindow(): boolean {
+  const query = '(max-height: 760px)'
+  const [short, setShort] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia(query).matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined
+    const mq = window.matchMedia(query)
+    const on = (): void => setShort(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return short
 }
 
 /**
@@ -125,15 +169,14 @@ function AskBar({ project }: { project: Project }): ReactElement {
         <label className="sr-only" htmlFor="team-ask-input">
           Ask the Architect
         </label>
-        <input
+        <Input
           id="team-ask-input"
-          type="text"
-          className="team-ask-input"
           data-testid="team-ask-input"
           value={form.revision}
           placeholder="Ask the Architect to change the team, for example: add someone who writes docs"
           aria-describedby="team-ask-hint"
-          onChange={(e) => form.setRevision(e.target.value)}
+          autoComplete="off"
+          onChange={form.setRevision}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault()

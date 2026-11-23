@@ -219,7 +219,9 @@ export function roleSubline(roles: readonly RoleRef[], role: RoleRef): string {
   if (role.reportsTo === null) return 'Leads the team'
   const manager = roles.find((r) => r.id === role.reportsTo)
   const group = roleGroupName(roles, role)
-  return manager ? `${group} · reports to ${manager.name}` : group
+  if (!manager) return group
+  // The group name is dropped when it only repeats the role or its manager.
+  return group === manager.name || group === role.name ? `Reports to ${manager.name}` : `${group} group · reports to ${manager.name}`
 }
 
 /** True when the role has neither Edit nor Write (it can read and run, but not change files). */
