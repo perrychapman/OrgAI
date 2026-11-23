@@ -103,6 +103,9 @@ function movement(cur: number, prev: number, fmt: (n: number) => string): Moveme
   return { dir, text: `${amount} ${COMPARED_WITH}`, label: `${dir} ${amount} ${COMPARED_WITH}` }
 }
 
+/** The 7 days before hold no run: there is nothing to compare with, and "0 before" would be a made-up number. */
+export const NO_PRIOR: Movement = { dir: 'none', text: 'No prior data', label: 'No prior data' }
+
 const notCompared = (why: string): Movement => ({ dir: 'none', text: `Not compared: ${why}`, label: `Not compared: ${why}` })
 
 export interface StatCard {
@@ -227,7 +230,9 @@ function finish(c: Omit<StatCard, 'name'>): StatCard {
  * left out (Decisions until runs carry the count); a focus that is left out falls back to the first card.
  */
 export function statCards(recap: WeekRecap, focus: FocusFigure): StatCard[] {
-  const all = [spendCard(recap), runsCard(recap), timeCard(recap), decisionsCard(recap)].filter((c): c is StatCard => c !== null)
+  // With no run in the 7 days before there is no earlier period: every card says so instead of reading the week as growth from zero.
+  const noPrior = recap.previous.runs === 0
+  const all = [spendCard(recap), runsCard(recap), timeCard(recap), decisionsCard(recap)].filter((c): c is StatCard => c !== null).map((c) => (noPrior ? finish({ ...c, movement: NO_PRIOR }) : c))
   const lead = all.find((c) => c.id === focus)
   const order = [...FOCUS_FIGURES]
   const rest = all.filter((c) => c !== lead).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))

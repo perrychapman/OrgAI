@@ -57,6 +57,11 @@
 }
 .settings-detail-help {
   align-self: flex-start;
+  /* A long label wraps inside the panel; it must not run under a horizontal scrollbar. */
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  text-align: left;
 }
 @media (forced-colors: active) {
   .connectors-gallery .connector-tile.is-selected {

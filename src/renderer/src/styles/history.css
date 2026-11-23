@@ -223,6 +223,19 @@
 .hb-again {
   display: contents;
 }
+/* A button with a short line saying what it does, so two near-identical actions read apart at a glance. */
+.hb-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.hb-action-sub {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  max-width: 24ch;
+}
 .hb-files-unknown {
   font-size: var(--text-caption);
   color: var(--text-tertiary);

@@ -368,6 +368,21 @@ try {
         check(!!g && !!d && d.x >= g.x + g.width - 1, `the detail panel sits beside the gallery at ${tag}`, JSON.stringify({ g, d }))
       }
       await shot(`gallery-${tag}`)
+      if (w < 1600) {
+        // M10: stacked below the grid, the panel comes into view when a tile is picked; focus stays on the tile.
+        const last = page.locator('[data-testid=connector-tile]').last()
+        await last.scrollIntoViewIfNeeded()
+        await last.click({ position: { x: 12, y: 12 } })
+        await sleep(500)
+        const seen = await page.evaluate(() => {
+          const d = document.querySelector('[data-testid=connector-detail]')
+          const r = d?.getBoundingClientRect()
+          return { top: r?.top ?? -1, bottom: r?.bottom ?? -1, h: window.innerHeight, tileFocus: !!document.activeElement?.closest?.('[data-testid=connector-tile]'), win: document.documentElement.scrollTop }
+        })
+        check(seen.top >= 0 && seen.top < seen.h - 100 && seen.bottom > 100, `M10 picking a tile brings "The team can / cannot" into view at ${tag}`, JSON.stringify(seen))
+        check(seen.win === 0, `M10 the window itself did not scroll at ${tag}`, JSON.stringify(seen))
+        await shot(`gallery-detail-${tag}`)
+      }
       await openDialog('github')
       await noHScroll(`token dialog ${tag}`)
       await shot(`dialog-token-${tag}`)

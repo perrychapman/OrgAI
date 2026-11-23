@@ -17,6 +17,7 @@ import {
   guardReset,
   guardSwallows,
   nextSelection,
+  openTeamCount,
   projectOptions,
   readReadIds,
   readSeenAt,
@@ -322,5 +323,27 @@ describe('what the user has seen', () => {
     s.data['orgai.inboxRead'] = '[1,"a",null]'
     expect(readReadIds(s)).toEqual(['a'])
     expect(readSeenAt(null)).toBeNull()
+  })
+})
+
+describe('openTeamCount (the empty Inbox and the sidebar agree)', () => {
+  const statuses = ['starting', 'running', 'idle', 'stopping', 'finished', 'error', 'paused'] as const
+  it('counts exactly the statuses the store treats as live', async () => {
+    const { isRunLive } = await import('../store/useAppStore')
+    for (const status of statuses) {
+      const live = isRunLive({ summary: { status } } as Parameters<typeof isRunLive>[0])
+      expect(openTeamCount([{ projectId: 'p', status }]), status).toBe(live ? 1 : 0)
+    }
+  })
+  it('counts distinct projects, not runs', () => {
+    expect(
+      openTeamCount([
+        { projectId: 'a', status: 'running' },
+        { projectId: 'a', status: 'idle' },
+        { projectId: 'b', status: 'starting' },
+        { projectId: 'c', status: 'finished' }
+      ])
+    ).toBe(2)
+    expect(openTeamCount([])).toBe(0)
   })
 })

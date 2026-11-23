@@ -219,16 +219,27 @@ export function HistoryDetail({
             Open the run
           </Button>
           {canRerun && (
-            <span className="hb-again" onKeyDownCapture={onAgainKeyDown} onKeyUpCapture={onAgainKeyUp} onBlurCapture={() => (armed.current = false)}>
-              <Button loading={busy} onClick={runAgain} testId="history-detail-again" ariaDescribedBy={`${headingId}-again`} title="Open the New run page with this request filled in. Nothing is sent until you start it there.">
-                Run it again
-              </Button>
+            <span className="hb-action">
+              <span className="hb-again" onKeyDownCapture={onAgainKeyDown} onKeyUpCapture={onAgainKeyUp} onBlurCapture={() => (armed.current = false)}>
+                <Button loading={busy} onClick={runAgain} testId="history-detail-again" ariaDescribedBy={`${headingId}-again`} title="Open the New run page with this request filled in. Nothing is sent until you start it there.">
+                  Run it again
+                </Button>
+              </span>
+              {/* The note below says the same at length and is this button's description. */}
+              <span className="hb-action-sub" aria-hidden="true" data-testid="history-again-sub">
+                Opens New run with the same request
+              </span>
             </span>
           )}
           {retryOffer.ok && (
-            <Button onClick={askRetry} testId="history-detail-retry" inert={retryState?.state === 'busy'} title="Continue this failed run. You confirm before anything is sent.">
-              Try again
-            </Button>
+            <span className="hb-action">
+              <Button onClick={askRetry} testId="history-detail-retry" inert={retryState?.state === 'busy'} ariaDescribedBy={`${headingId}-retry-sub`} title="Continue this failed run. You confirm before anything is sent.">
+                Try again
+              </Button>
+              <span className="hb-action-sub" id={`${headingId}-retry-sub`} data-testid="history-retry-sub">
+                Continues this run from where it failed
+              </span>
+            </span>
           )}
           {canContinue && (
             <Button onClick={() => onContinue(newest.id)} testId="history-detail-continue" title="Open this run and continue its session with its memory">

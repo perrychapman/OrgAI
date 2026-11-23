@@ -264,8 +264,11 @@ export function formatUntil(at: number, now = Date.now()): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
+/** How long an agent has worked; '' when the start is missing (0, not a number): never a duration since the epoch. */
 export function formatElapsed(startedAt: number, endedAt?: number): string {
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return ''
   const ms = (endedAt ?? Date.now()) - startedAt
+  if (!Number.isFinite(ms) || ms < 0) return ''
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)

@@ -133,3 +133,11 @@ export function firstDayLabel(map: ActivityMap): string {
   const first = map.days[0]
   return first ? new Date(first.start).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : ''
 }
+
+/**
+ * The clock the map and the week recap read: the 60-second tick, or the wall clock when that is later. A run that
+ * started after the last tick would otherwise be stamped "after now" and left out of the map until the next tick.
+ */
+export function freshNow(tick: number, wall: number): number {
+  return Math.max(tick, wall)
+}

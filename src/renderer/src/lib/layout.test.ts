@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { acyclicParents, initials, layoutCanvas, radialLayout, treeLayout } from './layout'
+import { acyclicParents, formatElapsed, initials, layoutCanvas, radialLayout, treeLayout } from './layout'
 
 describe('initials', () => {
   it('uses the first letters of the first two words', () => {
@@ -176,5 +176,20 @@ describe('honeycomb layout', () => {
   })
   it('is stable across calls', () => {
     expect(run(tree(9))).toEqual(run(tree(9)))
+  })
+})
+
+describe('formatElapsed', () => {
+  it('shows nothing for a missing start, never a time since the epoch', () => {
+    expect(formatElapsed(0)).toBe('')
+    expect(formatElapsed(0, 5000)).toBe('')
+    expect(formatElapsed(Number.NaN)).toBe('')
+    expect(formatElapsed(-5)).toBe('')
+  })
+  it('formats a real span and rejects an end before the start', () => {
+    expect(formatElapsed(1000, 6000)).toBe('5s')
+    expect(formatElapsed(1000, 1000 + 125_000)).toBe('2m 5s')
+    expect(formatElapsed(1000, 1000 + 3_700_000)).toBe('1h 1m')
+    expect(formatElapsed(9000, 1000)).toBe('')
   })
 })

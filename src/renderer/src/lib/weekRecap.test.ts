@@ -216,3 +216,15 @@ describe('scope', () => {
     expect(quiet.costShown).toBe(false)
   })
 })
+
+describe('no prior week', () => {
+  it('says no prior data on every card instead of growth from zero, and keeps comparing when the week before has runs', () => {
+    const only = statCards(weekRecap([run('a', at(2026, 11, 7, 9), { cost: 0.14, wall: 10 * MIN })], projects, NOW), 'spend')
+    for (const c of only) {
+      expect(c.movement).toMatchObject({ dir: 'none', text: 'No prior data' })
+      expect(c.name).toContain('no prior data')
+    }
+    const both = statCards(weekRecap([run('a', at(2026, 11, 7, 9), { cost: 5 }), run('p', at(2026, 10, 28), { cost: 4 })], projects, NOW), 'spend')
+    expect(both[0].movement.dir).toBe('up')
+  })
+})

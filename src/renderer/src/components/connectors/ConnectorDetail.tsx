@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Sparkles } from 'lucide-react'
 import type { ConnectorInfo } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
@@ -7,7 +7,7 @@ import { mcpServersForRole } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { CATEGORY_LABELS, stateChip, tileAction } from '../../lib/connectors'
-import { DetailActions, DetailChips, DetailHeader, DetailList, DetailNote, type GalleryTone } from '../settings/SettingsGallery'
+import { DetailActions, DetailChips, DetailHeader, DetailList, DetailNote, revealAside, type GalleryTone } from '../settings/SettingsGallery'
 import { ConnectorLogo } from './ConnectorLogo'
 import { toolCapabilities, variantOf } from './toolCapabilities'
 
@@ -53,8 +53,21 @@ export function ConnectorDetail({ info, onOpen }: { info: ConnectorInfo; onOpen:
           ? `The last sign-in failed${info.library?.auth.error ? `: ${info.library.auth.error.slice(0, 300)}` : '.'}`
           : def.description
 
+  // Narrow windows stack this panel below the grid: a click on a tile (Enter and Space click too) brings it into view.
+  // Arrow keys only move the selection and leave the scroll alone. Focus never moves.
+  const asideRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const onClick = (e: MouseEvent): void => {
+      const t = e.target instanceof Element ? e.target : null
+      if (!t?.closest('[data-testid=connector-tile]') || t.closest('[data-testid=connector-action]')) return
+      requestAnimationFrame(() => requestAnimationFrame(() => revealAside(asideRef.current)))
+    }
+    document.addEventListener('click', onClick)
+    return () => document.removeEventListener('click', onClick)
+  }, [])
+
   return (
-    <aside className="settings-gallery-aside glass" aria-label={`Selected service: ${def.name}`} data-testid="connector-detail" data-connector={def.id}>
+    <aside ref={asideRef} className="settings-gallery-aside glass" aria-label={`Selected service: ${def.name}`} data-testid="connector-detail" data-connector={def.id}>
       <DetailHeader mark={<ConnectorLogo def={def} />} name={def.name} tag={`${CATEGORY_LABELS[def.category]} · ${scope}`} />
       <DetailNote tone={TONE[info.state]} testId="connector-detail-note">
         {note}

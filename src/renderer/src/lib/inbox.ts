@@ -318,6 +318,21 @@ export function relativeAgo(at: number, now: number): string {
   return `${Math.floor(ms / (24 * 60 * MIN))} d`
 }
 
+// ---------------------------------------------------------------- teams with a run going
+
+/** Run statuses the sidebar counts as open (a project row's working dot): the same set as the store's `isRunLive`. */
+const OPEN_RUN_STATUSES: ReadonlySet<string> = new Set(['starting', 'running', 'idle', 'stopping'])
+
+/** True for a run the sidebar shows as open. */
+export function isOpenRunStatus(status: string): boolean {
+  return OPEN_RUN_STATUSES.has(status)
+}
+
+/** Distinct projects with an open run: the number the empty Inbox names, the same rule as the sidebar's working dots. */
+export function openTeamCount(runs: readonly { projectId: string; status: string }[]): number {
+  return new Set(runs.filter((r) => isOpenRunStatus(r.status)).map((r) => r.projectId)).size
+}
+
 // ---------------------------------------------------------------- the activation guard (pure)
 
 /**

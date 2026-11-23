@@ -183,7 +183,8 @@ export default function AgentFocus({ runId, agentId, onClose, onSelect }: AgentF
   const meta: ReactNode[] = [roleName]
   if (parent) meta.push(`reports to ${agentLabel(parent)}`)
   if (model) meta.push(model)
-  meta.push(formatElapsed(agent.startedAt, agent.endedAt))
+  const elapsed = formatElapsed(agent.startedAt, agent.endedAt)
+  if (elapsed) meta.push(elapsed)
   const costKind = costView(agentCostInput(agent)).kind
   const showCost = costKind === 'known' || costKind === 'partial'
 
@@ -356,8 +357,12 @@ export default function AgentFocus({ runId, agentId, onClose, onSelect }: AgentF
                     <dd>{agent.usage.toolCalls} tool calls, {agent.usage.turns} turns</dd>
                   </>
                 )}
-                <dt>Time</dt>
-                <dd>{formatElapsed(agent.startedAt, agent.endedAt)}{ended ? '' : ' so far'}</dd>
+                {elapsed && (
+                  <>
+                    <dt>Time</dt>
+                    <dd>{elapsed}{ended ? '' : ' so far'}</dd>
+                  </>
+                )}
                 {staffing && (
                   <>
                     <dt>Staffing</dt>
