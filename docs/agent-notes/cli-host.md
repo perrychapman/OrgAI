@@ -567,3 +567,14 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   live provider. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
   backs out one level. The first time a terminal opens a project it shows one notice naming /team and /settings
   (`<userDataDir>/tui-hints.json`, `hintStore`).
+- TUI `/mcp` and `/skills` (2026-11-23; `McpView.tsx` / `mcpModel.ts`, `SkillsView.tsx` / `skillsModel.ts`, host calls in
+  `toolsApi.ts`, built like /team on `configUi.tsx`): the project's servers and skills as a list; Space turns one on or
+  off, `r` ticks the roles (MCP: `McpServerSpec.roles` slugs, every role ticked = no list; skills: the complete set of
+  role ids), `l` adds one from the library, `x` removes it after `y`, Enter shows the details (a skill's text is read
+  in the background). Each save is ONE field of ONE item, so it reaches the live team runs this terminal hosts
+  (ARCHITECTURE.md "Host changes in a live run", TERMINAL); the run answers in the status line, and the view adds its
+  "keeps what it started with" note only when some live run does not take the save. `setMcp` reads mcp:list afresh
+  and upserts the spec with that one field changed, which is what the host's one-field rule expects. Not in the views:
+  adding a new server or skill by hand, secrets and sign-in (the `orgai mcp` / `orgai skills` commands). Checked by
+  the four view and model test files and e2e `cli-tui.mjs` section i (mock adapter); no live provider. The views were
+  written by a local model from a design brief and reviewed line by line.

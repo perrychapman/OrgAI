@@ -4,6 +4,7 @@ import {
   cardRolesForStore,
   grantEditsOf,
   slugsForStore,
+  terminalUpsertField,
   upsertFieldsOf,
   itemEditOf,
   itemGrantEditsOf,
@@ -288,5 +289,28 @@ describe('itemEditOf with linkOwn (review L-f: library-linked items)', () => {
     const saved: Spec = { id: 'm1', name: 'docs', enabled: true, command: 'own' }
     expect(itemEditOf<Spec>([raw], [raw], [saved], { ids: ['m1'], names: [] }, undefined, MCP_LINK_OWN).widenedIds).toEqual(['m1'])
     expect(SKILL_LINK_OWN.has('files')).toBe(false)
+  })
+})
+
+describe('terminalUpsertField (mcp:upsert on the terminal host: exactly one of enabled / roles)', () => {
+  const shown = { id: 'm1', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'docs'], enabled: true }
+
+  it('names the one field the terminal UI changed', () => {
+    expect(terminalUpsertField({ ...shown, enabled: false }, shown)).toBe('enabled')
+    expect(terminalUpsertField({ ...shown, roles: ['engineer'] }, shown)).toBe('roles')
+    expect(terminalUpsertField({ ...shown, roles: ['engineer'] }, { ...shown, roles: ['engineer', 'reviewer'] })).toBe('roles')
+    // A roles list dropped again (every role).
+    expect(terminalUpsertField(shown, { ...shown, roles: [] })).toBe('roles')
+  })
+
+  it('answers nothing for an unchanged spec, a second differing field, another field, or an unknown server', () => {
+    expect(terminalUpsertField({ ...shown }, shown)).toBeUndefined()
+    expect(terminalUpsertField({ ...shown, enabled: false, roles: [] }, shown)).toBeUndefined()
+    // A stale copy: the command changed in the store after the client read it.
+    expect(terminalUpsertField({ ...shown, enabled: false }, { ...shown, command: 'node' })).toBeUndefined()
+    expect(terminalUpsertField({ ...shown, command: 'node' }, shown)).toBeUndefined()
+    expect(terminalUpsertField({ ...shown, args: ['-y', 'other'] }, shown)).toBeUndefined()
+    expect(terminalUpsertField({ ...shown, enabled: false }, undefined)).toBeUndefined()
+    expect(terminalUpsertField(undefined, shown)).toBeUndefined()
   })
 })

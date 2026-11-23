@@ -782,10 +782,10 @@ export interface RunManagerOptions {
   liveHostChanges?: true
   /**
    * The orgai command's own host (bootstrap.ts, hostKind 'inproc': it serves only the terminal process that started
-   * it): a PROJECT SAVE the user typed there (projects:save, source 'user') reaches the team work runs that process
-   * hosts, read against the version the user edited (dispatcher.ts, ProjectStore.baseOf). Nothing else does: mcp:* /
-   * skills:* saves and card fan-out stay with liveHostChanges, because their "before" is read outside the data
-   * folder's write lock and another orgai process can save in between.
+   * it): a save the user typed there (projects:save, mcp:*, skills:*; source 'user') reaches the team work runs that
+   * process hosts. A project save is read against the version the user edited (dispatcher.ts, ProjectStore.baseOf);
+   * an MCP or skill save reads the project before and saves as one step under the data folder's write lock
+   * (dispatcher.ts oneStep). Card fan-out stays with liveHostChanges: its before is read outside that lock.
    */
   liveUserSaves?: true
   /** How long applyProjectChange waits for each run's session before answering 'pending'. Tests; default LIVE_RUN_CHANGE_WAIT_MS. */
@@ -5282,8 +5282,9 @@ export class RunManager {
    * returns [] and touches nothing. Never throws; each run's answer is waited for at most LIVE_RUN_CHANGE_WAIT_MS.
    */
   async applyProjectChange(projectId: string, saved: Project, change: HostProjectChange, opts: { exceptRunId?: string; source?: 'user' | 'card' } = {}): Promise<LiveRunChange[]> {
-    // The terminal's own host (liveUserSaves) passes on only a project save the user typed there.
-    const allowed = this.options.liveHostChanges === true || (this.options.liveUserSaves === true && change?.kind === 'projectSave' && (opts.source ?? 'user') === 'user')
+    // The terminal's own host (liveUserSaves) passes on only what the user typed there: a project, MCP or skill save. Never a card.
+    const typed = (opts.source ?? 'user') === 'user' && (change?.kind === 'projectSave' || change?.kind === 'mcp' || change?.kind === 'skills')
+    const allowed = this.options.liveHostChanges === true || (this.options.liveUserSaves === true && typed)
     if (!allowed || typeof projectId !== 'string' || isVirtualProjectId(projectId) || saved?.id !== projectId) return []
     const out: Promise<LiveRunChange | undefined>[] = []
     for (const a of this.runs.values()) {

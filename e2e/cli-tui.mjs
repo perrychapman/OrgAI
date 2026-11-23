@@ -34,6 +34,8 @@
 //    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
 //    agent, message marks and the run chips have no mock source here: unit tests only.
 //    Then /team raises a report role's effort (y confirms): the status line says the live run uses the change now.
+//    Then /mcp turns the project's one server off with Space (the live run says it uses the change now), and /skills
+//    opens on a project without skills.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
 //
 // Not covered here (unit tests only): merge review cards (the mock has no worktrees), the pager, TERM=dumb Enter
@@ -537,6 +539,9 @@ try {
 
   // ---------- i: the org tree, inspector and keys overlay ----------
   {
+    // A server for the /mcp check below, added before the TUI starts (a save from another orgai reaches no live run).
+    const added = await cli(['mcp', 'add', 'e2e-docs', '--command', 'node', '--arg', 'server.js'], { cwd: repo })
+    check(added.code === 0, 'i: mcp add gives the project a server for the /mcp view', show(added))
     const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
     open.push(t)
     try {
@@ -616,6 +621,24 @@ try {
       check(!t.screen().includes('keeps the team it started with'), 'i: ... and the view does not say the live run keeps its team', esc(t.screen()))
       t.key('escape')
       await t.waitFor((s) => !s.includes('Team of '), 10_000)
+
+      // /mcp: turning a server off reaches the live team run at once (run.liveChange); Esc leaves the view.
+      await type(t, '/mcp')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('MCP servers of ') && s.includes('e2e-docs'), 10_000)
+      check(/e2e-docs\s+on · every role · stdio/.test(t.screen()), "i: /mcp lists the project's server with its state, roles and transport", esc(t.screen()))
+      await type(t, ' ')
+      const mcpSaid = await t.waitFor((s) => s.includes('Turned e2e-docs off.') && s.includes('MCP servers: this run uses the change now.'), 15_000).then(() => true, () => false)
+      check(mcpSaid, 'i: Space in /mcp turns the server off, and the live team run says it uses the change now', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('MCP servers of '), 10_000)
+      // /skills on a project without skills says how to add the first one.
+      await type(t, '/skills')
+      t.key('enter')
+      const skillsShown = await t.waitFor((s) => s.includes('This project has no skills.'), 10_000).then(() => true, () => false)
+      check(skillsShown, 'i: /skills opens and says how to add the first skill', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('Skills of '), 10_000)
       const e = await quit(t, { confirm: true })
       check(e?.code === 0, 'i: quitting exits 0', JSON.stringify(e))
     } finally {

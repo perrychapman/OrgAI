@@ -496,14 +496,18 @@ describe('applyProjectChange: hosts, sessions and run states', () => {
     await m.stopAll()
   })
 
-  it("the terminal's own host: a saved MCP server reaches no live run (its before is read outside the write lock)", async () => {
+  it("the terminal's own host: an MCP server the user saved reaches the live run; the same change from a card does not", async () => {
     const p = newProject()
     const { m, ctxs, calls } = rig({ terminalHost: true })
     await m.start({ project: p, prompt: 'go' })
     const s = itemSave(p, (c) => ({ ...c, mcpServers: [server('m-docs', 'docs'), server('m-new', 'tracker')] }))
-    expect(await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker', before: s.before })).toEqual([])
+    const change = { kind: 'mcp' as const, ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker', before: s.before }
+    expect(await m.applyProjectChange(p.id, s.saved, change, { source: 'card' })).toEqual([])
     expect(ctxs[0].mcpServers!().map((x) => x.id)).toEqual(['m-docs'])
-    expect(calls).toEqual([])
+    const [res] = await m.applyProjectChange(p.id, s.saved, change)
+    expect(res.availability).toBe('now')
+    expect(ctxs[0].mcpServers!().map((x) => x.id)).toEqual(['m-docs', 'm-new'])
+    expect(calls).toEqual([{ mcp: { upserted: ['tracker'], removed: [] } }])
     await m.stopAll()
   })
 

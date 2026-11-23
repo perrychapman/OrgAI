@@ -27,7 +27,9 @@ import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
 import { CONFIG_HINT } from './configApi'
+import { McpView } from './McpView'
 import { SettingsView } from './SettingsView'
+import { SkillsView } from './SkillsView'
 import { TeamView } from './TeamView'
 import { editTextIn } from '../commands/teamRoleEdit'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
@@ -129,7 +131,7 @@ type Overlay =
   /** A short list (/model): Enter picks, Esc dismisses (undefined). */
   | { kind: 'pick'; title: string; options: readonly { value: string; label: string }[]; sel: number; resolve(value: string | undefined): void }
   /** /team or /settings (cli-parity 3.7): the view takes the body and its own keys; Esc backs out to the run view. */
-  | { kind: 'config'; view: 'team' | 'settings' }
+  | { kind: 'config'; view: 'team' | 'settings' | 'mcp' | 'skills' }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
 const isWorking = (status: RunStatus | undefined): boolean => status === 'starting' || status === 'running'
@@ -1177,10 +1179,10 @@ export function App(props: AppProps) {
     openConfig: (view) => {
       const st = session.getState()
       if (!st.project) {
-        notify('Open a project folder first: /team and /settings show a project.', 'warn')
+        notify('Open a project folder first: /team, /settings, /mcp and /skills show a project.', 'warn')
         return
       }
-      if (!session.config) {
+      if (view === 'mcp' || view === 'skills' ? !session.tools : !session.config) {
         notify(`/${view} is not available here.`, 'warn')
         return
       }
@@ -1721,11 +1723,37 @@ export function App(props: AppProps) {
   const configHeight = inline ? Math.max(8, size.rows - 5) : Math.max(3, bodyRows)
   const openRuns = Object.values(state.runs).filter((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
   const liveRun = openRuns.length > 0
-  // /team: a team run this terminal hosts answers a save in the status line (run.liveChange); only the others keep their team.
+  // /team, /mcp, /skills: a team run this terminal hosts answers a save in the status line (run.liveChange); only the others keep what they started with.
   const liveRunKeepsTeam = openRuns.some((r) => !takesSavedTeam(r.summary))
   const overlayNode = overlay ? (
     overlay.kind === 'config' ? (
-      state.project && session.config ? (
+      state.project && session.tools && (overlay.view === 'mcp' || overlay.view === 'skills') ? (
+        overlay.view === 'mcp' ? (
+          <McpView
+            key="mcp"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.tools}
+            liveRun={liveRunKeepsTeam}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        ) : (
+          <SkillsView
+            key="skills"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.tools}
+            liveRun={liveRunKeepsTeam}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        )
+      ) : state.project && session.config && (overlay.view === 'team' || overlay.view === 'settings') ? (
         overlay.view === 'team' ? (
           <TeamView
             key="team"
