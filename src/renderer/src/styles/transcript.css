@@ -237,6 +237,26 @@
   margin-left: var(--space-1);
   font-size: var(--text-small);
 }
+/* A knowledge write row: icon, headline (two lines at most) and "Open" stay on one line, even in the narrowest dock. */
+.knowledge-row-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.knowledge-row-head > .entry-plain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.knowledge-row-head > .knowledge-row-open {
+  flex: none;
+  margin-left: 0;
+}
 .tool-label {
   overflow-wrap: anywhere;
 }

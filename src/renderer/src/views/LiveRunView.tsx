@@ -27,7 +27,7 @@ import { PlanStrip } from '../components/canvas/PlanStrip'
 import { RunHoldCard } from '../components/canvas/RunHoldCard'
 import AgentFocus from '../components/canvas/AgentFocus'
 import { agentCounts, matchesAgentFilter, waitingAgentIds, type AgentFilterValue } from '../lib/canvasAgents'
-import { openAgentFinder } from '../components/RunDetailTabs'
+import { onAgentFinder, openAgentFinder } from '../components/RunDetailTabs'
 import { saveCanvas } from '../lib/canvasSettings'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
@@ -93,6 +93,8 @@ const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'waiting'])
 /** A finished report keeps its own node this long before folding into its parent's "done" group. */
 const COLLAPSE_KEY = 'orgai.collapseFinished'
+/** The conversation dock starts hidden when the run view is narrower than this (px); the user's own choice wins from then on. */
+const DOCK_AUTO_HIDE_BELOW = 900
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
 /** Neutral role colour used when a role has none; resolved from a token at render time (React Flow cannot take var()). */
@@ -371,6 +373,57 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     bodyRef.current?.querySelector<HTMLElement>(strip)?.focus({ preventScroll: true })
   }, [sidePanel])
 
+  // Conversation dock: the run panel and the composer. SidePanel reports whether it is hidden; the stage button below shows
+  // it again. Everything inside stays mounted while hidden, so the draft, the model switch and its pending state survive.
+  const [dockReport, setDockReport] = useState<{ collapsed: boolean; noRoom: boolean }>(() => {
+    let closed = false
+    try {
+      closed = localStorage.getItem('orgai.sidePanel.run') === 'closed'
+    } catch {
+      /* storage unavailable */
+    }
+    return { collapsed: closed, noRoom: false }
+  })
+  const dockState: 'open' | 'hidden' | 'rail' | undefined = !sidePanel ? undefined : dockReport.noRoom ? 'rail' : dockReport.collapsed ? 'hidden' : 'open'
+  const dockHidden = dockState === 'hidden'
+  const [dockShowRequest, setDockShowRequest] = useState(0)
+  // Focus follows a show only when the user asked by keyboard (the button was activated with Enter or Space).
+  const focusAfterShow = useRef(false)
+  const showDock = (byKeyboard: boolean): void => {
+    if (!dockHidden) return
+    focusAfterShow.current = byKeyboard
+    setDockShowRequest((n) => n + 1)
+  }
+  const onDockState = useCallback((s: { collapsed: boolean; noRoom: boolean }) => setDockReport((was) => (was.collapsed === s.collapsed && was.noRoom === s.noRoom ? was : s)), [])
+  const focusDockComposer = useCallback((): void => {
+    const region = bodyRef.current?.querySelector<HTMLElement>('.live-composer-region')
+    const field = region?.querySelector<HTMLElement>('.composer textarea') ?? region?.querySelector<HTMLElement>('button, input, textarea, select') ?? bodyRef.current?.querySelector<HTMLElement>('.side-panel [role=tab][aria-selected=true]')
+    field?.focus({ preventScroll: true })
+  }, [])
+  const focusDockButton = useCallback((): void => {
+    bodyRef.current?.querySelector<HTMLElement>('[data-testid="dock-show"]')?.focus({ preventScroll: true })
+  }, [])
+  useEffect(() => {
+    if (dockState !== 'open' || !focusAfterShow.current) return
+    focusAfterShow.current = false
+    requestAnimationFrame(focusDockComposer)
+  }, [dockState, focusDockComposer])
+  // Anything that needs the composer or a tab (a decision answer, History's Continue, the plan strip, Find an agent) shows the dock first.
+  const seenFocusToken = useRef(composerFocusToken)
+  useEffect(() => {
+    if (composerFocusToken === seenFocusToken.current) return
+    seenFocusToken.current = composerFocusToken
+    if (!dockHidden) return
+    focusAfterShow.current = true
+    setDockShowRequest((n) => n + 1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerFocusToken])
+  useEffect(() => onAgentFinder(() => showDock(false)))
+  const showTab = (tab: Parameters<typeof setSideTab>[0]): void => {
+    showDock(false)
+    setSideTab(tab)
+  }
+
   // The chain up to the viewed run, oldest first (the viewed run is the newest in practice).
   const upto = useMemo(() => {
     const at = members.findIndex((m) => m.summary.id === runId)
@@ -551,6 +604,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const waitingIds = useMemo(() => waitingAgentIds(run), [run.permissions, run.questions, run.ruleRequests, run.mergeReviews, run.mcpInstalls])
   const counts = useMemo(() => agentCounts([...agentLookup.values()], waitingIds), [agentLookup, waitingIds])
   const filterOn = agentFilter !== 'all'
+  // The filter only dims nodes, so a screen reader hears how many are left in view: "12 of 40 agents shown".
+  const changeAgentFilter = (value: AgentFilterValue): void => {
+    setAgentFilter(value)
+    const shown = value === 'all' ? counts.all : value === 'working' ? counts.working : value === 'waiting' ? counts.waiting : null
+    if (shown !== null) setArrival((a) => ({ text: `${shown} of ${counts.all} agents shown`, n: (a?.n ?? 0) + 1 }))
+  }
 
   const nodes: CanvasNode[] = useMemo(() => {
     const agentNodes: CanvasNode[] = visibleAgents.map((agent) => ({
@@ -1154,6 +1213,32 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [decisionKeys, runId])
 
+  // Unread while the dock is hidden, from real events only: a new reply from the root agent or a new open decision since
+  // the dock was last on screen. Nothing is invented for a run that was already quiet.
+  const rootAgentId = rootAgent?.id ?? 'root'
+  const replyCount = useMemo(() => run.transcript.reduce((n, e) => (e.agentId === rootAgentId && e.block.kind === 'text' && e.source !== 'harness' ? n + 1 : n), 0), [run.transcript, rootAgentId])
+  const openDecisionKeys = decisionItems.filter((d) => !isRecord(d.key)).map((d) => d.key)
+  const openDecisionList = openDecisionKeys.join('|')
+  const dockSeen = useRef({ replies: replyCount, keys: new Set(openDecisionKeys) })
+  useEffect(() => {
+    if (dockHidden) return
+    dockSeen.current = { replies: replyCount, keys: new Set(openDecisionKeys) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dockHidden, replyCount, openDecisionList])
+  const dockUnread = dockHidden && (replyCount > dockSeen.current.replies || openDecisionKeys.some((k) => !dockSeen.current.keys.has(k)))
+  // A new reply while hidden is said once per hide period (a new decision is already announced above).
+  const saidReply = useRef(false)
+  useEffect(() => {
+    if (!dockHidden) {
+      saidReply.current = false
+      return
+    }
+    if (replyCount > dockSeen.current.replies && !saidReply.current) {
+      saidReply.current = true
+      setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))
+    }
+  }, [dockHidden, replyCount])
+
   // What the user approved in this view; the setup banner only claims what was actually applied.
   const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
     await decideProposal(p.id, d)
@@ -1188,7 +1273,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           {orgChangeRun ? 'Review or adjust the changes on the Team tab.' : 'The Architect is done. Review or adjust what it set up on the Team tab.'}
         </Banner>
       )}
-      <div className="run-body" ref={bodyRef} data-layout={layout} data-side-panel={sidePanel ? undefined : 'none'}>
+      <div className="run-body" ref={bodyRef} data-layout={layout} data-side-panel={sidePanel ? undefined : 'none'} data-dock={dockState}>
 
         <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
@@ -1201,7 +1286,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                     <Button size="sm" variant="ghost" icon={Search} testId="find-agent" onClick={() => openAgentFinder()}>
                       Find an agent
                     </Button>
-                    {counts.all > 1 && <AgentFilter value={agentFilter} onChange={setAgentFilter} counts={counts} />}
+                    {counts.all > 1 && <AgentFilter value={agentFilter} onChange={changeAgentFilter} counts={counts} />}
                   </>
                 )}
               </div>
@@ -1241,6 +1326,21 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   })
                 }}>Load earlier sessions ({earlierToLoad})</Button>
               )}
+              {dockHidden && (
+                <button
+                  type="button"
+                  className="btn sm dock-show"
+                  data-testid="dock-show"
+                  data-unread={dockUnread ? 'true' : undefined}
+                  aria-expanded={false}
+                  onClick={(e) => showDock(e.detail === 0)}
+                >
+                  {dockUnread && <span className="dock-unread motion-breathe" aria-hidden="true" />}
+                  <MessageSquare size={14} aria-hidden="true" />
+                  Conversation
+                  {dockUnread && <span className="sr-only"> (new)</span>}
+                </button>
+              )}
               <IconButton
                 icon={conversation ? Network : MessageSquare}
                 label={conversation ? 'Show agents' : 'Show conversation'}
@@ -1276,7 +1376,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                 needsYouIds={needsYouIds}
                 selectedId={selectedAgentId ?? undefined}
                 onSelect={selectAgent}
-                onOpenPlan={() => setSideTab('plan')}
+                onOpenPlan={() => showTab('plan')}
                 onUseGraph={() => void saveCanvas((c) => ({ ...c, presentation: 'graph' })).catch(() => setArrival((a) => ({ text: 'Could not switch to Graph.', n: (a?.n ?? 0) + 1 })))}
               />
             ) : options.presentation === 'pocket-office' ? (
@@ -1311,7 +1411,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           </FrameStage>
           {!conversation && !focusAgentId && run.plan && run.plan.steps.length > 0 && (
             <FrameFooter>
-              <PlanStrip plan={run.plan} onOpenPlan={() => setSideTab('plan')} />
+              <PlanStrip plan={run.plan} onOpenPlan={() => showTab('plan')} />
             </FrameFooter>
           )}
           <FrameTray label="Decisions" shortcutHint="Ctrl+. or Alt+D jumps to the first decision button" shortcutKeys="Control+Period Alt+D">
@@ -1320,8 +1420,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             canContinue={canContinue}
             sessionOpen={sessionOpen}
             onAnswer={() => focusComposer()}
-            onShowPlan={() => setSideTab('plan')}
-            onSwitchModel={() => bodyRef.current?.querySelector<HTMLElement>('[data-testid="live-settings-bar"] button')?.focus()}
+            onShowPlan={() => showTab('plan')}
+            onSwitchModel={() => {
+              // A hidden dock holds the model switch: show it, then focus once it is drawn.
+              showDock(false)
+              requestAnimationFrame(() => requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>('[data-testid="live-settings-bar"] button')?.focus()))
+            }}
           />
 
           <DecisionTray items={decisionItems} selected={selectedDecision} onSelect={(i) => setPickedDecision(decisionItems[i].key)} onPin={pinShown} />
@@ -1400,7 +1504,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         </div>
         {sidePanel && (
-        <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
+        <SidePanel label="run panel" testId="run-dock" autoCollapseBelow={DOCK_AUTO_HIDE_BELOW} persistKey="run" railless showRequest={dockShowRequest} hideFocus={focusDockButton} onStateChange={onDockState} revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
           <div className={`live-panel${usesScenePalette(options.presentation) && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && selectedAgent) { if (usesScenePalette(options.presentation)) { event.preventDefault(); returnToOffice(selectedAgent.id) } else if (factoryOn) { event.preventDefault(); returnToFloor(selectedAgent.id) } } }}>
             {usesScenePalette(options.presentation) && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
             {selectedAgent && !finishedGroup && !focusAgentId && <div className="agent-focus-open-row"><Button size="sm" testId="agent-focus-open" onClick={() => openAgentView(selectedAgent.id)}>Open agent view</Button></div>}

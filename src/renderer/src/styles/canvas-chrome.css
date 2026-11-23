@@ -487,11 +487,13 @@
   flex-wrap: nowrap;
   overflow: hidden;
 }
-@container frame (max-width: 900px) {
+@container frame (max-width: 1100px) {
   .canvas-chrome-start .agent-filter { display: none; }
 }
-@container frame (max-width: 680px) {
+@container frame (max-width: 900px) {
   .canvas-chrome-start [data-testid='find-agent'] { display: none; }
+}
+@container frame (max-width: 680px) {
   .canvas-chrome-start .canvas-theme-label { display: none; }
 }
 @container frame (max-width: 520px) {
@@ -516,3 +518,24 @@
   border-color: var(--eng-line);
 }
 .run-view[data-kind='engagement'] .agent-row[aria-current='true'] { background: var(--eng-soft); }
+
+/* The toolbar's Conversation button: shows the hidden dock again. The amber dot (--warning) marks a new reply or decision
+   that arrived while the dock was hidden; it breathes (.motion-breathe stops under reduced motion and Pause motion). */
+.dock-show {
+  gap: var(--space-1h);
+  flex: none;
+}
+.dock-show[data-unread='true'] {
+  border-color: var(--warning);
+}
+.dock-unread {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+/* The dock's own Hide button sits at the top right of the card. */
+.run-body[data-dock='open'] > .side-panel > .side-panel-bar {
+  padding: var(--space-1h) var(--space-2) 0;
+}

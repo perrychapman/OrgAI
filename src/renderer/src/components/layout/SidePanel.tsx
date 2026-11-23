@@ -48,7 +48,11 @@ export function SidePanel({
   persistKey,
   revealOn,
   revealOnMount,
-  arrival
+  arrival,
+  showRequest,
+  hideFocus,
+  railless,
+  onStateChange
 }: {
   label: string
   children: ReactNode
@@ -64,6 +68,14 @@ export function SidePanel({
   /** Read at mount only: open now, as `revealOn` would on a change (unless auto-collapse says no room). */
   revealOnMount?: boolean
   arrival?: string | null
+  /** A changed number opens the panel the way the Show button does (saved, glides). The first value is ignored. */
+  showRequest?: number
+  /** Runs after the user's own Hide instead of focusing the rail's Show button (the parent has a button elsewhere). */
+  hideFocus?: () => void
+  /** The panel has no rail while hidden (the parent shows a button elsewhere); a rail still shows when there is no room. */
+  railless?: boolean
+  /** Reports what is on screen: `collapsed` (hidden or railed) and `noRoom` (railed only because the width does not fit). */
+  onStateChange?: (state: { collapsed: boolean; noRoom: boolean }) => void
 }): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const [inner, setInner] = useState(() => {
@@ -197,13 +209,30 @@ export function SidePanel({
   useEffect(() => {
     if (!hideClicked.current || !isCollapsed) return
     hideClicked.current = false
+    if (hideFocus) {
+      requestAnimationFrame(hideFocus)
+      return
+    }
     const active = document.activeElement
     if (active && active !== document.body) return
     ref.current?.querySelector<HTMLElement>('.side-rail button')?.focus({ preventScroll: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCollapsed])
+  const noRoom = collapsible && !collapsed && !budget.fits
+  useLayoutEffect(() => {
+    onStateChange?.({ collapsed: isCollapsed, noRoom })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCollapsed, noRoom])
+  const firstShow = useRef(showRequest)
+  useEffect(() => {
+    if (showRequest === undefined || showRequest === firstShow.current) return
+    firstShow.current = showRequest
+    if (isCollapsed && !noRoom) setCollapsed(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRequest])
   return (
     <aside ref={ref} className="side side-panel" aria-label={label} data-collapsed={isCollapsed ? 'true' : 'false'} data-testid={testId}>
-      {isCollapsed && (
+      {isCollapsed && (!railless || noRoom) && (
         <div className="side-rail">
           <IconButton icon={PanelRightOpen} label={`Show ${label}`} size="sm" expanded={false} onClick={() => setCollapsed(false)} />
         </div>
