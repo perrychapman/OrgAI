@@ -2,8 +2,8 @@ import { AGENT_BRIEF_MAX_CHARS, type AgentInstance, type Project, type Role } fr
 import { ROOT_AGENT_ID } from './types'
 
 /**
- * UI overhaul spawn caps, one decision for every adapter (Claude, Codex, mock; the harness bridge keeps its own concurrency
- * check). Two limits the user sets and an adapter must hold at its spawn enforcement point:
+ * UI overhaul spawn caps, one decision for every adapter (Claude, Codex, mock) and for the bridge's delegate path
+ * (bridge.ts, counted over the run's whole agent record). Two limits the user sets and an adapter must hold at its spawn enforcement point:
  *  - `Role.maxConcurrent` (1..ROLE_MAX_CONCURRENT_LIMIT): most live agents of that role at a time.
  *  - `Project.maxAgentsPerRun` (1..PROJECT_MAX_AGENTS_PER_RUN_LIMIT): most agents one run may start in total. The root is
  *    never counted; a resumed agent is the same agent, so it counts once. Per session: a continued run starts a new count.
