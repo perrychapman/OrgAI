@@ -544,7 +544,7 @@ class CodexSession implements RuntimeSession {
       ...staffingProfileDep(ctx)
     })
     // `project` is read at each spawn: Project.maxAgentsPerRun can change mid-run (Role.maxConcurrent comes with the live roles).
-    this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency, project: () => this.ctx.project })
+    this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency, project: () => this.ctx.project, extraAgents: () => this.ctx.spawnCapAgents?.() ?? [] })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
     this.partial = new ThrottledPartial((agentId, text) => this.emit({ type: 'agent.partial', runId: ctx.run.id, agentId, text }))
 

@@ -117,6 +117,8 @@ export interface NetworkOptions {
   maxConcurrent: number
   /** The run's project as it is now (UI overhaul spawn caps: Project.maxAgentsPerRun); Role.maxConcurrent is read from `roles`. Missing = no total cap. */
   project?: () => Pick<Project, 'maxAgentsPerRun'>
+  /** Agents of the run the members do not hold (RuntimeContext.spawnCapAgents: bridged children), read at each spawn. Missing = none. */
+  extraAgents?: () => Iterable<{ id: string; state: AgentInstance['state']; roleId?: string | null }>
   handles?: HandleNamer
 }
 
@@ -228,7 +230,8 @@ export class CodexAgentNetwork {
       project: this.opts.project?.() ?? {},
       roles: this.opts.roles,
       roleId: target.id,
-      agents: [...this.members.values()].map((m) => ({ id: m.id, roleId: m.role.id, state: m.live && !m.parked ? 'thinking' : 'done' }))
+      agents: [...this.members.values()].map((m) => ({ id: m.id, roleId: m.role.id, state: m.live && !m.parked ? 'thinking' : 'done' })),
+      extraAgents: this.opts.extraAgents?.() ?? []
     })
     if (capped) return { ok: false, message: capped }
     const name = args.name?.trim()

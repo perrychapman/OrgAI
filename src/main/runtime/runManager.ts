@@ -2808,6 +2808,7 @@ export class RunManager {
         ...(bridge
           ? {
               bridge: { roles: () => bridge.roles(), spawn: (input) => bridge.spawn(input) },
+              spawnCapAgents: () => bridge.spawnCapAgents(),
               agentConnection: (roleId: string) => {
                 // A role removed mid-run still labels the agents that started on it.
                 const r = ctx.roles.find((x) => x.id === roleId) ?? active.retiredRoles?.find((x) => x.id === roleId)
@@ -6298,7 +6299,12 @@ export class RunManager {
     const exec = !!s.overrides?.execMode
     const percent = warnPercentOf(this.options.appSettings?.().spendWarnPercent)
     const project = this.liveCapProject(s.projectId, !!s.quick || !!s.buildWorkspace, a.liveProject?.())
-    const ownCap = !exec && s.conversationBudgetUsd === undefined ? s.runBudgetUsd : undefined
+    // The run's own cap: the per-run cap the user chose (or a carried one), else the project's budget (Project.maxBudgetUsd, as
+    // the run sees it: overrides applied), so a project cap alone holds a run on every adapter, not only on the ones whose
+    // SDK enforces it (Codex never reads it). A conversation budget and an exec run have their own enforcement
+    // (checkExecBudget); an adapter's own stop and this one meet in spendStopped (one hold, one endedBy).
+    const projectCap = !exec && s.conversationBudgetUsd === undefined && s.runBudgetUsd === undefined && a.ctx ? projectBudgetUsd(a.ctx.project) : undefined
+    const ownCap = !exec && s.conversationBudgetUsd === undefined ? s.runBudgetUsd ?? projectCap : undefined
     const spend = this.spendNow(project)
     // M2: a cap counts known costs only. When this run's cost turns unknown (a model with no price) or partly unknown while a
     // cap is set, say so once in the run log: the cap cannot see the unpriced part.
@@ -6310,11 +6316,28 @@ export class RunManager {
     const cost = this.runCostUsd(s)
     const reached = spend ? capsReached(spend)[0] : undefined
     if (reached && project) return this.spendLimitStop(a, reached, project)
-    // The per-run cap the user chose (main enforces it too: a provider that does not enforce a budget still stops here).
-    if (ownCap !== undefined && cost >= ownCap) {
+    // The run's own cap (main enforces it too: a provider that does not enforce a budget still stops here). Claude's SDK
+    // stops on its own running total for the project's cap (error_max_budget_usd), so for that fallback main compares only
+    // the run total the adapter reported (run.cost: the SDK's, or its own pricing on a proxy), never its own estimate from
+    // tokens, so it cannot stop a Claude run before the SDK would; the SDK's later error finds spendStopped set
+    // (budgetReached) and adds no second hold. A per-run cap the user chose keeps comparing the best known cost.
+    const providerCost = s.usage?.providerCostUsd
+    const sdkEnforced = projectCap !== undefined && a.adapter === 'claude'
+    const ownCost = sdkEnforced ? (typeof providerCost === 'number' && Number.isFinite(providerCost) && providerCost > 0 ? providerCost : 0) : cost
+    if (ownCap !== undefined && ownCost >= ownCap) {
       this.setBudgetHold(a, 'run', ownCap, cost)
       a.spendStopped = true
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: `The run used all of its spending limit (${money(ownCap)}) and stopped. You can add budget to continue.` })
+      void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
+      return
+    }
+    // Unknown price is not zero: a run whose spend cannot be priced (all or part of it) cannot be held to a cap, so under
+    // one it stops, as start refuses an unpriced chosen model under a project cap and an exec run ends on one. The hold shows
+    // the known part of the spend. `allowUnpricedBudget` (an exec override) keeps its meaning.
+    if (ownCap !== undefined && (s.usage?.costSource === 'unknown' || s.usage?.costPartial) && !s.overrides?.allowUnpricedBudget) {
+      this.setBudgetHold(a, 'run', ownCap, cost)
+      a.spendStopped = true
+      a.emit({ type: 'log', runId: s.id, level: 'warn', message: `Part of this run has no known price, so its spending limit (${money(ownCap)}) cannot be enforced and the run stopped. Set a model price in Settings, or remove the limit.` })
       void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
       return
     }

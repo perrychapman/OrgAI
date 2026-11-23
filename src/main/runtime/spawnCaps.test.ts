@@ -62,6 +62,29 @@ describe('spawnCapRefusal', () => {
   })
 })
 
+describe('spawnCapRefusal with extraAgents (the run\'s agents outside the session)', () => {
+  it('counts extra agents toward the total and the role cap, ended ones toward the total only', () => {
+    const extra = [ag('ag_b', 'r-oa'), ag('ag_b:e1', 'r-eng'), ag('ag_b:e2', 'r-eng', 'done')]
+    expect(spawnCapRefusal({ project: { maxAgentsPerRun: 3 }, roles, roleId: 'r-help', agents: [root], extraAgents: extra })).toMatch(/Agent limit reached \(this run may start 3 agents in total and 3 have started\)/)
+    expect(spawnCapRefusal({ project: { maxAgentsPerRun: 4 }, roles, roleId: 'r-help', agents: [root], extraAgents: extra })).toBeUndefined()
+    // One live engineer outside plus one inside: the role cap of 2 holds across both.
+    expect(spawnCapRefusal({ project: {}, roles, roleId: 'r-eng', agents: [ag('n1', 'r-eng')], extraAgents: extra })).toMatch(/Concurrent limit for engineer reached \(2 running at once\)/)
+    expect(spawnCapRefusal({ project: {}, roles, roleId: 'r-eng', agents: [], extraAgents: extra })).toBeUndefined()
+  })
+
+  it('an extra agent with the same id as an own agent is the same agent: counted once, the own record wins', () => {
+    expect(spawnCapCounts({ roleId: 'r-eng', agents: [ag('x', 'r-eng', 'done')], extraAgents: [ag('x', 'r-eng', 'thinking'), ag('y', 'r-eng')] })).toEqual({ started: 2, liveOfRole: 1 })
+  })
+
+  it('skips the root in the extra list, and adds pending spawns on top', () => {
+    expect(spawnCapCounts({ roleId: 'r-eng', agents: [], extraAgents: [root, ag('y', 'r-eng')], pending: ['r-help'] })).toEqual({ started: 2, liveOfRole: 1 })
+  })
+
+  it('without extraAgents nothing changes', () => {
+    expect(spawnCapCounts({ roleId: 'r-eng', agents: [ag('a', 'r-eng')] })).toEqual({ started: 1, liveOfRole: 1 })
+  })
+})
+
 describe('agentBriefOf', () => {
   it('trims, cuts to AGENT_BRIEF_MAX_CHARS and drops empty or non-text input', () => {
     expect(agentBriefOf('  Do the thing  ')).toBe('Do the thing')

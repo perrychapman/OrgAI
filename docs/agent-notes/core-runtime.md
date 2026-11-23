@@ -997,8 +997,16 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
 - **Per-run cap and left-out roles:** `StartRunInput.maxBudgetUsd` narrows only, `excludeRoleIds` drops a role with its
   subtree (not the root, not on single or setup runs); desktop only, continuations carry them.
 - **Spawn caps** (`spawnCaps.ts` and the claude / codex / mock / bridge `*SpawnCaps.test.ts`): `Role.maxConcurrent`,
-  `Project.maxAgentsPerRun`, read live, approved but unstarted spawns count; a bridged child gets what is left. Known gaps: a
-  native Claude spawn does not see bridged children; the count is per session, so a continuation starts a fresh one.
+  `Project.maxAgentsPerRun`, read live, approved but unstarted spawns count. `RuntimeContext.spawnCapAgents()` (RunManager from
+  `BridgedSessions`, live) lists the run's agents the session's adapter does not hold (bridged children for the run session;
+  native agents, other children and its own root for a child, ids prefixed `run:`) and adapters pass it as `extraAgents`; a
+  bridged child holds the whole cap, not a start-time snapshot. Known gaps: a native spawn approved but not started is not
+  visible to a bridged delegation in that window; the count is per session, so a continuation starts a fresh one.
+- **Project budget cap in main:** `checkSpend`'s own cap is `runBudgetUsd`, else `Project.maxBudgetUsd` as the run sees it, on
+  every adapter (a project cap alone used to stop only Claude, through the SDK). Unknown or partly unknown price under a cap
+  stops the run (known part on the hold). For a Claude run the project-cap fallback compares only the adapter's reported run
+  total, so the SDK's own stop is never preempted and both stops make one hold (`spendStopped`). Conversation budgets and exec
+  runs stay on `checkExecBudget`. `runManager.projectCap.test.ts`; live providers unverified.
 - **Test gate** (`testGate.ts`, `testGate.test.ts`, `integration.test.ts`): the user's command runs in the finished copy
   before the merge; allowlisted environment with secret-looking and cloud variables scrubbed; stdin closed; 10 minutes then
   the tree is killed; the last 4,000 characters kept and scrubbed, shown only in the run log and the maintenance result. The
