@@ -28,7 +28,7 @@ from the boards, and how it was checked.
 - **Engagement.** `.run-view[data-kind='engagement']`: serif headings, coral selection and plan accents, neutral wording.
   No Context screen, no per-run source picker.
 - **Toolbar fit.** The chrome (Theme, Find, Show) shares the 32 px dense toolbar row; it drops Show under 1100 px of frame
-  width, Find and the "Theme" word under 900, the theme name under 700, and hides under 320 (the theme is then set in
+  width, Find under 900, the "Theme" word under 680, the theme name under 520, and hides under 320 (the theme is then set in
   App settings > Canvas).
 - **Owed fixes.** Composer Enter guard and one-shot New run mode were already on dev. RunActions copy already used the
   current pane names. Usage kind names now read "Tools helper" and "Skills helper".

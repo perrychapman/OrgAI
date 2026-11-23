@@ -492,9 +492,11 @@
 }
 @container frame (max-width: 900px) {
   .canvas-chrome-start [data-testid='find-agent'] { display: none; }
+}
+@container frame (max-width: 680px) {
   .canvas-chrome-start .canvas-theme-label { display: none; }
 }
-@container frame (max-width: 700px) {
+@container frame (max-width: 520px) {
   .canvas-chrome-start .canvas-theme-current { display: none; }
 }
 @container frame (max-width: 340px) {
