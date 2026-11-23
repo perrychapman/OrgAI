@@ -994,6 +994,198 @@
   text-overflow: ellipsis;
 }
 
+/* ---------- Project > Permissions: "How much the team asks you" (ui-overhaul Settings board) ---------- */
+.perm-mode-card > .perm-mode-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+.perm-cards-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.perm-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: var(--space-3);
+}
+.perm-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  background: var(--glass, var(--surface-2));
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+.perm-card:hover {
+  border-color: var(--border-strong);
+}
+.perm-card.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.perm-card.is-danger.is-on {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.perm-card-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.perm-card:has(.perm-card-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.perm-card-bars {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-1);
+  width: 72px;
+}
+.perm-card-bars > span {
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+}
+.perm-card-bars > span.is-lit {
+  background: var(--working, var(--accent));
+}
+.perm-card.is-danger .perm-card-bars > span.is-lit {
+  background: var(--danger-text);
+}
+.perm-card-title {
+  font-weight: var(--weight-semibold);
+}
+.perm-card-mode {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.perm-card-text {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.perm-card-rec,
+.perm-card-danger {
+  align-self: flex-start;
+  padding: var(--space-0h) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.perm-card-rec {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.perm-card-danger {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.perm-more-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.perm-more-toggle:hover {
+  color: var(--accent-text);
+}
+.perm-more-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.perm-more-chevron {
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+.perm-more-toggle[aria-expanded='true'] .perm-more-chevron {
+  rotate: 90deg;
+}
+.perm-effects {
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--field-bg);
+}
+.perm-effects table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.perm-effects th,
+.perm-effects td {
+  padding: var(--space-2) 0;
+  text-align: left;
+  font-weight: var(--weight-regular);
+}
+.perm-effects tr + tr > * {
+  border-top: 1px solid var(--border-subtle);
+}
+.perm-effects td {
+  text-align: right;
+}
+.perm-outcome {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.perm-outcome.is-ask {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.perm-outcome.is-go {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.perm-outcome.is-check {
+  background: var(--working-soft, var(--surface-3));
+  color: var(--working-text, var(--text-secondary));
+}
+.perm-outcome.is-unchecked {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.perm-effects-note {
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.perm-mode-now {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.perm-mode-default {
+  color: var(--text-tertiary);
+}
+
 /* ---------- App settings > Appearance (ui-overhaul Appearance board) ---------- */
 .appearance-layout {
   display: flex;
