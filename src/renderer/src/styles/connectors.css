@@ -129,9 +129,12 @@
   gap: var(--space-3);
   min-width: 0;
   padding: var(--space-3);
-  background: var(--surface-1);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--glass, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
+  transition: border-color var(--dur-fast) var(--ease-out);
   content-visibility: auto;
   contain-intrinsic-size: auto 80px;
 }

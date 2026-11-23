@@ -1,5 +1,6 @@
-/* ---------- Settings pages (App settings and project Settings): page frame, pane nav, sections, cards, rows ---------- */
-/* The page is a container (settings-page): the nav is a left rail from 640px, a tab strip above the content below that. */
+/* ---------- Settings pages (App settings and project Settings): page frame, settings menu, sections, cards, rows ---------- */
+/* ui-overhaul settings boards: a glass settings menu (App and Project groups) beside the pane; glass group cards hold the
+   rows. Glass tokens come from tokens.css (ov-foundation); the fallbacks keep the old solid surfaces until they land. */
 .settings-scroll {
   flex: 1;
   container-type: inline-size;
@@ -7,7 +8,7 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4);
   /* Contain absolutely positioned descendants (sr-only live regions, native inputs) so they never extend the window. */
   position: relative;
 }
@@ -20,6 +21,7 @@
 }
 .settings-page-title {
   margin: 0 0 var(--space-4);
+  font-family: var(--font-display, inherit);
   font-size: var(--text-title-lg);
   line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
@@ -31,76 +33,122 @@
   align-items: start;
 }
 
-/* Pane nav (role=tablist). Narrow: a scrolling strip with an underline on the active tab. */
+/* Settings menu. Narrow: a scrolling glass strip, groups side by side, the active tab underlined. */
 .settings-nav {
   display: flex;
-  gap: var(--space-1);
+  align-items: stretch;
+  gap: var(--space-3);
   position: sticky;
-  top: calc(var(--space-5) * -1);
+  top: calc(var(--space-4) * -1);
   z-index: var(--z-sticky);
-  padding: var(--space-1) 0 0;
-  margin-inline: calc(var(--space-6) * -1);
-  padding-inline: var(--space-6);
+  padding: var(--space-1) var(--space-2);
   overflow-x: auto;
   scrollbar-width: none;
-  background: var(--surface-0);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--glass-strong, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-xl);
 }
 .settings-nav::-webkit-scrollbar {
   display: none;
 }
+.settings-nav-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+}
+.settings-nav-head {
+  flex: none;
+  padding: 0 var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.settings-nav-tabs,
+.settings-nav-links {
+  display: flex;
+  gap: var(--space-0h);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .settings-nav-item {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: 32px;
   border: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: var(--text-body);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  font-weight: var(--weight-medium);
+  padding: 0 var(--space-3);
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
 }
 .settings-nav-item:hover {
   color: var(--text-primary);
-  background: var(--surface-3);
+  background: var(--field-bg);
 }
 .settings-nav-item.active {
   color: var(--text-primary);
   font-weight: var(--weight-semibold);
-  border-bottom-color: var(--accent);
+  background: var(--field-bg);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .settings-nav-item:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
+.settings-nav-item.is-link > span {
+  flex: 1 1 auto;
+}
+.settings-nav-link-icon {
+  flex: none;
+  color: var(--text-tertiary);
+}
 @container settings-page (min-width: 640px) {
   .settings-layout {
-    grid-template-columns: 168px minmax(0, 1fr);
-    gap: var(--space-8);
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+    gap: var(--space-4);
   }
   .settings-nav {
     flex-direction: column;
+    gap: var(--space-1);
     top: 0;
-    margin-inline: 0;
-    padding: 0;
+    padding: var(--space-2);
     overflow: visible;
-    background: transparent;
-    border-bottom: 0;
   }
-  .settings-nav-item {
-    border-bottom: 0;
-    margin-bottom: 0;
-    border-radius: var(--radius-md);
-    padding: var(--space-1) var(--space-3);
+  .settings-nav-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-0h);
+  }
+  .settings-nav-head {
+    padding: var(--space-3) var(--space-3) var(--space-1);
+    max-width: none;
+  }
+  .settings-nav-tabs,
+  .settings-nav-links {
+    flex-direction: column;
   }
   .settings-nav-item.active {
-    background: var(--accent-faint);
+    box-shadow: none;
   }
   .settings-nav-item:focus-visible {
-    outline-offset: 2px;
+    outline-offset: 0;
   }
 }
 
@@ -110,22 +158,48 @@
   container-name: settings-col;
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
+  gap: var(--space-4);
   width: 100%;
-  max-width: 720px;
+  max-width: 860px;
   min-width: 0;
 }
-/* Sections that bring their own markup (connections, MCP, plugins) are still separated by a rule. */
-.settings-col > section + section {
-  padding-top: var(--space-8);
-  border-top: 1px solid var(--border-subtle);
+.settings-col.is-wide {
+  max-width: 1240px;
+}
+
+/* Pane header: scope caption, the h2 (tab label) and its one line; page actions to the right. */
+.settings-pane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+.settings-pane-heading {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.settings-pane-scope {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.settings-pane-sub {
+  margin: var(--space-0h) 0 0;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+.settings-pane-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 /* ---------- Section: title tier, lead, actions ---------- */
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-width: 0;
 }
 .settings-section-head,
@@ -138,9 +212,10 @@
 }
 /* Pane heading (h2, the tab name) is the first tier; section titles (h3) sit one tier below it. */
 .settings-pane-title {
-  margin: 0 0 calc(var(--space-4) * -1);
-  font-size: var(--text-title-lg);
-  line-height: var(--text-title-lg-lh);
+  margin: 0;
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-display);
+  line-height: var(--text-display-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
   border-radius: var(--radius-xs);
@@ -156,6 +231,7 @@
 .settings-col .section-head h2,
 .settings-col .section-head h3 {
   margin: 0;
+  font-family: var(--font-display, inherit);
   font-size: var(--text-title);
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
@@ -182,7 +258,7 @@
   margin-bottom: 0;
 }
 
-/* Lower tier inside a section: caption, secondary, sentence case. */
+/* Lower tier inside a section: caption, tertiary, sentence case (the boards' group label). */
 .settings-group {
   display: flex;
   flex-direction: column;
@@ -191,23 +267,35 @@
 }
 .settings-group-title {
   margin: 0;
+  padding-inline: var(--space-1);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
 }
 
-/* ---------- Card of rows ---------- */
+/* ---------- Glass group card of rows ---------- */
 .settings-card {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  padding: var(--space-1) var(--space-4);
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
+}
+/* Sections with their own blocks (providers, tools, skills, templates) take the same glass inside settings. */
+.settings-col .card-block {
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border-color: var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
 }
 .settings-card > * {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) 0;
   min-width: 0;
 }
 .settings-card > * + * {
@@ -782,4 +870,637 @@
   max-height: 240px;
   overflow: auto;
   margin: 0;
+}
+
+/* ---------- Settings top bar: search and the autosave note ---------- */
+.settings-topbar {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+.settings-topbar h1 {
+  font-family: var(--font-display, inherit);
+}
+.settings-autosave {
+  font-size: var(--text-small);
+  white-space: nowrap;
+}
+@media (max-width: 1100px) {
+  .settings-autosave {
+    display: none;
+  }
+}
+.settings-search {
+  position: relative;
+  flex: 1 1 200px;
+  max-width: 320px;
+  min-width: 160px;
+}
+.settings-search-icon {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  translate: 0 -50%;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.settings-search-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--space-3) 0 calc(var(--space-3) + 20px);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--glass, var(--field-bg));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-body);
+}
+.settings-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+.settings-search-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.settings-search-pop {
+  position: absolute;
+  z-index: var(--z-popover);
+  top: calc(100% + var(--space-1));
+  left: 0;
+  width: max(100%, 320px);
+  max-width: min(420px, calc(100vw - var(--space-8)));
+  padding: var(--space-1);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-line, var(--border-default));
+  background: var(--glass-strong, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  box-shadow: var(--elev-2);
+}
+.settings-search-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 360px;
+  overflow: auto;
+}
+.settings-search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-search-hit:hover,
+.settings-search-hit:focus-visible {
+  background: var(--field-bg);
+}
+.settings-search-hit:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.settings-search-label {
+  font-weight: var(--weight-semibold);
+}
+.settings-search-where {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.settings-search-empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+/* A row's read-only value beside its action (General > AI provider), and a long path in a row. */
+.settings-inline-value {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+.settings-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-1h) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--field-bg);
+  font-size: var(--text-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Project > Permissions: "How much the team asks you" (ui-overhaul Settings board) ---------- */
+.perm-mode-card > .perm-mode-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+.perm-cards-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.perm-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: var(--space-3);
+}
+.perm-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  background: var(--glass, var(--surface-2));
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+.perm-card:hover {
+  border-color: var(--border-strong);
+}
+.perm-card.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.perm-card.is-danger.is-on {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.perm-card-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.perm-card:has(.perm-card-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.perm-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 20px;
+}
+.perm-card-current {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
+}
+.perm-card-desc {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1h);
+}
+/* Forced colours: the chosen card keeps a visible outline (the tint and border colour are dropped). */
+@media (forced-colors: active) {
+  .perm-card.is-on,
+  .appearance-mode.is-on {
+    outline: 3px solid Highlight;
+    outline-offset: 1px;
+  }
+}
+.perm-card-bars {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-1);
+  width: 72px;
+}
+.perm-card-bars > span {
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+}
+.perm-card-bars > span.is-lit {
+  background: var(--working, var(--accent));
+}
+.perm-card.is-danger .perm-card-bars > span.is-lit {
+  background: var(--danger-text);
+}
+.perm-card-title {
+  font-weight: var(--weight-semibold);
+}
+.perm-card-mode {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.perm-card-text {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.perm-card-rec,
+.perm-card-danger {
+  align-self: flex-start;
+  padding: var(--space-0h) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+.perm-card-rec {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.perm-card-danger {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
+.perm-more-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.perm-more-toggle:hover {
+  color: var(--accent-text);
+}
+.perm-more-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.perm-more-chevron {
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+.perm-more-toggle[aria-expanded='true'] .perm-more-chevron {
+  rotate: 90deg;
+}
+.perm-effects {
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--field-bg);
+}
+.perm-effects table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.perm-effects th,
+.perm-effects td {
+  padding: var(--space-2) 0;
+  text-align: left;
+  font-weight: var(--weight-regular);
+}
+.perm-effects tr + tr > * {
+  border-top: 1px solid var(--border-subtle);
+}
+.perm-effects td {
+  text-align: right;
+}
+.perm-outcome {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.perm-outcome.is-ask,
+.perm-outcome.is-askSafe {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.perm-outcome.is-go {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.perm-outcome.is-check,
+.perm-outcome.is-goOrCheck {
+  background: var(--working-soft, var(--surface-3));
+  color: var(--working-text, var(--text-secondary));
+}
+.perm-outcome.is-unchecked {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.perm-effects-note {
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.perm-mode-now {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.perm-mode-default {
+  color: var(--text-tertiary);
+}
+
+/* ---------- Project > Spending limits: this month's spend (ui-overhaul Limits board hero) ---------- */
+.month-spend {
+  padding: var(--space-4);
+}
+.month-spend > .month-spend-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0;
+}
+.month-spend-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.month-spend-title {
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.month-spend-line {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+/* ---------- App settings > Appearance (ui-overhaul Appearance board) ---------- */
+.appearance-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.appearance-main {
+  flex: 999 1 420px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.appearance-modes-card {
+  padding: var(--space-3);
+}
+.appearance-modes-card > * {
+  padding: 0;
+}
+.appearance-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+.appearance-mode {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-xl);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+.appearance-mode:hover {
+  border-color: var(--border-strong);
+}
+.appearance-mode.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.appearance-mode-input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.appearance-mode:has(.appearance-mode-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* Thumbnails show the mode itself, whatever the current theme is, so they mix from black and white. */
+.appearance-mode-art {
+  --art-ground: color-mix(in srgb, black 86%, var(--accent));
+  --art-pane: color-mix(in srgb, white 14%, transparent);
+  height: 76px;
+  border-radius: var(--radius-md);
+  background: var(--art-ground);
+  border: 1px solid var(--border-subtle);
+  padding: var(--space-2);
+  display: flex;
+  gap: var(--space-1h);
+}
+.appearance-mode[data-mode='light'] .appearance-mode-art {
+  --art-ground: color-mix(in srgb, white 92%, var(--accent));
+  --art-pane: color-mix(in srgb, black 10%, transparent);
+}
+.appearance-mode[data-mode='system'] .appearance-mode-art {
+  --art-pane: color-mix(in srgb, white 30%, color-mix(in srgb, black 30%, transparent));
+  background: linear-gradient(90deg, color-mix(in srgb, black 86%, var(--accent)) 50%, color-mix(in srgb, white 92%, var(--accent)) 50%);
+}
+.appearance-mode-pane {
+  width: 26%;
+  border-radius: var(--radius-sm);
+  background: var(--art-pane);
+}
+.appearance-mode-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding-top: var(--space-1h);
+}
+.appearance-mode-bar {
+  width: 44%;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+}
+.appearance-mode-tiles {
+  display: flex;
+  gap: var(--space-1);
+  width: 100%;
+}
+.appearance-mode-tiles > span {
+  flex: 1 1 0;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--art-pane);
+}
+.appearance-mode-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) var(--space-0h);
+}
+.appearance-mode-name {
+  flex: 1 1 auto;
+  font-weight: var(--weight-semibold);
+}
+.appearance-mode-check {
+  flex: none;
+  color: var(--accent-text);
+}
+.appearance-mode-note {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.appearance-preview {
+  flex: 1 1 240px;
+  max-width: 340px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  position: sticky;
+  top: 0;
+}
+.appearance-preview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+}
+.appearance-preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.appearance-preview-avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-weight: var(--weight-semibold);
+}
+.appearance-preview-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.appearance-preview-name {
+  font-weight: var(--weight-semibold);
+}
+.appearance-preview-doing {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.appearance-preview-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--text-small);
+}
+.appearance-preview-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.appearance-preview-row.is-working .appearance-preview-dot {
+  background: var(--working, var(--info));
+}
+.appearance-preview-row.is-working {
+  color: var(--working-text, var(--text-primary));
+}
+.appearance-preview-row.is-waiting {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+.appearance-preview-row.is-waiting .appearance-preview-dot {
+  background: var(--warning-text);
+}
+.appearance-preview-row.is-done .appearance-preview-dot {
+  background: var(--success-text);
+}
+.appearance-preview-row.is-done {
+  color: var(--text-tertiary);
+}
+.appearance-preview-dot.is-live {
+  animation: appearance-live var(--dur-pulse) var(--ease-in-out) infinite;
+}
+@keyframes appearance-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .appearance-preview-dot.is-live {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .appearance-preview-dot.is-live {
+  animation: none;
+}
+.appearance-preview-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.appearance-preview-btn {
+  height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  border: 1px solid var(--border-strong);
+}
+.appearance-preview-btn.is-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--text-on-accent);
+}
+.appearance-preview-note {
+  margin: 0;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
 }

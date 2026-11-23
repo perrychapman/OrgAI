@@ -42,7 +42,7 @@ export default function UpdateNotice({ rail }: { rail: boolean }): ReactElement 
           <IconButton icon={CircleArrowUp} label={`${notice.text}. Open App settings, About`} testId="update-notice" onClick={openUpdates} />
         ) : (
           <div className="update-notice" data-testid="update-notice">
-            <button type="button" className="nav-item update-notice-open" data-testid="update-notice-open" title="Open App settings > About" onClick={openUpdates}>
+            <button type="button" className="nav-item update-notice-open" data-testid="update-notice-open" title="Open Settings > About and updates" onClick={openUpdates}>
               <Icon icon={CircleArrowUp} size="sm" />
               <span className="update-notice-text">{notice.text}</span>
             </button>

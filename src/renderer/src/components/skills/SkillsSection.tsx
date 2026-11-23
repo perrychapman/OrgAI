@@ -203,14 +203,14 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
     try {
       await useAppStore.getState().startSkillAssist({ scope: 'project', projectId: project.id })
     } catch (e) {
-      setAskError(cleanIpcError(e, 'Could not start the Skill assistant.'))
+      setAskError(cleanIpcError(e, 'Could not start the Skills helper.'))
     } finally {
       setAskBusy(false)
     }
   }
   const askButton = (
     <Button icon={Sparkles} testId="skill-ask-assistant" loading={askBusy} onClick={() => void askAssistant()}>
-      Ask the Skill assistant
+      Ask the Skills helper
     </Button>
   )
   const evaluateButton = (
@@ -250,7 +250,7 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
         <LiveChangeNote projectId={project.id} surface="skills" />
         {askError && (
           <div role="alert">
-            <Banner tone="danger" title="Could not start the Skill assistant" onDismiss={() => setAskError(null)}>
+            <Banner tone="danger" title="Could not start the Skills helper" onDismiss={() => setAskError(null)}>
               {askError}
             </Banner>
           </div>

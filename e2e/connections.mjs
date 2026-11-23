@@ -43,7 +43,7 @@ try {
 
       // App settings > Connections
       await openAppSettings(page)
-      await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+      await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
       await page.waitForSelector('#connections-title', { timeout: 10_000 })
       await sleep(800)
       const cards = await page.locator('[data-testid=connection-card]').count()
@@ -55,7 +55,7 @@ try {
 
       // Five panes, no Defaults tab (config-review spec 8.1)
       const tabNames = await page.getByRole('tab').allTextContents()
-      check(!tabNames.includes('Defaults') && ['General', 'Connections', 'Connectors', 'Skill library', 'About'].every((n) => tabNames.includes(n)), `App settings has no Defaults tab at ${w}x${h} ${theme}`, tabNames.join(', '))
+      check(!tabNames.includes('Defaults') && ['General', 'Appearance', 'AI providers', 'Tools and services', 'Skills', 'Templates', 'About and updates'].every((n) => tabNames.includes(n)), `App settings has no Defaults tab at ${w}x${h} ${theme}`, tabNames.join(', '))
 
       // Connections: one default badge, "Use for new projects" only on other connected cards, one polite live region
       check((await page.locator('[data-testid=default-connection-badge]').count()) === 1, `exactly one default-connection badge at ${w}x${h} ${theme}`)
@@ -110,16 +110,16 @@ try {
       // N8: the same short names as the project's mode select (lib/settingsCopy.ts PERMISSION_MODE_SHORT).
       const appModes = (await modeSel.locator('option').allTextContents()).map((t) => t.trim())
       check(JSON.stringify(appModes) === JSON.stringify(['Unattended', 'Auto-accept edits', 'Ask for everything risky', 'Never ask', 'Plan only', 'Bypass all prompts']), `default-mode-select uses the shared short names at ${w}x${h} ${theme}`, appModes.join(' | '))
-      check(/Starting values for new projects\. Existing projects keep their own\./.test((await page.locator('[data-testid=new-projects-section]').textContent()) ?? ''), 'New projects lead reads as specced')
+      check(/Each project can change these\. Existing projects keep their own\./.test((await page.locator('[data-testid=new-projects-section]').textContent()) ?? ''), 'New projects lead reads as specced')
       await shot(`general-${w}x${h}-${theme}`)
       await openAdvanced('app-general')
-      for (const name of ['Setup model', 'MCP assistant model', 'Skill assistant model', 'Chat model', 'Orchestrator starting tier', 'Report starting tier']) {
+      for (const name of ['Setup model', 'Tools helper model', 'Skills helper model', 'Chat model', 'Orchestrator starting tier', 'Report starting tier']) {
         check((await page.getByRole('combobox', { name, exact: true }).count()) === 1, `${name} select in General Advanced at ${w}x${h} ${theme}`)
       }
       const note = page.locator('[data-testid=assistant-models-note]')
       check((await note.count()) === 1, `Assistant models note present at ${w}x${h} ${theme}`)
       const noteText = (await note.innerText().catch(() => '')) ?? ''
-      check(/run on (Anthropic|OpenAI|LiteLLM), the default connection/.test(noteText), `Assistant models note names the default connection at ${w}x${h} ${theme}`, noteText)
+      check(/run on (Anthropic|OpenAI|LiteLLM), the default provider/.test(noteText), `Assistant models note names the default connection at ${w}x${h} ${theme}`, noteText)
       await note.scrollIntoViewIfNeeded()
       const defOv = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(defOv.sw <= defOv.cw, `no horizontal scroll on General at ${w}x${h} ${theme}`, JSON.stringify(defOv))
@@ -167,7 +167,7 @@ try {
         // Spec 8.6: the Advanced summary's name, keys, focus ring and per-pane persistence
         for (const pane of ['app-general', 'app-connections']) {
           if (pane === 'app-connections') {
-            await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+            await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
             await page.waitForSelector('#connections-title', { timeout: 10_000 })
           }
           const sum = advSummary(pane)
@@ -192,7 +192,7 @@ try {
           await page.reload()
           await page.waitForSelector('.nav-item', { timeout: 15_000 })
           await openAppSettings(page)
-          await page.getByRole('tab', { name: pane === 'app-general' ? 'General' : 'Connections', exact: true }).click()
+          await page.getByRole('tab', { name: pane === 'app-general' ? 'General' : 'AI providers', exact: true }).click()
           await page.locator(`[data-testid=settings-advanced][data-pane=${pane}]`).waitFor({ timeout: 10_000 })
           check(await details(pane).evaluate((el) => el.open), `${pane} Advanced stays open after a reload`)
           await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
@@ -211,11 +211,11 @@ try {
           check(shift.ok, `${section} deep link leaves the window unshifted at ${w}x${h} ${theme}`, JSON.stringify(shift))
         }
         await closeAdvanced('app-general')
-        await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+        await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
         await closeAdvanced('app-connections')
-        await page.getByRole('tab', { name: 'About', exact: true }).click()
+        await page.getByRole('tab', { name: 'About and updates', exact: true }).click()
         await deepLink('appsettings-section-model-prices')
-        check((await page.getByRole('tab', { name: 'Connections', exact: true }).getAttribute('aria-selected')) === 'true', 'model-price deep link lands on Connections')
+        check((await page.getByRole('tab', { name: 'AI providers', exact: true }).getAttribute('aria-selected')) === 'true', 'model-price deep link lands on Connections')
         check(await details('app-connections').evaluate((el) => el.open), 'model-price deep link opens Connections Advanced')
         const priceFocus = await page.evaluate(() => {
           const a = document.activeElement
@@ -224,11 +224,11 @@ try {
         check(priceFocus.inSection, 'model-price deep link focuses the Model prices section', JSON.stringify(priceFocus))
         await deepLink('appsettings-section-costs')
         check(await page.evaluate(() => document.activeElement?.closest('#appsettings-section-costs') !== null), 'costs deep link focuses the Costs section title')
-        await page.getByRole('tab', { name: 'About', exact: true }).click()
+        await page.getByRole('tab', { name: 'About and updates', exact: true }).click()
         await deepLink('appsettings-section-assistant-models')
         check((await page.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected')) === 'true' && (await details('app-general').evaluate((el) => el.open)), 'assistant-models deep link lands on General with Advanced open')
         check(await page.evaluate(() => document.activeElement?.matches('#appsettings-section-assistant-models .settings-group-title') === true), 'assistant-models deep link focuses the group heading')
-        await page.getByRole('tab', { name: 'About', exact: true }).click()
+        await page.getByRole('tab', { name: 'About and updates', exact: true }).click()
         await deepLink('appsettings-section-defaults')
         check((await page.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected')) === 'true', 'the removed Defaults id opens General')
         // Section ids that used to sit under Defaults are gone from the DOM
@@ -236,7 +236,7 @@ try {
       }
 
       // About block
-      await page.getByRole('tab', { name: 'About', exact: true }).click()
+      await page.getByRole('tab', { name: 'About and updates', exact: true }).click()
       const about = page.locator('[data-testid=about-block]')
       check((await about.count()) === 1, `about block present at ${w}x${h} ${theme}`)
       await about.scrollIntoViewIfNeeded()
@@ -271,7 +271,7 @@ try {
       await page.locator('[data-testid=catalog-skills]').scrollIntoViewIfNeeded()
       await shot(`catalog-skills-${w}x${h}-${theme}`)
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'General', exact: true }).click()
+      await page.getByRole('tab', { name: 'Basics', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
       const toggle = page.locator('[data-testid=mock-adapter-toggle]')
@@ -367,7 +367,7 @@ try {
   // MCP library: add a stdio server by hand in App settings, then link it from the project's settings.
   try {
     await openAppSettings(page)
-    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    await page.getByRole('tab', { name: 'Tools and services', exact: true }).click()
     const libSec = page.locator('[data-testid=mcp-library-section]')
     await libSec.waitFor({ timeout: 10_000 })
     await libSec.scrollIntoViewIfNeeded()
@@ -410,7 +410,7 @@ try {
   // Connectors gallery: connect Notion (mock sign-in), check it, disconnect, remove.
   try {
     await openAppSettings(page)
-    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    await page.getByRole('tab', { name: 'Tools and services', exact: true }).click()
     const gal = page.locator('[data-testid=connectors-section]')
     await gal.waitFor({ timeout: 10_000 })
     const tile = gal.locator('[data-testid=connector-tile][data-connector=notion]')
@@ -443,7 +443,7 @@ try {
   await sleep(300)
   await openProject(page, NAME)
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
   const addBtn = page.locator('[data-testid=proxy-add]')
   const live = page.locator('[data-testid=connections-live]')
@@ -607,7 +607,7 @@ try {
   await page.reload()
   await page.waitForSelector('.nav-item', { timeout: 15_000 })
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
   await mg.waitFor({ timeout: 10_000 })
   await mg.locator('[data-testid=proxy-toggle]').click()
   await mg.locator('[data-testid=proxy-remove]').click()
@@ -622,7 +622,7 @@ try {
   await page.reload()
   await page.waitForSelector('.nav-item', { timeout: 15000 })
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
   const legacyCard = proxyCard('Legacy gateway')
   await legacyCard.locator('[data-testid=proxy-toggle]').click()
   check(await legacyCard.locator('[data-testid=proxy-litellm-features]').isChecked(), 'legacy LiteLLM reporting defaults on')
@@ -647,7 +647,7 @@ try {
     for (const theme of ['dark', 'light']) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await openAppSettings(page)
-      await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+      await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
       await page.waitForSelector('[data-testid=proxy-list]', { timeout: 10_000 })
       check((await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').count()) === 4, `four proxy cards at ${w}x${h} ${theme}`)
       const ov = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
@@ -668,7 +668,7 @@ try {
   await page.reload()
   await page.waitForSelector('.nav-item', { timeout: 15_000 })
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
   await addBtn.waitFor({ timeout: 10_000 })
   check((await addBtn.getAttribute('aria-disabled')) === 'true' && /most OrgAI keeps/.test((await page.locator('[data-testid=proxy-add-reason]').textContent().catch(() => '')) ?? ''), 'Add proxy is inert with a reason at the maximum')
   await openProject(page, NAME)

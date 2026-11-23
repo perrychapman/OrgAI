@@ -23,7 +23,7 @@ const noHScroll = async (what) => {
 }
 async function openGallery() {
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+  await page.getByRole('tab', { name: 'Tools and services', exact: true }).click()
   await page.locator('[data-testid=connectors-section]').waitFor({ timeout: 10_000 })
   await tile('notion').waitFor({ timeout: 10_000 })
 }

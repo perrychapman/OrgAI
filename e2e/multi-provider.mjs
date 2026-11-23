@@ -176,7 +176,7 @@ try {
 
   // --- Project settings of the mock project: roles line
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'General', exact: true }).click()
+  await page.getByRole('tab', { name: 'Basics', exact: true }).click()
   const rolesLine = page.locator('[data-testid=project-connection-roles-line]')
   await rolesLine.waitFor({ timeout: 10_000 })
   check(/1 runs on its own connection/.test((await rolesLine.textContent()) ?? ''), 'the roles line counts the pinned role', (await rolesLine.textContent()) ?? '')
@@ -187,7 +187,7 @@ try {
   const pinnedR = await pinReviewer(R, proxyId)
   check(pinnedR?.connection === proxyId, 'Reviewer pinned on the real-adapter project')
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'General', exact: true }).click()
+  await page.getByRole('tab', { name: 'Basics', exact: true }).click()
   await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
   await page.locator(`[data-testid=project-connection-option][data-id="${otherId}"]`).click()
   await page.getByRole('button', { name: 'Review changes', exact: true }).click()
@@ -216,7 +216,7 @@ try {
 
       await openProject(page, R)
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'General', exact: true }).click()
+      await page.getByRole('tab', { name: 'Basics', exact: true }).click()
       const refusal = page.locator('[data-testid=project-start-refusal]')
       await refusal.waitFor({ timeout: 10_000 }).catch(() => {})
       const rt = (await refusal.textContent().catch(() => '')) ?? ''
