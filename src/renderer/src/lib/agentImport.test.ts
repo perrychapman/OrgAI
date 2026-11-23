@@ -92,6 +92,8 @@ describe('choices and counts', () => {
     expect(importButtonLabel(3, 'replace')).toBe('Replace team with 3 roles')
     expect(modeLine('merge', 3, 4)).toBe('Adds 3 roles next to the 4 you have.')
     expect(modeLine('replace', 3, 1)).toBe('Replaces your 1 role with these 3.')
+    expect(modeLine('replace', 2, 4, 3)).toBe('Replaces 3 roles with these 2. Your top role stays, so the team ends at 3 roles.')
+    expect(modeLine('replace', 2, 4, 2)).toBe('Replaces your 4 roles with these 2.')
     expect(elevatedLabels(['Bash', 'Edit', 'Write', 'canSpawn'])).toEqual(['Runs commands', 'Edits files', 'Can start other agents'])
   })
   it('matches a manager by slug, id or name', () => {

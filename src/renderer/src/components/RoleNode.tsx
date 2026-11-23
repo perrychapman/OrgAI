@@ -2,7 +2,7 @@ import { BookOpen, Plug, TriangleAlert, Wrench } from 'lucide-react'
 import { Icon } from './ui/Icon'
 import type { CSSProperties, KeyboardEvent, ReactElement, SyntheticEvent } from 'react'
 import { memo } from 'react'
-import { Handle, NodeToolbar, useConnection, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, NodeToolbar, useConnection, useNodesStore, useViewportStore, type Position, type Node, type NodeProps } from '@xyflow/react'
 import { useRoleNodeActions } from './team/roleNodeActions'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { TOOL_CATALOG, type CanvasLayout, type CanvasNodeStyle, type Role } from '@shared/types'
@@ -33,6 +33,30 @@ export type RoleFlowNode = Node<
 
 const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as const
 
+/** The selected role's action row is about this wide and tall (px, at any zoom: the toolbar does not scale). */
+const TOOLBAR_WIDTH = 340
+const TOOLBAR_ROOT_WIDTH = 130
+const TOOLBAR_HEIGHT = 40
+const TOOLBAR_GAP = 8
+
+/**
+ * Where the action row goes so it stays inside the visible chart: left-aligned above the role, right-aligned when it
+ * would run past the right edge, below the role when there is no room above. Reads the viewport only while selected.
+ */
+function useToolbarSpot(id: string, width: number, active: boolean): { end: boolean; below: boolean } {
+  const transform = useViewportStore((s) => s.transform)
+  const stageWidth = useViewportStore((s) => s.width)
+  const node = useNodesStore((s) => (active ? s.nodeLookup.get(id) : undefined))
+  if (!active || !node) return { end: false, below: false }
+  const [tx, ty, zoom] = transform
+  const left = node.internals.positionAbsolute.x * zoom + tx
+  const top = node.internals.positionAbsolute.y * zoom + ty
+  const w = (node.measured.width ?? 220) * zoom
+  const fitsStart = left + width <= stageWidth
+  const fitsEnd = left + w - width >= 0
+  return { end: !fitsStart && fitsEnd, below: top < TOOLBAR_HEIGHT + TOOLBAR_GAP }
+}
+
 /** What a connection being dragged is doing to this node: 'self' it started here, 'valid' / 'invalid' it hovers here. */
 type DropState = 'self' | 'valid' | 'invalid' | null
 
@@ -56,6 +80,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   const hs = (side: string): { style?: CSSProperties } => (station ? { style: stationHandleStyle(geo, side as `${Position}`) } : {})
   const isRoot = role.reportsTo === null
   const actions = useRoleNodeActions()
+  const toolbarSpot = useToolbarSpot(id, isRoot ? TOOLBAR_ROOT_WIDTH : TOOLBAR_WIDTH, !!(team && selected))
   // The provider shows only when this role is pinned to a connection other than the project's (never on the root).
   const base = useAppStore((s) => {
     const p = selectedProject(s)
@@ -148,14 +173,14 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
       </div>}
       <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
       {team && actions && (
-        <NodeToolbar isVisible={selected} position={'top' as Position} offset={8} align="start" className="role-node-toolbar" data-testid="role-node-toolbar">
+        <NodeToolbar isVisible={selected} position={(toolbarSpot.below ? 'bottom' : 'top') as Position} offset={8} align={toolbarSpot.end ? 'end' : 'start'} className="role-node-toolbar" data-testid="role-node-toolbar">
           {/* The toolbar is portalled, but React still bubbles its events to the node wrapper (select, menu, keys):
               stop them here so an action never re-selects the node it came from (review H1). */}
           <div
             role="toolbar"
             aria-label={`Actions for ${role.name}`}
             className="role-node-toolbar-row"
-            onKeyDown={onToolbarKey}
+            onKeyDown={(e) => onToolbarKey(e, id)}
             onClick={stop}
             onDoubleClick={stop}
             onContextMenu={stop}
@@ -190,14 +215,29 @@ function stop(e: SyntheticEvent): void {
   e.stopPropagation()
 }
 
-function onToolbarKey(e: KeyboardEvent<HTMLDivElement>): void {
+function onToolbarKey(e: KeyboardEvent<HTMLDivElement>, nodeId: string): void {
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button'))
+  const at = items.indexOf(document.activeElement as HTMLButtonElement)
+  // The toolbar is portalled after every node, but it belongs right after its role: Shift+Tab off the first action
+  // goes back to the role, Tab off the last goes to the next role (not past the whole chart).
+  if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>('.react-flow__node'))
+    const own = nodes.findIndex((n) => n.dataset.id === nodeId)
+    if (e.shiftKey && at === 0 && own >= 0) {
+      e.preventDefault()
+      nodes[own].focus()
+    } else if (!e.shiftKey && at === items.length - 1 && own >= 0 && own < nodes.length - 1) {
+      e.preventDefault()
+      nodes[own + 1].focus()
+    }
+    e.stopPropagation()
+    return
+  }
   // Enter, Space, Escape, Delete and the menu keys belong to the button, not to the node behind the portal.
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
     e.stopPropagation()
     return
   }
-  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button'))
-  const at = items.indexOf(document.activeElement as HTMLButtonElement)
   if (items.length === 0) return
   e.preventDefault()
   e.stopPropagation()

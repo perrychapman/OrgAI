@@ -30,6 +30,14 @@ async function seed(page) {
   await openTeam(page)
 }
 
+/** A short window folds the Team assistant to its Ask bar: unfold the recommendations before driving them. */
+async function expandAssistant(page) {
+  const more = page.locator('[data-testid=team-assistant-more]')
+  await more.waitFor({ timeout: 10_000 })
+  if ((await more.getAttribute('aria-expanded')) === 'false') await more.click()
+  await page.locator('[data-testid=team-recommend]').waitFor({ state: 'visible', timeout: 5000 })
+}
+
 async function selectReviewer(page) {
   await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().click()
   await teamPanelTab(page, 'Role').waitFor()
@@ -77,9 +85,13 @@ async function sectionEditor(page) {
   check(/What this role does/.test(await page.locator('[data-testid=role-section-job]').innerText()), 'the description is labelled "What this role does"')
   check(/Cannot edit files|Read files/.test(await page.locator('[data-testid=role-use-chips]').innerText()), 'What it can use shows chips for the tools')
   check(await page.locator('[data-testid=role-model-tiers] input[type=radio]').count() > 0 || (await page.locator('[data-testid=role-model-tiers]').count()) === 0, 'the Model section offers the tiers as one radio group')
-  check(/reports to/.test(await page.locator('[data-testid=role-subline]').innerText()), 'the panel header names the group and the manager', await page.locator('[data-testid=role-subline]').innerText())
+  check(/reports to/i.test(await page.locator('[data-testid=role-subline]').innerText()), 'the panel header names the manager', await page.locator('[data-testid=role-subline]').innerText())
+  // Review M7: the sub-line is never cut off (it wraps) and does not repeat the role's own name.
+  const sub = await page.locator('[data-testid=role-subline]').evaluate((el) => ({ cut: el.scrollWidth > el.clientWidth + 1, text: el.textContent ?? '' }))
+  const roleName = (await page.locator('.role-inspector .ri-heading h2').innerText()).trim()
+  check(!sub.cut && !new RegExp(`^${roleName}\\b`).test(sub.text), 'the panel header sub-line is not truncated and does not repeat the name', JSON.stringify(sub))
   check((await page.locator('[data-testid=role-model-advanced] > summary').innerText()).trim() === 'Choose an exact model', 'the exact model controls sit behind "Choose an exact model"')
-  check((await page.locator('[data-testid=role-section-count]').count()) === 0, 'How many at once stays hidden until Role carries the field')
+  check((await page.locator('[data-testid=role-section-count] [data-testid=role-concurrency]').count()) === 1, 'How many at once is in the panel (Role.maxConcurrent)')
   const preview = page.locator('[data-testid=role-preview-prompt]')
   check((await preview.getAttribute('aria-disabled')) === 'true' || (await preview.isDisabled()), '"Preview final prompt" is disabled')
   check(/Not available yet\./.test(await page.locator('[data-testid=role-section-does]').innerText({ timeout: 2000 }).catch(() => '')) || (await page.locator('#' + ((await preview.getAttribute('aria-describedby')) ?? 'x')).count()) === 1, '"Preview final prompt" explains "Not available yet."')
@@ -441,6 +453,7 @@ async function sectionConnections(page, shot) {
 async function sectionAssistant(page, shot) {
   const tray = page.locator('[data-testid=team-assistant]')
   await tray.waitFor({ timeout: 10_000 })
+  await expandAssistant(page)
   check((await page.locator('[data-testid=architect-open]').count()) === 0, 'the tray has no Design tab (the Architect is in Start from)')
   check((await page.locator('[data-testid=org-change-start]').count()) === 0, 'no Architect form is mounted until the dialog opens')
   check((await tray.locator('[data-testid=team-include-outside]').count()) === 1, 'the outside-sources opt-in is present')
@@ -712,6 +725,7 @@ async function sectionDismiss(page, shot, app) {
   // Walk 4 M1 is a short-tray problem: dismiss at 1024x640.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
   await sleep(600)
+  await expandAssistant(page)
   await tray.locator('[data-testid=team-scope] select').selectOption('team')
   await tray.locator('[data-testid=team-recommend]').click()
   await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
@@ -1230,9 +1244,10 @@ async function sectionAddIdsAndLongName(page, app, shot) {
     const btn = [...hd.querySelectorAll('button')].find((b) => /Remove/.test(b.textContent ?? ''))
     // The name and its "{group} · reports to {manager}" line form one block (.ri-heading); Remove is centred beside it.
     const hb = hd.getBoundingClientRect(), tb = (hd.querySelector('.ri-heading') ?? h2).getBoundingClientRect(), bb = btn.getBoundingClientRect()
-    return { headH: hb.height, h2Mid: tb.top + tb.height / 2, btnMid: bb.top + bb.height / 2, btnBottom: bb.bottom, headBottom: hb.bottom, btnRight: bb.right, headRight: hb.right, title: h2.getAttribute('title'), ellipsis: getComputedStyle(h2).textOverflow }
+    return { headH: hb.height, firstRowMid: tb.top + 22, h2Mid: tb.top + tb.height / 2, btnMid: bb.top + bb.height / 2, btnBottom: bb.bottom, headBottom: hb.bottom, btnRight: bb.right, headRight: hb.right, title: h2.getAttribute('title'), ellipsis: getComputedStyle(h2).textOverflow }
   })
-  check(Math.abs(head.h2Mid - head.btnMid) <= 3 && head.btnBottom <= head.headBottom && head.btnRight <= head.headRight + 0.5, 'the role editor header keeps Remove on the name row (QA P4)', JSON.stringify(head))
+  // A long name wraps (two lines at most), so Remove sits beside its first row, not centred on the block.
+  check(Math.abs(head.firstRowMid - head.btnMid) <= 14 && head.btnBottom <= head.headBottom && head.btnRight <= head.headRight + 0.5, 'the role editor header keeps Remove on the name row (QA P4)', JSON.stringify(head))
   check(head.title === long && head.ellipsis === 'ellipsis', 'the long header name truncates and keeps its full text in the title')
   // P1: the collapsed tools summary has no double space.
   const summary = await page.evaluate(() => {
@@ -1244,12 +1259,123 @@ async function sectionAddIdsAndLongName(page, app, shot) {
   check(!/Can\s{2,}/.test(all), 'no "Can  " double space in the role capabilities block', JSON.stringify(all.slice(0, 120)))
 }
 
+/** A box's distance from each edge of the chart stage (negative: outside). */
+const stageGap = (page, selector) =>
+  page.evaluate((s) => {
+    const el = document.querySelector(s)
+    const st = document.querySelector('.editor .frame-stage')
+    if (!el || !st) return null
+    const b = el.getBoundingClientRect()
+    const v = st.getBoundingClientRect()
+    return { left: Math.round(b.left - v.left), right: Math.round(v.right - b.right), top: Math.round(b.top - v.top), bottom: Math.round(v.bottom - b.bottom) }
+  }, selector)
+const insideStage = (g) => !!g && g.left >= 0 && g.right >= 0 && g.top >= 0 && g.bottom >= 0
+
+/**
+ * Walkthrough fixes (ux-review-team-overhaul): the role toolbar stays inside the chart, Duplicate brings the copy into
+ * view, Add group says what it does, Escape and Tab on a role keep focus where the keyboard user expects it.
+ */
+async function sectionReviewFixes(page, app, shot) {
+  for (const [w, h] of SIZES) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(600)
+    // Every role in turn: the toolbar is inside the visible chart wherever the role sits (it flips or shifts).
+    await page.locator('.react-flow__controls-fitview').click()
+    await sleep(500)
+    const ids = await page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].map((n) => ({ id: n.dataset.id, x: n.getBoundingClientRect().right })).sort((a, b) => b.x - a.x).map((n) => n.id))
+    for (const id of [ids[0], ids[ids.length - 1]]) {
+      await page.locator(`.react-flow__node[data-id="${id}"]`).click({ position: { x: 20, y: 20 } })
+      await sleep(400)
+      // The toolbar's own box (not the node's) must be inside the stage.
+      const gap = await page.evaluate(() => {
+        const el = document.querySelector('.role-node-toolbar-row')
+        const st = document.querySelector('.editor .frame-stage')
+        if (!el || !st) return null
+        const b = el.getBoundingClientRect(), v = st.getBoundingClientRect()
+        return { left: Math.round(b.left - v.left), right: Math.round(v.right - b.right), top: Math.round(b.top - v.top), bottom: Math.round(v.bottom - b.bottom) }
+      })
+      check(insideStage(gap), `the role toolbar is inside the chart at ${w}x${h} (${id === ids[0] ? 'right-most' : 'left-most'} role)`, JSON.stringify(gap))
+    }
+  }
+  // Add group says what it does.
+  await page.locator('[data-testid=team-add-group]').click()
+  const pop = page.locator('[data-testid=add-role-popover]')
+  await pop.waitFor({ timeout: 5000 })
+  check(/Add a group lead/.test(await pop.locator('[data-testid=add-role-title]').innerText()), 'Add group opens a form titled "Add a group lead"')
+  check(/lead its own group/i.test(await pop.innerText()), 'the Add group form says the role leads its own group')
+  check((await pop.locator('[data-testid=add-role-name]').inputValue()).startsWith('New group'), 'the Add group name starts as "New group"')
+  await page.keyboard.press('Escape')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
+  await page.locator('[data-testid=team-add-role]').click()
+  await pop.waitFor({ timeout: 5000 })
+  check(/Add a role/.test(await pop.locator('[data-testid=add-role-title]').innerText()), 'the plain Add role form keeps its title after Add group')
+  await page.keyboard.press('Escape')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
+
+  // Duplicate the right-most role: the copy comes into view and its description has focus.
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [1024, 640])
+  await sleep(600)
+  const rightmost = await page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].map((n) => ({ id: n.dataset.id, x: n.getBoundingClientRect().right })).sort((a, b) => b.x - a.x)[0].id)
+  const before = (await findProject(page, NAME)).roles.length
+  await page.locator(`.react-flow__node[data-id="${rightmost}"]`).click({ position: { x: 20, y: 20 } })
+  await page.locator('[data-testid=role-node-duplicate]').click()
+  await sleep(1000)
+  const after = await findProject(page, NAME)
+  check(after.roles.length === before + 1, 'Duplicate adds one role')
+  const copy = await page.evaluate(() => document.querySelector('.react-flow__node.selected')?.dataset.id)
+  const gap = await stageGap(page, `.react-flow__node[data-id="${copy}"]`)
+  check(insideStage(gap), 'the duplicated role is brought into view', JSON.stringify(gap))
+  check(await page.evaluate(() => document.activeElement?.id === 'role-description'), 'focus stays on the copy\'s description after Duplicate')
+  const tbGap = await page.evaluate(() => {
+    const el = document.querySelector('.role-node-toolbar-row'), v = document.querySelector('.editor .frame-stage').getBoundingClientRect()
+    const b = el?.getBoundingClientRect()
+    return b ? { left: b.left - v.left, right: v.right - b.right, top: b.top - v.top } : null
+  })
+  check(!!tbGap && tbGap.left >= 0 && tbGap.right >= 0 && tbGap.top >= 0, 'the new role\'s toolbar is inside the chart', JSON.stringify(tbGap))
+  await shot('review-fixes-duplicate')
+
+  // Escape on a focused role keeps focus on the role.
+  const nodeSel = `.react-flow__node[data-id="${copy}"]`
+  await page.locator(nodeSel).focus()
+  await page.keyboard.press('Escape')
+  await sleep(500)
+  check(await page.evaluate((s) => document.activeElement?.matches(s) === true, nodeSel), 'Escape on a focused role keeps focus on the role')
+
+  // Tab order: the selected role, then its actions, then the next role.
+  await page.locator(nodeSel).focus()
+  await page.keyboard.press('Enter')
+  await sleep(400)
+  await page.locator(nodeSel).focus()
+  await page.keyboard.press('Tab')
+  check(await page.evaluate(() => document.activeElement?.closest('.role-node-toolbar-row') !== null), 'Tab from the selected role lands on its actions')
+  await page.keyboard.press('Shift+Tab')
+  check(await page.evaluate((s) => document.activeElement?.matches(s) === true, nodeSel), 'Shift+Tab from the first action returns to the role')
+  await page.keyboard.press('Shift+F10')
+  const menuOpen = await page.locator('[data-testid=role-node-menu]').isVisible().catch(() => false)
+  check(menuOpen, 'Shift+F10 on the role still opens its menu')
+  await page.keyboard.press('Escape')
+  await sleep(300)
+  // Undo the duplicate through its notice.
+  const undo = page.locator('[data-testid=team-notice-undo]')
+  if (await undo.count()) await undo.click()
+  await sleep(400)
+}
+
 const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
   await openTeam(page)
   for (const [w, h] of SIZES) {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(500)
+    // Review M8: a short window folds the Team assistant to its Ask bar, so the chart keeps its room.
+    const more = page.locator('[data-testid=team-assistant-more]')
+    const folded = (await more.getAttribute('aria-expanded')) === 'false'
+    check(folded === (h <= 760), `the Team assistant is ${h <= 760 ? 'folded to the Ask bar' : 'open'} at ${w}x${h}`, String(folded))
+    if (folded) {
+      check(!(await page.locator('[data-testid=team-recommend]').isVisible()), 'folded: the recommendations are hidden')
+      check((await page.locator('.editor .frame-stage').evaluate((el) => el.getBoundingClientRect().height)) >= 360, `the chart has at least 360 px of height at ${w}x${h}`)
+    }
     for (const theme of THEMES) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await teamPanelTab(page, 'Catalog').click()
@@ -1302,6 +1428,7 @@ try {
   for (const [w, h] of SIZES) {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
     await sleep(500)
+    await expandAssistant(page)
     await page.locator('[data-testid=team-recommend]').click()
     await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
     await sleep(400)
@@ -1328,6 +1455,7 @@ try {
     }
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  await sectionReviewFixes(page, app, shot)
   await sectionNodeMenu(page)
   await sectionAddAndDrag(page, app, shot)
   await sectionAddIdsAndLongName(page, app, shot)

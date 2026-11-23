@@ -29,7 +29,9 @@
   gap: var(--space-3);
   padding: var(--space-4) var(--space-4) var(--space-3);
   border-bottom: 0;
-  background: var(--glass-strong, var(--surface-1));
+  /* The header is sticky: its glass sits on an opaque surface so scrolled content never shows through. */
+  background: linear-gradient(var(--glass-strong, transparent), var(--glass-strong, transparent)), var(--surface-1);
+  align-items: flex-start;
 }
 .ri-avatar {
   flex: none;
@@ -38,7 +40,8 @@
   width: var(--space-10);
   height: var(--space-10);
   border-radius: var(--radius-lg);
-  background: var(--role);
+  /* Same recipe as the chart's avatar (editor.css): white initials stay above 4.5:1 on any role colour. */
+  background: color-mix(in oklab, var(--role) 50%, var(--role-shade, #000));
   color: var(--text-on-accent);
   font-size: var(--text-title-sm);
   font-weight: var(--weight-semibold);
@@ -52,11 +55,16 @@
   font-size: var(--text-title-lg);
   line-height: var(--text-title-lg-lh);
   letter-spacing: 0;
+  /* A long name wraps (two lines at most, the full name in its title) instead of cutting off at one line. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 .ri-subline {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);

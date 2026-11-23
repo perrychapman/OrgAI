@@ -26,7 +26,7 @@ import SaveTemplateDialog from '../components/templates/SaveTemplateDialog'
 import ApplyTemplateDialog from '../components/templates/ApplyTemplateDialog'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { Tabs, panelDomId, tabDomId } from '../components/ui/Tabs'
-import TeamAssistantTray from '../components/team/TeamAssistantTray'
+import TeamAssistantTray, { TEAM_ASSISTANT_EXPAND } from '../components/team/TeamAssistantTray'
 import TeamCatalog from '../components/team/TeamCatalog'
 import { capabilityCounts, capabilityLabel } from '../lib/teamView'
 import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
@@ -87,6 +87,9 @@ import { serverGranted, teamGroupCount } from '../lib/roleCapabilities'
 
 const nodeTypes = { role: RoleNode }
 
+/** A wide team fits a 1024 px window only below React Flow's default 0.5, so the chart may zoom out further (review M8). */
+const TEAM_MIN_ZOOM = 0.3
+
 /**
  * The chart's zoom group (Team board): zoom out, the zoom level, zoom in, fit and Tidy (lay every role out again).
  * Inside React Flow's own Controls panel, so the reveal logic and e2e keep finding `.react-flow__controls` and its
@@ -95,8 +98,8 @@ const nodeTypes = { role: RoleNode }
 function TeamZoomControls({ onTidy, padding }: { onTidy: () => void; padding: `${number}%` }): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow()
   const { zoom } = useViewport()
-  // React Flow's defaults (minZoom 0.5, maxZoom 2): the buttons say when they can go no further (review L6).
-  const atMin = zoom <= 0.5 + 0.001
+  // The chart's limits (TEAM_MIN_ZOOM, React Flow's default maxZoom 2): the buttons say when they can go no further (review L6).
+  const atMin = zoom <= TEAM_MIN_ZOOM + 0.001
   const atMax = zoom >= 2 - 0.001
   const pct = `${Math.round(zoom * 100)}%`
   const reduced = useReducedMotion()
@@ -496,7 +499,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           initialWidth: ROLE_SIZE.width,
           initialHeight: ROLE_SIZE.height,
           ...(nodeDims.dims[role.id] ? { measured: nodeDims.dims[role.id] } : {}),
-          ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
+          ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.${role.id === selectedRoleId ? ' Tab moves to its actions.' : ''}`,
           // The chip counts the direct reports this role may actually delegate to, not every report.
           data: {
             role,
@@ -723,10 +726,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   )
 
   /** Opens the Add role popover on the header button, with `parentId` as "Reports to" when given. */
-  const openAddRole = (parentId?: string): void => {
+  const openAddRole = (parentId?: string, group?: boolean): void => {
     const trigger = rootRef.current?.querySelector<HTMLButtonElement>('[data-testid=team-add-role]')
     if (!trigger) return
-    if (parentId) setAddRequest((r) => ({ parentId, n: (r?.n ?? 0) + 1 }))
+    if (parentId) setAddRequest((r) => ({ parentId, n: (r?.n ?? 0) + 1, ...(group ? { group: true } : {}) }))
     if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
   }
 
@@ -786,6 +789,19 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     const el = e.target as HTMLElement
     if (el.classList.contains('react-flow__node') && el.dataset.id) {
       if (roleMenu.onKeyDown(e, el.dataset.id, { anchor: el, invoker: el, ...roleMenuOpts(el.dataset.id) })) return
+      const id = el.dataset.id
+      // React Flow unselects the node on Escape and blurs it on the next frame, which drops focus to the page: put it
+      // back on the role (the keyboard user stays where they were on the chart).
+      if (e.key === 'Escape') window.requestAnimationFrame(() => focusNode(id))
+      // The toolbar is portalled after every node: Tab from the selected role goes straight to its actions.
+      if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && id === selectedRoleId) {
+        const first = rootRef.current?.querySelector<HTMLElement>('.role-node-toolbar-row button')
+        if (first) {
+          e.preventDefault()
+          first.focus()
+          return
+        }
+      }
     }
     if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('react-flow__node')) {
       focusTarget.current = 'role-name-input'
@@ -797,10 +813,19 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   /** Pan (never zoom) so a role at `pos` is fully inside the stage, clear of the zoom controls and minimap. */
   const revealRole = (roleId: string, pos: { x: number; y: number }, size: { width: number; height: number }): void => {
-    window.setTimeout(() => {
+    // Pass 0 waits for the node to be drawn and glides; pass 1 (after the glide and any refit that overlapped it) checks
+    // again and corrects at once, so a pan that a refit or an earlier glide cut short never leaves the new role outside.
+    const run = (pass: 0 | 1 | 2, tries = 0): void => {
       const flow = flowRef.current
       const stage = frameRef.current?.querySelector<HTMLElement>('.frame-stage')
       if (!flow || !stage) return
+      // The checking passes only matter while the new role is still the one being looked at.
+      if (pass > 0 && useAppStore.getState().selectedRoleId !== roleId) return
+      const drawn = stage.querySelector(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)
+      if (pass === 0 && !drawn && tries < 20) {
+        window.setTimeout(() => run(0, tries + 1), 50)
+        return
+      }
       const vp = flow.getViewport()
       const view = stage.getBoundingClientRect()
       const inStage = (el: Element | null): StageRect | null => {
@@ -817,8 +842,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         .map(inStage)
         .filter((r): r is StageRect => r !== null)
       const { dx, dy } = revealShift(node, { w: view.width, h: view.height }, REVEAL_MARGIN, obstacles)
-      if (dx !== 0 || dy !== 0) void flow.setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: fitMs(reducedMotion) })
-    }, 60)
+      // Pass 0 glides (instant under reduced motion); the checking passes move at once.
+      const ms = pass === 0 ? fitMs(reducedMotion) : 0
+      if (dx !== 0 || dy !== 0) void flow.setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: ms })
+      if (pass < 2) window.setTimeout(() => run((pass + 1) as 1 | 2), pass === 0 ? ms + 450 : 600)
+    }
+    window.setTimeout(() => run(0), 60)
   }
 
   /**
@@ -934,7 +963,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
   // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.
   const openAssistant = (): void => {
-    window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus())
+    // A short window folds the recommendations: unfold them first, then focus the primary button.
+    window.dispatchEvent(new Event(TEAM_ASSISTANT_EXPAND))
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus()))
   }
 
   /** Lay every role out in `dir`: the nodes glide to their places (up to 60 of them), then one fit. */
@@ -1006,6 +1037,16 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       setHintSeen(true)
     }
   }
+  // The engagement header's Undo button (EngagementTeam board) is the latest change's own Undo: the same action as the
+  // notice row's button, so nothing new is undoable and the button goes when its notice does.
+  const undoNotice = [ranked.current, ...ranked.waiting].find((n): n is TeamNotice => !!n && !!n.actions?.some((a) => a.id === 'undo'))
+  const headerUndo = undoNotice
+    ? {
+        label: undoNotice.title ?? undoNotice.text,
+        busy: !!undoNotice.actions?.find((a) => a.id === 'undo')?.busy,
+        onUndo: () => onNoticeAction(undoNotice, 'undo')
+      }
+    : null
   const onNoticeDismiss = (n: TeamNotice): void => {
     if (n.key.startsWith('store:')) dismissImportNotice(project.id)
     else clear(n.key)
@@ -1042,7 +1083,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           <TeamHeader
             roleCount={project.roles.length}
             groupCount={teamGroupCount(project.roles)}
-            onAddGroup={root ? () => openAddRole(root.id) : undefined}
+            onAddGroup={root ? () => openAddRole(root.id, true) : undefined}
             onImport={() => setImportDialog({ fresh: false })}
             layout={layoutDir}
             onLayoutChange={changeLayout}
@@ -1074,6 +1115,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               onReview: () => setCardFocusN((n) => n + 1),
               applied: filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />
             }}
+            engagement={engagement ? { undo: headerUndo } : undefined}
             addRole={<AddRolePopover roles={project.roles} selectedRoleId={selectedRoleId} request={addRequest} onSubmit={addRole} />}
           />
         </FrameToolbar>
@@ -1110,6 +1152,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             aria-describedby="team-chart-desc"
             fitView
             fitViewOptions={{ padding: TEAM_FIT_PADDING, maxZoom: 1 }}
+            minZoom={TEAM_MIN_ZOOM}
             elevateEdgesOnSelect={false}
             proOptions={{ hideAttribution: true }}
             deleteKeyCode={['Delete', 'Backspace']}

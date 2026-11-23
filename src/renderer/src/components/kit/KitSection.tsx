@@ -7,7 +7,7 @@ import { clampLabel } from '../../lib/clampLabel'
 import { showHidden } from '../../lib/hiddenChars'
 import { kitApi, type KitApplyResult, type KitExportResult, type KitImportPreview } from '../../lib/kitApi'
 import { KIT_LAST_KEY, importedCount, importedLine, kitLastLine, needsSecretsLine, parseKitLast, type KitLast } from '../../lib/kit'
-import { APP_SETTINGS_PANES, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { openToolsAndServices } from './openToolsAndServices'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { CopyButton } from '../ui/CopyButton'
@@ -61,12 +61,7 @@ export default function KitSection(): ReactElement | null {
     }
   }
 
-  const openConnectors = (): void => {
-    requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
-    // Project settings ignore app deep links: switch to app Settings first, then ask for the pane.
-    useAppStore.getState().setView('appSettings')
-    window.dispatchEvent(new Event('orgai:settings-section'))
-  }
+  const openConnectors = (): void => openToolsAndServices()
 
   return (
     <SettingsSection

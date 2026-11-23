@@ -1061,26 +1061,33 @@
   backdrop-filter: var(--glass-blur, none);
   color: var(--accent-text);
 }
-.team-ask-bar:has(.team-ask-input:focus-visible) {
+.team-ask-bar:has(.input:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .team-ask-bar > svg {
   flex: none;
 }
-.team-ask-input {
+/* The shared Input, flattened into the glass bar: the bar draws the border and the focus ring. */
+.team-ask-bar > .input {
   flex: 1 1 auto;
+  width: auto;
   min-width: 0;
   height: var(--space-8);
+  padding: 0;
   border: 0;
+  border-radius: 0;
   outline: 0;
+  box-shadow: none;
   background: transparent;
-  color: var(--text-primary);
   font: inherit;
   font-size: var(--text-body);
 }
-.team-ask-input::placeholder {
-  color: var(--text-tertiary);
+.team-ask-bar > .input:focus {
+  border: 0;
+  box-shadow: none;
+}
+.team-ask-bar > .input::placeholder {
   text-overflow: ellipsis;
 }
 .team-ask-hint {

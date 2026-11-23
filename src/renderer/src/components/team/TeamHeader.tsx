@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Download, FolderPlus, LayoutGrid, Check } from 'lucide-react'
+import { ChevronDown, Download, FolderPlus, LayoutGrid, Check, Undo2 } from 'lucide-react'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import StartFromMenu, { type StartFromMenuProps } from './StartFromMenu'
@@ -172,6 +172,11 @@ export interface TeamHeaderProps {
   files: Omit<TeamFilesChipProps, 'compact'>
   /** The Add role control (AddRolePopover): the one primary button of the tab. */
   addRole: ReactNode
+  /**
+   * Engagements (EngagementTeam board): the latest change's Undo as a header button and the line that says the Team saves
+   * as you edit (there is no Save button). `undo` is null while no change has an Undo to offer.
+   */
+  engagement?: { undo: { label: string; busy?: boolean; onUndo: () => void } | null }
 }
 
 /**
@@ -179,7 +184,7 @@ export interface TeamHeaderProps {
  * the frame keeps its toolbar. Never wraps: under HEADER_COMPACT_BELOW the Team files chip, Layout and Start from keep
  * only their icon. The problems chip and the view switch are placeholders for phases 4 and 5.
  */
-export default function TeamHeader({ roleCount, groupCount = 0, onAddGroup, onImport, layout, onLayoutChange, onArrange, startFrom, files, addRole }: TeamHeaderProps): ReactElement {
+export default function TeamHeader({ roleCount, groupCount = 0, onAddGroup, onImport, layout, onLayoutChange, onArrange, startFrom, files, addRole, engagement }: TeamHeaderProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
   // The header's own width (it follows the frame, not the window): measured, not guessed from a media query.
   const [width, setWidth] = useState<number | null>(null)
@@ -206,8 +211,27 @@ export default function TeamHeader({ roleCount, groupCount = 0, onAddGroup, onIm
         {/* The problems chip (`team-problems-chip`) stays out of the DOM until the check is live (phase 4). */}
         {/* Empty until the Chart | List | Capabilities switch lands (phases 4 and 5). */}
         <div className="team-view-switch" data-testid="team-view-switch" />
+        {engagement && (
+          <span className="team-header-saved" data-testid="team-saves-hint" title="Every change saves as you make it, so there is no Save button. Undo reverses the latest one.">
+            Saves as you edit
+          </span>
+        )}
       </div>
       <div className="team-header-right">
+        {engagement?.undo && (
+          <button
+            type="button"
+            className="btn sm team-header-btn"
+            data-testid="team-undo"
+            aria-label={compact ? `Undo: ${engagement.undo.label}` : undefined}
+            title={engagement.undo.label}
+            disabled={engagement.undo.busy}
+            onClick={engagement.undo.onUndo}
+          >
+            <Icon icon={Undo2} size="sm" />
+            {!compact && <span>Undo</span>}
+          </button>
+        )}
         {onAddGroup && (
           <button
             type="button"

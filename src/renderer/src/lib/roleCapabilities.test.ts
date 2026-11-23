@@ -162,7 +162,8 @@ describe('panel header and chips', () => {
   })
   it('words the subline', () => {
     expect(roleSubline(roles, roles[0])).toBe('Leads the team')
-    expect(roleSubline(roles, roles[2])).toBe('Lead reviewer \u00b7 reports to Lead reviewer')
+    expect(roleSubline(roles, roles[2])).toBe('Reports to Lead reviewer')
+    expect(roleSubline(roles, roles[1])).toBe('Reports to Orchestrator')
     expect(roleSubline(roles, { id: 'x', name: 'Lost', reportsTo: 'gone' })).toBe('Lost')
   })
   it('knows a role that cannot change files', () => {

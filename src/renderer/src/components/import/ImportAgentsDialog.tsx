@@ -130,7 +130,7 @@ function ImportRow({
             )}
           </div>
           <div className="import-field">
-            <label htmlFor={`${uid}-model`}>Level</label>
+            <label htmlFor={`${uid}-model`}>Model</label>
             <Select id={`${uid}-model`} value={item.model} options={models} onChange={(model) => onEdit({ model })} disabled={!included} />
           </div>
         </div>
@@ -155,9 +155,9 @@ function ImportRow({
       </div>
       {(item.modelReason === 'default' || item.modelReason === 'inherit' || (item.tier && item.modelReason === 'tier') || spend) && (
         <p className="hint import-hints">
-          {item.modelReason === 'default' && <span>Not recognised, so the Standard level was used. </span>}
+          {item.modelReason === 'default' && <span>Not recognised, so the Standard model was used.</span>}
           {item.modelReason === 'inherit' && <span>Inherit means it uses its parent&apos;s model. </span>}
-          {item.tier && item.modelReason === 'tier' && <span>Mapped to your {PLAIN_TIER_WORD[item.tier]} level. </span>}
+          {item.tier && item.modelReason === 'tier' && <span>Mapped to your {PLAIN_TIER_WORD[item.tier]} model.</span>}
           {spend && <span data-testid="import-spend">{spend}</span>}
         </p>
       )}
@@ -597,7 +597,7 @@ export default function ImportAgentsDialog({
               <div className="import-main">
                 {fromCard}
                 <SegmentedControl label="Import mode" value={mode} options={MODES} onChange={setMode} />
-                {preview && <p className="hint import-mode-line">{modeLine(mode, count, project.roles.length)}</p>}
+                {preview && <p className="hint import-mode-line">{modeLine(mode, count, project.roles.length, preview.roles.length)}</p>}
                 {error && (
                   <Banner tone="danger" title="Could not build the preview">
                     {error}
@@ -628,7 +628,7 @@ export default function ImportAgentsDialog({
                       </Button>
                     </div>
                     <p className="hint">
-                      Models become levels of {mock ? "the connection's tiers (mock adapter)" : `${connectionLabel(preview.connection)}'s tiers`}
+                      Each model becomes one of {mock ? "the connection's tiers (mock adapter)" : `${connectionLabel(preview.connection)}'s tiers`}
                       {flat ? '; roles without a hierarchy report to the orchestrator' : ''}. Change either below.
                     </p>
                     <ul className="import-roles" aria-busy={loading}>
@@ -666,7 +666,7 @@ export default function ImportAgentsDialog({
                   <ul className="import-notes">
                     <li>{teamSizeLine(project.roles.length, preview.roles.length)}</li>
                     <li>Imported roles keep their own instructions, word for word.</li>
-                    <li>Model names in the files become levels (Fast, Standard, Advanced, Most capable).</li>
+                    <li>Model names in the files become model tiers (Fast, Standard, Advanced, Most capable).</li>
                   </ul>
                 </aside>
               )}

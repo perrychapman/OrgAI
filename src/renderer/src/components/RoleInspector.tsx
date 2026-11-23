@@ -182,7 +182,7 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
         </div>
         <div className="ri-heading">
           <h2 title={role.name || 'Role'}>{role.name || 'Role'}</h2>
-          <div className="ri-subline" data-testid="role-subline">
+          <div className="ri-subline" data-testid="role-subline" title={roleSubline(project.roles, role)}>
             {roleSubline(project.roles, role)}
           </div>
         </div>
