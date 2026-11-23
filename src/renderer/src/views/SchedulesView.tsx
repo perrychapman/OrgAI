@@ -13,6 +13,9 @@ import { Switch } from '../components/ui/Switch'
 import { useConfirm } from '../components/ui/ConfirmDialog'
 import ScheduleRow from '../components/schedules/ScheduleRow'
 import ScheduleEditor from '../components/schedules/ScheduleEditor'
+import ScheduleDetail from '../components/schedules/ScheduleDetail'
+import WeekStrip from '../components/schedules/WeekStrip'
+import { boardSummary, lastTone, scheduleColour, summaryText } from '../lib/schedulesBoard'
 import { saveSchedulesPaused, useSchedules } from '../components/schedules/useSchedules'
 import { cleanIpcError } from '../lib/ipcError'
 import { folderName } from '../lib/paths'
@@ -69,6 +72,12 @@ export default function SchedulesView(): ReactElement {
   const refs = useMemo(() => projects.filter((p) => !isVirtualProjectId(p.id)).map((p) => ({ id: p.id, name: p.name })), [projects])
   const rows = useMemo(() => (data.list ? scheduleRows(data.list, { now, projects: refs, globalPaused: !!data.paused, folderName }) : []), [data.list, now, refs, data.paused])
   const byId = useMemo(() => new Map((data.list ?? []).map((s) => [s.id, s])), [data.list])
+  const [pickedId, setSelectedId] = useState<string | null>(null)
+  // The picked schedule, else the one a focus request names, else the first row. A deleted pick falls back.
+  const selectedId = pickedId && byId.has(pickedId) ? pickedId : (rows[0]?.id ?? null)
+  const selectedRow = rows.find((r) => r.id === selectedId) ?? null
+  const selectedSchedule = selectedId ? (byId.get(selectedId) ?? null) : null
+  const summary = useMemo(() => boardSummary(data.list ?? [], !!data.paused), [data.list, data.paused])
 
   // Land on the page heading, or on one schedule's row (the run meta's "Scheduled:" label).
   useEffect(() => {
@@ -76,6 +85,7 @@ export default function SchedulesView(): ReactElement {
     // Wait for the list when a row is the target, unless it failed to load (then land on the heading).
     if (focus.scheduleId && !data.list && !data.error) return
     handledFocusSeq = focus.seq
+    if (focus.scheduleId) setSelectedId(focus.scheduleId)
     requestAnimationFrame(() => {
       const row = focus.scheduleId ? document.querySelector<HTMLElement>(`[data-testid="schedule-row"][data-schedule-id="${CSS.escape(focus.scheduleId)}"]`) : null
       if (row) {
@@ -171,9 +181,14 @@ export default function SchedulesView(): ReactElement {
   return (
     <div className="schedules-view" data-testid="schedules-view" aria-busy={data.loading && !data.list}>
       <div className="topbar">
-        <h1 ref={h1Ref} tabIndex={-1}>
+        <h1 ref={h1Ref} tabIndex={-1} className="schedules-title">
           Schedules
         </h1>
+        {data.list && data.list.length > 0 && (
+          <span className="schedules-summary" data-testid="schedules-summary">
+            {summaryText(summary, now, !!data.paused)}
+          </span>
+        )}
         <div className="spacer" />
         <div className="schedules-pause-all">
           <Switch
@@ -253,6 +268,8 @@ export default function SchedulesView(): ReactElement {
                   {data.error} The list may be out of date.
                 </p>
               )}
+              <WeekStrip list={data.list} now={now} globalPaused={!!data.paused} />
+              <div className="schedules-board">
               <ul className="schedules-list" data-testid="schedules-list" aria-label="Schedules">
                 {rows.map((row) => {
                   const s = byId.get(row.id) as Schedule
@@ -262,6 +279,10 @@ export default function SchedulesView(): ReactElement {
                       row={row}
                       busy={!!busy[row.id]}
                       historyKey={historyKeys[row.id] ?? 0}
+                      selected={row.id === selectedId}
+                      colour={scheduleColour(data.list ?? [], row.id)}
+                      tone={lastTone(s)}
+                      onSelect={() => setSelectedId(row.id)}
                       onRunNow={() => runNow(s)}
                       onToggle={() => toggle(s, row.toggle === 'Resume')}
                       onEdit={() => setEditor({ open: true, editing: s })}
@@ -275,6 +296,8 @@ export default function SchedulesView(): ReactElement {
                   )
                 })}
               </ul>
+              {selectedRow && selectedSchedule && <ScheduleDetail schedule={selectedSchedule} row={selectedRow} />}
+              </div>
             </>
           )}
         </div>
