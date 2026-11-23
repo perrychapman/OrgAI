@@ -351,3 +351,25 @@
   flex-direction: column;
   gap: var(--space-2);
 }
+
+/* What an approved proposal did and its next step: its own row under the run header, never folded into a menu. */
+.proposal-next-note {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--glass-line);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.proposal-next-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

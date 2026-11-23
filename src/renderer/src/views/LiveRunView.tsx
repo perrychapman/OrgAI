@@ -60,6 +60,7 @@ import { Popover } from '../components/ui/Popover'
 import { Switch } from '../components/ui/Switch'
 import RunActions from '../components/RunActions'
 import RunMeta from '../components/RunMeta'
+import ProposalNextNote from '../components/proposals/ProposalNextNote'
 import { useCssVar } from '../lib/useCssVar'
 import { activeRun, useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
@@ -1281,6 +1282,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           {orgChangeRun ? 'Review or adjust the changes on the Team tab.' : 'The Architect is done. Review or adjust what it set up on the Team tab.'}
         </Banner>
       )}
+      <ProposalNextNote runId={run.summary.id} />
       <div className="run-body" ref={bodyRef} data-layout={layout} data-side-panel={sidePanel ? undefined : 'none'} data-dock={dockState}>
 
         <CanvasFrame frameRef={canvasRef} announcement={arrival}>

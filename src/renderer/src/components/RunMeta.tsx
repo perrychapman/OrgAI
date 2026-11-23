@@ -18,8 +18,7 @@ import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
 import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, parseBreakdownPartial, recordedBreakdown, recordedBreakdownText, recordedLabel, recordedTitle } from '../lib/knowledgeRun'
 import { isRunWindow, revealKnowledgeTab } from '../lib/runKnowledge'
-import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
-import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
+import { proposalNextLead } from '../lib/proposalNext'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
 import { staffingCounts } from '../lib/planGraph'
@@ -238,8 +237,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const metaTone = metaMode ? permissionTone(metaEnded ? metaMode : modeInForce(summary, metaMode)) : null
   const metaLabel = metaMode ? (metaEnded ? permissionModeName(metaMode) : modeInForceLabel(summary, metaMode)) : ''
   const scheduleName = showHidden(summary.scheduleName ?? '').trim() || 'Scheduled run'
-  const next = useAppStore((s) => s.proposalNextByRun[summary.id])
-  const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
   // Status (dot and word, never colour alone) and the model with its exact id in the title.
   const status = statusOfRun(run, project, needsYou(run))
   const statusWord = statusText(status)
@@ -248,22 +245,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const modelLabel = (modelId && modelCatalog?.find((m) => m.id === modelId)?.label) || modelId
   const lineRef = useRef<HTMLDivElement>(null)
   const folded = useMetaFold(lineRef)
-  const goNext = (): void => {
-    if (!next) return
-    const st = useAppStore.getState()
-    if (next.kind === 'skillsLibrary') {
-      requestSkillLibrary()
-      st.setView('appSettings')
-    } else if (next.kind === 'connectors') {
-      requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
-      st.setView('appSettings')
-    } else if (next.kind === 'mcpProject' || next.kind === 'mcpSecrets') {
-      st.openProjectMcp(next.projectId)
-    } else {
-      if (st.selectedProjectId !== next.projectId) st.selectProject(next.projectId)
-      st.setView('team')
-    }
-  }
   return (
     <div className="run-meta" data-testid="run-meta" ref={lineRef}>
       <span className="run-meta-item run-meta-status" data-prio="0" data-testid="run-meta-status" data-tone={STATUS_TONE[status.tone]} title={status.note && status.note !== statusWord ? `${statusWord}: ${status.note}` : statusWord}>
@@ -287,26 +268,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <span className="run-meta-item run-meta-cost" data-prio="2">
           <Cost value={cost} labelled />
         </span>
-      )}
-      {next && nextCopy && (
-        <div className="run-meta-item run-meta-next" data-prio="9">
-          <span data-testid="proposal-next-lead">{proposalNextLead(next)}</span>
-          {next.roster && next.roster.deferred.length > 0 && (
-            <ul className="run-meta-next-list" data-testid="proposal-next-deferred">
-              {next.roster.deferred.map((d, i) => (
-                <li key={i}>
-                  {clampLabel(showHidden(d.name), 40)}: {clampLabel(showHidden(d.reason), 200)}
-                </li>
-              ))}
-            </ul>
-          )}{' '}
-          <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
-            {nextCopy.action}
-          </button>
-          <button type="button" className="link-btn" onClick={() => useAppStore.getState().noteProposalNext(summary.id, null)} aria-label="Dismiss this note">
-            Dismiss
-          </button>
-        </div>
       )}
       {!isVirtualProjectId(project.id) && (
         <span className="run-meta-wrap" data-prio="9">
