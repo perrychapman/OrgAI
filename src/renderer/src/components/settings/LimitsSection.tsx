@@ -60,6 +60,13 @@ function UsdInput({ id, label, describedBy, testId, value, onCommit }: { id: str
   )
 }
 
+/**
+ * Day / month caps and the spend warning show only once main measures project spend (runtime/projectSpend.ts). On
+ * this base it is still the contract stub (spend always 0), so a cap could never bite: the rows stay hidden until the
+ * runtime branch with the real projectSpend is merged, then this flips to true.
+ */
+const PERIOD_CAPS_LIVE = false
+
 const WARN_OPTIONS = [
   { value: 'off', label: 'Off' },
   { value: '50', label: '50% of a limit' },
@@ -269,7 +276,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         )}
       </SettingsSection>
 
-      {metered && (
+      {PERIOD_CAPS_LIVE && metered && (
         <SettingsSection id="settings-section-period-limits" title="Per day and per month" description="Counts every run and schedule in this project." testId="period-limits-section">
           {periodCard}
         </SettingsSection>
@@ -313,7 +320,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
       </SettingsSection>
 
       <SettingsAdvanced paneKey="project-limits">
-        {!metered && <SettingsGroup title="Per day and per month">{periodCard}</SettingsGroup>}
+        {PERIOD_CAPS_LIVE && !metered && <SettingsGroup title="Per day and per month">{periodCard}</SettingsGroup>}
         <StaffingSettings project={project} patch={patch} />
         <SettingsGroup title="Runs and agents">
           <SettingsCard>

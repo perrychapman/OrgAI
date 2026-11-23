@@ -583,6 +583,11 @@ try {
     // Day and month caps (Limits board): at rest when metered, in Advanced on a plan; saved to the project.
     await paneTab('Spending limits')
     if (!(await page.locator('[data-testid=limit-day-input]').isVisible().catch(() => false))) await setAdvanced('project-limits', true)
+    // The caps show only once main measures project spend (LimitsSection PERIOD_CAPS_LIVE).
+    if ((await page.locator('[data-testid=limit-day-input]').count()) === 0) {
+      check(true, 'day and month caps are held back until project spend is measured; the caps check was skipped')
+      await setAdvanced('project-limits', false)
+    } else {
     await page.locator('[data-testid=limit-day-input]').fill('12.5')
     await page.locator('[data-testid=limit-day-input]').press('Enter')
     await sleep(800)
@@ -596,6 +601,7 @@ try {
     await sleep(800)
     check((await findProject(page, NAME))?.maxDailyUsd === undefined, 'clearing the day limit removes it')
     await setAdvanced('project-limits', false)
+    }
   }
 
   // N6: the Team tab reaches the Team assistant select in one click (Permissions > Advanced, select focused).
