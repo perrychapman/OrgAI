@@ -24,6 +24,12 @@ export interface SpawnCapInput {
   roleId: string
   /** Every agent this session has started, ended ones included. The root is skipped. */
   agents: Iterable<SpawnCapAgent>
+  /**
+   * Agents of the same run that `agents` does not hold: the bridged children's agents (and, inside a bridged child, the
+   * run's other agents), read live from `RuntimeContext.spawnCapAgents`. An entry whose id is already in `agents` is the same
+   * agent and counts once (the session's own record wins); the root is skipped like everywhere else.
+   */
+  extraAgents?: Iterable<SpawnCapAgent>
   /** Role ids of spawns already approved that have no agent yet (parallel calls in one message). Undefined entries count only toward the total. */
   pending?: Iterable<string | undefined>
 }
@@ -38,11 +44,19 @@ export interface SpawnCapCounts {
 
 const ended = (a: Pick<AgentInstance, 'state'>): boolean => a.state === 'done' || a.state === 'error'
 
-export function spawnCapCounts(input: Pick<SpawnCapInput, 'roleId' | 'agents' | 'pending'>): SpawnCapCounts {
+export function spawnCapCounts(input: Pick<SpawnCapInput, 'roleId' | 'agents' | 'pending' | 'extraAgents'>): SpawnCapCounts {
   let started = 0
   let liveOfRole = 0
+  const own = new Set<string>()
   for (const a of input.agents) {
     if (a.id === ROOT_AGENT_ID) continue
+    own.add(a.id)
+    started++
+    if (a.roleId === input.roleId && !ended(a)) liveOfRole++
+  }
+  for (const a of input.extraAgents ?? []) {
+    if (a.id === ROOT_AGENT_ID || own.has(a.id)) continue
+    own.add(a.id)
     started++
     if (a.roleId === input.roleId && !ended(a)) liveOfRole++
   }
@@ -92,14 +106,15 @@ export interface SpawnAllowance {
  */
 export function spawnAllowanceAfter(input: SpawnCapInput): SpawnAllowance {
   const agents = [...input.agents]
+  const extraAgents = [...(input.extraAgents ?? [])]
   const pending = [...(input.pending ?? [])]
   const total = capOf(input.project.maxAgentsPerRun)
   const out: SpawnAllowance = { roleLeft: new Map() }
-  if (total !== undefined) out.agentsLeft = Math.max(0, total - spawnCapCounts({ roleId: input.roleId, agents, pending }).started - 1)
+  if (total !== undefined) out.agentsLeft = Math.max(0, total - spawnCapCounts({ roleId: input.roleId, agents, extraAgents, pending }).started - 1)
   for (const r of input.roles) {
     const cap = capOf(r.maxConcurrent)
     if (cap === undefined) continue
-    const live = spawnCapCounts({ roleId: r.id, agents, pending }).liveOfRole + (r.id === input.roleId ? 1 : 0)
+    const live = spawnCapCounts({ roleId: r.id, agents, extraAgents, pending }).liveOfRole + (r.id === input.roleId ? 1 : 0)
     out.roleLeft.set(r.id, Math.max(0, cap - live))
   }
   return out

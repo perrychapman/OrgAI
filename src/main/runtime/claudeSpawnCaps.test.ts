@@ -199,6 +199,32 @@ describe('Claude: spawn caps (Role.maxConcurrent, Project.maxAgentsPerRun)', () 
     for (let i = 0; i < 4; i++) expect(await spawn(q, `t${i}`, call.engineer(`eng-${i}`))).toEqual({})
   })
 
+  it('counts the run\'s bridged agents (ctx.spawnCapAgents, read live) toward the total and a role cap', async () => {
+    const { ctx, q } = await start(chart({ maxConcurrent: 2 }), { maxAgentsPerRun: 3 })
+    // Two agents a bridged child started, in the run's record but not in this session: 2 of 3 are used.
+    const bridged: { id: string; state: AgentInstance['state']; roleId: string | null }[] = [
+      { id: 'ag_b', state: 'thinking', roleId: 'r-oa' },
+      { id: 'ag_b:h1', state: 'thinking', roleId: 'r-eng' }
+    ]
+    ctx.spawnCapAgents = () => bridged
+    // The engineer cap counts the bridged engineer too: one more engineer is the second, a third would be refused.
+    expect(denial(await spawn(q, 't1', call.engineer('eng-1')))).toBeUndefined()
+    // Three agents now exist (2 bridged + 1 native): the fourth is refused whatever its role.
+    expect(denial(await spawn(q, 't2', call.helper('help-1')))).toContain('Agent limit reached (this run may start 3 agents in total and 3 have started)')
+    // The accessor is read at every spawn, not once: when the bridged list shrinks (a removed agent) the next spawn passes.
+    bridged.pop()
+    expect(denial(await spawn(q, 't3', call.helper('help-1')))).toBeUndefined()
+  })
+
+  it('a role cap counts a live bridged agent of the role, and a finished one frees the slot', async () => {
+    const { ctx, q } = await start(chart({ maxConcurrent: 1 }))
+    const bridged: { id: string; state: AgentInstance['state']; roleId: string | null }[] = [{ id: 'ag_b:e1', state: 'thinking', roleId: 'r-eng' }]
+    ctx.spawnCapAgents = () => bridged
+    expect(denial(await spawn(q, 't1', call.engineer('eng-1')))).toContain('Concurrent limit for engineer reached (1 running at once)')
+    bridged[0]!.state = 'done'
+    expect(denial(await spawn(q, 't2', call.engineer('eng-1')))).toBeUndefined()
+  })
+
   it('a report spawning under a cap is refused by the same gate', async () => {
     const { ctx, q } = await start(chart(), { maxAgentsPerRun: 1 })
     await spawn(q, 't1', call.engineer('eng-1'))

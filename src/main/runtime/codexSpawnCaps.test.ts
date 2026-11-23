@@ -153,6 +153,34 @@ describe('CodexAdapter: spawn caps, brief and stopAgent', () => {
     expect((await spawnEng(s, 'c5')).success).toBe(true)
   })
 
+  it('counts the run\'s bridged agents (ctx.spawnCapAgents, read live) toward the total and a role cap', async () => {
+    const bridged: { id: string; state: AgentInstance['state']; roleId: string | null }[] = [
+      { id: 'ag_b', state: 'thinking', roleId: 'r-oa' },
+      { id: 'ag_b:h1', state: 'thinking', roleId: 'r-eng' }
+    ]
+    const { s } = await start(chart({ maxConcurrent: 2 }), { maxAgentsPerRun: 3 }, { spawnCapAgents: () => bridged })
+    // Two of the three agents belong to a bridged child: one native spawn fits, the next does not (any role).
+    expect((await spawnEng(s, 'c1')).success).toBe(true)
+    const refused = await spawnEng(s, 'c2', 'helper')
+    expect(refused.success).toBe(false)
+    expect(refused.contentItems[0].text).toContain('Agent limit reached (this run may start 3 agents in total and 3 have started)')
+    expect(s.of('thread/start')).toHaveLength(2)
+    // The accessor is live: an agent leaving the bridged list frees the total.
+    bridged.pop()
+    expect((await spawnEng(s, 'c3', 'helper')).success).toBe(true)
+  })
+
+  it('a bridged agent that is also a member (an adopted report) counts once', async () => {
+    // The member of a bridged spawn_report carries the bridged agent's id; the accessor lists the same agent.
+    const bridged: { id: string; state: AgentInstance['state']; roleId: string | null }[] = []
+    const { s, ctx } = await start(chart(), { maxAgentsPerRun: 2 }, { spawnCapAgents: () => bridged })
+    expect((await spawnEng(s, 'c1')).success).toBe(true)
+    const own = idOf(ctx, 'engineer-1')
+    bridged.push({ id: own, state: 'thinking', roleId: 'r-eng' })
+    expect((await spawnEng(s, 'c2', 'helper')).success).toBe(true)
+    expect((await spawnEng(s, 'c3', 'helper')).success).toBe(false)
+  })
+
   it('no caps set: unchanged behaviour', async () => {
     const { s } = await start()
     for (let i = 0; i < 4; i++) expect((await spawnEng(s, `c${i}`)).success).toBe(true)

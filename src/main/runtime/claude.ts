@@ -3510,7 +3510,7 @@ export class ClaudeSession implements RuntimeSession {
         // no agent yet (spawnModes) count, so parallel calls in one message cannot all slip under a cap.
         const capRole = this.liveRoleBySlug(requested)
         const capDenial = capRole
-          ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values(), pending: [...this.spawnModes.values()].map((e) => e.roleId) })
+          ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values(), extraAgents: this.ctx.spawnCapAgents?.() ?? [], pending: [...this.spawnModes.values()].map((e) => e.roleId) })
           : undefined
         if (capDenial) {
           this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (spawn cap)`)

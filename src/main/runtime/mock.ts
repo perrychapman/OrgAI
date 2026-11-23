@@ -3167,7 +3167,7 @@ export class MockSession implements RuntimeSession {
     // UI overhaul spawn caps (Role.maxConcurrent, Project.maxAgentsPerRun), read from ctx now like the real adapters; a
     // spawn of an agent id that already exists is its resume, not a new agent. Refused like the denials above.
     const capRole = this.roleBySlug(slug)
-    const capDenial = !this.agents.has(step.id) && capRole ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values() }) : undefined
+    const capDenial = !this.agents.has(step.id) && capRole ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values(), extraAgents: this.ctx.spawnCapAgents?.() ?? [] }) : undefined
     if (capDenial) {
       this.log('warn', `Blocked spawn: ${parent.roleSlug} -> ${slug} (spawn cap)`)
       this.transcript(parentId, { kind: 'tool_result', toolUseId, content: capDenial, isError: true })

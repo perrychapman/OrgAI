@@ -72,6 +72,35 @@ describe('mock: spawn caps', () => {
     await session.stop()
   })
 
+  it('counts the run\'s bridged agents (ctx.spawnCapAgents, read live) toward the total and a role cap', async () => {
+    const bridged: { id: string; state: AgentInstance['state']; roleId: string | null }[] = [
+      { id: 'ag_b', state: 'thinking', roleId: 'r-oa' },
+      { id: 'ag_b:h1', state: 'thinking', roleId: 'r-eng' }
+    ]
+    // maxAgentsPerRun 3 with two bridged agents: the first native spawn fits, the second is refused by the total.
+    const { ctx, sessionP, ends } = start([spawn('e1'), spawn('h1', 'helper'), { type: 'finish', id: 'e1', result: 'ok' }], { spawnCapAgents: () => bridged }, chart({ maxConcurrent: 2 }), { maxAgentsPerRun: 3 })
+    const session = await sessionP
+    await vi.waitFor(() => expect(ends).toHaveLength(1))
+    expect(lastOf(ctx.events, 'e1')).toBeDefined()
+    expect(lastOf(ctx.events, 'h1')).toBeUndefined()
+    expect(spawnResults(ctx.events).find((r) => r.isError)?.content).toContain('Agent limit reached (this run may start 3 agents in total and 3 have started)')
+    // Live: with one bridged agent gone the helper now fits.
+    bridged.pop()
+    await (session as unknown as { spawnStep(s: MockStep): Promise<void> }).spawnStep(spawn('h2', 'helper'))
+    expect(lastOf(ctx.events, 'h2')).toBeDefined()
+    await session.stop()
+  })
+
+  it('a live bridged agent of a capped role refuses a native spawn of that role', async () => {
+    const bridged: { id: string; state: AgentInstance['state']; roleId: string | null }[] = [{ id: 'ag_b:e', state: 'thinking', roleId: 'r-eng' }]
+    const { ctx, sessionP, ends } = start([spawn('e1')], { spawnCapAgents: () => bridged }, chart({ maxConcurrent: 1 }))
+    const session = await sessionP
+    await vi.waitFor(() => expect(ends).toHaveLength(1))
+    expect(lastOf(ctx.events, 'e1')).toBeUndefined()
+    expect(spawnResults(ctx.events).find((r) => r.isError)?.content).toContain('Concurrent limit for engineer reached (1 running at once)')
+    await session.stop()
+  })
+
   it('without caps every spawn goes through', async () => {
     const { ctx, sessionP, ends } = start([spawn('e1'), spawn('e2'), spawn('e3')])
     const session = await sessionP

@@ -230,20 +230,42 @@ support for what the overhaul boards draw that the app did not have. The orchest
   pending. Checked with fake timers in `claudeProviderRetry.test.ts`, `codexStaffing.test.ts`, `mockProviderRetry.test.ts` and
   through RunManager in `runManagerMockHold.test.ts`. The Codex tool-call timeout for `spawn_report` is not known (no
   timeout is set in `codex.ts`); unverified live.
-- **Codex has no budget hold from the project cap alone (confirmed, not fixable in an adapter).** `codex.ts` never reads
-  `maxBudgetUsd` or `ctx.budgetUsd`. Claude gets its stop from the SDK (`error_max_budget_usd` -> `budgetReached`). In main,
-  `RunManager.checkSpend` enforces only `RunSummary.runBudgetUsd` (a per-run cap the user chose or a carried one) as `ownCap`;
-  `Project.maxBudgetUsd` alone is read only for the warning and for `budgetReached`. So on Codex (and for any adapter that
-  does not enforce a budget) a project cap alone never stops the run or raises a hold. Module that must change:
-  `runManager.ts checkSpend` (`ownCap` should fall back to `projectBudgetUsd(a.ctx.project)`). A decision that can change
-  spend: needs the Reviewer.
-- **Spawn caps and bridged children (confirmed, not fixable in an adapter).** `bridge.ts delegate_agent` counts the run's whole
-  record and hands a child a snapshot of what is left (`spawnAllowanceAfter`). Two leaks remain: the snapshot is not reduced by
-  agents spawned later, and a native spawn counts only the adapter's own `this.agents` / members (`claude.ts`,
-  `codexAgents.ts`, `mock.ts`), never bridged children, so with `maxAgentsPerRun` 3 a bridged child that starts 2 agents and then a
-  native spawn by the root reach 4. Modules that must change: `types.ts` (an optional `RuntimeContext` accessor for the run's
-  bridged agents), `runManager.ts` (provide it from the run record) and then the three adapters pass it as extra `agents` to
-  `spawnCapRefusal`. The decision stays in `spawnCaps.ts`.
+- **A project budget cap alone now holds a run on every adapter (fixed in main).** `codex.ts` never reads `maxBudgetUsd` or
+  `ctx.budgetUsd`; Claude gets its stop from the SDK (`error_max_budget_usd` -> `budgetReached`). `RunManager.checkSpend`
+  enforced only `RunSummary.runBudgetUsd` (a per-run cap the user chose or a carried one), so on Codex a project cap alone
+  never stopped the run. Now `ownCap` is `runBudgetUsd`, else `projectBudgetUsd(a.ctx.project)` (the project as the run sees it,
+  overrides applied), for a non-exec run without a conversation budget (those keep `checkExecBudget`). A reached cap holds the
+  run on `budget` (scope `run`) and ends it as `endedBy: 'budget'`, with no exec outcome and no `run.finalized`, exactly as the
+  per-run cap and `[mock:budget-stop]` do. For users: a project `maxBudgetUsd` that only produced a warning on Codex runs (and
+  on any adapter that does not enforce a budget) now stops them; it can be raised from the hold card.
+  - *Unknown prices.* Spend that has no known price (all of it `costSource: 'unknown'`, or `costPartial`) under a cap (per-run or
+    project) stops the run too, with a log line saying the limit cannot be enforced and the known part of the spend on the hold,
+    instead of counting as $0. This is what start already does for a chosen unpriced model and what an exec run does
+    (`allowUnpricedBudget` is honoured).
+  - *Claude, two stops.* The SDK compares its own running total, so for the project-cap fallback main compares only the run total
+    the adapter reported (`run.cost`: the SDK's, or the adapter's own pricing on a proxy), never its own estimate from tokens,
+    and cannot stop a Claude run before the SDK would. Whichever stop comes first sets `spendStopped`; the other finds it set
+    (`checkSpend` returns, `budgetReached` returns): one hold, one `endedBy`, one log line. A per-run cap keeps comparing the
+    best known cost, as before.
+  - Checked by `runManager.projectCap.test.ts` (recording Codex adapter, all four run kinds: reached, under, no cap, per-run
+    lower and higher than project, unknown and partly unknown price, held once; recording Claude adapter: main first then SDK
+    error, SDK first then cost, not before the SDK total, proxy total; a conversation budget still holds once through
+    `checkExecBudget`). Live Codex and Claude behaviour is unverified. Money-affecting: Reviewer.
+- **Spawn caps hold across native and bridged agents (fixed in `spawnCaps.ts`, `bridge.ts`, `runManager.ts`, the adapters).**
+  Two leaks existed: the snapshot of "what is left" handed to a bridged child was not reduced by agents spawned later, and a
+  native spawn counted only the adapter's own agents. Now `RuntimeContext.spawnCapAgents()` (optional, live, present only on a
+  run with bridged roles and on its children) returns the agents of the run the session's adapter does not hold: for the run's
+  own session every bridged child's agents (root and descendants, ended included); for a child the run's native agents (ids
+  prefixed `run:`), the other children's agents and its own root. `spawnCapRefusal` takes them as `extraAgents` (an id in both
+  counts once, the root never counts) and Claude, Codex (`CodexAgentNetwork` option) and the mock pass the accessor through. A
+  child now gets the whole `maxAgentsPerRun` (read live from the run, so a lowered cap applies) and its roles keep their own
+  `maxConcurrent`; it is no longer handed a start-time snapshot, and only a run with no total left hides its spawn roles. Each
+  side's check-and-register is synchronous (`bridge.spawn` registers the child before it yields), so racing delegations cannot
+  both pass. Not covered: a native spawn that an adapter has approved but not yet started (Claude parallel calls in one message)
+  is invisible to a bridged delegation checked in that window, as the run record does not show it yet. Checked by
+  `bridgeSpawnCaps.test.ts` (bridged then native, native then bridged, racing children, role cap across both, lowered cap,
+  accessor shapes), `spawnCaps.test.ts`, `runManagerBridge.test.ts` (wiring) and the Claude, Codex and mock `SpawnCaps` tests.
+  Live providers unverified.
 - **Mock markers.** `[mock:budget-stop]` and `[mock:provider-error]` reach `run.hold` through RunManager exactly as a real
   adapter's end does (`runManagerMockHold.test.ts`): budget-stop holds on `budget` only when the run has a cap (per-run or
   project), as on Claude; provider-error holds on `provider`. `[mock:stronger-model]` (work run, default script, first session)

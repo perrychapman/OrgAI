@@ -154,6 +154,44 @@ describe('RunManager bridged reports', () => {
     await m.stop(run.id)
   })
 
+  it('hands both sides the run\'s agents outside their own session for the spawn caps (live, from the run record)', async () => {
+    const claude = fake('claude', 'claude-sonnet-4-5')
+    // The bridged child keeps its report open so the test can look at both sides.
+    const codex = fake('codex', 'gpt-5')
+    const p = bridgedProject({ maxAgentsPerRun: 5 })
+    const { m } = setup(p, claude, codex)
+    const run = await m.start({ project: p, prompt: 'go' })
+    await tick()
+    const parentCtx = claude.ctxs[0]!
+    // No child yet: nothing outside the run's own session.
+    expect(parentCtx.spawnCapAgents!()).toEqual([])
+    void parentCtx.bridge!.spawn({ role: 'engineer', brief: 'Review', description: 'Reviewing' })
+    await tick()
+    const childCtx = codex.ctxs[0]!
+    const childRootId = childCtx.bridgedChild!.agentId
+    // The run session sees the child's root; the child's own session sees nothing but its root (no native agent yet).
+    expect(parentCtx.spawnCapAgents!().map((a) => a.id)).toEqual([childRootId])
+    expect(childCtx.spawnCapAgents!().map((a) => a.id)).toEqual([childRootId])
+    // A native agent starts in the run session afterwards: the child sees it at once (prefixed), the run session does not list it.
+    parentCtx.emit({ type: 'agent.upsert', runId: run.id, agent: agent({ id: 'nat-1', roleId: 'r-rev', roleSlug: 'reviewer', parentId: ROOT_AGENT_ID }) })
+    expect(childCtx.spawnCapAgents!().map((a) => a.id).sort()).toEqual([childRootId, 'run:nat-1'].sort())
+    expect(parentCtx.spawnCapAgents!().map((a) => a.id)).toEqual([childRootId])
+    // The child's project reads the run's cap live.
+    expect(childCtx.project.maxAgentsPerRun).toBe(5)
+    await m.stop(run.id)
+  })
+
+  it('a run without bridged roles has no accessor (nothing to add)', async () => {
+    const claude = fake('claude', 'claude-sonnet-4-5')
+    const codex = fake('codex', 'gpt-5')
+    const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } } })
+    const { m } = setup(p, claude, codex)
+    const run = await m.start({ project: p, prompt: 'go' })
+    await tick()
+    expect(claude.ctxs[0]!.spawnCapAgents).toBeUndefined()
+    await m.stop(run.id)
+  })
+
   it('leaves RunUsage.connections unset when every agent ran on the run connection', async () => {
     const claude = fake('claude', 'claude-sonnet-4-5')
     const codex = fake('codex', 'gpt-5')

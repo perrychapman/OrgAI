@@ -1,4 +1,5 @@
 import type {
+  AgentInstance,
   ConnectionId,
   DelegationVerdict,
   EngagementNote,
@@ -771,6 +772,15 @@ export interface RuntimeContext {
     roles(): BridgedRole[]
     spawn(input: BridgeSpawnInput): Promise<BridgeSpawnResult>
   }
+  /**
+   * Spawn caps (Project.maxAgentsPerRun, Role.maxConcurrent; spawnCaps.ts): the agents of this run that the session's own
+   * adapter does not hold, read live at every spawn, never a snapshot. In the run's own session these are the bridged
+   * children's agents (the root of each and everything it started, ended ones included); inside a bridged child they are
+   * the run's native agents (ids prefixed `run:`), the other children's agents and this child's own root. The adapter
+   * passes the result as `extraAgents` to `spawnCapRefusal` next to its own agents (an id that is in both counts once).
+   * Present only on a run with bridged roles and on the contexts of its bridged children; missing = nothing to add.
+   */
+  spawnCapAgents?(): readonly Pick<AgentInstance, 'id' | 'state' | 'roleId'>[]
   /** The connection a role's agents run on in this run (defaults.ts roleConnection), for adapters that label agents. Missing = the run's connection. */
   agentConnection?(roleId: string): ConnectionId | undefined
   /**

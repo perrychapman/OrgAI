@@ -84,6 +84,8 @@ interface Child {
   acceptEditsGranted?: true
 }
 
+const slim = (a: AgentInstance): Pick<AgentInstance, 'id' | 'state' | 'roleId'> => ({ id: a.id, state: a.state, roleId: a.roleId })
+
 /** Env names whose values are always secrets, whatever characters they have. */
 const SECRET_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL/i
 const MIN_SECRET_CHARS = 8
@@ -222,6 +224,31 @@ export class BridgedSessions {
     return out
   }
 
+  /**
+   * The agents the spawn caps must count that the asking session's own adapter does not hold (RuntimeContext.spawnCapAgents),
+   * read live from the children and the run's record at every call.
+   * - The run's own session (`forChild` undefined): every bridged child's agents, root of each included, ended ones too.
+   * - A bridged child: the run's native agents (record entries that are not a child's, ids prefixed `run:` so they never meet
+   *   the child's own ids), every other child's agents and this child's own root. Its own descendants are not here: its
+   *   adapter counts them itself.
+   */
+  spawnCapAgents(forChildId?: string): Pick<AgentInstance, 'id' | 'state' | 'roleId'>[] {
+    const forChild = forChildId === undefined ? undefined : this.children.get(forChildId)
+    const bridged = new Map<string, Child>()
+    for (const c of this.children.values()) for (const id of c.agents.keys()) bridged.set(id, c)
+    if (!forChild) return [...bridged.keys()].map((id) => slim(bridged.get(id)!.agents.get(id)!))
+    const out: Pick<AgentInstance, 'id' | 'state' | 'roleId'>[] = []
+    for (const a of this.deps.agents()) {
+      if (a.id === ROOT_AGENT_ID || bridged.has(a.id)) continue
+      out.push({ ...slim(a), id: `run:${a.id}` })
+    }
+    for (const [id, c] of bridged) {
+      if (c === forChild && id !== forChild.agentId) continue
+      out.push(slim(c.agents.get(id)!))
+    }
+    return out
+  }
+
   private secrets(): string[] {
     return connectionSecrets([...this.deps.connections.values(), ...(this.deps.extraConnections ?? [])])
   }
@@ -299,19 +326,17 @@ export class BridgedSessions {
 
     // The child's own adapter reads limits from its project and chart: hand it what is left of the run's budget.
     const childDepthBudget = limits.depth - (depth + 1)
-    // The same for the UI overhaul caps (security review L3): the child's adapter counts only its own agents, so it gets what
-    // is left of Project.maxAgentsPerRun and of each Role.maxConcurrent, not the whole cap. Nothing left means no spawning
-    // (a cap of 0 does not exist), and a capped role with no free slot is not reachable from the child.
+    // The UI overhaul caps (Project.maxAgentsPerRun, Role.maxConcurrent) are NOT handed down as a snapshot of what is left:
+    // the child's adapter holds them in full and counts the whole run at every spawn through ctx.spawnCapAgents (the run's
+    // native agents, the other children and its own root, live), so an agent started later anywhere in the run is counted.
+    // Only a run with nothing left at all (no total left once this child is counted) hides the child's spawn roles, as a
+    // total never frees up.
     const allowance = spawnAllowanceAfter({ project: parent.project, roles: parent.roles, roleId: role.id, agents, pending })
     const childLimits = {
       depth: Math.max(1, childDepthBudget),
-      concurrency: Math.max(1, limits.concurrency - live - 1),
-      ...(allowance.agentsLeft !== undefined ? { maxAgents: Math.max(1, allowance.agentsLeft) } : {})
+      concurrency: Math.max(1, limits.concurrency - live - 1)
     }
-    const childRoles = this.withRoleAllowance(
-      this.childRoles(this.staffedRole(role, choice, conn, input, parent), choice, parent.roles, childDepthBudget <= 0 || allowance.agentsLeft === 0),
-      allowance.roleLeft
-    )
+    const childRoles = this.childRoles(this.staffedRole(role, choice, conn, input, parent), choice, parent.roles, childDepthBudget <= 0 || allowance.agentsLeft === 0)
     const child: Child = {
       agentId,
       handle,
@@ -409,28 +434,11 @@ export class BridgedSessions {
     return [copy(role, true), ...[...reachable.values()].map((r) => copy(r, false))]
   }
 
-  /**
-   * The child's roles with each capped role's Role.maxConcurrent lowered to the slots still free in the run; a reachable
-   * role with none free is dropped (and from every spawnable list), since a cap of 0 does not exist. The first role is the
-   * child's own root, which the child never spawns, so it is left as configured.
-   */
-  private withRoleAllowance(roles: Role[], left: ReadonlyMap<string, number>): Role[] {
-    if (!left.size) return roles
-    const [root, ...rest] = roles
-    const blocked = new Set(rest.filter((r) => left.get(r.id) === 0).map((r) => r.id))
-    const narrow = (r: Role): Role => {
-      const spawnable = r.spawnable.filter((id) => !blocked.has(id))
-      const slots = left.get(r.id)
-      return { ...r, spawnable, canSpawn: r.canSpawn && spawnable.length > 0, ...(slots !== undefined && r !== root ? { maxConcurrent: slots } : {}) }
-    }
-    return [narrow(root), ...rest.filter((r) => !blocked.has(r.id)).map(narrow)]
-  }
-
   private mapId(child: Child, childId: string): string {
     return childId === ROOT_AGENT_ID ? child.agentId : `${child.agentId}:${childId}`
   }
 
-  private childContext(child: Child, conn: RunConnection, roles: Role[], input: BridgeSpawnInput, limits: { depth: number; concurrency: number; maxAgents?: number }): RuntimeContext {
+  private childContext(child: Child, conn: RunConnection, roles: Role[], input: BridgeSpawnInput, limits: { depth: number; concurrency: number }): RuntimeContext {
     const parentNow = (): RuntimeContext => this.deps.parent()
     const p0 = parentNow()
     const agent = (id: string | undefined): string | undefined => (id === undefined ? undefined : this.mapId(child, id))
@@ -445,9 +453,11 @@ export class BridgedSessions {
       isolateWriters: false,
       maxSubagentDepth: limits.depth,
       maxConcurrentSubagents: limits.concurrency,
-      ...(limits.maxAgents !== undefined ? { maxAgentsPerRun: limits.maxAgents } : {}),
       provider: { ...p0.project.provider, id: child.choice.adapter }
     }
+    // The total cap is the run's own, read live (the user can change it mid-run); the child's adapter counts the rest of the
+    // run through spawnCapAgents below.
+    Object.defineProperty(project, 'maxAgentsPerRun', { enumerable: true, configurable: true, get: () => parentNow().project.maxAgentsPerRun })
     // The child session keeps this mode for its life (its project is a snapshot): see liveWiderThan.
     child.startMode = project.permissionMode
     // The adapters read ctx.project.permissionMode on every check (their plan / dontAsk "accept edits" drop included), so
@@ -474,6 +484,7 @@ export class BridgedSessions {
       autoContinue: false,
       maxAutoContinues: 0,
       bridgedChild: { agentId: child.agentId, parentAgentId: child.parentAgentId, roleId: child.role.id },
+      spawnCapAgents: () => this.spawnCapAgents(child.agentId),
       // The child's own "accept edits" grant moves only the child session: recorded here, never forwarded to the parent.
       acceptEditsGranted: () => {
         child.acceptEditsGranted = true
