@@ -147,6 +147,9 @@ import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
  * spending limit (errorSubtype 'error_max_budget_usd'); [mock:provider-error] ends the run with a provider error (run.status
  * 'error' with MOCK_PROVIDER_ERROR_MESSAGE, session open); see BUDGET_STOP_TOKEN. Spawn caps (Role.maxConcurrent,
  * Project.maxAgentsPerRun), AgentInstance.brief and stopAgent behave as on the real adapters.
+ * Stronger-model marker (work runs, default script, first session only): [mock:stronger-model] (strongerModelSteps) fails a
+ * fast-tier report so the next spawn escalates; with Project.askBeforeStrongerModel the "Use a stronger model for <role>?"
+ * card appears (see STRONGER_MODEL_TOKEN).
  * Provider retry marker (work runs, default script, first session only): [mock:provider-retry] (providerRetrySteps) emits two
  * `provider.retry` events (attempt 1 then 2, nextTryAt 1.5 s ahead, the run waits 1.5 s after each) and then one with
  * `ok: true`, then a closing text; no provider text is in the events.
@@ -225,7 +228,7 @@ export type MockStep =
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
   | { type: 'message'; from?: string; to: string; text: string }
   /** A report finishes and reports back to its parent. */
-  | { type: 'finish'; id: string; result: string; /** Steps run when the delegation gate corrects the agent (the agent complies), before it tries to finish again. */ comply?: MockStep[] }
+  | { type: 'finish'; id: string; result: string; /** The report counts as failed for run staffing (the book escalates its plan step's next spawn). */ failed?: boolean; /** Steps run when the delegation gate corrects the agent (the agent complies), before it tries to finish again. */ comply?: MockStep[] }
   /** Call one of the harness's own tools by bare name (propose_architecture, ask_user, complete_setup, ...). */
   | {
       type: 'harness'
@@ -904,6 +907,26 @@ export function providerRetrySteps(): MockStep[] {
     { type: 'wait', ms: MOCK_PROVIDER_RETRY_DELAY_MS },
     { type: 'providerRetry', attempt: 2, ok: true },
     { type: 'text', text: 'The provider answered after two retries.' }
+  ]
+}
+
+/**
+ * [mock:stronger-model] (work runs, default script, first session only): raises the "Use a stronger model for <role>?"
+ * card for e2e. A plan step is staffed on the fast tier; its first report fails, so the book escalates the next spawn on
+ * that step and, with Project.askBeforeStrongerModel on, the spawn waits for the answer (card options "Use it" /
+ * "Keep the role's model"; no answer in STRONGER_MODEL_ASK_TIMEOUT_MS keeps the role's model and cancels the card). With
+ * the setting off nothing is asked and both reports run. The spawn is the reference for the card on every adapter.
+ */
+export const STRONGER_MODEL_TOKEN = '[mock:stronger-model]'
+export function strongerModelSteps(slug: string): MockStep[] {
+  return [
+    { type: 'text', text: 'Starting on the request: the first report runs on a light model.' },
+    { type: 'plan', goal: 'Do the work', steps: [{ title: 'Do the work', staff: { role: slug, tier: 'fast', effort: 'high' } }] as never },
+    { type: 'spawn', id: 'mock-stronger-1', role: slug, description: 'First attempt' },
+    { type: 'finish', id: 'mock-stronger-1', result: 'The first attempt did not work.', failed: true },
+    { type: 'spawn', id: 'mock-stronger-2', role: slug, description: 'Second attempt' },
+    { type: 'finish', id: 'mock-stronger-2', result: 'The second attempt worked.' },
+    { type: 'text', text: 'Both attempts are done.' }
   ]
 }
 
@@ -2491,6 +2514,7 @@ export class MockSession implements RuntimeSession {
       if (prompt.includes(BUDGET_STOP_TOKEN)) return budgetStopSteps()
       if (prompt.includes(PROVIDER_ERROR_TOKEN)) return providerErrorSteps()
       if (prompt.includes(PROVIDER_RETRY_TOKEN)) return providerRetrySteps()
+      if (prompt.includes(STRONGER_MODEL_TOKEN)) return strongerModelSteps(this.firstSpawnableSlug(this.root))
     }
     if (prompt.includes(COMPACT_TOKEN)) return compactSteps()
     if (prompt.includes(RATE_LIMIT_TOKEN)) return rateLimitSteps()
@@ -3068,7 +3092,7 @@ export class MockSession implements RuntimeSession {
   private async finishStep(step: Extract<MockStep, { type: 'finish' }>): Promise<void> {
     const gate = this.ctx.delegation
     let text = step.result
-    let failed = false
+    let failed = step.failed === true
     if (gate) {
       const ask = (): ReturnType<typeof gate.completion> => gate.completion(step.id, { canCorrect: true, canWait: true, reportText: step.result })
       let d = ask()
@@ -3088,7 +3112,7 @@ export class MockSession implements RuntimeSession {
       }
       if (d.action === 'none' || d.action === 'correct') return
       this.pendingFinish.delete(step.id)
-      failed = d.action === 'fail'
+      failed = step.failed === true || d.action === 'fail'
       const receipt = gate.receiptText(step.id)
       if (receipt) text = `${receipt}\n\n${step.result}`
     }
@@ -3168,7 +3192,7 @@ export class MockSession implements RuntimeSession {
             return this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(call ? { onCall: call } : {}) })
           },
           cancel: () => this.staffing.cancel(step.id),
-          ask: (card) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }),
+          ask: (card, signal) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }, { signal }),
           log: (level, text) => this.log(level, text)
         })
       : undefined

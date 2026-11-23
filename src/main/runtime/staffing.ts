@@ -775,6 +775,12 @@ export function staffingLabel(resolved: ResolvedStaffing): string {
 export const STRONGER_MODEL_USE = 'Use it'
 export const STRONGER_MODEL_KEEP = "Keep the role's model"
 
+/**
+ * How long a spawn waits for the answer (ms) before it keeps the role's tier and cancels the card. One value for every
+ * adapter; it must stay below the Claude PreToolUse hook timeout (600 s, claude.ts) and any provider tool-call timeout.
+ */
+export const STRONGER_MODEL_ASK_TIMEOUT_MS = 580_000
+
 /** The question text; `roleName` is the role's display name. */
 export function strongerModelQuestion(roleName: string): string {
   return `Use a stronger model for ${roleName}? It may cost more.`
@@ -864,30 +870,48 @@ export async function decideWithStrongerGate<D extends { resolved: ResolvedStaff
   parentTier?: ModelTier
   decide(keepTier?: ModelTier): D
   cancel(): void
-  ask?: (card: StrongerModelCard) => Promise<{ selected?: readonly string[] }>
+  /** Raises the question; `signal` aborts when the wait ends unanswered: pass it to ctx.requestQuestion so the card is cancelled. */
+  ask?: (card: StrongerModelCard, signal: AbortSignal) => Promise<{ selected?: readonly string[] }>
   log(level: 'info' | 'warn', text: string): void
 }): Promise<D> {
   const first = opts.decide()
   const check = strongerModelCheck({ role: opts.role, project: opts.project, parentTier: opts.parentTier, resolved: first.resolved })
   if (!check.ask) return first
   let choice: 'use' | 'keep' = 'keep'
-  let asked = false
+  let reason: 'unavailable' | 'kept' | 'no-answer' = 'unavailable'
   if (opts.ask) {
+    // A bounded wait: no answer in STRONGER_MODEL_ASK_TIMEOUT_MS keeps the role's tier and cancels the card, so a late
+    // "Use it" finds nothing to resolve and can never escalate.
+    const ctl = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), STRONGER_MODEL_ASK_TIMEOUT_MS)
+    })
     try {
-      choice = strongerModelChoice(await opts.ask(strongerModelCard(opts.role.name)))
-      asked = true
+      const answer = await Promise.race([opts.ask(strongerModelCard(opts.role.name), ctl.signal), timeout])
+      if (answer === 'timeout') {
+        reason = 'no-answer'
+        ctl.abort()
+      } else {
+        choice = strongerModelChoice(answer)
+        reason = 'kept'
+      }
     } catch {
       choice = 'keep'
+      reason = 'unavailable'
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
   if (choice === 'use') return first
-  opts.log('info', strongerModelKeptLine(opts.role.name, check.keepTier ?? first.resolved.tier ?? 'everyday', asked ? 'kept' : 'unavailable'))
+  opts.log('info', strongerModelKeptLine(opts.role.name, check.keepTier ?? first.resolved.tier ?? 'everyday', reason))
   opts.cancel()
   return opts.decide(check.keepTier)
 }
 
 /** The run line when a stronger model is not used: the question could not be asked, or the answer was "keep". */
-export function strongerModelKeptLine(roleName: string, keepTier: ModelTier, reason: 'unavailable' | 'kept'): string {
+export function strongerModelKeptLine(roleName: string, keepTier: ModelTier, reason: 'unavailable' | 'kept' | 'no-answer'): string {
+  if (reason === 'no-answer') return `Kept ${roleName} on the ${keepTier} tier: no answer, kept the role's model.`
   return reason === 'unavailable'
     ? `Kept ${roleName} on the ${keepTier} tier: a stronger model needs the user's approval and a question could not be asked.`
     : `Kept ${roleName} on the ${keepTier} tier: the stronger model was not approved.`

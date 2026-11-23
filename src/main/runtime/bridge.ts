@@ -494,10 +494,11 @@ export class BridgedSessions {
         const s = this.secrets()
         return parentNow().requestPermission(withAgent({ ...req, summary: redactText(req.summary, s) }))
       },
-      requestQuestion: (req) => {
+      requestQuestion: (req, opts) => {
         const s = this.secrets()
         return parentNow().requestQuestion(
-          withAgent({ ...req, question: redactText(req.question, s), options: (Array.isArray(req.options) ? req.options : []).map((o) => (o.description === undefined ? o : { ...o, description: redactText(o.description, s) })) })
+          withAgent({ ...req, question: redactText(req.question, s), options: (Array.isArray(req.options) ? req.options : []).map((o) => (o.description === undefined ? o : { ...o, description: redactText(o.description, s) })) }),
+          opts
         )
       },
       requestProposal: async () => {

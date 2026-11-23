@@ -2861,7 +2861,7 @@ export class RunManager {
         },
         plugins: () => (bare ? [] : (live.plugins ?? []).filter((p) => p.enabled)),
         skills: () => active.skills,
-        requestQuestion: (req) => this.requestQuestion(active, req),
+        requestQuestion: (req, qopts) => this.requestQuestion(active, req, qopts),
         requestPermissionRules: (req) => this.requestRules(active, req),
         // A quick run works in a folder the user never made a project: only this run's own grants count, never the
         // folder's saved rules file (it is untrusted), and nothing is ever written there (decideRules).
@@ -5543,13 +5543,29 @@ export class RunManager {
 
   private requestQuestion(
     active: ActiveRun,
-    req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>
+    req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>,
+    opts: { signal?: AbortSignal } = {}
   ): Promise<QuestionAnswer> {
     const question: UserQuestion = { ...req, id: newId('q'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
     return new Promise((resolve) => {
+      const signal = opts.signal
+      if (signal?.aborted) return resolve({ selected: [] })
       active.pendingQuestions.set(question.id, { question, resolve })
       this.broadcast({ type: 'question.request', runId: active.summary.id, question })
       this.cardCreated(active, 'question', question.id, question)
+      // The asker gave up (a bounded wait ended): cancel the card like a run end does, so it leaves the tray and a late
+      // answer finds nothing to resolve.
+      signal?.addEventListener(
+        'abort',
+        () => {
+          if (!active.pendingQuestions.delete(question.id)) return
+          this.cardResolved(active, 'question', question.id, 'cancelled')
+          resolve({ selected: [] })
+          this.broadcast({ type: 'question.resolved', runId: active.summary.id, questionId: question.id, answer: { selected: [] }, cancelled: true })
+          this.cardSettled(active)
+        },
+        { once: true }
+      )
     })
   }
 

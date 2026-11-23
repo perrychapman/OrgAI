@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RunEvent } from '@shared/types'
-import { MOCK_PROVIDER_RETRY_DELAY_MS, MockAdapter, PROVIDER_RETRY_TOKEN, type MockSession, type MockStep } from './mock'
+import { MOCK_PROVIDER_RETRY_DELAY_MS, MockAdapter, PROVIDER_RETRY_TOKEN, STRONGER_MODEL_TOKEN, type MockSession, type MockStep } from './mock'
 import { type RootTurnEnd, type RuntimeContext } from './types'
-import { fakeCtx, project, role } from './testHelpers'
+import { STRONGER_MODEL_ASK_TIMEOUT_MS } from './staffing'
+import { fakeCtx, fakeQuestion, project, role } from './testHelpers'
 
 // The mock as the reference adapter for `provider.retry` ([mock:provider-retry]) and Project.askBeforeStrongerModel.
 
@@ -87,6 +88,47 @@ describe('mock: askBeforeStrongerModel', () => {
     expect(requestQuestion).toHaveBeenCalledTimes(1)
     expect(rows[1]!.tier).toBe('fast')
     expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('stronger model was not approved'))).toBe(true)
+  })
+
+  it('on, no answer in STRONGER_MODEL_ASK_TIMEOUT_MS: keeps the tier, cancels the card, and a late answer does nothing', async () => {
+    const q = fakeQuestion()
+    const { ctx, sessionP, ends } = start([planStep, spawn('e1')], { requestQuestion: q.request }, { askBeforeStrongerModel: true })
+    const session = (await sessionP) as any
+    await vi.waitFor(() => expect(ends).toHaveLength(1))
+    session.staffing.ended('e1', { failed: true })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const spawning = session.spawnStep(spawn('e2'))
+      await vi.advanceTimersByTimeAsync(STRONGER_MODEL_ASK_TIMEOUT_MS)
+      await spawning
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(q.cancelled).toBe(true)
+    expect(q.answerLate(['Use it'])).toBe(false)
+    expect(ctx.getStaffing()!.assignments[1]!.tier).toBe('fast')
+    expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('no answer'))).toBe(true)
+    await session.stop()
+  })
+
+  it('[mock:stronger-model] on a work run raises the question and spawns both reports', async () => {
+    const requestQuestion = vi.fn(async (_req: unknown) => ({ selected: ['Use it'] }))
+    const { ctx, sessionP, ends } = start(undefined, { requestQuestion, prompt: `Do it ${STRONGER_MODEL_TOKEN}` }, { askBeforeStrongerModel: true })
+    const session = await sessionP
+    await vi.waitFor(() => expect(ends).toHaveLength(1), { timeout: 5000 })
+    expect(requestQuestion).toHaveBeenCalledTimes(1)
+    expect(requestQuestion.mock.calls[0]![0]).toMatchObject({ question: 'Use a stronger model for Engineer? It may cost more.' })
+    expect(ctx.getStaffing()!.assignments).toHaveLength(2)
+    await session.stop()
+  })
+
+  it('[mock:stronger-model] with the setting off asks nothing', async () => {
+    const requestQuestion = vi.fn(async (_req: unknown) => ({ selected: [] as string[] }))
+    const { sessionP, ends } = start(undefined, { requestQuestion, prompt: `Do it ${STRONGER_MODEL_TOKEN}` })
+    const session = await sessionP
+    await vi.waitFor(() => expect(ends).toHaveLength(1), { timeout: 5000 })
+    expect(requestQuestion).not.toHaveBeenCalled()
+    await session.stop()
   })
 
   it('on, a spawn that is not above the role never asks', async () => {

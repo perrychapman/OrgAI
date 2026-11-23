@@ -67,6 +67,36 @@ export function mcpSpec(over: Partial<McpServerSpec> = {}): McpServerSpec {
   }
 }
 
+/**
+ * A requestQuestion that waits for an answer like RunManager's card: aborting the call's signal cancels the card (it
+ * resolves empty and `cancelled` turns true); `answerLate` is a user answer that arrives afterwards and, like
+ * RunManager, finds no pending card, so it resolves nothing and reports false.
+ */
+export function fakeQuestion() {
+  const state = { cancelled: false, answered: false }
+  let resolve: ((a: { selected: string[] }) => void) | undefined
+  const request: RuntimeContext['requestQuestion'] = (_req, opts) =>
+    new Promise((res) => {
+      resolve = res
+      opts?.signal?.addEventListener('abort', () => {
+        state.cancelled = true
+        res({ selected: [] })
+      })
+    })
+  return {
+    request,
+    get cancelled() {
+      return state.cancelled
+    },
+    answerLate(selected: string[]): boolean {
+      if (state.cancelled || !resolve) return false
+      state.answered = true
+      resolve({ selected })
+      return true
+    }
+  }
+}
+
 /** A RuntimeContext whose round-trips are vi.fn()s; events land in `events`. */
 export function fakeCtx(over: Partial<RuntimeContext> = {}): RuntimeContext & { events: RunEvent[] } {
   const events: RunEvent[] = []

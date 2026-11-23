@@ -364,7 +364,7 @@ export interface RuntimeContext {
   /** Setup runs only: the Architect declares setup finished. */
   completeSetup(summary: string): Promise<void>
   /** Ask the user a multiple-choice question (ask_user). Resolves with their answer (empty if the run ends first). */
-  requestQuestion(req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>): Promise<QuestionAnswer>
+  requestQuestion(req: Omit<UserQuestion, 'id' | 'runId' | 'createdAt'>, opts?: { signal?: AbortSignal }): Promise<QuestionAnswer>
   /**
    * request_permission_rules: an agent asks for rules after a policy denial. Resolves with the user's decision; a
    * grant is already in allowedRules() when it resolves. Missing = the tool answers DENIED.

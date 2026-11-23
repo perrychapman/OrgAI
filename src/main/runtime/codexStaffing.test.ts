@@ -6,7 +6,8 @@ import type { BridgeSpawnInput, BridgeSpawnResult, BridgedRole, RuntimeContext, 
 import type { Role } from '@shared/types'
 import { CodexAdapter, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
-import { fakeCtx, project, role } from './testHelpers'
+import { fakeCtx, fakeQuestion, project, role } from './testHelpers'
+import { STRONGER_MODEL_ASK_TIMEOUT_MS } from './staffing'
 
 // Run staffing on the Codex adapter (orchestration-efficiency 4.3 "Mechanics"): spawn_report tier / effort, the thread's
 // model and the effort every message to it carries, against a scripted app-server (no codex binary, no tokens).
@@ -337,15 +338,18 @@ describe('Codex askBeforeStrongerModel', () => {
     rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
   })
 
-  async function startOn(ask: boolean | undefined, answer: string[]) {
+  async function startOn(ask: boolean | undefined, answer: string[], custom?: RuntimeContext['requestQuestion']) {
     const servers: FakeServer[] = []
     const roles = chart()
     // thread/start requests seen when the question was raised (root + the failed first report = 2).
     const threadsAtAsk: number[] = []
-    const requestQuestion = vi.fn(async (_req: unknown) => {
-      threadsAtAsk.push(servers.at(-1)!.of('thread/start').length)
-      return { selected: answer }
-    })
+    const requestQuestion = vi.fn(
+      custom ??
+        (async (_req: unknown) => {
+          threadsAtAsk.push(servers.at(-1)!.of('thread/start').length)
+          return { selected: answer }
+        })
+    )
     const ctx = fakeCtx({
       project: project({ path: dir, roles, isolateWriters: false, ...(ask === undefined ? {} : { askBeforeStrongerModel: ask }) }),
       roles,
@@ -404,6 +408,25 @@ describe('Codex askBeforeStrongerModel', () => {
     const { ctx, s } = await startOn(true, [])
     expect((await retry(s)).success).toBe(true)
     expect(ctx.getStaffing()!.assignments[1]!.tier).toBe('fast')
+  })
+
+  it('on, no answer in STRONGER_MODEL_ASK_TIMEOUT_MS: keeps the tier, cancels the card, and a late answer does nothing', async () => {
+    const q = fakeQuestion()
+    const { ctx, s, requestQuestion } = await startOn(true, [], q.request)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const pending = retry(s)
+      await vi.advanceTimersByTimeAsync(STRONGER_MODEL_ASK_TIMEOUT_MS)
+      expect((await pending).success).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(requestQuestion).toHaveBeenCalledTimes(1)
+    expect(q.cancelled).toBe(true)
+    expect(q.answerLate(['Use it'])).toBe(false)
+    expect(ctx.getStaffing()!.assignments[1]!.tier).toBe('fast')
+    expect(s.of('thread/start')[2]!.params.model).toBe('gpt-fast')
+    expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('no answer'))).toBe(true)
   })
 
   it('on, but a spawn that is not above the role (the first attempt) never asks', async () => {
