@@ -77,6 +77,13 @@ export function orgChartCardLines(payload: OrgChartProposalPayload, saved: reado
     if (full) {
       for (const resp of r.responsibilities ?? []) out.push(`    * ${fmt.text(resp)}`)
       if (Array.isArray(r.tools) && r.tools.length > 0) out.push(`    Tools: ${r.tools.map((t) => fmt.one(t, 40)).join(', ')}`)
+      if (typeof r.tier === 'string' && r.tier) out.push(`    Tier: ${fmt.one(r.tier, 40)}`)
+      if (typeof r.effort === 'string' && r.effort) out.push(`    Effort: ${fmt.one(r.effort, 40)}`)
+      if (typeof r.connection === 'string' && r.connection) out.push(`    Connection: ${fmt.one(r.connection, 60)}`)
+      if (r.staffing && typeof r.staffing.mode === 'string') {
+        out.push(`    Staffing: ${fmt.one(r.staffing.mode, 40)}${r.staffing.minTier ? `, from ${fmt.one(r.staffing.minTier, 40)}` : ''}${r.staffing.maxEffort ? `, up to ${fmt.one(r.staffing.maxEffort, 40)} effort` : ''}`)
+      }
+      if (Array.isArray(r.skills) && r.skills.length > 0) out.push(`    Skills: ${r.skills.map((t) => fmt.one(t, 40)).join(', ')}`)
       if (r.prompt) out.push('    Prompt:', ...fmt.text(r.prompt).split('\n').map((l) => `      ${l}`))
     }
   }

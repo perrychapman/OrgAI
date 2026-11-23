@@ -35,7 +35,7 @@ import {
 } from '../../shared/view/mcpProposal'
 import { pinnedVersionOf } from '../../shared/view/mcpVersion'
 import { collapseRules, noRuleLine, permissionOffer, referenceEffect, referenceLocation, ruleChip } from '../../shared/view/permissionCopy'
-import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines, orgChartRoleLines, orgChartSummaryLine } from './orgChartCard'
+import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines,orgChartSummaryLine } from './orgChartCard'
 import { graphemes, graphemeWidth, textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import type { DecisionCall, TrayCard } from './types'
@@ -566,8 +566,15 @@ function cutChars(s: string, max: number): string {
   return s.slice(0, end)
 }
 
+/** An org chart card whose approval changes the live run's team now: y waits until its whole body was read. */
+export function appliesToLiveRun(card: TrayCard): boolean {
+  return card.kind === 'proposal' && card.card.kind === 'orgChart' && orgChartAppliesNow(card.card)
+}
+
 /** The body items (each may hold line breaks); `cut` says the card or the full view left text out. */
-function logicalLines(card: TrayCard, full: boolean): { lines: string[]; cut: boolean } {
+function logicalLines(card: TrayCard, fullView: boolean): { lines: string[]; cut: boolean } {
+  // A team change that applies to the live run shows every value in the card body itself (same text as v).
+  const full = fullView || appliesToLiveRun(card)
   const raw = rawLines(card, full)
   let cut = false
   if (full) {
@@ -674,12 +681,12 @@ export function cardDetailLines(card: TrayCard, width: number): string[] {
 export function proposalPreview(card: TrayCard, width: number): string[] | undefined {
   if (card.kind !== 'proposal' || (card.card.kind !== 'architecture' && card.card.kind !== 'orgChart')) return undefined
   const p = card.card
+  // A card that changes this run's team shows its whole value-bearing body (scrollable), never names alone.
+  if (appliesToLiveRun(card)) return cardDetail(card, width).lines
   const lines = [oneText(p.title, 200)]
   if (p.kind === 'architecture' && p.payload.summary) lines.push(oneText(p.payload.summary, 160))
   if (p.kind === 'orgChart') {
     lines.push(orgChartSummaryLine(p.payload, card.savedRoles) ?? `${p.payload.roles.length} roles proposed`)
-    // A card that changes this run's team names the roles it moves, so y is not pressed on a bare count.
-    if (orgChartAppliesNow(p)) lines.push(...(orgChartRoleLines(p.payload, card.savedRoles, { one: oneText, text }) ?? []))
   }
   const effect = p.effect === 'next-run' ? 'Applies to the next run.' : proposalEffectCopy(p.effect)
   if (effect) lines.push(effect)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CardKind, McpInstallRequest, MergeReview, OrgChartProposalPayload, PermissionRequest, PermissionRuleRequest, Proposal, Role, UserQuestion } from '../../shared/types'
-import { bindingsFor, cardDetailLines, cardFullText, cardTitle, confirmQuestion, decisionFor, proposalPreview, secretSlotsFor, wrapLine, type TrayAction } from './decisions'
+import { appliesToLiveRun, bindingsFor, cardDetail, cardDetailLines, cardFullText, cardFullView, cardTitle, confirmQuestion, decisionFor, proposalPreview, secretSlotsFor, wrapLine, type TrayAction } from './decisions'
 import { cardKey, type CardRef, type TrayCard } from './types'
 
 const RUN = 'run_1'
@@ -307,16 +307,44 @@ describe('org chart cards show the diff', () => {
     expect(proposalPreview(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '' })), 120)).toContain('2 roles proposed')
   })
 
-  it('the tray preview of a card that changes this run names the roles it moves', () => {
-    const live = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'now'))
+  it('the body of a card that changes this run carries every value that moves, not field names', () => {
+    const live = tray('proposal', org({ roles: [proposedLead, { ...proposedQa, tools: ['Bash', 'Write'], prompt: 'Run every script.', tier: 'deep', effort: 'high', canSpawn: true, spawnable: ['lead'] }], rationale: '', runBaseline: [savedLead] }, 'now'))
     const lines = proposalPreview(live, 120) ?? []
-    expect(lines).toEqual(['Add a tester', "1 added (compared with this run's team)", '+ QA', 'Takes effect now.'])
-    // Between the summary and the effect line, so y is never pressed on a bare count.
-    expect(lines.indexOf('+ QA')).toBeGreaterThan(lines.indexOf("1 added (compared with this run's team)"))
-    expect(lines.indexOf('+ QA')).toBeLessThan(lines.indexOf('Takes effect now.'))
-    // A changed role names the fields that move.
-    const movedLead = orgRole('lead', { name: 'Lead', description: 'runs the team', tools: ['Read', 'Grep'] })
-    expect(proposalPreview(tray('proposal', org({ roles: [movedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'after-turn')), 120)).toContain('~ Lead: tools')
+    expect(lines).toContain("1 added (compared with this run's team)")
+    expect(lines).toContain('    Tools: Bash, Write')
+    expect(lines).toContain('    Tier: deep')
+    expect(lines).toContain('    Effort: high')
+    expect(lines.join('\n')).toContain('spawns: Lead')
+    expect(lines).toContain('      Run every script.')
+    expect(lines).toContain('Takes effect now.')
+    // A changed role shows from -> to, not just the name of the field.
+    const movedLead = orgRole('lead', { name: 'Lead', description: 'runs the team', tools: ['Read', 'Grep'], model: 'claude-opus-5' })
+    const moved = proposalPreview(tray('proposal', org({ roles: [movedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'after-turn')), 120) ?? []
+    expect(moved.some((l) => /Tools?: .*Read.* -> .*Grep/i.test(l))).toBe(true)
+    expect(moved.some((l) => /Everyday -> Deep/.test(l))).toBe(true)
+  })
+
+  it('a live team change is cut at 64 KB: the view is cut, and capped says y must wait', () => {
+    const big = tray('proposal', org({ roles: [proposedLead, { ...proposedQa, prompt: `${'x'.repeat(100)}\n`.repeat(900) }], rationale: '', runBaseline: [savedLead] }, 'now'))
+    expect(cardFullView(big).cut).toBe(true)
+    expect(cardDetail(big, 120).capped).toBe(true)
+    const small = tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'now'))
+    expect(cardFullView(small).cut).toBe(false)
+    expect(cardDetail(small, 120).capped).toBe(false)
+    expect(appliesToLiveRun(small)).toBe(true)
+    expect(appliesToLiveRun(tray('proposal', org({ roles: [proposedLead, proposedQa], rationale: '', runBaseline: [savedLead] }, 'next-run')))).toBe(false)
+  })
+
+  it('hostile text in a role name and a prompt never reaches the live card body as an escape', () => {
+    const evil = orgRole('evil', { name: 'Ev\u001b[31mil\u001b]0;pwn\u0007', description: 'd‮evil', prompt: 'ok\u001b[2Jwipe‮gnp.exe\nsecond', reportsTo: 'lead' })
+    const live = tray('proposal', org({ roles: [proposedLead, evil], rationale: '', runBaseline: [savedLead] }, 'now'))
+    const all = [...(proposalPreview(live, 120) ?? []), cardFullText(live)].join('\n')
+    // The real formatter shows hidden characters as visible \u escapes and never passes the raw character on.
+    expect(all).toContain('\\u001b')
+    expect(all).toContain('\\u202e')
+    expect(all).toContain('wipe')
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u001b\u0007‮\u009b]/.test(all)).toBe(false)
   })
 
   it('a next-run card keeps today\'s preview: the summary line, no role lines', () => {
