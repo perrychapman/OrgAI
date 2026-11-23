@@ -1792,6 +1792,8 @@ export class ClaudeSession implements RuntimeSession {
       ...staffingProfileDep(ctx)
     })
     this.isSetup = isSetupLikeRun(ctx.run.kind)
+    // Approved spawns that have no agent yet, read live by the bridge's cap checks (RuntimeContext.spawnCapPending).
+    ctx.spawnCapPending?.(() => [...this.spawnModes.values()].map((e) => e.roleId))
     // Org changes in the same run (configChanged with `roles`): team work runs only; a bridged child is one report.
     this.liveRoster = ctx.run.kind === 'work' && !this.isSetup && !ctx.bridgedChild && !ctx.run.quick && ctx.run.team !== 'single'
     this.isolation =!this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)

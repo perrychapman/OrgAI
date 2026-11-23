@@ -176,3 +176,48 @@ describe('a live model switch under a daily or monthly cap needs a priced model 
     expect(r.store.get('ended')?.modelSelection).toEqual({ model: 'claude-opus-4-5', connection: 'anthropic' })
   })
 })
+
+describe('a live model switch under the project\'s per-run cap needs a priced model too', () => {
+  const REASON = 'This project has a per-run spending limit, but mystery-model has no known price, so the limit cannot be enforced. Set a model price in Settings or remove the limit.'
+
+  it('refuses a live switch to an unpriced model under the project\'s own budget, before the adapter changes anything', async () => {
+    const p = claudeTeam('claude-sonnet-4-5', { maxBudgetUsd: 5 })
+    const r = rig({ resolveProject: () => p })
+    const run = await r.m.start({ project: p, prompt: 'go' })
+    const change = vi.fn(async () => {})
+    Reflect.get(r.m, 'runs').get(run.id).session.switchModel = change
+    const before = r.m.summaryOf(run.id)!.modelSelection
+    expect(await r.m.switchModel({ runId: run.id, model: 'mystery-model' })).toMatchObject({ applied: false, reason: REASON })
+    expect(change).not.toHaveBeenCalled()
+    expect(r.m.summaryOf(run.id)!.modelSelection).toEqual(before)
+    expect(events.some((e) => e.type === 'run.model')).toBe(false)
+    expect((await r.m.switchModel({ runId: run.id, model: 'claude-opus-4-5' })).applied).toBe(true)
+    await r.m.stopAll()
+  })
+
+  it('refuses under a per-run cap the user chose at start, even when the project has none', async () => {
+    const p = claudeTeam('claude-sonnet-4-5')
+    const r = rig({ resolveProject: () => p })
+    const run = await r.m.start({ project: p, prompt: 'go', userChoice: { maxBudgetUsd: 3 } })
+    Reflect.get(r.m, 'runs').get(run.id).session.switchModel = vi.fn(async () => {})
+    expect(await r.m.switchModel({ runId: run.id, model: 'mystery-model' })).toMatchObject({ applied: false, reason: REASON })
+    await r.m.stopAll()
+  })
+
+  it('refuses a selection saved for the next continuation of an ended run under the project\'s budget, and saves nothing', async () => {
+    const p = claudeTeam('claude-sonnet-4-5', { maxBudgetUsd: 5 })
+    const r = rig({ resolveProject: () => p })
+    r.store.upsert(runSummary({ id: 'ended', projectId: 'p1', status: 'finished', connection: 'anthropic', modelAdapter: 'claude' }))
+    expect(await r.m.switchModel({ runId: 'ended', model: 'mystery-model' })).toMatchObject({ applied: false, reason: REASON })
+    expect(r.store.get('ended')?.modelSelection).toBeUndefined()
+  })
+
+  it('allows the same model when nothing caps the run', async () => {
+    const p = claudeTeam('claude-sonnet-4-5')
+    const r = rig({ resolveProject: () => p })
+    const run = await r.m.start({ project: p, prompt: 'go' })
+    Reflect.get(r.m, 'runs').get(run.id).session.switchModel = vi.fn(async () => {})
+    expect((await r.m.switchModel({ runId: run.id, model: 'mystery-model' })).applied).toBe(true)
+    await r.m.stopAll()
+  })
+})

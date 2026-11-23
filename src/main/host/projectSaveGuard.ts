@@ -1,6 +1,10 @@
 import type { AppSettings, Project, Role } from '@shared/types'
+import { effectiveSubagentLimits } from '@shared/defaults'
 import { cleanProjectLimits, cleanRoleLimits } from '../store/projects'
 import { normalizeSpendWarnPercent } from '../store/settings'
+
+/** A per-run budget as the runtime reads it: finite and above 0, else no cap (Infinity). */
+const budgetCap = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : Infinity)
 
 /**
  * UI overhaul: spend and command settings only the desktop window may widen.
@@ -11,6 +15,10 @@ import { normalizeSpendWarnPercent } from '../store/settings'
  * narrowing. The dispatcher refuses such a save (scope_denied) before anything is stored.
  *
  * - `maxDailyUsd`, `maxMonthlyUsd`: the cap may be set where there was none, kept, or lowered; never raised or removed.
+ * - `maxBudgetUsd` (the per-run budget): set where there was none, kept or lowered; never raised or removed (<= 0 and absent
+ *   both mean no cap, so clearing counts as raising).
+ * - `maxSubagentDepth`, `maxConcurrentSubagents`: an explicit stored value may be kept or lowered; never raised, and never
+ *   cleared when the automatic value (from the org chart) would allow more. Setting one where there was none is allowed.
  * - `schedulesNearPlanLimit`: may be turned off or kept; never turned on.
  * - `onSpendLimit`, `requireTestsPass`, `testCommand`: never changed (a test command is a shell command the user
  *   chose in the window; a gate is not waived from a terminal; pause / stop decides what a limit does).
@@ -74,6 +82,16 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
     if (before === undefined) continue // there was no cap: setting one (or none) only narrows
     if (after === undefined || after > before) refused.push(key)
   }
+  // Project.maxBudgetUsd (the per-run budget, which every adapter now enforces): <= 0, absent and junk all mean "no cap", so a
+  // stored cap may be lowered or kept, and a cap may be set where there was none; raising it or removing it is the window's.
+  if (budgetCap(incoming.maxBudgetUsd) > budgetCap(stored.maxBudgetUsd)) refused.push('maxBudgetUsd')
+  // An explicit subagent limit is a cap on how many reports work at once and how deep they nest: it may be lowered or kept, not
+  // raised, and not cleared when automatic would allow more (effective values, as the team-file gate compares them). Setting
+  // one where the project was automatic stays allowed, as it always was.
+  const limitsWas = effectiveSubagentLimits({ maxSubagentDepth: stored.maxSubagentDepth, maxConcurrentSubagents: stored.maxConcurrentSubagents, roles: Array.isArray(stored.roles) ? stored.roles : [] })
+  const limitsNow = effectiveSubagentLimits({ maxSubagentDepth: incoming.maxSubagentDepth, maxConcurrentSubagents: incoming.maxConcurrentSubagents, roles: Array.isArray(incoming.roles) ? incoming.roles : [] })
+  if (limitsWas.explicit.depth && limitsNow.depth > limitsWas.depth) refused.push('maxSubagentDepth')
+  if (limitsWas.explicit.concurrency && limitsNow.concurrency > limitsWas.concurrency) refused.push('maxConcurrentSubagents')
   if (now.schedulesNearPlanLimit === true && was.schedulesNearPlanLimit !== true) refused.push('schedulesNearPlanLimit')
   if ((now.onSpendLimit ?? 'pause') !== (was.onSpendLimit ?? 'pause')) refused.push('onSpendLimit')
   if ((now.requireTestsPass === true) !== (was.requireTestsPass === true)) refused.push('requireTestsPass')

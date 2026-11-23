@@ -83,16 +83,23 @@ describe('orgai projects against a real inproc host', () => {
     expect(check.doc.check).toMatchObject({ exists: true, isDirectory: true, existingProjectName: 'Code int' })
   })
 
-  it('set --max-budget 5, then none (cleared through the null codec)', async () => {
+  it('set --max-budget 5 (where there was none), lower it, and clear the explicit depth; raising or removing the budget needs the desktop (security review M3)', async () => {
     const set = await json(['--project', codeDir, 'projects', 'set', '--max-budget', '5', '--max-depth', '3'])
     expect(set.code).toBe(0)
     expect(set.doc.project).toMatchObject({ maxBudgetUsd: 5, limits: { depth: 3, explicit: { depth: true } } })
-    const cleared = await json(['--project', codeDir, 'projects', 'set', '--max-budget', 'none', '--max-depth', 'auto'])
-    expect(cleared.code).toBe(0)
-    expect(cleared.doc.project).toMatchObject({ maxBudgetUsd: null, limits: { explicit: { depth: false } } })
+    // Lowering is allowed, and so is clearing an explicit depth that automatic does not exceed.
+    const lowered = await json(['--project', codeDir, 'projects', 'set', '--max-budget', '3', '--max-depth', 'auto'])
+    expect(lowered.code).toBe(0)
+    expect(lowered.doc.project).toMatchObject({ maxBudgetUsd: 3, limits: { explicit: { depth: false } } })
+    // Raising it, and removing it (the cleared field travels as null), are refused with the window-only message, and nothing changes.
+    for (const flag of ['8', 'none']) {
+      const refused = await cli(['--project', codeDir, 'projects', 'set', '--max-budget', flag])
+      expect(refused.code).toBe(1)
+      expect(refused.err).toContain('can be changed in the OrgAI window only: maxBudgetUsd')
+    }
     const show = await cli(['projects', 'show', codeDir])
     expect(show.code).toBe(0)
-    expect(show.out).toContain('Budget per run:  no cap')
+    expect(show.out).toContain('Budget per run:  $3.00')
     expect(show.out).toMatch(/Subagent depth:\s+Automatic \(\d\)/)
   })
 

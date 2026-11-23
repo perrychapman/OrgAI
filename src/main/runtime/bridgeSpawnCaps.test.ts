@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, BridgedRoleChoice, Project, Role, RunEvent } from '@shared/types'
-import { BridgedSessions, bridgeKey } from './bridge'
+import { BRIDGE_NO_BUDGET_LEFT_USD, BridgedSessions, bridgeKey } from './bridge'
 import { ROOT_AGENT_ID, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession } from './types'
 import { spawnCapRefusal } from './spawnCaps'
 import { fakeCtx, project as makeProject, role } from './testHelpers'
@@ -54,7 +54,7 @@ const BRIDGED: BridgedRoleChoice[] = [
   { roleId: 'r-solo', connection: 'proxy-1', adapter: 'claude' }
 ]
 
-function rig(project: Partial<Project> = {}, roles: Role[] = chart(), bridged: BridgedRoleChoice[] = BRIDGED) {
+function rig(project: Partial<Project> = {}, roles: Role[] = chart(), bridged: BridgedRoleChoice[] = BRIDGED, budget?: () => { limitUsd: number; spentUsd: number } | undefined) {
   const p = makeProject({ roles, maxSubagentDepth: 3, maxConcurrentSubagents: 10, ...project })
   const parent = fakeCtx({ project: p, roles })
   const events: RunEvent[] = []
@@ -75,10 +75,12 @@ function rig(project: Partial<Project> = {}, roles: Role[] = chart(), bridged: B
       if (e.type === 'agent.remove') agents.delete(e.agentId)
     },
     agents: () => [...agents.values()],
-    connectionName: (id) => (id === 'openai' ? 'OpenAI' : 'Acme proxy')
+    connectionName: (id) => (id === 'openai' ? 'OpenAI' : 'Acme proxy'),
+    ...(budget ? { budget } : {})
   })
   // RunManager provides the run's accessor from its BridgedSessions the same way.
   parent.spawnCapAgents = () => b.spawnCapAgents()
+  parent.spawnCapPending = (read) => b.registerRootPending(read)
   return { b, parent, agents, codex, claude, events }
 }
 
@@ -373,5 +375,189 @@ describe('spawnAllowanceAfter', () => {
     expect(out.agentsLeft).toBe(0) // 2 started + 1 pending + this one = 4
     expect([...out.roleLeft]).toEqual([['a', 1]]) // 3 - 1 live - this one
     expect(spawnAllowanceAfter({ project: {}, roles, roleId: 'b', agents }).agentsLeft).toBeUndefined()
+  })
+})
+
+describe('spawns approved but not started count in a bridged delegation (spawnCapPending)', () => {
+  it('maxAgentsPerRun: a delegation made while the run adapter has an approved spawn without an agent is refused at the cap', async () => {
+    const r = rig({ maxAgentsPerRun: 2 })
+    r.agents.set('cl-1', agentOf({ id: 'cl-1', roleId: 'r-eng', roleSlug: 'engineer', parentId: ROOT_AGENT_ID }))
+    // The Claude hook approved one more Agent call (PreToolUse) and task_started has not come: the record shows one agent.
+    let pending: (string | undefined)[] = ['r-eng']
+    r.parent.spawnCapPending!(() => pending)
+    await expect(delegate(r, 'oa')).rejects.toThrow(/Agent limit reached \(this run may start 2 agents in total and 2 have started\)/)
+    // The spawn started (its agent is in the record, the adapter's list is empty): the same count, so still refused, not twice.
+    r.agents.set('cl-2', agentOf({ id: 'cl-2', roleId: 'r-eng', roleSlug: 'engineer', parentId: ROOT_AGENT_ID }))
+    pending = []
+    await expect(delegate(r, 'oa')).rejects.toThrow(/2 have started|3 have started/)
+  })
+
+  it('without the pending spawn the same delegation starts (the count is what refuses it)', async () => {
+    const r = rig({ maxAgentsPerRun: 2 })
+    r.agents.set('cl-1', agentOf({ id: 'cl-1', roleId: 'r-eng', roleSlug: 'engineer', parentId: ROOT_AGENT_ID }))
+    r.parent.spawnCapPending!(() => [])
+    void delegate(r, 'oa')
+    await tick()
+    expect(r.codex.sessions).toHaveLength(1)
+  })
+
+  it('Role.maxConcurrent: a pending spawn of the role holds its slot', async () => {
+    const roles = chart().map((x) => (x.id === 'r-oa' ? { ...x, maxConcurrent: 1 } : x))
+    const r = rig({}, roles)
+    r.parent.spawnCapPending!(() => ['r-oa'])
+    await expect(delegate(r, 'oa')).rejects.toThrow(/Concurrent limit for oa reached \(1 running at once\)/)
+    // Another role is not held by it.
+    void delegate(r, 'solo')
+    await tick()
+    expect(r.claude.sessions).toHaveLength(1)
+  })
+
+  it('a pending spawn with no known role counts toward the total only', async () => {
+    const r = rig({ maxAgentsPerRun: 1 })
+    r.parent.spawnCapPending!(() => [undefined])
+    await expect(delegate(r, 'oa')).rejects.toThrow(/Agent limit reached/)
+  })
+
+  it('a reader that throws shows nothing (the delegation is judged on the record alone)', async () => {
+    const r = rig({ maxAgentsPerRun: 1 })
+    r.parent.spawnCapPending!(() => {
+      throw new Error('boom')
+    })
+    void delegate(r, 'oa')
+    await tick()
+    expect(r.codex.sessions).toHaveLength(1)
+  })
+
+  it('a child sees the run adapter\'s pending spawns, the run adapter does not see its own twice, and a child\'s pending counts for the run', async () => {
+    const r = rig({ maxAgentsPerRun: 3 })
+    r.parent.spawnCapPending!(() => ['r-eng'])
+    void delegate(r, 'oa')
+    await tick()
+    const child = r.codex.sessions[0]!.ctx
+    // The child's side: the run's pending spawn, as an agent about to exist, next to the child's own root.
+    expect(child.spawnCapAgents!().filter((a) => a.id.startsWith('pending:')).map((a) => a.roleId)).toEqual(['r-eng'])
+    // The run's own side: only the children's pending (none yet), so the adapter's own list is never counted twice.
+    expect(r.parent.spawnCapAgents!().some((a) => a.id.startsWith('pending:'))).toBe(false)
+    // The child's adapter approved a spawn of its own: the run side sees it, and a delegation counts it
+    // (the child's root 1, the child's pending 1, the run's pending 1 = 3).
+    child.spawnCapPending!(() => ['r-oa'])
+    expect(r.parent.spawnCapAgents!().filter((a) => a.id.startsWith('pending:')).map((a) => a.roleId)).toEqual(['r-oa'])
+    await expect(delegate(r, 'solo')).rejects.toThrow(/Agent limit reached \(this run may start 3 agents in total and 3 have started\)/)
+    // The child does not count its own pending twice (its adapter counts it).
+    expect(child.spawnCapAgents!().some((a) => a.roleId === 'r-oa' && a.id.startsWith('pending:'))).toBe(false)
+  })
+})
+
+describe('Role.maxConcurrent and Project.maxAgentsPerRun of a bridged child follow the run live', () => {
+  const withHelper = (helperCap?: number): Role[] => [
+    ...chart().map((x) => (x.id === 'r-oa' ? { ...x, canSpawn: true, spawnable: ['r-oa2'] } : x)),
+    role({ id: 'r-oa2', slug: 'oa2', name: 'OpenAI helper', reportsTo: 'r-oa', connection: 'openai', ...(helperCap ? { maxConcurrent: helperCap } : {}) })
+  ]
+  const BRIDGED2: BridgedRoleChoice[] = [...BRIDGED, { roleId: 'r-oa2', connection: 'openai', adapter: 'codex' }]
+
+  it('lowering, adding and removing a role cap on the run changes the child\'s role at once, not at the next child', async () => {
+    const r = rig({ maxAgentsPerRun: 6 }, withHelper(3), BRIDGED2)
+    void delegate(r, 'oa')
+    await tick()
+    const ctx = r.codex.sessions[0]!.ctx
+    const helper = (): Role => ctx.roles.find((x) => x.id === 'r-oa2')!
+    expect(helper().maxConcurrent).toBe(3)
+    r.parent.roles.find((x) => x.id === 'r-oa2')!.maxConcurrent = 1
+    expect(helper().maxConcurrent).toBe(1)
+    r.parent.roles.find((x) => x.id === 'r-oa2')!.maxConcurrent = undefined
+    expect(helper().maxConcurrent).toBeUndefined()
+    r.parent.roles.find((x) => x.id === 'r-oa2')!.maxConcurrent = 2
+    // A role the chart no longer has keeps the value the child started with (never less strict).
+    r.parent.roles.splice(r.parent.roles.findIndex((x) => x.id === 'r-oa2'), 1)
+    expect(helper().maxConcurrent).toBe(3)
+  })
+
+  it('both caps lowered mid-run reach the child\'s next check through the same ctx the adapters read', async () => {
+    const r = rig({ maxAgentsPerRun: 8 }, withHelper(4), BRIDGED2)
+    void delegate(r, 'oa')
+    await tick()
+    const ctx = r.codex.sessions[0]!.ctx
+    const own: AgentInstance[] = []
+    const spawn = (): string | undefined => {
+      const refusal = spawnCapRefusal({ project: ctx.project, roles: ctx.roles, roleId: 'r-oa2', agents: own, extraAgents: ctx.spawnCapAgents!() })
+      if (!refusal) {
+        const a = agentOf({ id: `h-${own.length + 1}`, roleId: 'r-oa2', roleSlug: 'oa2', parentId: ROOT_AGENT_ID })
+        own.push(a)
+        ctx.emit({ type: 'agent.upsert', runId: ctx.run.id, agent: a })
+      }
+      return refusal
+    }
+    expect(spawn()).toBeUndefined()
+    expect(spawn()).toBeUndefined()
+    r.parent.roles.find((x) => x.id === 'r-oa2')!.maxConcurrent = 2
+    expect(spawn()).toMatch(/Concurrent limit for oa2 reached \(2 running at once\)/)
+    r.parent.roles.find((x) => x.id === 'r-oa2')!.maxConcurrent = 5
+    expect(spawn()).toBeUndefined() // three helpers now, the child's root and the first delegation make 4 started
+    r.parent.project.maxAgentsPerRun = 4
+    expect(spawn()).toMatch(/Agent limit reached \(this run may start 4 agents in total and 4 have started\)/)
+  })
+
+  it('no adapter keeps a spread copy of the run\'s project (it would freeze a live getter): only the call-time subagent-limit reads spread it', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    for (const file of ['claude.ts', 'codex.ts', 'codexAgents.ts', 'mock.ts', 'continuation.ts']) {
+      const text = readFileSync(join(__dirname, file), 'utf8')
+      const spreads = [...text.matchAll(/\.\.\.(?:this\.)?ctx\.project\b|\.\.\.project\b/g)].map((m) => text.slice(Math.max(0, m.index! - 40), m.index! + 40).replace(/\s+/g, ' '))
+      for (const s of spreads) expect(s, `${file}: ${s}`).toMatch(/effectiveSubagentLimits/)
+    }
+  })
+})
+
+describe('the run\'s spending cap reaches a bridged child as what is left, live (budget)', () => {
+  const state = { limitUsd: 5, spentUsd: 0 }
+  let on = true
+  const budget = (): { limitUsd: number; spentUsd: number } | undefined => (on ? { ...state } : undefined)
+  const costed = (id: string, usd: number, over: Partial<AgentInstance> = {}): AgentInstance =>
+    agentOf({ id, usage: { costUsd: usd, costSource: 'provider', tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, models: [], turns: 0, toolCalls: 0, retries: 0 } as never, ...over })
+
+  it('a delegation is refused once the run has used all of its cap, and starts with something left', async () => {
+    on = true
+    state.limitUsd = 5
+    state.spentUsd = 5
+    const r = rig({}, chart(), BRIDGED, budget)
+    await expect(delegate(r, 'oa')).rejects.toThrow(/used all of its spending limit, so OpenAI lead was not started/)
+    expect(r.codex.sessions).toHaveLength(0)
+    state.spentUsd = 4.9
+    void delegate(r, 'oa')
+    await tick()
+    expect(r.codex.sessions).toHaveLength(1)
+  })
+
+  it('the child\'s Project.maxBudgetUsd is the run\'s limit less what the REST of the run spent, read at every query it builds', async () => {
+    on = true
+    state.limitUsd = 5
+    state.spentUsd = 2
+    // The copy of the project's own cap the child used to get whole.
+    const r = rig({ maxBudgetUsd: 5 }, chart(), BRIDGED, budget)
+    void delegate(r, 'oa')
+    await tick()
+    const ctx = r.codex.sessions[0]!.ctx
+    expect(ctx.project.maxBudgetUsd).toBeCloseTo(3, 9)
+    // The rest of the run spends more: the next read shows less.
+    state.spentUsd = 3.5
+    expect(ctx.project.maxBudgetUsd).toBeCloseTo(1.5, 9)
+    // The child's own spend is added back: it is the child's own session total that its cap is measured against.
+    r.agents.set(ctx.bridgedChild!.agentId, costed(ctx.bridgedChild!.agentId, 1))
+    state.spentUsd = 3.5 // the run total includes that 1
+    expect(ctx.project.maxBudgetUsd).toBeCloseTo(2.5, 9)
+    // Used up: a positive stand-in (a cap of 0 would read as no cap), never the old full copy and never "none".
+    state.spentUsd = 9
+    expect(ctx.project.maxBudgetUsd).toBe(BRIDGE_NO_BUDGET_LEFT_USD)
+    expect(ctx.project.maxBudgetUsd).toBeGreaterThan(0)
+    // The run's cap goes away (the user removed it): the child's cap goes with it.
+    on = false
+    expect(ctx.project.maxBudgetUsd).toBeUndefined()
+  })
+
+  it('without a budget accessor the child keeps the project\'s value (older callers)', async () => {
+    const r = rig({ maxBudgetUsd: 5 })
+    void delegate(r, 'oa')
+    await tick()
+    expect(r.codex.sessions[0]!.ctx.project.maxBudgetUsd).toBe(5)
   })
 })

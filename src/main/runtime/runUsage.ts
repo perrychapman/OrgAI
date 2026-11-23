@@ -96,6 +96,12 @@ export function countUsage(agent: AgentInstance, kind: 'turns' | 'toolCalls' | '
 export interface RunUsageInputs {
   /** The adapter's last run.cost (provider total, resume base already subtracted). */
   providerTotalUsd?: number
+  /**
+   * Ids of the run's agents that run in bridged child sessions (their own adapter, not the root's). The adapter's total covers
+   * only the root's session, so a run with any of these never stands on it, even when every agent shares one connection (a
+   * proxy serving two families): the agents' own costs are summed, children included, for the daily / monthly caps.
+   */
+  bridgedAgentIds?: ReadonlySet<string>
   /** RunPlan.autoContinues of this run. */
   nudges: number
   waitingMs: number
@@ -385,7 +391,8 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
   const multi = runConnection !== undefined && agents.some((a) => a.connection !== undefined && a.connection !== runConnection)
   const provider = inputs.providerTotalUsd
   // The adapter's total covers only the root's own session, never a bridged child's, so it cannot stand for a multi-provider run.
-  const hasProvider = !multi && provider !== undefined && Number.isFinite(provider) && provider > 0
+  const bridgedHere = !!inputs.bridgedAgentIds?.size && agents.some((a) => inputs.bridgedAgentIds!.has(a.id))
+  const hasProvider = !multi && !bridgedHere && provider !== undefined && Number.isFinite(provider) && provider > 0
   // The provider's run total covers the whole run, so it wins when the agents' costs are provider-priced, and it
   // fills in when agent costs are missing altogether (no per-model cost reported). Computed costs keep their sum.
   const useProvider = hasProvider && (cost.costSource === 'provider' || cost.costSource === 'none' || cost.costSource === 'unknown')

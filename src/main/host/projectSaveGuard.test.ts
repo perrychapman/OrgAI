@@ -54,6 +54,60 @@ describe('desktopOnlyProjectChanges (pure)', () => {
     expect(desktopOnlyProjectChanges(withLimits(), withLimits({ schedulesNearPlanLimit: true }))).toEqual(['schedulesNearPlanLimit'])
   })
 
+  describe('the per-run budget (Project.maxBudgetUsd, security review M3)', () => {
+    const capped = withLimits({ maxBudgetUsd: 5 })
+    it('allows keeping, lowering and setting one where there was none (a budget that was 0 or junk counts as none)', () => {
+      expect(desktopOnlyProjectChanges(capped, { ...capped })).toEqual([])
+      expect(desktopOnlyProjectChanges(capped, { ...capped, maxBudgetUsd: 2.5 })).toEqual([])
+      expect(desktopOnlyProjectChanges(withLimits(), withLimits({ maxBudgetUsd: 3 }))).toEqual([])
+      expect(desktopOnlyProjectChanges(withLimits({ maxBudgetUsd: 0 }), withLimits({ maxBudgetUsd: 3 }))).toEqual([])
+      expect(desktopOnlyProjectChanges(withLimits({ maxBudgetUsd: 'x' }), withLimits({ maxBudgetUsd: 3 }))).toEqual([])
+    })
+    it('refuses raising it', () => {
+      expect(desktopOnlyProjectChanges(capped, { ...capped, maxBudgetUsd: 5.01 })).toEqual(['maxBudgetUsd'])
+      expect(desktopOnlyProjectChanges(capped, { ...capped, maxBudgetUsd: 1_000_000 })).toEqual(['maxBudgetUsd'])
+    })
+    it('refuses removing it in every spelling: absent, null, 0, negative, junk, Infinity', () => {
+      const { maxBudgetUsd: _drop, ...none } = capped
+      void _drop
+      expect(desktopOnlyProjectChanges(capped, none as Project)).toEqual(['maxBudgetUsd'])
+      for (const v of [null, 0, -1, 'none', Number.NaN, Infinity]) {
+        expect(desktopOnlyProjectChanges(capped, { ...capped, maxBudgetUsd: v as unknown as number }), String(v)).toEqual(['maxBudgetUsd'])
+      }
+    })
+    it('allows the same junk where there was no cap (nothing to remove)', () => {
+      expect(desktopOnlyProjectChanges(withLimits(), withLimits({ maxBudgetUsd: 0 }))).toEqual([])
+      expect(desktopOnlyProjectChanges(withLimits({ maxBudgetUsd: 0 }), withLimits())).toEqual([])
+    })
+  })
+
+  describe('explicit subagent limits (Project.maxSubagentDepth, maxConcurrentSubagents)', () => {
+    const explicit = withLimits({ maxSubagentDepth: 2, maxConcurrentSubagents: 3 })
+    it('allows keeping and lowering them, setting one where the project was automatic, and an unchanged copy', () => {
+      expect(desktopOnlyProjectChanges(explicit, { ...explicit })).toEqual([])
+      expect(desktopOnlyProjectChanges(explicit, { ...explicit, maxSubagentDepth: 1, maxConcurrentSubagents: 1 })).toEqual([])
+      // The test fixture is explicit (2 and 3); an automatic project has neither field.
+      const { maxSubagentDepth: _d, maxConcurrentSubagents: _c, ...auto } = withLimits()
+      void _d
+      void _c
+      expect(desktopOnlyProjectChanges(auto as Project, { ...auto, maxSubagentDepth: 3, maxConcurrentSubagents: 12 } as Project)).toEqual([])
+    })
+    it('refuses raising an explicit limit', () => {
+      expect(desktopOnlyProjectChanges(explicit, { ...explicit, maxSubagentDepth: 3 })).toEqual(['maxSubagentDepth'])
+      expect(desktopOnlyProjectChanges(explicit, { ...explicit, maxConcurrentSubagents: 4 })).toEqual(['maxConcurrentSubagents'])
+    })
+    it('refuses clearing an explicit limit when the automatic value would allow more, and allows it when it would not', () => {
+      // Automatic concurrency is the default (more than 3): clearing it raises the limit. Automatic depth for this chart is 2 or 3.
+      const tight = withLimits({ maxSubagentDepth: 1, maxConcurrentSubagents: 1 })
+      const { maxSubagentDepth: _d, maxConcurrentSubagents: _c, ...auto } = tight
+      void _d
+      void _c
+      expect(desktopOnlyProjectChanges(tight, auto as Project)).toEqual(['maxSubagentDepth', 'maxConcurrentSubagents'])
+      const loose = withLimits({ maxSubagentDepth: 9, maxConcurrentSubagents: 99 })
+      expect(desktopOnlyProjectChanges(loose, auto as Project)).toEqual([])
+    })
+  })
+
   it('refuses any change to onSpendLimit, requireTestsPass and testCommand', () => {
     expect(desktopOnlyProjectChanges(stored, { ...stored, onSpendLimit: 'pause' })).toEqual(['onSpendLimit'])
     expect(desktopOnlyProjectChanges(withLimits(), withLimits({ onSpendLimit: 'stop' }))).toEqual(['onSpendLimit'])
@@ -325,6 +379,21 @@ describe('projects:save from a non-desktop surface', () => {
     await d.invokeRpc(IPC.projectsSave, [{ ...stored, name: 'Renamed' }], CONFIGURE)
     await d.invokeRpc(IPC.projectsSave, [{ ...stored, maxDailyUsd: 1 }], CONFIGURE)
     expect(saveFromRenderer).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses raising or removing the per-run budget from a socket client and the in-process surface; lowering and setting one go through; the desktop may do all', async () => {
+    const budgeted = withLimits({ maxBudgetUsd: 5 })
+    const { d, saveFromRenderer } = setup(budgeted)
+    await expect(d.invokeRpc(IPC.projectsSave, [{ ...budgeted, maxBudgetUsd: 50 }], CONFIGURE)).rejects.toMatchObject({ code: 'scope_denied', message: expect.stringContaining('maxBudgetUsd') as unknown as string })
+    await expect(d.invokeRpc(IPC.projectsSave, [{ ...budgeted, maxBudgetUsd: null }], CONFIGURE)).rejects.toMatchObject({ code: 'scope_denied' })
+    const inproc: InvokeContext = { surface: 'inproc', grantedScopes: ['read', 'operate', 'configure'] } as InvokeContext
+    await expect(async () => d.invoke(IPC.projectsSave, [{ ...budgeted, maxBudgetUsd: 0 }], inproc)).rejects.toMatchObject({ code: 'scope_denied' })
+    expect(saveFromRenderer).not.toHaveBeenCalled()
+    await d.invokeRpc(IPC.projectsSave, [{ ...budgeted, maxBudgetUsd: 1 }], CONFIGURE)
+    expect(saveFromRenderer).toHaveBeenCalledTimes(1)
+    await d.invoke(IPC.projectsSave, [{ ...budgeted, maxBudgetUsd: 500 }], DESKTOP)
+    await d.invoke(IPC.projectsSave, [{ ...budgeted, maxBudgetUsd: null }], DESKTOP)
+    expect(saveFromRenderer).toHaveBeenCalledTimes(3)
   })
 
   it('does not restrict the desktop window', async () => {

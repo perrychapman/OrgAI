@@ -781,6 +781,15 @@ export interface RuntimeContext {
    * Present only on a run with bridged roles and on the contexts of its bridged children; missing = nothing to add.
    */
   spawnCapAgents?(): readonly Pick<AgentInstance, 'id' | 'state' | 'roleId'>[]
+  /**
+   * The other half of spawnCapAgents: an adapter that approves a spawn before the agent exists (Claude: PreToolUse approves,
+   * task_started follows) hands over a reader of those approved-but-not-started spawns (the role id of each, undefined when
+   * unknown), once at session start. The bridge counts them in a bridged delegation's cap check, and shows them to the other
+   * sessions through spawnCapAgents as `pending:` entries, so a delegation in that window cannot pass maxAgentsPerRun or
+   * Role.maxConcurrent. Present only on a run with bridged roles and on its bridged children; the adapter just passes its own
+   * list through.
+   */
+  spawnCapPending?(read: () => readonly (string | undefined)[]): void
   /** The connection a role's agents run on in this run (defaults.ts roleConnection), for adapters that label agents. Missing = the run's connection. */
   agentConnection?(roleId: string): ConnectionId | undefined
   /**

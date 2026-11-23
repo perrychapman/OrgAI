@@ -11,6 +11,9 @@ vi.mock('./testGate', async () => {
   return { ...actual, runTestGate: vi.fn() }
 })
 
+// The checkout pin around the test command is checked against real git in integration.rootPin.test.ts; here it reads nothing.
+vi.mock('./rootPin', () => ({ pinRoot: vi.fn(async () => undefined), rootDrift: vi.fn(async () => undefined) }))
+
 vi.mock('./worktrees', () => ({
   prepareRepo: vi.fn(async () => {}),
   findWorktree: vi.fn(async () => null),

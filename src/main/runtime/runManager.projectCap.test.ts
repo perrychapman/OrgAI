@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, Project, ProviderId, ProviderModel, RunEvent, RunKind } from '@shared/types'
-import { RunManager } from './runManager'
+import { RunManager, type RunManagerOptions } from './runManager'
 import { setModelTokens } from './runUsage'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -48,11 +48,11 @@ function recorder(id: ProviderId) {
   return { adapter, ctxs }
 }
 
-function rig(adapter: ProviderId) {
+function rig(adapter: ProviderId, extra: RunManagerOptions = {}) {
   const rec = recorder(adapter)
   const setup = { applyProposal: vi.fn(), markScaffolded: vi.fn(), markArchitectureUpdated: vi.fn(), hiddenContext: vi.fn(() => ''), complete: vi.fn(), prepare: vi.fn(async (x: Project) => x) } as unknown as SetupService
   const own = events
-  const m = new RunManager({ [adapter]: rec.adapter }, (e) => void own.push(e), new RunStore(join(dir, 'data')), setup, () => 100, { dataDir: join(dir, 'data'), catalog: () => CATALOG })
+  const m = new RunManager({ [adapter]: rec.adapter }, (e) => void own.push(e), new RunStore(join(dir, 'data')), setup, () => 100, { dataDir: join(dir, 'data'), catalog: () => CATALOG, ...extra })
   return { m, ctx: () => rec.ctxs.at(-1)! }
 }
 
@@ -221,32 +221,124 @@ describe('Claude: the SDK stop and main\'s project-cap stop make one hold', () =
     await m.stopAll()
   })
 
-  it('main does not stop a Claude run before the SDK would: the SDK\'s own run total decides, not a higher computed one', async () => {
+  /** The same, with a token mix the price table prices at $6 (sonnet input $3 per million): 1.2 times the cap of 5. */
+  const MODEST = { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }
+  const sdkUsageOf = (ctx: RuntimeContext, tokens: typeof BIG, totalUsd: number): void => {
+    // The SDK's total is already known (an earlier turn) when the agent's tokens move: before it has reported any total the
+    // run is compared on the estimate (the "no total yet" tests below).
+    ctx.emit({ type: 'run.cost', runId: ctx.run.id, totalCostUsd: totalUsd })
+    const a = rootUsing('claude-sonnet-4-5')
+    setModelTokens(a, 'claude-sonnet-4-5', tokens)
+    spend(ctx, a)
+  }
+
+  it('main does not stop a Claude run before the SDK would on a moderate estimate: the SDK\'s own run total decides (estimate 1.2x the cap, SDK total under it)', async () => {
     const { m, ctx, run } = await claudeRun(5)
-    // The SDK's total is 3 while the table prices the same tokens far higher.
-    sdkUsage(ctx(), 3)
+    // The SDK's total is 3 while the table prices the same tokens at 6: past the cap, short of the 1.5x backstop.
+    sdkUsageOf(ctx(), MODEST, 3)
     const usage = m.summary(run.id)?.usage
     expect(usage?.providerCostUsd).toBe(3)
     expect(usage?.costUsd ?? 0).toBeGreaterThanOrEqual(5)
+    expect(usage?.costUsd ?? 0).toBeLessThan(7.5)
     expect(m.summary(run.id)?.status).toBe('running')
     expect(m.summary(run.id)?.hold).toBeUndefined()
     // The SDK's total reaches the cap: held at once, without waiting for its error.
-    sdkUsage(ctx(), 5)
+    sdkUsageOf(ctx(), MODEST, 5)
     await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
     expect(holdsOf(run.id)).toHaveLength(1)
     await m.stopAll()
   })
 
-  it('a Claude run with no run total yet is not held on main\'s own estimate; the total the adapter reports (a proxy\'s priced total too) holds it', async () => {
+  it('backstop: an estimate of 1.5x the cap or more holds a first-party Claude run even when the SDK\'s total is still under it (15 against 3 under a cap of 5)', async () => {
+    const { m, ctx, run } = await claudeRun(5)
+    // 3x the cap by the price table, SDK total 3: an SDK total that far under its own tokens is not trusted. Once, with the
+    // ordinary hold and line; the SDK's later error finds the run already stopped.
+    sdkUsageOf(ctx(), BIG, 3)
+    expect(m.summary(run.id)?.usage?.providerCostUsd).toBe(3)
+    expect(m.summary(run.id)?.usage?.costUsd ?? 0).toBeGreaterThanOrEqual(15)
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget', budget: { limitUsd: 5 } } }))
+    ctx().onRootTurnEnded?.({ turnGen: 1, ok: false, errorSubtype: 'error_max_budget_usd' })
+    expect(holdsOf(run.id)).toHaveLength(1)
+    expect(logsOf(run.id, 'used all of its spending limit')).toHaveLength(1)
+    expect(finishedOf(run.id)).toHaveLength(1)
+    await m.stopAll()
+  })
+
+  it('backstop: just under 1.5x the cap does not hold while the SDK is under the cap', async () => {
+    const { m, ctx, run } = await claudeRun(5)
+    // 2.4M sonnet input tokens = $7.20, 1.44x of 5.
+    sdkUsageOf(ctx(), { input: 2_400_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 2)
+    expect(m.summary(run.id)?.usage?.costUsd).toBeCloseTo(7.2, 5)
+    expect(m.summary(run.id)?.hold).toBeUndefined()
+    expect(m.summary(run.id)?.status).toBe('running')
+    await m.stopAll()
+  })
+
+  it('a first-party Claude run whose SDK has reported no total yet is held on main\'s own estimate once tokens were used (the adapter under-reports)', async () => {
     const { m, ctx, run } = await claudeRun(5)
     const a = rootUsing('claude-sonnet-4-5')
-    setModelTokens(a, 'claude-sonnet-4-5', BIG)
+    setModelTokens(a, 'claude-sonnet-4-5', MODEST)
     spend(ctx(), a)
     expect(m.summary(run.id)?.usage?.providerCostUsd).toBeUndefined()
-    expect(m.summary(run.id)?.usage?.costUsd ?? 0).toBeGreaterThanOrEqual(5)
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget', budget: { limitUsd: 5 } } }))
+    expect(holdsOf(run.id)).toHaveLength(1)
+    await m.stopAll()
+  })
+
+  it('an SDK total of 0 with tokens used is the same: held on the estimate, not invisible', async () => {
+    const { m, ctx, run } = await claudeRun(5)
+    sdkUsageOf(ctx(), MODEST, 0)
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+    await m.stopAll()
+  })
+
+  it('a run priced from Settings (computed) with a low SDK total cannot hide behind it: the Settings price is the estimate', async () => {
+    // A Settings price: 10 dollars per million input tokens, so 2M tokens cost 20 against a cap of 5 (4x), SDK total 1.
+    const { m, ctx } = rig('claude', { appSettings: () => ({ modelPrices: [{ model: 'claude-sonnet-4-5', price: { inputPerToken: 0.00001, outputPerToken: 0.00005 } }] }) as never })
+    const run = await m.start({ project: team('claude-sonnet-4-5', 5), prompt: 'go' })
+    sdkUsageOf(ctx(), MODEST, 1)
+    expect(m.summary(run.id)?.usage).toMatchObject({ costSource: 'computed', providerCostUsd: 1 })
+    expect(m.summary(run.id)?.usage?.costUsd).toBeCloseTo(20, 5)
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+    await m.stopAll()
+  })
+
+  it('a run with no SDK total yet and no tokens is not held (nothing to compare)', async () => {
+    const { m, ctx, run } = await claudeRun(5)
+    spend(ctx(), rootUsing('claude-sonnet-4-5'))
     expect(m.summary(run.id)?.hold).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('the total the adapter reports holds a first-party run at once (the SDK-first ordering)', async () => {
+    const { m, ctx, run } = await claudeRun(5)
+    const a = rootUsing('claude-sonnet-4-5')
+    spend(ctx(), a)
     ctx().emit({ type: 'run.cost', runId: run.id, totalCostUsd: 6 })
     await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+    await m.stopAll()
+  })
+})
+
+describe('Claude through a proxy: the cap compares the best known cost, not only the adapter\'s total', () => {
+  it('a proxy connection with a low reported total and a higher estimate holds on the estimate', async () => {
+    const rec = recorder('claude')
+    const setup = { applyProposal: vi.fn(), markScaffolded: vi.fn(), markArchitectureUpdated: vi.fn(), hiddenContext: vi.fn(() => ''), complete: vi.fn(), prepare: vi.fn(async (x: Project) => x) } as unknown as SetupService
+    const m = new RunManager({ claude: rec.adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), setup, () => 100, {
+      dataDir: join(dir, 'data'),
+      catalog: () => CATALOG,
+      resolveConnection: () => ({ connection: 'proxy-1', adapter: 'claude', env: {} })
+    })
+    const run = await m.start({ project: team('claude-sonnet-4-5', 5), prompt: 'go' })
+    expect(m.summary(run.id)?.connection).toBe('proxy-1')
+    const ctx = rec.ctxs.at(-1)!
+    const a = rootUsing('claude-sonnet-4-5')
+    setModelTokens(a, 'claude-sonnet-4-5', { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })
+    spend(ctx, a)
+    ctx.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 1 })
+    // 6 by the table, 1 reported, 1.2x the cap: a proxy has no SDK-first rule, so the estimate counts.
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ endedBy: 'budget', hold: { kind: 'budget' } }))
+    expect(holdsOf(run.id)).toHaveLength(1)
     await m.stopAll()
   })
 })

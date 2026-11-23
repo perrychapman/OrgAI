@@ -1198,6 +1198,12 @@ export interface StartChoiceRun {
 
 /** The largest per-run cap a start may ask for (a sanity bound; the project's own cap is what limits it). */
 const START_BUDGET_MAX_USD = 1_000_000
+/**
+ * A first-party Claude run under the project's cap is stopped by its SDK on the SDK's own total. Main's own estimate from tokens
+ * (the price table, Settings prices) only stops it when that estimate reaches this multiple of the cap while the SDK's total has
+ * not: a total that far apart is under-reported or the table is wrong, and the run holds on the safe side.
+ */
+const SDK_BACKSTOP_RATIO = 1.5
 
 /** The same text rule as switchModel's: non-empty, short, trimmed, no control characters. */
 const isChoiceText = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200 && v.trim() === v && !/[\x00-\x1f\x7f]/.test(v)
@@ -2777,6 +2783,7 @@ export class RunManager {
             extraConnections: connection ? [connection] : [],
             emit: (e) => emit(e, { bridged: true }),
             agents: () => Object.values(active.record.agents),
+            budget: () => this.runBudgetView(active),
             connectionName: (id) => connectionName(id, this.options.appSettings?.()),
             log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
           })
@@ -2809,6 +2816,7 @@ export class RunManager {
           ? {
               bridge: { roles: () => bridge.roles(), spawn: (input) => bridge.spawn(input) },
               spawnCapAgents: () => bridge.spawnCapAgents(),
+              spawnCapPending: (read: () => readonly (string | undefined)[]) => bridge.registerRootPending(read),
               agentConnection: (roleId: string) => {
                 // A role removed mid-run still labels the agents that started on it.
                 const r = ctx.roles.find((x) => x.id === roleId) ?? active.retiredRoles?.find((x) => x.id === roleId)
@@ -3537,7 +3545,8 @@ export class RunManager {
         return
       }
     }
-    const cost = Math.max(a.summary.usage?.costUsd ?? 0, a.summary.usage?.providerCostUsd ?? 0)
+    const spent = this.spendOf(a)
+    const cost = spent.usd
     if (a.chainPriorCostUsd + cost >= budget) {
       // A desktop run on a conversation budget (model handoff) waits on the user: the hold lets them add budget.
       if (!a.summary.overrides?.execMode) {
@@ -4029,6 +4038,7 @@ export class RunManager {
   private currentUsage(a: ActiveRun, now: number): RunUsage {
     return computeRunUsage(a.summary, Object.values(a.record.agents), {
       providerTotalUsd: a.providerTotalUsd,
+      ...(a.bridgedAgents?.size ? { bridgedAgentIds: new Set(a.bridgedAgents.keys()) } : {}),
       nudges: a.record.plan?.autoContinues ?? 0,
       waitingMs: a.waiting.elapsed(now),
       decisions: a.decisionsOpened,
@@ -5879,15 +5889,19 @@ export class RunManager {
       project = undefined
     }
     const capped = this.liveCapProject(run.projectId, !!run.quick || !!run.buildWorkspace, project ?? undefined)
-    if (!this.capsOn(capped)) return undefined
+    // The per-run cap the user chose, or the project's own per-run budget, cannot see an unpriced model either (an exec run's
+    // `allowUnpricedBudget` keeps its meaning; a conversation budget has its own refusal in the live branch below).
+    const perRunCap = !run.overrides?.allowUnpricedBudget && (run.runBudgetUsd !== undefined || (!!project && projectBudgetUsd(project) !== undefined))
+    if (!this.capsOn(capped) && !perRunCap) return undefined
     let rc: RunConnection | undefined
     try {
-      rc = this.options.resolveRoleConnection?.(capped, { connection, adapter: model.adapter })
+      const forRole = capped ?? project
+      rc = forRole ? this.options.resolveRoleConnection?.(forRole, { connection, adapter: model.adapter }) : undefined
     } catch {
       rc = undefined
     }
     if (this.modelIsPriced(model.id, connection, rc)) return undefined
-    return `This project has a daily or monthly spending limit, but ${logText(model.id)} has no known price, so the limit cannot be enforced. Set a model price in Settings or remove the limit.`
+    return `This project has a ${this.capsOn(capped) ? 'daily or monthly' : 'per-run'} spending limit, but ${logText(model.id)} has no known price, so the limit cannot be enforced. Set a model price in Settings or remove the limit.`
   }
 
   // ---------- UI overhaul run actions (desktop only, main/overhaulIpc.ts; docs/design/ui-overhaul/impl-runtime.md) ----------
@@ -6108,6 +6122,46 @@ export class RunManager {
     return Number.isFinite(v) ? v : 0
   }
 
+  /**
+   * What a run has spent as its caps compare it: `usd` is the best known cost of the whole run, `bridgedUsd` the known cost of
+   * its bridged agents (own sessions on other connections or adapters: a parent's provider total never covers them) and
+   * `unknown` whether any of them has no known price. For a run without bridged agents this is runCostUsd, unchanged. With
+   * them, the parent session's best cost (its provider total or its native agents' priced sum) plus the bridged agents is
+   * compared too, so a total that covers only the parent's own session cannot hide the children (usage.costUsd drops the
+   * children when the provider total stands for the run).
+   */
+  private spendOf(a: ActiveRun): { usd: number; bridgedUsd: number; unknown: boolean } {
+    const base = this.runCostUsd(a.summary)
+    const ids = a.bridgedAgents
+    if (!ids?.size) return { usd: base, bridgedUsd: 0, unknown: false }
+    let bridgedUsd = 0
+    let nativeUsd = 0
+    let unknown = false
+    for (const agent of Object.values(a.record.agents)) {
+      const u = agent.usage
+      const c = typeof u?.costUsd === 'number' && Number.isFinite(u.costUsd) && u.costUsd > 0 ? u.costUsd : 0
+      if (ids.has(agent.id)) {
+        bridgedUsd += c
+        if (u && (u.costSource === 'unknown' || u.costPartial)) unknown = true
+      } else nativeUsd += c
+    }
+    const root = typeof a.providerTotalUsd === 'number' && Number.isFinite(a.providerTotalUsd) && a.providerTotalUsd > 0 ? a.providerTotalUsd : 0
+    return { usd: Math.max(base, Math.max(root, nativeUsd) + bridgedUsd), bridgedUsd, unknown }
+  }
+
+  /**
+   * The run's cap and its spend for the bridge (BridgedSessionsDeps.budget), read live: the per-run cap, else the project's
+   * (the run's view of it), and for an exec or conversation budget the chain's budget with the chain's earlier spend counted.
+   */
+  private runBudgetView(a: ActiveRun): { limitUsd: number; spentUsd: number } | undefined {
+    const s = a.summary
+    if (s.overrides?.execMode || s.conversationBudgetUsd !== undefined) {
+      return a.execBudget === undefined ? undefined : { limitUsd: a.execBudget, spentUsd: a.chainPriorCostUsd + this.spendOf(a).usd }
+    }
+    const limit = s.runBudgetUsd ?? (a.ctx ? projectBudgetUsd(a.ctx.project) : undefined)
+    return limit === undefined ? undefined : { limitUsd: limit, spentUsd: this.spendOf(a).usd }
+  }
+
   /** What the other runs of a model-handoff chain cost (a conversation budget is one total over the chain). Read once. */
   private priorChainUsd(a: ActiveRun): number {
     if (a.priorChainUsd !== undefined) return a.priorChainUsd
@@ -6313,18 +6367,25 @@ export class RunManager {
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: 'This project has a daily or monthly spending limit, but part of this run has no known price, so that part does not count toward the limit. Set a model price in Settings.' })
     }
     if (!spend && ownCap === undefined && percent === undefined) return
-    const cost = this.runCostUsd(s)
+    // What the run has spent as a cap sees it: the best known cost of the whole run, the known cost of its bridged agents
+    // included whatever the parent's adapter is (the parent's own total covers only its own session).
+    const spent = this.spendOf(a)
+    const cost = spent.usd
     const reached = spend ? capsReached(spend)[0] : undefined
     if (reached && project) return this.spendLimitStop(a, reached, project)
-    // The run's own cap (main enforces it too: a provider that does not enforce a budget still stops here). Claude's SDK
-    // stops on its own running total for the project's cap (error_max_budget_usd), so for that fallback main compares only
-    // the run total the adapter reported (run.cost: the SDK's, or its own pricing on a proxy), never its own estimate from
-    // tokens, so it cannot stop a Claude run before the SDK would; the SDK's later error finds spendStopped set
-    // (budgetReached) and adds no second hold. A per-run cap the user chose keeps comparing the best known cost.
-    const providerCost = s.usage?.providerCostUsd
-    const sdkEnforced = projectCap !== undefined && a.adapter === 'claude'
-    const ownCost = sdkEnforced ? (typeof providerCost === 'number' && Number.isFinite(providerCost) && providerCost > 0 ? providerCost : 0) : cost
-    if (ownCap !== undefined && ownCost >= ownCap) {
+    // The run's own cap (main enforces it too: a provider that does not enforce a budget still stops here). A first-party
+    // Claude run under the project's cap is stopped by its SDK on the SDK's own running total (error_max_budget_usd), so
+    // main does not stop it before the SDK would on its own estimate: while the SDK has reported a run total, main compares
+    // that total (plus the bridged agents, which the SDK never sees). Three cases compare the best known cost instead, so
+    // an adapter that under-reports cannot hide spend: the SDK has reported no total yet (or 0) while tokens were used, the
+    // connection is not first-party Anthropic (a proxy's total is the adapter's own pricing), or the cost is far past the cap
+    // while the SDK's total is not (a backstop at SDK_BACKSTOP_RATIO of the cap: the SDK's total or the price table is then
+    // wrong, and the run is stopped on the safe side). A per-run cap the user chose always compares the best known cost.
+    const sdkTotal = typeof a.providerTotalUsd === 'number' && Number.isFinite(a.providerTotalUsd) && a.providerTotalUsd > 0 ? a.providerTotalUsd : 0
+    const sdkFirst = projectCap !== undefined && a.adapter === 'claude' && s.connection === 'anthropic' && sdkTotal > 0
+    const ownCost = sdkFirst ? sdkTotal + spent.bridgedUsd : cost
+    const backstop = sdkFirst && ownCap !== undefined && cost >= ownCap * SDK_BACKSTOP_RATIO
+    if (ownCap !== undefined && (ownCost >= ownCap || backstop)) {
       this.setBudgetHold(a, 'run', ownCap, cost)
       a.spendStopped = true
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: `The run used all of its spending limit (${money(ownCap)}) and stopped. You can add budget to continue.` })
@@ -6334,7 +6395,7 @@ export class RunManager {
     // Unknown price is not zero: a run whose spend cannot be priced (all or part of it) cannot be held to a cap, so under
     // one it stops, as start refuses an unpriced chosen model under a project cap and an exec run ends on one. The hold shows
     // the known part of the spend. `allowUnpricedBudget` (an exec override) keeps its meaning.
-    if (ownCap !== undefined && (s.usage?.costSource === 'unknown' || s.usage?.costPartial) && !s.overrides?.allowUnpricedBudget) {
+    if (ownCap !== undefined && (s.usage?.costSource === 'unknown' || s.usage?.costPartial || spent.unknown) && !s.overrides?.allowUnpricedBudget) {
       this.setBudgetHold(a, 'run', ownCap, cost)
       a.spendStopped = true
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: `Part of this run has no known price, so its spending limit (${money(ownCap)}) cannot be enforced and the run stopped. Set a model price in Settings, or remove the limit.` })

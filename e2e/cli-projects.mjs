@@ -2,7 +2,7 @@
 // adapter only (ORGAI_MOCK=1): no tokens, no network. Every command hosts itself, one at a time (e2e/cliLib.mjs).
 //
 // a. projects create (code, JSON) / create (engagement with --client, text) / list (text and JSON) / show / set
-//    (--max-budget 5 then none, --max-depth auto, --plan-guard off) / check / remove --yes (JSON), and a second create
+//    (--max-budget 5 then 3, 8 and none refused, --max-depth auto, --plan-guard off) / check / remove --yes (JSON), and a second create
 //    of the same folder exits 1.
 // b. init --skip-architect in a fixture repo exits 0 and registers it; again says "Already an OrgAI project".
 // c. `orgai init` on a pseudo-terminal (e2e/ptyDriver.mjs, as cli-tui.mjs): every card the mock Architect raises (its
@@ -62,10 +62,16 @@ async function partA() {
   const set = await cli(['projects', 'set', '--max-budget', '5', '--max-depth', '3', '--plan-guard', 'off', '--output-format', 'json'], { cwd: codeDir })
   const sj = json(set.out)
   check(set.code === 0 && sj?.project?.maxBudgetUsd === 5 && sj.project.limits?.depth === 3 && sj.project.planGuard === 'off', 'projects set --max-budget 5 --max-depth 3 --plan-guard off', show(set))
-  const cleared = await cli(['projects', 'set', '--max-budget', 'none', '--max-depth', 'auto'], { cwd: codeDir })
-  check(cleared.code === 0 && /Budget per run:\s+no cap/.test(cleared.out) && /Subagent depth:\s+Automatic/.test(cleared.out), 'projects set --max-budget none --max-depth auto clears both', show(cleared))
+  // A budget may be lowered from the terminal; raising or removing it is the desktop's (security review M3). The depth, an
+  // explicit limit that automatic does not exceed, may still be cleared.
+  const cleared = await cli(['projects', 'set', '--max-budget', '3', '--max-depth', 'auto'], { cwd: codeDir })
+  check(cleared.code === 0 && /Budget per run:\s+\$3\.00/.test(cleared.out) && /Subagent depth:\s+Automatic/.test(cleared.out), 'projects set --max-budget 3 (lowered) --max-depth auto clears the depth', show(cleared))
+  for (const flag of ['8', 'none']) {
+    const raised = await cli(['projects', 'set', '--max-budget', flag], { cwd: codeDir })
+    check(raised.code === 1 && /window only: maxBudgetUsd/.test(raised.err), `projects set --max-budget ${flag} is refused (window only)`, show(raised))
+  }
   const stored = storedProject(cj?.project?.id)
-  check(stored && stored.maxBudgetUsd === undefined && stored.maxSubagentDepth === undefined && stored.preferEverydayNearLimit === false, 'the cleared fields are stored as unset', JSON.stringify(stored && { b: stored.maxBudgetUsd, d: stored.maxSubagentDepth }))
+  check(stored && stored.maxBudgetUsd === 3 && stored.maxSubagentDepth === undefined && stored.preferEverydayNearLimit === false, 'the lowered budget stays and the cleared depth is stored as unset', JSON.stringify(stored && { b: stored.maxBudgetUsd, d: stored.maxSubagentDepth }))
 
   // Run staffing, review and retention flags (cli-parity 3.2).
   const sShown = json((await cli(['projects', 'show', '--output-format', 'json'], { cwd: codeDir })).out)
