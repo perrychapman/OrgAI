@@ -554,6 +554,23 @@ describe('Lows', () => {
     expect(await mergeAttributeRefusal(root, git(root, 'rev-parse', 'worktree-agent-r1'), ['src/new.js'])).toMatch(/src\/old\.js \(merge=union\)/)
   })
 
+  it('each scratch use gets its own mkdtemp folder under the shared one, removed after the check; a stale one a crash left is swept whole', async () => {
+    const dir = mergeScratchDir()
+    mkdirSync(dir, { recursive: true })
+    const before = readdirSync(dir).filter((n) => n.startsWith('use-'))
+    await mergeAttributeRefusal(root, headOf(root), ['src/app.js'])
+    expect(readdirSync(dir).filter((n) => n.startsWith('use-'))).toEqual(before)
+    const stale = mkdtempSync(join(dir, 'use-'))
+    writeFileSync(join(stale, 'scratch.index'), 'x')
+    const fresh = mkdtempSync(join(dir, 'use-'))
+    const old = new Date(Date.now() - 60 * 60_000)
+    utimesSync(stale, old, old)
+    expect(sweepMergeScratch()).toBe(1)
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    rmSync(fresh, { recursive: true, force: true })
+  })
+
   it('the scratch index lives under one OrgAI temp folder, is gone after a check, and a stale one a crash left is swept', async () => {
     const dir = mergeScratchDir()
     expect(dir).toContain('orgai-merge-scratch')

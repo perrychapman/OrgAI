@@ -1,7 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { scrubControlEnv } from './childEnv'
-import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { devNull, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
@@ -1064,6 +1063,7 @@ const NO_FILTER_ATTRS = new Set(['unspecified', 'unset'])
  * leaves a file the next start can find and remove (sweepMergeScratch), not a stray file among the OS temp files.
  */
 const SCRATCH_DIR_NAME = 'orgai-merge-scratch'
+const SCRATCH_USE_PREFIX = 'use-'
 const SCRATCH_STALE_MS = 10 * 60_000
 let scratchSwept = false
 
@@ -1077,11 +1077,15 @@ export function sweepMergeScratch(now: number = Date.now()): number {
   try {
     const dir = mergeScratchDir()
     for (const name of readdirSync(dir)) {
-      if (!/\.index(\.lock)?$/.test(name)) continue
+      const perUse = name.startsWith(SCRATCH_USE_PREFIX)
+      if (!perUse && !/\.index(\.lock)?$/.test(name)) continue
       try {
         const full = join(dir, name)
-        if (now - statSync(full).mtimeMs < SCRATCH_STALE_MS) continue
-        unlinkSync(full)
+        const st = statSync(full)
+        if (now - st.mtimeMs < SCRATCH_STALE_MS) continue
+        // A per-use folder (made by mkdtemp) goes whole; a loose index file is what an older version left.
+        if (perUse && st.isDirectory()) rmSync(full, { recursive: true, force: true })
+        else unlinkSync(full)
         removed++
       } catch {
         /* ignore */
@@ -1095,17 +1099,33 @@ export function sweepMergeScratch(now: number = Date.now()): number {
 
 /** A fresh scratch index path; the first use in this process sweeps what an earlier crash left. */
 function newMergeScratchPath(): string {
-  const dir = mergeScratchDir()
+  const parent = mergeScratchDir()
+  let dir: string
   try {
-    mkdirSync(dir, { recursive: true })
+    // The shared parent holds one folder per use, made by mkdtemp (owner-only where the platform has modes), so another local
+    // user cannot plant or pre-create the index path.
+    mkdirSync(parent, { recursive: true, mode: 0o700 })
+    if (!scratchSwept) {
+      scratchSwept = true
+      sweepMergeScratch()
+    }
+    dir = mkdtempSync(join(parent, SCRATCH_USE_PREFIX))
   } catch {
-    return join(tmpdir(), `orgai-attr-${randomUUID()}.index`)
+    dir = mkdtempSync(join(tmpdir(), `${SCRATCH_DIR_NAME}-`))
   }
-  if (!scratchSwept) {
-    scratchSwept = true
-    sweepMergeScratch()
+  return join(dir, 'scratch.index')
+}
+
+/** Remove the per-use folder of a scratch index made by newMergeScratchPath (never any other folder). */
+function removeMergeScratch(scratch: string): void {
+  const dir = dirname(scratch)
+  const name = basename(dir)
+  if (!name.startsWith(SCRATCH_USE_PREFIX) && !name.startsWith(`${SCRATCH_DIR_NAME}-`)) return
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    /* ignore */
   }
-  return join(dir, `${randomUUID()}.index`)
 }
 
 /**
@@ -1208,11 +1228,7 @@ export async function mergeAttributeRefusal(root: string, sha: string, files: re
     const named = [...new Set(bad.map((b) => `${b.path} (merge=${b.value})`))].slice(0, 3).join(', ')
     return `a merge attribute selects a custom merge for ${named}${bad.length > 3 ? ', ...' : ''}, which could make the merged content differ from the reviewed commit. Only git's own text merge is used here: remove the merge attribute (in .gitattributes or .git/info/attributes), then integrate again.`
   } finally {
-    try {
-      unlinkSync(scratch)
-    } catch {
-      /* ignore */
-    }
+    removeMergeScratch(scratch)
   }
 }
 
