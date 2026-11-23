@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronDown,
   ClipboardCheck,
+  Copy,
   Download,
   Ellipsis,
   ExternalLink,
@@ -393,6 +394,7 @@ function SkillRow({
   const { spec } = info
   const linked = !!spec.libraryId
   const [error, setError] = useState<string | null>(null)
+  const [exported, setExported] = useState<string | null>(null)
   const [rolesOpen, setRolesOpen] = useState(false)
   const [flashing, setFlashing] = useState(false)
   const row = useRef<HTMLLIElement>(null)
@@ -522,6 +524,40 @@ function SkillRow({
                 <Button
                   variant="ghost"
                   size="sm"
+                  icon={Copy}
+                  testId="skill-duplicate"
+                  title="Make a copy of this skill in this project. Roles are not copied."
+                  onClick={() => {
+                    close()
+                    setExported(null)
+                    void mutate(async () => {
+                      await window.orgai.skillsExtra.duplicate({ projectId: project.id, skillId: spec.id })
+                      await Promise.all([skillsApi.reload(), useAppStore.getState().loadProjects()])
+                    })
+                  }}
+                >
+                  Duplicate
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={Download}
+                  testId="skill-export"
+                  title="Save this skill's files to a folder you choose"
+                  onClick={() => {
+                    close()
+                    setExported(null)
+                    void mutate(async () => {
+                      const path = await window.orgai.skillsExtra.export({ projectId: project.id, skillId: spec.id })
+                      if (path) setExported(path)
+                    })
+                  }}
+                >
+                  Export…
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   icon={linked ? Unlink : Trash2}
                   testId="skill-remove"
                   onClick={() => {
@@ -562,6 +598,11 @@ function SkillRow({
         <p className="mcp-row-note warn" data-testid="skill-elevated">
           <Icon icon={TriangleAlert} size="sm" />
           <span>{hint}</span>
+        </p>
+      )}
+      {exported && (
+        <p className="mcp-row-note" role="status" data-testid="skill-exported">
+          <span>Exported to {exported}</span>
         </p>
       )}
       {error && (

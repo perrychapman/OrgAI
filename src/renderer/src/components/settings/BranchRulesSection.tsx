@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
-import type { Project } from '@shared/types'
+import type { FinishedCopiesSize, Project } from '@shared/types'
 import { PROJECT_TEST_COMMAND_MAX_CHARS } from '@shared/types'
+import { formatBytes } from '../../lib/outputs'
 import { Input } from '../ui/Input'
 import { Select } from '../ui/Select'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
@@ -17,6 +18,45 @@ const KEEP_DAYS = [1, 7, 14, 30, 90]
  * branch; missing = the detected default), a failing `testCommand` in the finished copy refuses the merge, and
  * Maintenance removes failed or discarded copies after `keepFailedBranchesDays`.
  */
+/**
+ * "Finished copies on this computer": count and size from maintenanceExtra.finishedCopiesSize. Loading, failed and
+ * unknown (a copy count of 0 is said as none; a truncated walk says "at least") are told apart; a size never shows as 0.
+ */
+function FinishedCopiesRow({ projectId, rowId }: { projectId: string; rowId: string }): ReactElement {
+  const [state, setState] = useState<{ kind: 'loading' } | { kind: 'failed' } | { kind: 'done'; data: FinishedCopiesSize }>({ kind: 'loading' })
+  useEffect(() => {
+    let live = true
+    setState({ kind: 'loading' })
+    window.orgai.maintenanceExtra
+      .finishedCopiesSize(projectId)
+      .then((data) => live && setState({ kind: 'done', data }))
+      .catch(() => live && setState({ kind: 'failed' }))
+    return () => {
+      live = false
+    }
+  }, [projectId])
+  let text: string
+  if (state.kind === 'loading') text = 'Measuring…'
+  else if (state.kind === 'failed') text = 'Could not be measured'
+  else if (state.data.count === 0) text = 'None'
+  else {
+    const size = formatBytes(state.data.bytes)
+    text = `${state.data.count} ${state.data.count === 1 ? 'copy' : 'copies'}${size ? ` · ${state.data.truncated ? 'at least ' : ''}${size}` : ''}`
+  }
+  return (
+    <SettingRow
+      id={rowId}
+      title="Finished copies on this computer"
+      description="Separate working copies agents leave behind. Work already merged into main is safe there; discard or delete a branch under Branches to remove its copy."
+      control={
+        <span className="settings-quiet" data-testid="finished-copies-size" role="status" aria-describedby={settingDescId(rowId)}>
+          {text}
+        </span>
+      }
+    />
+  )
+}
+
 export function BranchRulesSection({ project, patch }: { project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
   const uid = useId()
   const row = (n: string): string => `${uid}-${n}-row`
@@ -88,7 +128,7 @@ export function BranchRulesSection({ project, patch }: { project: Project; patch
         <SettingRow
           id={row('cmd')}
           title="Test command"
-          description={project.requireTestsPass && !command.trim() ? 'No tests run until you add a command: merges go ahead untested.' : 'One line, run in the finished copy, for example npm test.'}
+          description={project.requireTestsPass && !command.trim() ? 'Add a command: while this is empty, merges are refused because there is nothing to run.' : 'One line, run in the finished copy, for example npm test.'}
           width="select"
           control={
             <Input
@@ -124,6 +164,7 @@ export function BranchRulesSection({ project, patch }: { project: Project; patch
             />
           }
         />
+        <FinishedCopiesRow projectId={project.id} rowId={row('copies')} />
       </SettingsCard>
     </SettingsSection>
   )

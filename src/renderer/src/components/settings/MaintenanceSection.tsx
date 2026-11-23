@@ -160,6 +160,48 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
     if (ok) await act(w.branch, () => window.orgai.maintenance.discardWorktree({ projectId: project.id, branch: w.branch }))
   }
 
+  // Delete branch is never offered for the checked-out or the default / main branch (main refuses them too). Until git
+  // says which those are, it is not offered at all.
+  const [protectedBranches, setProtectedBranches] = useState<Set<string> | null>(null)
+  useEffect(() => {
+    let live = true
+    setProtectedBranches(null)
+    window.orgai.gitInfo
+      .summary(project.id)
+      .then((g) => live && setProtectedBranches(g ? new Set([g.branch, g.defaultBranch, project.mainBranch].filter((b): b is string => !!b)) : null))
+      .catch(() => live && setProtectedBranches(null))
+    return () => {
+      live = false
+    }
+  }, [project.id, project.mainBranch, worktrees])
+  const deleting = useRef(false)
+  const deleteBranch = async (w: PendingWorktree): Promise<void> => {
+    if (deleting.current) return
+    deleting.current = true
+    try {
+      const ok = await confirm({
+        title: `Delete the branch ${w.branch}?`,
+        body: (
+          <>
+            <p data-testid="delete-branch-body">
+              This deletes the branch <code>{w.branch}</code>
+              {w.exists ? ' and its finished copy' : ''}. Its {w.commitsAhead} commit{w.commitsAhead === 1 ? '' : 's'} not merged into main
+              {w.uncommittedFiles > 0 ? ` and ${w.uncommittedFiles} uncommitted file${w.uncommittedFiles === 1 ? '' : 's'}` : ''} are lost. This cannot be undone.
+            </p>
+          </>
+        ),
+        confirmLabel: 'Delete branch',
+        cancelLabel: 'Keep branch',
+        danger: true,
+        confirmTestId: 'delete-branch-confirm'
+      })
+      if (!ok) return
+      await act(w.branch, () => window.orgai.maintenanceExtra.deleteBranch({ projectId: project.id, branch: w.branch }))
+    } finally {
+      deleting.current = false
+    }
+  }
+
   const uninstall = async (): Promise<void> => {
     const ok = await confirm({
       title: 'Remove OrgAI files from this repository?',
@@ -244,6 +286,11 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
                     <Button variant="danger" size="sm" disabled={busy !== null} onClick={() => void discard(w)}>
                       Discard
                     </Button>
+                    {protectedBranches !== null && !protectedBranches.has(w.branch) && (
+                      <Button variant="danger" size="sm" disabled={busy !== null} testId="delete-branch" onClick={() => void deleteBranch(w)}>
+                        Delete branch…
+                      </Button>
+                    )}
                     <Button variant="ghost" size="sm" disabled={diff === 'loading'} onClick={() => void toggleDiff(w.branch)}>
                       {diff === 'loading' ? 'Loading…' : diff ? 'Hide diff' : 'View diff'}
                     </Button>
