@@ -40,12 +40,23 @@ export interface GalleryItem {
   /** Controls beside the select button (a switch); positioned top right of the tile. */
   trailing?: ReactNode
   testId?: string
+  /** Extra data-* attributes on the tile (e2e hooks such as data-provider), keys without the "data-" prefix. */
+  data?: Record<string, string>
 }
 
 export interface GallerySection {
   id: string
-  label: string
+  label: ReactNode
   note?: ReactNode
+  /** Buttons on the section's title row (Add proxy). */
+  actions?: ReactNode
+  /** Shown (and the section kept) when it has no tiles; without it an empty section is hidden. */
+  emptyNote?: ReactNode
+  /** Heading id (a focus target after a removal) and test id. */
+  headingId?: string
+  headingTestId?: string
+  /** Shown under the title row, e.g. a limit reason. */
+  footnote?: ReactNode
 }
 
 export interface GalleryFilter {
@@ -122,7 +133,7 @@ export function SettingsGallery({
 
   const shownSections = sections
     .map((s) => ({ ...s, cards: visible.filter((i) => i.section === s.id) }))
-    .filter((s) => s.cards.length > 0)
+    .filter((s) => s.cards.length > 0 || (s.emptyNote !== undefined && !query.trim() && filter === 'all'))
 
   return (
     <div className="settings-gallery" data-testid={testId}>
@@ -156,15 +167,19 @@ export function SettingsGallery({
           {toolbar && <div className="settings-gallery-toolbar">{toolbar}</div>}
         </div>
         <div ref={grid} className="settings-gallery-sections" onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
-          {shownSections.length === 0 && (empty ?? <p className="settings-gallery-empty">Nothing matches.</p>)}
+          {shownSections.every((s) => s.cards.length === 0 && s.emptyNote === undefined) && (empty ?? <p className="settings-gallery-empty">Nothing matches.</p>)}
           {shownSections.map((s) => (
-            <section key={s.id} className="settings-gallery-section" aria-labelledby={`${asideId}-${s.id}`}>
+            <section key={s.id} className="settings-gallery-section" aria-labelledby={s.headingId ?? `${asideId}-${s.id}`}>
               <div className="settings-gallery-section-head">
-                <h3 id={`${asideId}-${s.id}`} className="settings-gallery-section-title">
+                <h3 id={s.headingId ?? `${asideId}-${s.id}`} className="settings-gallery-section-title" tabIndex={s.headingId ? -1 : undefined} data-testid={s.headingTestId}>
                   {s.label}
                 </h3>
                 {s.note && <span className="settings-gallery-section-note">{s.note}</span>}
+                {s.actions && <span className="settings-gallery-section-actions">{s.actions}</span>}
               </div>
+              {s.footnote}
+              {s.cards.length === 0 && s.emptyNote}
+              {s.cards.length > 0 && (
               <ul className="settings-gallery-grid" role="list">
                 {s.cards.map((i) => {
                   const isSel = current?.id === i.id
@@ -173,6 +188,7 @@ export function SettingsGallery({
                       key={i.id}
                       className={`settings-gallery-tile glass motion-lift${isSel ? ' is-selected' : ''}${i.dashed ? ' is-dashed' : ''}${i.dimmed ? ' is-dimmed' : ''}${i.trailing ? ' has-trailing' : ''}`}
                       data-testid={i.testId}
+                      {...Object.fromEntries(Object.entries(i.data ?? {}).map(([k, v]) => [`data-${k}`, v]))}
                     >
                       <button
                         type="button"
@@ -186,7 +202,9 @@ export function SettingsGallery({
                             {i.mark ?? i.name.slice(0, 1).toUpperCase()}
                           </span>
                           <span className="settings-gallery-names">
-                            <span className="settings-gallery-name">{i.name}</span>
+                            <span className="settings-gallery-name" title={i.name}>
+                              {i.name}
+                            </span>
                             {i.tag && <span className="settings-gallery-tag">{i.tag}</span>}
                           </span>
                         </span>
@@ -198,6 +216,7 @@ export function SettingsGallery({
                   )
                 })}
               </ul>
+              )}
             </section>
           ))}
         </div>

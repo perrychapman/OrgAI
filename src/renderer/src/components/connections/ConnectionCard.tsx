@@ -37,7 +37,7 @@ const statusWord = (state: ConnectionInfo['status']['state']): string =>
 
 const errText = (e: unknown): string => appSecretReason(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
 
-export default function ConnectionCard({ info }: { info: ConnectionInfo }): ReactElement {
+export default function ConnectionCard({ info, embedded }: { info: ConnectionInfo; embedded?: boolean }): ReactElement {
   const id = info.connection.id
   const meta = META[id]
   const setInfo = useAppStore((s) => s.setConnectionInfo)
@@ -45,8 +45,10 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
   const models = useAppStore((s) => s.models[id])
   const modelsError = useAppStore((s) => s.modelsError[id])
   // Collapsed by default, connected or not: a provider the user did not ask about stays one line with a Connect
-  // button. Opens by itself only when something is wrong or a sign-in is pending.
-  const [open, setOpen] = useState(info.status.state === 'error' || info.status.state === 'connecting')
+  // button. Opens by itself only when something is wrong or a sign-in is pending. In the AI providers detail panel
+  // (`embedded`) the card is always open and has no collapse button.
+  const [openState, setOpen] = useState(info.status.state === 'error' || info.status.state === 'connecting')
+  const open = embedded || openState
   const card = useRef<HTMLElement>(null)
   const focusOnOpen = useRef(false)
   const [busy, setBusy] = useState<null | 'refresh' | 'connect'>(null)
@@ -219,7 +221,7 @@ export default function ConnectionCard({ info }: { info: ConnectionInfo }): Reac
           onClick={() => void refresh()}
           testId="connection-refresh"
         />
-        <IconButton icon={open ? ChevronDown : ChevronRight} label={open ? `Collapse ${meta.name}` : `Expand ${meta.name}`} size="sm" expanded={open} onClick={() => setOpen((v) => !v)} />
+        {!embedded && <IconButton icon={open ? ChevronDown : ChevronRight} label={open ? `Collapse ${meta.name}` : `Expand ${meta.name}`} size="sm" expanded={open} onClick={() => setOpen((v) => !v)} />}
       </header>
       {(isDefault || connected) && (
         <div className="card-sec conn-default">

@@ -46,7 +46,7 @@ try {
       await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
       await page.waitForSelector('#connections-title', { timeout: 10_000 })
       await sleep(800)
-      const cards = await page.locator('[data-testid=connection-card]').count()
+      const cards = await page.locator('[data-testid=provider-tile][data-kind=builtin]').count()
       const errBanner = await page.getByText('Could not load connections').count()
       check(cards >= 2 || errBanner === 1, `connections page shows the built-in cards or a load error at ${w}x${h} ${theme}`, `${cards}/${errBanner}`)
       const ov = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
@@ -57,13 +57,21 @@ try {
       const tabNames = await page.getByRole('tab').allTextContents()
       check(!tabNames.includes('Defaults') && ['General', 'Appearance', 'AI providers', 'Tools and services', 'Skills', 'Templates', 'About and updates'].every((n) => tabNames.includes(n)), `App settings has no Defaults tab at ${w}x${h} ${theme}`, tabNames.join(', '))
 
-      // Connections: one default badge, "Use for new projects" only on other connected cards, one polite live region
+      // Connections (Providers board: a tile per provider, the selected one's card in the detail panel): one default
+      // tile, "Use for new projects" only on other connected cards, one polite live region
+      const pickProvider = async (id) => {
+        await page.locator(`[data-testid=provider-tile][data-provider="${id}"] .settings-gallery-pick`).click()
+        await page.locator(`[data-testid=providers-gallery-detail] [data-testid=connection-card][data-provider="${id}"]`).waitFor({ timeout: 5000 })
+      }
+      check((await page.locator('[data-testid=provider-tile][data-default=true]').count()) === 1, `exactly one default provider tile at ${w}x${h} ${theme}`)
+      await pickProvider(await page.locator('[data-testid=provider-tile][data-default=true]').getAttribute('data-provider'))
       check((await page.locator('[data-testid=default-connection-badge]').count()) === 1, `exactly one default-connection badge at ${w}x${h} ${theme}`)
       const badgeCard = page.locator('[data-testid=connection-card]:has([data-testid=default-connection-badge])')
       check(/Default for new projects and assistants/.test((await badgeCard.locator('[data-testid=default-connection-badge]').textContent()) ?? ''), 'default badge text reads "Default for new projects and assistants"')
       check(/^(Chosen|Automatic)$/.test(((await badgeCard.locator('[data-testid=default-connection-mode]').textContent()) ?? '').trim()), 'default badge is followed by Chosen or Automatic')
       const listed = await page.evaluate(() => window.orgai.connections.list())
       for (const c of listed) {
+        await pickProvider(c.connection.id)
         const card = page.locator(`[data-testid=connection-card][data-provider=${c.connection.id}]`)
         const makeDefault = card.locator('[data-testid=connection-make-default]')
         if (c.status.state !== 'connected') {
@@ -72,6 +80,11 @@ try {
           check((await makeDefault.count()) === 1 && ((await makeDefault.getAttribute('aria-label')) ?? '').startsWith('Use for new projects'), `${c.connection.id} connected non-default card offers "Use for new projects" with a label-in-name`)
         }
       }
+      // Four tiers in plain words, each with its app tier word and the exact model it resolves to.
+      const tierNames = await page.locator('[data-testid=provider-tier] .providers-tier-name').allTextContents()
+      check(JSON.stringify(tierNames) === JSON.stringify(['Most capable', 'Deep thinking', 'Standard', 'Fast']), `the tier table names all four tiers plainly at ${w}x${h} ${theme}`, tierNames.join(' | '))
+      const tierWords = await page.locator('[data-testid=provider-tier] .providers-tier-word').allTextContents()
+      check(JSON.stringify(tierWords) === JSON.stringify(['Top tier', 'Deep tier', 'Everyday tier', 'Fast tier']), 'each plain tier name keeps the app tier word', tierWords.join(' | '))
       const liveRegions = await page.locator('#appsettings-section-connections [data-testid=connections-live]').count()
       check(liveRegions === 1, `the Connections pane has one polite live region at ${w}x${h} ${theme}`, String(liveRegions))
       // Any other polite region in the pane must be a Banner (the no-connection notice), never a second sr-only region.
@@ -449,7 +462,12 @@ try {
   const live = page.locator('[data-testid=connections-live]')
   const dlg = page.locator('[data-testid=proxy-dialog]')
   const proxyCard = (n) => page.locator(`[data-testid=connection-card][data-kind=proxy][data-name="${n}"]`)
-  check((await page.locator('[data-testid=connection-card]').count()) === 2, 'a fresh profile lists the two built-in cards')
+  // Providers board: a proxy's card shows in the detail panel once its tile is picked.
+  const pickProxy = async (n) => {
+    await page.locator(`[data-testid=provider-tile][data-name="${n}"] .settings-gallery-pick`).click()
+    await proxyCard(n).waitFor({ timeout: 10_000 })
+  }
+  check((await page.locator('[data-testid=provider-tile][data-kind=builtin]').count()) === 2 && (await page.locator('[data-testid=provider-tile][data-kind=proxy]').count()) === 0, 'a fresh profile lists the two built-in tiles')
   check(/No proxies yet\. Add one to route Claude, GPT and other models through a gateway you run\./.test((await page.locator('[data-testid=proxies-empty]').textContent()) ?? ''), 'the empty state is worded as specced')
   check(/Proxies \(0\)/.test((await page.locator('[data-testid=proxies-heading]').textContent()) ?? ''), 'the group heading counts 0 proxies')
 
@@ -501,7 +519,7 @@ try {
   const genericRecord = await page.evaluate(async (id) => (await window.orgai.connections.list()).find((c) => c.connection.id === id).connection, await mg.getAttribute('data-provider'))
   check(genericRecord.kind === 'openai-compatible' && genericRecord.litellmFeatures === false, 'new default proxy saves reporting disabled')
   check(!/Proxy key/.test((await mg.textContent()) ?? ''), 'no "Proxy key" wording')
-  check((await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').count()) === 1 && /Proxies \(1\)/.test((await page.locator('[data-testid=proxies-heading]').textContent()) ?? ''), 'the group shows one proxy')
+  check((await page.locator('[data-testid=provider-tile][data-kind=proxy]').count()) === 1 && /Proxies \(1\)/.test((await page.locator('[data-testid=proxies-heading]').textContent()) ?? ''), 'the group shows one proxy')
   await shot('proxy-added')
 
   // LiteLLM proxy, bad key first, then replace it.
@@ -520,7 +538,7 @@ try {
   await lg.locator('[data-testid=proxy-checks]').waitFor({ timeout: 15_000 })
   check((await lg.locator('[data-testid=proxy-check]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-check')}:${e.getAttribute('data-ok')}`))).join(',') === 'reached:true,key:false', 'a refused key shows Reached then "The key was refused"')
   check(/The key was refused \(401\)/.test((await lg.locator('[data-testid=connection-status]').textContent()) ?? ''), 'main\'s refusal text is the status', (await lg.locator('[data-testid=connection-status]').textContent()) ?? '')
-  check((await mg.locator('[data-testid=proxy-checks]').count()) === 0, 'only one proxy card is open at a time')
+  check((await mg.count()) === 0, 'only the selected proxy card is shown')
   await lg.locator('input[type=password]').count().then(async (n) => { if (!n) await lg.getByRole('button', { name: 'Replace' }).click() })
   await lg.locator('input[type=password]').fill('good-key')
   await lg.getByRole('button', { name: 'Save', exact: true }).click()
@@ -591,11 +609,12 @@ try {
   check(leaks.length === 0, 'no plain-text secret in settings, projects or logs in the data dir', leaks.join(', '))
 
   // Remove is refused while a project uses the proxy, and works after the project moves.
-  const mgId = (await mg.getAttribute('data-provider')) ?? ''
+  const mgId = (await page.locator('[data-testid=provider-tile][data-name="Mock gateway"]').getAttribute('data-provider')) ?? ''
   const pid = await page.evaluate(async (n) => (await window.orgai.projects.list()).find((p) => p.name === n)?.id, NAME)
   await page.evaluate(({ p, c }) => window.orgai.projects.remapModels({ projectId: p, connection: c }), { p: pid, c: mgId })
   await sleep(800)
-  await mg.locator('[data-testid=proxy-toggle]').click()
+  // Picking the tile re-reads the list, so "used by" is current.
+  await pickProxy('Mock gateway')
   await mg.locator('[data-testid=proxy-remove-reason]').waitFor({ timeout: 8000 })
   const reason = (await mg.locator('[data-testid=proxy-remove-reason]').textContent()) ?? ''
   check(reason.includes(NAME) && /will not remove it while they use it/.test(reason), 'Remove names the projects that use the proxy', reason)
@@ -608,8 +627,7 @@ try {
   await page.waitForSelector('.nav-item', { timeout: 15_000 })
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
-  await mg.waitFor({ timeout: 10_000 })
-  await mg.locator('[data-testid=proxy-toggle]').click()
+  await pickProxy('Mock gateway')
   await mg.locator('[data-testid=proxy-remove]').click()
   await page.locator('[data-testid=proxy-remove-confirm]').click()
   await mg.waitFor({ state: 'detached', timeout: 10_000 })
@@ -624,7 +642,7 @@ try {
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
   const legacyCard = proxyCard('Legacy gateway')
-  await legacyCard.locator('[data-testid=proxy-toggle]').click()
+  await pickProxy('Legacy gateway')
   check(await legacyCard.locator('[data-testid=proxy-litellm-features]').isChecked(), 'legacy LiteLLM reporting defaults on')
   await legacyCard.locator('[data-testid=proxy-litellm-features]').uncheck()
   await legacyCard.locator('[data-testid=proxy-test]').click()
@@ -648,15 +666,14 @@ try {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
       await openAppSettings(page)
       await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
-      await page.waitForSelector('[data-testid=proxy-list]', { timeout: 10_000 })
-      check((await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').count()) === 4, `four proxy cards at ${w}x${h} ${theme}`)
+      await page.waitForSelector('[data-testid=provider-tile][data-kind=proxy]', { timeout: 10_000 })
+      check((await page.locator('[data-testid=provider-tile][data-kind=proxy]').count()) === 4, `four proxy tiles at ${w}x${h} ${theme}`)
       const ov = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(ov.sw <= ov.cw, `no horizontal scroll with four proxies at ${w}x${h} ${theme}`, JSON.stringify(ov))
-      const stops = await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').first().evaluate((el) =>
-        [...el.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')].filter((e) => e.checkVisibility() && !e.disabled).length
-      )
-      check(stops <= 2, `a collapsed proxy card has at most two Tab stops at ${w}x${h} ${theme}`, String(stops))
-      const clipped = await page.locator('[data-testid=proxy-list] .conn-summary').evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth && !e.title).length)
+      // The tile grid is one Tab stop (arrow keys move inside it).
+      const stops = await page.locator('[data-testid=providers-gallery] .settings-gallery-pick').evaluateAll((els) => els.filter((e) => e.tabIndex >= 0).length)
+      check(stops === 1, `the provider tiles are one Tab stop at ${w}x${h} ${theme}`, String(stops))
+      const clipped = await page.locator('[data-testid=provider-tile] .settings-gallery-name').evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth && !e.title).length)
       check(clipped === 0, `clipped summaries carry a title at ${w}x${h} ${theme}`)
       await shot(`proxies-four-${w}x${h}-${theme}`)
     }

@@ -1,5 +1,136 @@
 /* ---------- Connections, remap notices, project connection picker, role model picker ---------- */
 
+/* AI providers (Providers board): the selected card sits in the gallery's glass aside without a second card frame. */
+.settings-gallery-aside .conn-card {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+.settings-gallery-aside .conn-card > .card-sec {
+  padding-left: 0;
+  padding-right: 0;
+}
+.settings-gallery-aside .conn-head {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+.settings-gallery-aside .conn-title {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.settings-gallery-aside .conn-title h4 {
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+}
+.providers-add-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.providers-add-detail p {
+  margin: 0;
+}
+.providers-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.providers-tier-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: var(--space-3);
+}
+.providers-tier {
+  border-radius: var(--radius-xl);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.providers-tier-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.providers-tier-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.providers-tier-bars > span {
+  width: 4px;
+  border-radius: var(--radius-xs);
+  background: var(--border-strong);
+}
+.providers-tier-bars > span:nth-child(1) {
+  height: 6px;
+}
+.providers-tier-bars > span:nth-child(2) {
+  height: 9px;
+}
+.providers-tier-bars > span:nth-child(3) {
+  height: 12px;
+}
+.providers-tier-bars > span:nth-child(4) {
+  height: 15px;
+}
+.providers-tier-bars > span.is-lit {
+  background: var(--accent);
+}
+.providers-tier-name {
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.providers-tier-word {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.providers-tier-for {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.providers-tier-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+}
+.providers-tier-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.providers-tier-facts dt {
+  color: var(--text-tertiary);
+}
+.providers-tier-facts dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.providers-tier-auto {
+  font-family: var(--font-sans);
+  color: var(--text-tertiary);
+}
+@media (forced-colors: active) {
+  .providers-tier-bars > span.is-lit {
+    background: Highlight;
+    forced-color-adjust: none;
+  }
+}
+
 .conn-panel {
   display: flex;
   flex-direction: column;

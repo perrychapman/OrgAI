@@ -1595,6 +1595,15 @@
 .settings-gallery-section-note {
   font-weight: var(--weight-medium);
 }
+.settings-gallery-footnote {
+  margin: 0;
+  font-size: var(--text-small);
+}
+.settings-gallery-section-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
 .settings-gallery-grid {
   list-style: none;
   margin: 0;
