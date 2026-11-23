@@ -110,3 +110,15 @@ Corrected: the first three landed as `gitInfo.summary`, `runInsights.scheduleHis
   Home files to `per-project`, `engagement`, `engagement2`; the palette and banner files to `layout`, `updates`;
   `onboarding.css` and `FirstLaunch.tsx` to `dashboard`, `assistants`, `folder-trust` and the project-form scripts).
 - Corrected: Ctrl+K is in the shortcuts table now (`src/shared/view/shortcuts.ts`: "Search or jump to", Mod+K).
+
+## Since the first pass (read on dev 2026-11-23)
+
+- Project header at 1024 px: the name shrinks with an ellipsis (full name as title), the folder pill hides under 1100 px of
+  pane and the kind chip becomes its icon under 900 px (its words stay in the accessible name); `e2e/layout.mjs` checks no
+  overlap and nothing past the topbar.
+- First launch step 3 and the Home task box name the permission modes with the shared words (`lib/permissionWords.ts`);
+  Home "Start run" still opens New run and never sends.
+- The Inbox focuses its first row on arrival and the empty state names the teams with a run going; the attention sound,
+  command palette and banners are unchanged.
+- The Live run view is no longer "the shell's": the dock, header and hold card are in `impl-run.md` and `impl-run-header.md`.
+- Not re-walked; screen reader, macOS unverified.

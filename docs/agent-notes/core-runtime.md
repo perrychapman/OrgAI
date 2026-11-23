@@ -1046,7 +1046,10 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   `Project.maxBudgetUsd`, nor raise an explicit `maxSubagentDepth` / `maxConcurrentSubagents` (nor clear one when automatic
   would allow more). Also guarded (third pass fix round): approving a settings card from those surfaces, `projects:remove` of a
   project that carries a limit, and `templates:apply` / `projects:applyImport` that replace roles (`guardedFieldsOf`,
-  `widenGuard`, `SetupService.applyProposal` `nonDesktop`). The merge gate's pin now explains OrgAI's own parallel merges
+  `widenGuard`, `SetupService.applyProposal` `nonDesktop`; the org chart case runs the rule on the merged project, so a role's
+  `maxConcurrent` or `knowledgeWrite: false` cannot be shed by an omitted or same-named role, and the settings case also
+  refuses turning `reviewMerges` off; `orgai projects set --review-merges off` still works from a terminal by design; team files
+  can carry `maxBudgetUsd` and the subagent limits but `teamFiles/gate.ts` holds any raise for desktop review). The merge gate's pin now explains OrgAI's own parallel merges
   (`orgaiMoves.ts`), pins untracked `.gitattributes`, and the merge ignores global config and attribute-selected drivers;
   `integration.rootPinMoves.test.ts`.
 - **askBeforeStrongerModel** (`staffing.ts`, used by the Claude, Codex and mock spawn paths): asks "Use a stronger model for
@@ -1094,6 +1097,20 @@ Stated plainly; the same list is in `docs/design/ui-overhaul/impl-runtime.md`.
   `merge=text` and `-merge` are unaffected (`worktrees.ts mergeAttributeRefusal`, `GIT_NULL_FILE`). The orgai move ledger records a
   move only when the new HEAD is the merge commit of the HEAD read right before `git merge` and the merged sha (`mergeMadeMove`).
   Details and tests: `docs/design/ui-overhaul/impl-runtime.md` "Security fix round".
+- **Automatic merges need git 2.32 or newer** (`worktrees.ts MIN_NEUTRAL_GIT`, because the neutral merge relies on
+  `GIT_CONFIG_GLOBAL`; unverified on an older git). `git --version` is read once per process; an older git refuses before the
+  merge ("the installed git is X and the automatic merge needs 2.32 or newer") and the branch is kept. A second review round
+  reuses the first round's carried snapshot; if the user's git name, email or line-ending settings differ when it starts, the
+  merge is refused ("your git settings changed while the tests ran"). The `mainBranch` switch, worktree removal and
+  `branch -d` after a merge run neutral too.
+- **git-lfs and other filters:** a merge that touches a file with a `filter` attribute is refused before it runs and the branch
+  kept ("Merge it by hand with git in the project folder, where your filters run"), because the neutral merge runs no filter
+  program and would write pointer files. Attributes are read for both names of a renamed file. Repositories whose filter
+  attributes sit only on files the report did not touch are unaffected; the test gate still pins HEAD, the index and staged
+  changes there (not the working tree), so parallel OrgAI merges chain. Known limits, not fixed: configuration pulled in by
+  `include.path` is not pinned; `commit.gpgsign` / `gpg.program` in the repository config are not forced off;
+  `discardWorktree` and `commitLeftovers` use the unguarded git runner (outside the merge path). The re-ask note does not list
+  untracked files and names the old and new short sha when HEAD went backwards.
 - **Inherited `GIT_*` variables are dropped** for OrgAI's guarded git calls, now on a linked worktree as well as on a plain
   checkout, and replace objects are ignored: `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_DIR`, `GIT_INDEX_FILE` from the environment
   OrgAI was started in do not reach a merge or a branch deletion (`worktrees.ts guardedGitEnv`).

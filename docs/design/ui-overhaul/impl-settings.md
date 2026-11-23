@@ -209,3 +209,16 @@ new menu (self-help breadcrumbs).
 - Low items left: gallery section and detail headings are h3 like their section title (L3); `dimmed` / `trailing` on
   gallery items are unused (a trailing control would add a Tab stop per tile).
 - No UX walkthrough of part 2, no screen reader pass, narrow (1024x640) screenshots of Skills and Templates not looked at.
+
+## Since the first pass (read on dev 2026-11-23)
+
+- Spending limits shows the per-run, per-day and per-month limits, "When a limit is reached" and the warning at rest on every
+  sign-in (`LimitsSection.tsx`, `limitCopy.ts`, `e2e/limits-checks.mjs`). The "Open" line above about caps in Advanced on a
+  plan sign-in is out of date.
+- Permission mode names come from `lib/permissionWords.ts` on the mode cards, the Permissions page, the run settings
+  control (New run included), the settings proposal card, the Home task box and first launch step 3; the exact engine name is
+  secondary text.
+- Engagement and settings-proposal wording is neutral ("Who it is for", no client, sponsor or deliverable words).
+- The test gate and the merge changed (hooks off, global git config ignored, git 2.32 or newer, refusal on filter and merge
+  attributes): see `impl-runtime.md` "Behaviour changes for existing users". The Branches pane's merge wording is unchanged.
+- Not re-walked after these fixes; screen reader and macOS unverified.

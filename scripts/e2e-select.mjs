@@ -34,7 +34,7 @@ const KNOWLEDGE = ['knowledge', 'knowledge-graph', 'knowledge-run']
 const OUTPUTS = ['outputs', 'outputs-versions', 'outputs-notes', 'outputs-slides']
 const USAGE = ['usage', 'usage-app']
 const PROJECT_FORM = ['dashboard', 'layout', 'engagement', 'engagement2', 'clone-start', 'import', 'team-files', 'project-connection']
-const RUN_VIEW = ['runs', 'run-start', 'model-switch', 'org-change', 'menu', 'usage']
+const RUN_VIEW = ['runs', 'run-start', 'run-hold', 'model-switch', 'org-change', 'menu', 'usage']
 
 /**
  * Each rule: `match` (globs: `**` crosses folders, `*` does not), `scripts` (names from the e2e:free chain), `why`, and
@@ -117,6 +117,12 @@ export const RULES = [
   { match: [`${C}mcp/**`, `${C}McpInstallCard.tsx`, `${S}mcp*.css`, `${L}mcp*.ts`], scripts: ['per-project', 'presets', 'connections', 'proposals', 'live-changes'], why: 'MCP settings and install card' },
   { match: [`${C}skills/**`, `${S}skill-library.css`, `${L}skills.ts`, `${L}skillProposal.ts`], scripts: ['skills', 'live-changes'], why: 'Skills' },
   { match: [`${C}LiveChangeNote.tsx`, `${R}store/liveChangeStore.ts`, `${L}liveRunChange.ts`], scripts: ['live-changes', 'skills', 'connectors'], why: 'live run change status line' },
+  // Run view pieces (UI overhaul, docs/design/ui-overhaul/impl-run.md): before the broad canvas, proposals and lib rules (first match wins).
+  { match: [`${C}canvas/RunHoldCard.tsx`, `${C}canvas/AgentFocus.tsx`, `${C}canvas/CanvasThemeMenu.tsx`, `${C}canvas/AgentFilter.tsx`, `${C}canvas/AgentList.tsx`, `${C}canvas/PlanStrip.tsx`, `${L}agentFocus*`, `${L}canvasAgents*`, `${S}run-hold.css`, `${S}agent-focus.css`, `${S}canvas-chrome.css`, `${S}run-header.css`], scripts: [...RUN_VIEW, 'canvas'], why: 'run view: hold card, one-agent view, theme menu, agent filter and list, plan strip, header chips' },
+  { match: [`${C}proposals/ProposalNextNote.tsx`], scripts: ['proposals', 'runs', 'self-help'], why: 'proposal next-step note above the run body' },
+  { match: [`${L}permissionWords.ts`], scripts: ['layout', 'dashboard', 'permissions', 'run-start', 'runs'], why: 'permission mode names used by cards, chips, Settings, New run and first launch' },
+  { match: [`${C}history/**`], scripts: ['runs', 'schedules'], why: 'History tab rows and detail (ui-overhaul)' },
+  { match: [`${C}NewRunPage.tsx`, `${C}newRun/**`, `${S}new-run.css`], scripts: ['run-start', 'dashboard', 'per-project', 'runs'], why: 'New run page (ui-overhaul)' },
   // Narrow before the broad canvas rule below (first match wins): the Factory Floor 3D scene (docs/design/factory-floor.md 10.5).
   { match: [`${C}canvas/factory/**`, `${L}factory/**`, `${S}factory*.css`, `${R}assets/factory/**`, 'e2e/factory-floor.mjs'], scripts: ['factory-floor', 'canvas'], why: 'Factory Floor 3D scene' },
   { match: [`${C}canvas/**`, `${S}canvas*.css`, `${S}flow.css`, `${S}office.css`, `${L}canvas*.ts`, `${L}office/**`], scripts: ['canvas'], why: 'canvas themes and Pocket Office' },

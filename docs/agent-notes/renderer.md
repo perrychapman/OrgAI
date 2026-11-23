@@ -91,8 +91,9 @@ As built, deviations and open items: `docs/design/dashboard-usage-redesign/imple
 
 Design: `docs/design/ui-overhaul/` (status per board in `STATUS.md`). Notes: `impl-foundation.md` (tokens, primitives,
 cards), `impl-shell.md`, `impl-project-home.md`, `impl-data.md`. Where a note and the code disagreed, the code wins and
-this section says what the code does (checked by reading it on dev 2026-11-23). The Live run view is being reassembled:
-see `impl-run.md` when it lands; nothing here describes it.
+this section says what the code does (checked by reading it on dev 2026-11-23). The Live run view has its own section
+below, "Live run view (UI overhaul)". Fixes after the first pass (walk findings, review rounds) are listed under "Later
+fixes that change the notes above".
 
 - **Foundation.** Glass tokens, the new palette, bundled Space Grotesk and the `data-glass` / `data-text-size` /
   `data-density` / `data-activity-dots` switches are in `.orgai/ARCHITECTURE.md` "Theme layer". Shared pieces: `ui/Chip`
@@ -163,6 +164,109 @@ see `impl-run.md` when it lands; nothing here describes it.
   adapter. **Unverified:** screen-reader speech anywhere in the overhaul; macOS and Linux; both themes and both sizes by
   eye for every screen (screenshots were taken per area, not per board); the Home git strip against a real repository;
   live providers.
+
+### Later fixes that change the notes above (read on dev 2026-11-23)
+
+- **Mode names.** The screens that name a permission mode (Home task box, run settings control, Settings mode cards and
+  Permissions page, the settings proposal card, first launch step 3) read it from `lib/permissionWords.ts`
+  (`PERMISSION_TITLE`, `permissionWords`): the first pass had four different names for the same modes (UX walk H3). The exact engine name is
+  secondary text. Engagement screens use neutral words (no client / sponsor / deliverable; the stored `Project.client`
+  field is plain data), and the interview wording in main is neutral too.
+- **Spending limits.** The per-run, per-day and per-month limits, "When a limit is reached" and the app-wide warning all sit
+  at rest in the pane on every sign-in (`LimitsSection.tsx`, `limitCopy.ts`; `e2e/limits-checks.mjs`). `impl-settings.md`
+  still says day and month caps sit in Advanced on a plan sign-in: that is out of date.
+- **Files** opens in Grid when the project has no saved choice (`readViewMode(null)` is `'grid'`); the saved per-project
+  choice wins. `impl-data.md` says List is the default: out of date.
+- **Knowledge "Recorded by"** is one exclusive choice, Everyone / You / Team, over the origin filter (`KnowledgeFilters.tsx`;
+  `knowledge-origin` test id and `data-origin` all / user / agent kept). `impl-data.md` says it "stays chips".
+- **Team assistant fold.** `TeamAssistantTray` remembers the user's last fold choice across tab switches in a module
+  variable (`lastFold`): not saved to disk, so a restart follows the window size and results again.
+- **Proposal next step.** It is `proposals/ProposalNextNote.tsx`, a note row above `.run-body`, not a chip in `RunMeta`
+  (test ids `proposal-next-note`, `proposal-next-lead`, `proposal-next-deferred` kept). `layout.css` still holds an unused
+  `.run-meta-next-list` rule.
+- **Home "Start run"** still opens New run with the text and never sends. "Save as a schedule" carries what a schedule can hold
+  (model, permission mode except Bypass, limit, single) and names what it could not carry (`scheduleSeed`,
+  `schedule-not-kept-note`); the Inbox focuses its first row on arrival (J / K work) with a dwell that swallows the opening Enter and
+  names the teams with a run going when empty; Home "Your week" says "No prior data" instead of growth from zero; History
+  has separate "Run it again" (opens New run) and "Try again" (continues a failed run, confirms first) with a line under each.
+- **Team tab.** The selected-role toolbar stays inside the visible chart and is the next Tab stop after its role; a new role
+  is panned into view; Add group opens "Add group lead"; the header shows the Theme control compactly at 1024; the zoom
+  readout buttons disable at the limits. The Theme menu still has one item. The "Review with the Architect" confirm that
+  clipped its cost sentence (walk H1) was not re-checked.
+
+## Live run view (UI overhaul)
+
+Spec and notes: `docs/design/ui-overhaul/impl-run.md` (dock, hold, focus), `impl-run-header.md` (strip, chips). Where an
+older line in those files disagrees with this section, the code was read and this section follows it. Checked on the mock
+adapter by `e2e/run-hold.mjs`, `runs.mjs`, `run-start.mjs`, `canvas.mjs`, `model-switch.mjs`, `live-changes.mjs`,
+`layout.mjs` and unit tests (`runHold.test.ts`, `agentFocus.test.ts`, `canvasAgents.test.ts`, `decisionCard.test.ts`).
+Not checked: screen-reader speech, a run with 121 agents (the mock's largest is 40, `[mock:factory-floor]`), forced colours,
+macOS, live providers.
+
+- **Dock.** `.run-body[data-dock]` is `open`, `hidden` or `rail` on canvas-layout runs. It is computed in `LiveRunView.tsx`
+  from the `SidePanel` report (`noRoom`, `auto`, `collapsed`): `rail` when there is no room (about 560 px) or the panel is
+  auto-folded, `hidden` only when `collapsed` is the user's own saved choice, else `open`. **Only the user's Hide hides the
+  composer** (saved as `orgai.sidePanel.run`; an earlier rule that auto-hid it below 1100 px was removed). Under 900 px
+  (`DOCK_AUTO_HIDE_BELOW`) with no saved choice the panel is the 40 px rail (`autoAsRail`), the composer, settings row and
+  `LiveModelSwitch` sit under the canvas, and the toolbar "Conversation" button (`dock-show`) opens the dock and saves "open".
+  The width alone saves nothing; the fold is measured 120 ms after the last window resize and reverses when the grid grows
+  past 900 px. The composer region is one mounted element in every state, so the draft, focus, the model switch and scroll
+  survive. Hide moves focus to `dock-show`; keyboard show moves focus to the composer, a mouse click does not. A decision
+  answer, History's Continue, the plan strip and Find an agent show a hidden dock first. Unread dot and "(new)" for a root
+  reply or decision that arrived while hidden. Chat, setup, Tools helper and Skills helper keep the conversation-first layout.
+- **Stage.** What stays on the stage under the canvas: the decision tray and `RunHoldCard` (dock shown or not) and the
+  `PlanStrip` in the frame footer; compact tray threshold 570 px. The decision tray stays so a hidden dock never hides a card.
+- **CanvasThemeMenu.** Replaces the presentation radios (same `saveCanvas` setting), Live only. Toolbar fit by frame width:
+  Show filter hides under 1100, Find under 900, the theme name is clipped (kept in the accessible name) under 1000, the
+  "Theme" word under 680, the swatch under 340, the group under 320 (then App settings > Canvas). `impl-run.md` first said
+  520 for the name: the CSS (`canvas-chrome.css`) is the source.
+- **AgentFilter / Find / AgentList.** `AgentFilter` (All / Working / Waiting, counts, "N of M agents shown") dims other
+  nodes with `.node-dim` (0.35 opacity), never hides. Find an agent opens the Agents tab (`openAgentFinder`): search, sort
+  and the flat `AgentList` ("Showing 40 of 40" on the mock). Scenes keep their own Find and filter; the org-chart Show
+  filter, Find and "Hide finished agents" render on the org chart only.
+- **PlanStrip.** Segments from the run plan; opens the Plan tab (shows a hidden dock first). Reporting edges carry
+  `edge-done` / `edge-live`. The coral segment of an engagement run is visible only while a step is in progress and was
+  not seen.
+- **RunHoldCard.** Replaces the pause, plan-blocked and run-error banners (classes `pause-banner`, `plan-blocked-banner`,
+  test id `run-error` kept; `lib/runHold.ts` is the pure copy). Add budget, Skip review, Try again and Continue ask through
+  a confirmation naming the amount, the gate or the fact that a new provider turn can spend; focus starts on Cancel, so a
+  held Enter never confirms; one in-flight guard covers every action (double activation, key repeat); a refusal from main
+  shows inline; Resume now does not ask; Use another model focuses the model switch. One polite announcement per hold
+  through the frame announcer (quiet on remount). The card is tall at 1024x640: the tray scrolls and the action row is sticky.
+- **AgentFocus.** One agent on the stage (org chart layout), from "Open agent view" or a double click; Escape or "Back to
+  chart" closes and focus returns to the opener (found by test id after a re-mount). Shows Time (`formatElapsed`, "so far"
+  while working); message and stop one agent go through `runActions` (live `stopTask` / `turn/interrupt` unverified).
+- **Run header** (`RunTabs`, `RunMeta`, `RunActions`; `run-header.css`, `run-tabs.css`). **Fold order** (`useMetaFold`,
+  `data-prio`, highest number first, ties the later chip): fact chips fold first; then chips that hold a button (a count
+  that opens a tab, a link), which stay reachable from the "more" menu (`run-meta-more`) because the menu button calls the
+  original and keeps its test id; then, when only status, permission mode and cost are left, the status word shortens to an
+  ellipsis (`data-squeeze`), the permission mode (`data-compactable`) shortens to its icon (words stay in its name and title)
+  and only then does cost fold. Status (`data-prio` 0) and the permission mode never fold. `impl-run-header.md` said cost
+  folds second to last; the permission mode now shortens first. **Transitions are off on the meta row**
+  (`transition-property: none`): under reduced motion `global.css` gives every element a 0.01 ms transition and with `all`
+  and `interpolate-size` it animated width, so the line was measured mid-transition and a chip that did not fit read as
+  fitting (found with the permission chip at 1024 px). Folds that keep replacing each other stop after six changes in 200 ms.
+- **ProposalNextNote.** Renders in `LiveRunView.tsx` above `.run-body`, never folds, so the result of an approved proposal
+  and its one next step are visible without opening anything.
+- **DecisionCard focus rule** (`typingElsewhere`, `DecisionCard.tsx`): a card that mounts while focus is in a text field outside
+  it (input, textarea, contenteditable, the composer empty or not) never takes focus (a Send empties the composer just
+  before a permission card can arrive, so "Allow once" used to sit under the Enter key); a card that mounts while a key is
+  held waits for the key-up and takes focus only if focus is nowhere. The tray still announces it; Tab, a click or the
+  Needs-you jump reach it. The end of `e2e/runs.mjs` checks it.
+- **Composer.** Enter and Ctrl+Enter send once per press: a repeat, or an Enter that went down before the field had focus
+  (it opened the page or pressed a button that moved focus), does nothing (`enterDownElsewhere`).
+- **New run one-shot mode.** `store.newRunMode` (`team` or `ask`, with a project id) is applied once by `NewRunPage`
+  (`takeNewRunMode`) and is not written to the remembered per-project choice.
+- **Engagement runs.** `.run-view[data-kind='engagement']`: serif headings, coral selection and plan accents (the selected
+  agent ring is drawn in `--eng` by `run-header.css`), neutral wording; no Context screen and no per-run source picker. The
+  engagement run was looked at on the mock (2026-11-23).
+- **Deviations from the boards.** The dock is a right-hand column against the window edge, not a floating card (a margin
+  would break the resize handle's width arithmetic); the org chart stays the React Flow node chart, not department boxes;
+  the settings row is one scrolling line in the dock, so the composer is cramped at 1024x640 (placeholder clipped); no dock
+  shortcut in `shared/view/shortcuts.ts`.
+- **Open.** Reduced motion for the dock was checked as end states only; the minimap did not render in the 1024 and 1600
+  looks of the 40-agent run; `layout.css` `.run-meta-next-list` is unused; a run with many chips folded (staffing,
+  recorded, revision, schedule together) and forced colours were not looked at.
 
 ## Factory Floor, slice 1 (2026-11-19)
 

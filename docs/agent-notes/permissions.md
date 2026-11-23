@@ -116,6 +116,16 @@ Prompt fatigue (#14): allowed folders, rule matching, suggestions, and the permi
     and `codexProtocol.ts policyFor` (one Reviewer High, "dontAsk overstated safety on Codex", was fixed).
   - The test gate and its command are not permission rules: `requireTestsPass` / `testCommand` can only be changed from the
     desktop window (`host/projectSaveGuard.ts`).
+  - Who may approve a limit change: a decision from `cli`, `tui` or the headless policy (`decidedBy` into
+    `SetupService.applyProposal` `nonDesktop`) on a settings card that raises or removes `maxBudgetUsd` or an explicit subagent
+    limit, turns Review merges off, or on an org chart card that drops or replaces a role carrying `maxConcurrent` or
+    `knowledgeWrite: false`, comes back as a revise with the window-only sentence and saves nothing. The window is unchanged.
+    Tests: `setup/settingsProposalBoundary.test.ts`, `host/projectSaveGuard.test.ts`.
+  - The permission mode names in the renderer (mode cards, run settings, settings proposal card, first launch) come from `lib/permissionWords.ts` (title first, the exact engine
+    name as secondary text).
+  - The merge gate runs after the user's review approval and merges the reviewed commit with hooks off and the user's global
+    git configuration ignored (core-runtime.md "Behaviour changes for existing users"); a hook the repository relies on for
+    merges (git-lfs, secret scanners, signing prompts) does not run for OrgAI's merge.
 
 ## Renderer
 

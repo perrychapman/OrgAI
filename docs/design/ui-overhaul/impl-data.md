@@ -122,3 +122,16 @@ Deviations:
 - Glass add panel and rows, a display-font title, and open/done count badges.
 - Done rows get a green edge and tick.
 - Markup and test ids are unchanged.
+
+## Since the first pass (read on dev 2026-11-23)
+
+- Files opens in Grid when no choice is saved (`readViewMode(null)` is `'grid'`); the saved per-project choice wins. The
+  "default stays List" line above is out of date.
+- Knowledge "Recorded by" is one exclusive choice, Everyone / You / Team (`KnowledgeFilters.tsx`; `knowledge-origin` and
+  `data-origin` kept). The "stays chips" line above is out of date.
+- History has "Run it again" (opens New run with the request) and "Try again" (continues a failed run, asks first), each with
+  a line under it saying what it does.
+- Home "Your week" reads "No prior data" when the week before holds no run, instead of growth from zero.
+- The Inbox focuses its first row on arrival (J / K work) and its empty state names how many teams have a run going.
+- Settings galleries scroll a detail panel that sits below the grid into view after a tile is picked (`revealAside`).
+- Not re-walked after these fixes; screen reader, macOS and live providers unverified.

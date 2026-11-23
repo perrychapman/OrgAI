@@ -17,6 +17,9 @@ Boards: Run, RunLight, Scale, Engagement. Code: `RunTabs`, `RunMeta`, `RunAction
   says what goes first (highest number); status never folds. Folded chips stay in the DOM, and the menu buttons call the
   original button, so every control is still reachable. This replaces the container-query drops in layout.css, outputs.css
   and run.css, which `run-header.css` switches off with higher specificity.
+- **Corrected fold order.** Facts fold first, then chips that hold a button (still reachable from the "more" menu with the same
+  test id), and the permission mode shortens to its icon (it never folds) before cost folds; status never folds. Transitions
+  are off on the meta row because measuring mid-transition broke the fold. See "Looked at" and `useMetaFold` in `RunMeta.tsx`.
 - **Actions.** Interrupt turn (secondary), End session (quiet: ghost, danger text, a hairline before it, still words
   in a narrow strip), Save as project and Org retrospective (the first of them is primary once the session ended).
   All four remain, names and test ids unchanged.
@@ -50,7 +53,7 @@ project cap, `[mock:staffing]` and `[mock:factory-floor]` (40 agents).
   topbar and the strip under the topbar at both sizes and in a 792 px pane.
 - **Status chip.** Running is cyan, the pulse ring is on the dot's `::after` and runs only while working; Needs you is amber
   and breathes; Failed red, Stopped and Idle grey, all dot plus word. Reduced motion: no animation (checked).
-- **Cost.** Chips fold from the least useful end; cost now folds second to last (before: after the agent count), status never.
+- **Cost.** Chips fold from the least useful end; cost folds after everything except status and the permission mode; the mode shortens to an icon before cost folds and never folds itself (corrected: this line said cost folds "second to last"), status never.
   The toolbar row keeps 256 px for them (the theme name and the Show filter give way first). A long status word ("Stopped at its
   budget limit") shortens to an ellipsis before cost folds. "Cost unknown" shows for an unpriced run.
 - **More menu.** Enter opens it, the first item takes focus, Escape closes it and focus returns to the button.
