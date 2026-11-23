@@ -69,7 +69,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   const endHelp = 'Optional. Ends the session and stops all of its agents. Hiding the tab of an idle run ends it too; a working run keeps going when hidden.'
   const retroHelp = `Have the Architect (${setupModel}, set in App settings > General) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
   return (
-    <div className="run-actions" role="group" aria-label="Run actions">
+    <div className="run-actions" role="group" aria-label="Run actions" data-testid="run-actions">
       {sessionOpen && (
         <>
           <Described text={interruptHelp}>
@@ -79,7 +79,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
           </Described>
           <span className="run-act-end">
             <Described text={endHelp}>
-              <Button size="sm" variant="danger" icon={Square} ariaLabel="End session" onClick={() => void stopRun()} title={endHelp}>
+              <Button size="sm" variant="ghost" className="run-act-quiet-danger" icon={Square} ariaLabel="End session" onClick={() => void stopRun()} title={endHelp}>
                 <span className="run-act-label">End session</span>
               </Button>
             </Described>
@@ -89,7 +89,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
       {canSave && (
         <Described text={promote.ok ? 'Saves this chat as a project in its folder.' : (promote.reason ?? '')}>
           {promote.ok ? (
-            <Button size="sm" icon={FolderPlus} ariaLabel="Save as project" testId="run-save-as-project" title="Save this chat as a project in its folder" onClick={() => setSaving(true)}>
+            <Button size="sm" variant="primary" icon={FolderPlus} ariaLabel="Save as project" testId="run-save-as-project" title="Save this chat as a project in its folder" onClick={() => setSaving(true)}>
               <span className="run-act-label run-act-collapse">Save as project</span>
             </Button>
           ) : (
@@ -103,7 +103,7 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
       )}
       {canRetro && (
         <Described text={retroHelp}>
-          <Button size="sm" icon={RotateCcw} ariaLabel="Org retrospective" title={retroHelp} onClick={() => void startRetro(summary.id)}>
+          <Button size="sm" variant={canSave ? 'secondary' : 'primary'} icon={RotateCcw} ariaLabel="Org retrospective" title={retroHelp} onClick={() => void startRetro(summary.id)}>
             <span className="run-act-label run-act-collapse">Org retrospective</span>
           </Button>
         </Described>

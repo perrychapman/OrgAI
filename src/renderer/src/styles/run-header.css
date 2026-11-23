@@ -1,0 +1,245 @@
+/* ---------- Run header chips (UI overhaul Run board): RunMeta, FinishedList, DoneGroupNode ----------
+   RunMeta draws the run's facts as chips: status (dot and word), model, cost, time, files, then the rest. The line never
+   cuts a chip: RunMeta folds what does not fit into the "more" menu (useMetaFold), so the container-query rules in
+   layout.css, outputs.css and run.css that used to drop single chips are switched off here. Tokens only. */
+
+.run-meta {
+  gap: var(--space-2);
+  /* The "more" button's popover is in the top layer; only the chips are clipped. */
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.run-meta > .run-meta-item,
+.run-meta > .run-meta-wrap > .run-meta-item {
+  box-sizing: border-box;
+  min-height: var(--space-6);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+}
+.run-meta > .run-meta-wrap {
+  display: contents;
+}
+/* A note that reads as a sentence (next-step note, team files pointer) is not a chip. */
+.run-meta > .run-meta-next,
+.run-meta > .run-meta-wrap > .team-files-pointer {
+  border-radius: var(--radius-md);
+  font-weight: var(--weight-regular);
+}
+.run-meta > button.run-meta-item:hover {
+  background: color-mix(in oklab, var(--text-primary) 7%, transparent);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.run-meta > button.run-meta-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Status: dot and word. The word is always there; colour only agrees with it. */
+.run-meta > .run-meta-status {
+  gap: var(--space-1h);
+  color: var(--text-primary);
+}
+.run-status-dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.run-meta-status[data-tone='working'] {
+  color: var(--working-text);
+  border-color: var(--working);
+  background: var(--working-soft);
+}
+.run-meta-status[data-tone='working'] .run-status-dot {
+  background: var(--working);
+}
+.run-meta-status[data-tone='waiting'] {
+  color: var(--warning-text);
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+.run-meta-status[data-tone='waiting'] .run-status-dot {
+  background: var(--warning);
+}
+.run-meta-status[data-tone='done'] {
+  color: var(--success-text);
+}
+.run-meta-status[data-tone='done'] .run-status-dot {
+  background: var(--success);
+}
+.run-meta-status[data-tone='failed'] {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.run-meta-status[data-tone='failed'] .run-status-dot {
+  background: var(--danger);
+}
+.run-meta-status[data-tone='idle'] .run-status-dot {
+  background: var(--info);
+}
+/* The pulse ring needs the dot positioned; motion.css stops it for reduced motion and Pause motion. */
+
+/* The model: truncates, the exact id is in the title and read by screen readers. */
+.run-meta-model-name {
+  min-width: 0;
+  max-width: calc(var(--space-16) * 3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-meta-model {
+  min-width: 0;
+}
+.run-meta > .run-meta-cost .cost {
+  color: inherit;
+}
+.run-meta-permission[data-tone='warning'],
+.run-meta-permission[data-tone='danger'] {
+  border-color: currentColor;
+}
+
+/* Chips that used to drop in a narrow frame now fold (layout.css, outputs.css, run.css container rules). */
+@container frame (max-width: 760px) {
+  .run-meta > .run-meta-started,
+  .run-meta > .run-meta-auto {
+    display: inline-flex;
+  }
+}
+@container frame (max-width: 420px) {
+  .run-meta > .run-meta-cost,
+  .run-meta > .run-meta-wall,
+  .run-meta > .run-meta-sessions,
+  .run-meta > .run-meta-agents,
+  .run-meta > .run-meta-staffing,
+  .run-meta > .run-meta-recorded,
+  .run-meta > .run-meta-outputs {
+    display: inline-flex;
+  }
+  .run-meta > .run-meta-scheduled {
+    max-width: 34ch;
+  }
+}
+@container frame (max-width: 340px) {
+  .run-meta {
+    visibility: visible;
+  }
+}
+/* Under 1100 px of window the files chip kept only icon and count (outputs.css); the word costs little now. */
+@media (max-width: 1099px) {
+  .run-meta > .run-meta-outputs .run-meta-outputs-label {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+  }
+}
+/* Folded chips (set by RunMeta before paint). Same specificity as the rules above and last, so it wins. */
+.run-meta > [data-folded='true'],
+.run-meta > .run-meta-more[hidden] {
+  display: none;
+}
+
+.run-meta-more {
+  flex: none;
+  display: inline-flex;
+  margin-left: auto;
+}
+.run-meta-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--space-6);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.run-meta-more-btn:hover {
+  background: color-mix(in oklab, var(--text-primary) 7%, transparent);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.run-meta-more-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.run-meta-more-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: calc(var(--space-16) * 3);
+  max-width: calc(var(--space-16) * 6);
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  font-size: var(--text-small);
+}
+.run-meta-more-item,
+.run-meta-more-text {
+  display: block;
+  width: 100%;
+  padding: var(--space-1h) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.run-meta-more-item {
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.run-meta-more-item:hover {
+  background: color-mix(in oklab, var(--text-primary) 8%, transparent);
+}
+.run-meta-more-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* ---------- Engagement runs: serif titles and coral accents (the run view root carries data-kind) ---------- */
+.run-view[data-kind='engagement'] .run-meta-steps,
+.run-view[data-kind='engagement'] .run-meta-recorded {
+  border-color: var(--eng-line);
+}
+
+/* ---------- Finished list (side panel) and folded "done" groups: same glass family ---------- */
+.finished-row {
+  background: var(--glass);
+  border-color: var(--glass-line);
+  border-radius: var(--radius-lg);
+}
+.finished-row:hover {
+  background: color-mix(in oklab, var(--text-primary) 6%, var(--glass));
+  border-color: var(--border-strong);
+}
+.finished-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.finished-head {
+  font-weight: var(--weight-semibold);
+}
+.done-group .done-count i {
+  background: var(--success);
+}
+.done-group .done-failed {
+  color: var(--danger-text);
+}

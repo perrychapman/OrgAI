@@ -74,7 +74,7 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
   const main = (
     <div className="done-group-main">
       <span className="done-count">
-        <i /> {label ?? `${done} done`}
+        <i aria-hidden="true" /> {label ?? `${done} done`}
       </span>
       {failed > 0 && <span className="done-failed">{compact ? `· ${failed} failed` : `${failed} failed`}</span>}
       {!compact && conflicts > 0 && <span className="done-conflict">{conflicts} unmerged</span>}
