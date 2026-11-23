@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { McpLibraryEntry, Project, ProxyConnection, SkillLibraryEntry } from '@shared/types'
+import type { AppSettings, McpLibraryEntry, Project, ProxyConnection, SkillLibraryEntry } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { SessionBusyError, registerSession, type SessionHandle } from '../host/sessions'
 import { McpLibraryStore } from './mcpLibrary'
@@ -26,10 +26,10 @@ const syncs: { close(): void }[] = []
 const A = 'aaaaaaaaaaaa'
 const B = 'bbbbbbbbbbbb'
 
-function session(id: string): { handle: SessionHandle; sync: StoreSync } {
+function session(id: string, opts: { waitMs?: number } = {}): { handle: SessionHandle; sync: StoreSync } {
   const handle = registerSession(dataDir, { hostInstanceId: id, pid: process.pid, startedAt: Date.now(), appVersion: 't', cwd: `/work/${id}`, command: 'tui' })
   handles.push(handle)
-  const sync = createSharedStoreSync(handle, { checkMs: 0, liveForMs: 0 })
+  const sync = createSharedStoreSync(handle, { checkMs: 0, liveForMs: 0, ...opts })
   syncs.push(sync)
   return { handle, sync }
 }
@@ -60,6 +60,27 @@ describe('ProjectStore, two sessions', () => {
     expect(a.get('proj_b')?.name).toBe('Beta')
     expect(b.get('proj_a')?.brief).toBe('alpha again')
     expect(b.list().map((p) => p.id).sort()).toEqual(['proj_a', 'proj_b'])
+  })
+
+  it('locked() holds the write lock for a read-then-save step: another session\'s save waits until it ends', () => {
+    const a = new ProjectStore(dataDir, { sync: session(A).sync, home: root })
+    const b = new ProjectStore(dataDir, { sync: session(B, { waitMs: 60 }).sync, home: root })
+    a.save(project('proj_a', 'Alpha'))
+    let blocked = ''
+    a.locked(() => {
+      // Inside A's hold, B's save cannot run (B gives up after 60 ms rather than wait for the 15 s default).
+      try {
+        b.save({ ...(b.get('proj_a') as Project), brief: 'from b' })
+      } catch (e) {
+        blocked = e instanceof Error ? e.message : String(e)
+      }
+      a.save({ ...(a.get('proj_a') as Project), brief: 'from a' })
+    })
+    expect(blocked).toMatch(/stayed held/)
+    b.save({ ...(b.get('proj_a') as Project), name: 'Alpha 2' })
+    expect(a.get('proj_a')).toMatchObject({ brief: 'from a', name: 'Alpha 2' })
+    // One process per data folder: the same call, with no lock.
+    expect(new ProjectStore(join(root, 'solo'), { home: root }).locked(() => 7)).toBe(7)
   })
 
   it('update() works on what is stored now, not on what this session last saw', () => {
@@ -215,6 +236,29 @@ describe('SettingsStore, two sessions', () => {
     ).toThrow('at most 12')
     expect(b.get().proxies).toHaveLength(1)
     b.setProxies((list) => list)
+  })
+
+  it('the UI overhaul fields merge like the others: a save from an older copy never puts another session\'s newer value back', () => {
+    const a = new SettingsStore(dataDir, { sync: session(A).sync })
+    const b = new SettingsStore(dataDir, { sync: session(B).sync })
+    a.set({ ...a.get(), spendWarnPercent: 80, playSound: true })
+    expect(b.get()).toMatchObject({ spendWarnPercent: 80, playSound: true })
+    const fromA = { ...a.get(), spendWarnPercent: null } // A turns the warning off
+    const fromB = { ...b.get(), dateFormat: 'yyyy-MM-dd' as const, closeBehavior: 'keepRunning' as const }
+    a.set(fromA)
+    b.set(fromB) // B's copy still says 80 and it did not touch that field
+    expect(a.get()).toMatchObject({ spendWarnPercent: null, playSound: true, dateFormat: 'yyyy-MM-dd', closeBehavior: 'keepRunning' })
+    expect((read('settings.json').settings as Record<string, unknown>)).toMatchObject({ spendWarnPercent: null, playSound: true, dateFormat: 'yyyy-MM-dd', closeBehavior: 'keepRunning' })
+  })
+
+  it('a save that leaves the overhaul fields out (an older renderer) keeps what another session stored', () => {
+    const a = new SettingsStore(dataDir, { sync: session(A).sync })
+    const b = new SettingsStore(dataDir, { sync: session(B).sync })
+    const old = b.get() as unknown as Record<string, unknown>
+    for (const key of ['playSound', 'spendWarnPercent', 'openAtLogin', 'closeBehavior', 'keepAwakeDuringRuns', 'notifyNeedsMe', 'notifyRunFinished', 'notifyScheduleFindings', 'dateFormat']) delete old[key]
+    a.set({ ...a.get(), notifyNeedsMe: false, spendWarnPercent: 90 })
+    b.set({ ...old, displayName: 'Ada' } as Partial<AppSettings>)
+    expect(b.get()).toMatchObject({ displayName: 'Ada', notifyNeedsMe: false, spendWarnPercent: 90 })
   })
 
   it('changedFields compares deeply and reports only what differs', () => {

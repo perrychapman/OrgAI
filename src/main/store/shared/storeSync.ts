@@ -8,7 +8,9 @@
  * - `load(file, load)`     the first read: remembers what was on disk.
  * - `refresh(file, reload)` before a read: re-reads when the file changed on disk since this process last read or
  *   wrote it. That is one `stat` per read (about a microsecond, measured), so a session sees what another one saved on
- *   its very next read; `checkMs` can space the checks out, and is 0 by default.
+ *   its very next read; `checkMs` can space the checks out, and is 0 by default. The re-read itself (and the first
+ *   `load`) runs under the write lock, waiting at most `readWaitMs`: on Windows a writer's rename of a temp file over
+ *   the file fails with EPERM while another process has the file open for a read.
  * - `write(file, reload, fn)` a change: takes the data folder's write lock (one for the whole folder, so sections can
  *   nest and can never deadlock), re-reads the file if it changed, runs `fn` (which changes the in-memory state and
  *   writes the file), remembers the new stamp and lets the lock go. The change is thereby applied to the newest
@@ -85,8 +87,13 @@ export interface SharedStoreSyncOptions {
   waitMs?: number
   /** How long another session seen running is taken to still be running (ms). Default 500. */
   liveForMs?: number
+  /** How long a read of a store file waits for the write lock before it reads without it (ms). Default 2000. */
+  readWaitMs?: number
   now?: () => number
 }
+
+/** How long a read of a store file waits for the write lock before it goes ahead without it (ms). */
+export const READ_LOCK_WAIT_MS = 2000
 
 /** The sync of a session on a shared data folder. */
 export function createSharedStoreSync(session: SessionHandle, opts: SharedStoreSyncOptions = {}): StoreSync & { close(): void } {
@@ -97,17 +104,36 @@ export function createSharedStoreSync(session: SessionHandle, opts: SharedStoreS
   const stamps = new Map<string, string>()
   const checked = new Map<string, number>()
   const alive = sessionLiveness(session.dataDir, opts.liveForMs !== undefined ? { liveForMs: opts.liveForMs } : {})
+  const readWaitMs = opts.readWaitMs ?? READ_LOCK_WAIT_MS
+  /**
+   * Run a read of a store file holding the write lock. A writer replaces the file by renaming a temp file over it, and
+   * on Windows that rename fails with EPERM while any other process has the target open, even for a read that lasts
+   * a millisecond (measured: a second process re-reading a file in a loop made 69 % of another's renames fail, none
+   * failed without it). Reading under the lock keeps a reader and a writer apart. A lock that stays held for the
+   * whole of `readWaitMs` (a long change by another session) does not make the read fail: it is made unprotected, as
+   * before the lock was taken, and the writer's own EPERM is then what a caller may see.
+   */
+  const reading = <T>(fn: () => T): T => {
+    if (!lock.acquireWithin(readWaitMs)) return fn()
+    try {
+      return fn()
+    } finally {
+      lock.release()
+    }
+  }
   return {
     shared: true,
     sessionId: session.id,
     session,
     load(file, load) {
-      // The stamp is taken before the read: a write landing in between leaves an older stamp, and the next check
-      // reloads once more rather than missing it.
-      const stamp = fileStamp(file)
-      load()
-      stamps.set(file, stamp)
-      checked.set(file, now())
+      reading(() => {
+        // The stamp is taken before the read: a write landing in between leaves an older stamp, and the next check
+        // reloads once more rather than missing it.
+        const stamp = fileStamp(file)
+        load()
+        stamps.set(file, stamp)
+        checked.set(file, now())
+      })
     },
     refresh(file, reload) {
       if (checkMs > 0) {
@@ -116,11 +142,15 @@ export function createSharedStoreSync(session: SessionHandle, opts: SharedStoreS
         if (last !== undefined && t - last < checkMs) return false
         checked.set(file, t)
       }
-      const stamp = fileStamp(file)
-      if (stamp === stamps.get(file)) return false
-      reload()
-      stamps.set(file, stamp)
-      return true
+      if (fileStamp(file) === stamps.get(file)) return false
+      return reading(() => {
+        // Again inside the lock: the file may have changed again while this waited, and no writer is running now.
+        const stamp = fileStamp(file)
+        if (stamp === stamps.get(file)) return false
+        reload()
+        stamps.set(file, stamp)
+        return true
+      })
     },
     write(file, reload, fn) {
       lock.acquire()

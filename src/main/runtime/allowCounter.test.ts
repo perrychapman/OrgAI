@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { PermissionSuggestion } from '@shared/types'
 import { ALLOW_COUNT_KEYS_MAX, ALLOW_COUNT_KEY_MAX_CHARS, ALLOW_COUNT_MAX, allowCountFile, allowCountHash, allowCountKey, allowCountOf, bumpAllowCount, readAllowCounts } from './allowCounter'
 import { removeProjectData } from '../store/projectData'
+import { registerSession, writeLockPath } from '../host/sessions'
+import { createSharedStoreSync, enableStoreSync } from '../store/shared/storeSync'
+import { trySyncLock } from '../store/shared/syncLock'
 
 const h = allowCountHash
 
@@ -180,5 +183,54 @@ describe('counter file', () => {
   it('returns plain structured-clone safe values', () => {
     bumpAllowCount(dir, 'p1', 'Read')
     expect(structuredClone([...readAllowCounts(dir, 'p1')])).toEqual([[h('Read'), 1]])
+  })
+})
+
+// Several sessions on one data folder (docs/design/cli-sessions.md): a count is read, changed and rewritten as one step
+// under the data folder's write lock, and a version 1 file is migrated under it too.
+describe('counter file on a data folder several sessions share', () => {
+  const handles: Array<{ release(): void }> = []
+  const syncs: Array<{ close(): void }> = []
+  let off: () => void = () => {}
+  afterEach(() => {
+    off()
+    for (const s of syncs.splice(0)) s.close()
+    for (const x of handles.splice(0)) x.release()
+  })
+  function share(): void {
+    const handle = registerSession(dir, { hostInstanceId: 'aaaaaaaaaaaa', pid: process.pid, startedAt: Date.now(), appVersion: 't', cwd: '/work/a', command: 'tui' })
+    handles.push(handle)
+    const sync = createSharedStoreSync(handle, { checkMs: 0, liveForMs: 0, waitMs: 80 })
+    syncs.push(sync)
+    off = enableStoreSync(dir, sync)
+  }
+
+  it('does not count while another session is writing (a counter never throws), and counts once it is done', () => {
+    share()
+    const other = trySyncLock(writeLockPath(dir))
+    try {
+      expect(bumpAllowCount(dir, 'p1', 'Read')).toBeUndefined()
+      expect(existsSync(allowCountFile(dir, 'p1'))).toBe(false)
+    } finally {
+      other?.release()
+    }
+    expect(bumpAllowCount(dir, 'p1', 'Read')).toBe(1)
+    expect(bumpAllowCount(dir, 'p1', 'Read')).toBe(2)
+  })
+
+  it('migrates a version 1 file under the lock, and leaves it for later when another session is writing', () => {
+    const file = allowCountFile(dir, 'p1')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ v: 1, entries: [['Read', 2]] }))
+    share()
+    const other = trySyncLock(writeLockPath(dir))
+    try {
+      expect(readAllowCounts(dir, 'p1').size).toBe(0) // never throws: unknown, not guessed
+      expect((JSON.parse(readFileSync(file, 'utf8')) as { v: number }).v).toBe(1)
+    } finally {
+      other?.release()
+    }
+    expect(allowCountOf(dir, 'p1', 'Read')).toBe(2)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 2, entries: [[h('Read'), 2]] })
   })
 })

@@ -242,20 +242,32 @@ export class ReentrantSyncLock {
   }
 
   acquire(): void {
+    const start = this.now()
+    if (!this.acquireWithin(this.waitMs)) throw new SyncLockBusyError(this.path, this.now() - start)
+  }
+
+  /**
+   * Like {@link acquire}, but gives up after `ms` (at most the wait budget) and answers false instead of throwing; a
+   * true answer is a hold to `release()` as usual. For a caller that can do without the lock (a reader that would
+   * rather read unprotected than fail).
+   */
+  acquireWithin(ms: number): boolean {
     if (this.depth > 0) {
       this.depth += 1
-      return
+      return true
     }
+    const budget = Math.min(ms, this.waitMs)
     const start = this.now()
     let step = SYNC_BACKOFF_START_MS
     for (;;) {
       if (this.tryOnce()) break
       const waited = this.now() - start
-      if (waited >= this.waitMs) throw new SyncLockBusyError(this.path, waited)
-      this.sleep(Math.min(step * (0.5 + this.random()), this.waitMs - waited))
+      if (waited >= budget) return false
+      this.sleep(Math.min(step * (0.5 + this.random()), budget - waited))
       step = Math.min(step * 2, SYNC_BACKOFF_CAP_MS)
     }
     this.depth = 1
+    return true
   }
 
   release(): void {

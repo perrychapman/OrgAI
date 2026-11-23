@@ -77,7 +77,12 @@ const SESSION_MKDIR = 'sessions: idempotent recursive mkdir of <data>/run/sessio
 const VAULT_LOCKED =
   "vault: every commit runs under the data folder's write lock; a value change re-reads vault.json first; a creation re-checks under the lock that no other session created one"
 const VAULT_ALONE = 'vault reset: refused while another orgai session runs (SecretStore.refuseWhileOthersRun)'
-const TEMP_AGE = 'temp folder: run skill folders older than 24 h, swept by a session that is alone on its data folder (age keeps a session that starts meanwhile safe)'
+// UI overhaul skill export (SkillService.exportTo, desktop window only): the destination is a folder the user just picked,
+// outside the data folder; each export makes a NEW folder there (mkdirSync fails with EEXIST rather than reuse one, files
+// are written with flag 'wx'), so nothing is ever overwritten and two sessions exporting to one place get two folders.
+// The skill it reads is read inside the service's one change under the write lock (oneChangePerCall).
+const EXPORT_NEW_FOLDER = "outside data folder: a user-picked destination; a new folder per export (mkdir EEXIST, files 'wx'), never overwrites; the skill is read under the write lock (oneChangePerCall)"
+const TEMP_AGE ='temp folder: run skill folders older than 24 h, swept by a session that is alone on its data folder (age keeps a session that starts meanwhile safe)'
 const DATA_MKDIR = 'data folder creation: idempotent recursive mkdir'
 const COMPILE_CACHE =
   "compile cache: <data>/run/compile-cache/<version> (mode 0700, inside the folder agent tools are kept out of); V8 writes its own entries there with unique names; the folder's creation is idempotent and only another version's folder unused for 14 days is removed (a session that still used it would only lose cached code)"
@@ -314,12 +319,13 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/schedules/testkit.ts:cleanup:rmSync': TEST_TEMP,
   'src/main/schedules/testkit.ts:fakeEnv:mkdtempSync': TEST_TEMP,
   'src/main/skills/files.ts:writeFolder:writeFileSync': PROJECT_LOCKED,
-  // UI overhaul: the per-project allow counter (<data>/projects/<id>/allow-counts.json, written from the desktop
-  // decide path only) and skill export (a new folder under a destination the user just picked; never overwrites).
-  'src/main/runtime/allowCounter.ts:writeCounts:atomicWrite': 'single owner',
-  'src/main/skills/service.ts:SkillService.exportTo:mkdirSync': 'single owner',
-  'src/main/skills/service.ts:SkillService.exportTo:rmSync': 'single owner',
-  'src/main/skills/service.ts:SkillService.exportTo:writeFileSync': 'single owner',
+  // UI overhaul: the per-project allow counter (<data>/projects/<id>/allow-counts.json: bumped from the desktop decide path
+  // only, read by every host; bumpAllowCount and the version 1 migration in readAllowCounts run under the write lock) and
+  // skill export (a new folder under a destination the user just picked; never overwrites).
+  'src/main/runtime/allowCounter.ts:writeCounts:atomicWrite': PROJECT_LOCKED,
+  'src/main/skills/service.ts:SkillService.exportTo:mkdirSync': EXPORT_NEW_FOLDER,
+  'src/main/skills/service.ts:SkillService.exportTo:rmSync': EXPORT_NEW_FOLDER,
+  'src/main/skills/service.ts:SkillService.exportTo:writeFileSync': EXPORT_NEW_FOLDER,
   'src/main/skills/service.ts:copy:cpSync': PROJECT_LOCKED,
   'src/main/skills/service.ts:discard:rmSync': PROJECT_LOCKED,
   'src/main/skills/service.ts:restore:cpSync': PROJECT_LOCKED,

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { PermissionSuggestion } from '@shared/types'
 import { isSafeId } from '@shared/defaults'
 import { atomicWrite, ensurePlainDir, projectDataDir, readPlain } from '../store/projectData'
+import { storeSyncFor } from '../store/shared/storeSync'
 import { allowRuleStrings, deriveSuggestions } from './permissionRules'
 
 /**
@@ -89,34 +90,46 @@ function writeCounts(dataDir: string, projectId: string, counts: Map<string, num
  * counts in memory and leaves the old file for the next try). Never throws.
  */
 export function readAllowCounts(dataDir: string, projectId: string): Map<string, number> {
-  const out = new Map<string, number>()
   try {
-    if (!dataDir || !isSafeId(projectId)) return out
-    const file = readPlain(allowCountFile(dataDir, projectId), FILE_MAX_BYTES)
-    if (!file) return out
-    const parsed = JSON.parse(file.text) as unknown
-    const obj = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { entries?: unknown; v?: unknown }) : undefined
-    const entries = obj?.entries
-    if (!obj || !Array.isArray(entries)) return out
-    const plain = obj.v !== 2
-    for (const raw of entries) {
-      const e = cleanEntry(raw, plain)
-      if (!e) continue
-      out.delete(e[0])
-      out.set(e[0], e[1])
-    }
-    while (out.size > ALLOW_COUNT_KEYS_MAX) out.delete(out.keys().next().value as string)
-    if (plain) {
-      try {
-        writeCounts(dataDir, projectId, out)
-      } catch {
-        /* the next bump rewrites it */
+    const first = parseAllowCounts(dataDir, projectId)
+    if (!first.plain) return first.counts
+    // A version 1 file is rewritten as version 2: a change to a shared file, so under the data folder's write lock, on
+    // what the file holds now (another session may have rewritten it or bumped a count since the read above).
+    return storeSyncFor(dataDir).locked(() => {
+      const now = parseAllowCounts(dataDir, projectId)
+      if (now.plain) {
+        try {
+          writeCounts(dataDir, projectId, now.counts)
+        } catch {
+          /* the next bump rewrites it */
+        }
       }
-    }
+      return now.counts
+    })
   } catch {
     return new Map()
   }
-  return out
+}
+
+/** The file's counts, and whether it is a version 1 file (plain keys) that wants rewriting. Writes nothing. */
+function parseAllowCounts(dataDir: string, projectId: string): { counts: Map<string, number>; plain: boolean } {
+  const out = new Map<string, number>()
+  if (!dataDir || !isSafeId(projectId)) return { counts: out, plain: false }
+  const file = readPlain(allowCountFile(dataDir, projectId), FILE_MAX_BYTES)
+  if (!file) return { counts: out, plain: false }
+  const parsed = JSON.parse(file.text) as unknown
+  const obj = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { entries?: unknown; v?: unknown }) : undefined
+  const entries = obj?.entries
+  if (!obj || !Array.isArray(entries)) return { counts: out, plain: false }
+  const plain = obj.v !== 2
+  for (const raw of entries) {
+    const e = cleanEntry(raw, plain)
+    if (!e) continue
+    out.delete(e[0])
+    out.set(e[0], e[1])
+  }
+  while (out.size > ALLOW_COUNT_KEYS_MAX) out.delete(out.keys().next().value as string)
+  return { counts: out, plain }
 }
 
 /** How many times the project's user allowed `key` once; undefined when it has no record (unknown, never 0 by guess). */
@@ -132,14 +145,18 @@ export function allowCountOf(dataDir: string, projectId: string, key: string): n
 export function bumpAllowCount(dataDir: string, projectId: string, key: string): number | undefined {
   try {
     if (!dataDir || !isSafeId(projectId) || !key || key.length > ALLOW_COUNT_KEY_MAX_CHARS) return undefined
-    const counts = readAllowCounts(dataDir, projectId)
-    const hash = allowCountHash(key)
-    const next = Math.min(ALLOW_COUNT_MAX, (counts.get(hash) ?? 0) + 1)
-    counts.delete(hash)
-    counts.set(hash, next)
-    while (counts.size > ALLOW_COUNT_KEYS_MAX) counts.delete(counts.keys().next().value as string)
-    writeCounts(dataDir, projectId, counts)
-    return next
+    // Read, change and rewrite as one step under the data folder's write lock: two sessions allowing in one project (or
+    // a count read that migrates the file) never put a stale copy back over each other's count.
+    return storeSyncFor(dataDir).locked(() => {
+      const counts = readAllowCounts(dataDir, projectId)
+      const hash = allowCountHash(key)
+      const next = Math.min(ALLOW_COUNT_MAX, (counts.get(hash) ?? 0) + 1)
+      counts.delete(hash)
+      counts.set(hash, next)
+      while (counts.size > ALLOW_COUNT_KEYS_MAX) counts.delete(counts.keys().next().value as string)
+      writeCounts(dataDir, projectId, counts)
+      return next
+    })
   } catch {
     return undefined
   }

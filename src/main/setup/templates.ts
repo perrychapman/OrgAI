@@ -229,11 +229,15 @@ export class TemplateService {
    * template: it starts with no apply count.
    */
   duplicate(templateId: string): OrgTemplateInfo {
-    const found = isBuiltinTemplateId(templateId) ? builtinTemplate(templateId) : this.readForKit(templateId)
-    if (!found) throw new Error('Template not found')
-    const suffix = ' copy'
-    const base = found.info.name.slice(0, ORG_TEMPLATE_NAME_MAX_CHARS - suffix.length).trim()
-    return this.saveFromKit({ name: `${base}${suffix}`, description: found.info.description, kind: found.info.kind, orgText: found.orgText })
+    // Under the write lock from the read of the source to the save of the copy: the source cannot be removed or replaced
+    // by another session in between (the save nests in this hold).
+    return this.locked(() => {
+      const found = isBuiltinTemplateId(templateId) ? builtinTemplate(templateId) : this.readForKit(templateId)
+      if (!found) throw new Error('Template not found')
+      const suffix = ' copy'
+      const base = found.info.name.slice(0, ORG_TEMPLATE_NAME_MAX_CHARS - suffix.length).trim()
+      return this.saveFromKit({ name: `${base}${suffix}`, description: found.info.description, kind: found.info.kind, orgText: found.orgText })
+    })
   }
 
   /**
@@ -388,15 +392,19 @@ export class TemplateService {
   /** Record one successful apply in the index (a built-in in `builtInApplied`). A missing count starts at 1. Never throws. */
   private countApplied(templateId: string): void {
     try {
-      if (isBuiltinTemplateId(templateId)) {
-        const counts = this.readBuiltInCounts()
-        counts[templateId] = (counts[templateId] ?? 0) + 1
-        this.writeIndex(this.readIndex(), counts)
-        return
-      }
-      const templates = this.readIndex()
-      if (!templates.some((t) => t.id === templateId)) return
-      this.writeIndex(templates.map((t) => (t.id === templateId ? { ...t, appliedCount: (t.appliedCount ?? 0) + 1 } : t)))
+      // The index is read, changed and rewritten as one step under the write lock (the same rule as save and remove): an
+      // apply in another session, or a save, never has its change put back by this one.
+      this.locked(() => {
+        if (isBuiltinTemplateId(templateId)) {
+          const counts = this.readBuiltInCounts()
+          counts[templateId] = (counts[templateId] ?? 0) + 1
+          this.writeIndex(this.readIndex(), counts)
+          return
+        }
+        const templates = this.readIndex()
+        if (!templates.some((t) => t.id === templateId)) return
+        this.writeIndex(templates.map((t) => (t.id === templateId ? { ...t, appliedCount: (t.appliedCount ?? 0) + 1 } : t)))
+      })
     } catch (e) {
       console.warn('Counting a template apply failed:', e instanceof Error ? e.message : e)
     }
