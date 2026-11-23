@@ -22,7 +22,7 @@
 .shortcuts-table th,
 .shortcuts-table td {
   padding: var(--space-1) 0;
-  border-top: 1px solid var(--border-default);
+  border-top: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: baseline;
   font-weight: 400;
@@ -93,9 +93,9 @@
   display: inline-block;
   min-width: var(--space-5);
   padding: 0 var(--space-1);
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-xs);
-  background: var(--surface-3);
+  background: var(--field-bg);
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--text-mono);
