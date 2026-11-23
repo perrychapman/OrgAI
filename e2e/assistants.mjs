@@ -6,7 +6,7 @@ import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, 
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
-const LABELS = { quick: 'Chat', harness: 'MCP assistant', skills: 'Skill assistant' }
+const LABELS = { quick: 'Chat', harness: 'Tools helper', skills: 'Skills helper' }
 const IDS = ['quick', 'harness', 'skills']
 const repo = makeFixtureRepo('assistants')
 

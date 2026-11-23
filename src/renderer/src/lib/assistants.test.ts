@@ -69,18 +69,19 @@ describe('assistants', () => {
   it('names locations', () => {
     const projects = [{ id: 'p1', name: 'Shop' }]
     expect(locationLabel('quick', projects)).toBe('Chat')
-    expect(locationLabel('harness', projects)).toBe('MCP assistant')
+    expect(locationLabel('harness', projects)).toBe('Tools helper')
     expect(locationLabel('p1', projects)).toBe('Shop')
     expect(locationLabel('gone', projects)).toBe('Project')
   })
   it('builds a display project', () => {
-    expect(displayProject('skills')).toMatchObject({ id: 'skills', name: 'Skill assistant', path: '', roles: [] })
+    expect(displayProject('skills')).toMatchObject({ id: 'skills', name: 'Skills helper', path: '', roles: [] })
   })
   it('labels kinds', () => {
     expect(runKindLabel({ kind: 'work', quick: quick() })).toBe('Chat')
     expect(runKindLabel({ kind: 'work' })).toBe('Run')
     expect(runKindLabel({ kind: 'work', team: 'single' })).toBe('Ask')
-    expect(runKindLabel({ kind: 'skill-assist' })).toBe('Skill assistant')
+    expect(runKindLabel({ kind: 'skill-assist' })).toBe('Skills helper')
+    expect(runKindLabel({ kind: 'mcp-assist' })).toBe('Tools helper')
   })
   it('labels folder and access', () => {
     expect(quickFolderLabel(quick())).toBe('notes-api')

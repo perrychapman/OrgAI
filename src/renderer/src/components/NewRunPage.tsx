@@ -31,9 +31,10 @@ import { StartModelControl } from './runSettings/StartModelControl'
 import { EffortControl } from './runSettings/EffortControl'
 import { PermissionModeControl } from './runSettings/PermissionModeControl'
 import { GoalControl } from './runSettings/GoalControl'
-
-/** Role chips shown on the empty state; the rest are behind "+N more" (Team view). */
-const ROLE_CHIP_LIMIT = 5
+import { SettingTile } from './newRun/SettingTile'
+import { PickUpList } from './newRun/PickUpList'
+import { WhoWorksPanel } from './newRun/WhoWorksPanel'
+import '../styles/new-run.css'
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
@@ -61,7 +62,6 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const startRun = useAppStore((s) => s.startRun)
   const startSetup = useAppStore((s) => s.startSetup)
   const openRun = useAppStore((s) => s.openRun)
-  const setView = useAppStore((s) => s.setView)
   const focusToken = useAppStore((s) => s.composerFocusToken)
   const runs = useAppStore((s) => s.runs)
   const others = useMemo(
@@ -164,9 +164,19 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
     }
   }
 
+  const wide = canChooseMode
+
+  const lead = ask ? (
+    <p className="nr-lead" data-testid="new-run-ask-lead">
+      {askLead}
+    </p>
+  ) : (
+    <p className="nr-lead">{newRunLead(kind, rootName) ?? 'The orchestrator plans the task and hands parts to its team.'}</p>
+  )
+
   return (
     <div className="new-run">
-      <div className="new-run-inner">
+      <div className={`new-run-inner${wide ? ' new-run-inner--wide' : ''}`}>
         <TeamFilesPointer projectId={project.id} />
         {needsSetup ? (
           <EmptyState
@@ -191,36 +201,9 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               )
             }
           />
-        ) : ask ? (
-          <EmptyState title="Ask one assistant" description={<span data-testid="new-run-ask-lead">{askLead}</span>} />
-        ) : (
-          <EmptyState
-            title={`Give ${rootName} something to do`}
-            description={newRunLead(kind, rootName) ?? 'The orchestrator plans the task and hands parts to its team.'}
-            actions={
-              <ul className="role-chips" aria-label="Roles in this project">
-                {project.roles.slice(0, ROLE_CHIP_LIMIT).map((r) => (
-                  <li key={r.id} className="role-tag" style={{ ['--role' as string]: r.color }}>
-                    {r.name}
-                  </li>
-                ))}
-                {project.roles.length > ROLE_CHIP_LIMIT && (
-                  <li>
-                    <button
-                      type="button"
-                      className="link-btn"
-                      data-testid="new-run-more-roles"
-                      title={project.roles.map((r) => r.name).join(', ')}
-                      onClick={() => setView('team')}
-                    >
-                      +{project.roles.length - ROLE_CHIP_LIMIT} more
-                    </button>
-                  </li>
-                )}
-              </ul>
-            }
-          />
-        )}
+        ) : !wide ? (
+          <EmptyState title={`Give ${rootName} something to do`} description={newRunLead(kind, rootName) ?? 'The orchestrator plans the task and hands parts to its team.'} />
+        ) : null}
 
         <McpAuthNotice project={project} />
         <FolderTrustNotice project={project} />
@@ -231,6 +214,16 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           </Banner>
         )}
 
+        <div className={wide ? 'nr-cols' : undefined}>
+          <div className={wide ? 'nr-main motion-enter-lg' : 'nr-single'}>
+            {wide && (
+              <>
+                <h2 className="nr-heading" data-testid="new-run-heading">
+                  {ask ? 'What do you want to ask?' : 'What should the team do?'}
+                </h2>
+                {lead}
+              </>
+            )}
         <Composer
           draftKey={newRunDraftKey(project.id)}
           modeLabel={ask ? 'Ask one assistant' : 'New run'}
@@ -251,32 +244,6 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
                   onChange={setMode}
                 />
               </span>
-            ) : undefined
-          }
-          settings={
-            canChooseMode ? (
-              <>
-                <RunSettingsRow surface="start">
-                  <StartModelControl picked={pickedModel} defaultModel={defaultModel} ask={ask} mockProject={project.provider.id === 'mock'} onChange={setPickedModel} />
-                  <EffortControl picked={pickedEffort} defaultEffort={defaultEffort} adapter={runAdapter} onChange={setPickedEffort} />
-                  <PermissionModeControl
-                    value={shownMode}
-                    choices={permissionChoices}
-                    baseline={project.permissionMode}
-                    isDefault={pickedMode === null}
-                    defaultMode={project.permissionMode}
-                    onChoose={(m) => {
-                      const same = m === project.permissionMode
-                      setPickedMode(same ? null : m)
-                      setPickedModeBaseline(same ? null : project.permissionMode)
-                    }}
-                  />
-                  {showGoal && <GoalControl goal={goal} isDefault={pickedGoal === null} onChange={(g) => setPickedGoal(g === staffingGoalOf(project) ? null : g)} />}
-                </RunSettingsRow>
-                <p className="run-settings-note" data-testid="run-settings-note">
-                  These choices apply to this run only. Project settings stay as they are.
-                </p>
-              </>
             ) : undefined
           }
           notices={
@@ -320,6 +287,46 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           }, (runId) => runId)}
         />
         {todoDrafted && <TodoDraftNote id={todoNoteId} sendLabel={ask ? 'Ask' : needsSetup ? 'Start without setup' : 'Start'} />}
+
+            {canChooseMode && (
+              <>
+                <RunSettingsRow surface="start">
+                  <SettingTile label="Model" help={ask ? 'The assistant’s model.' : 'The lead agent. Other roles keep their own.'}>
+                    <StartModelControl picked={pickedModel} defaultModel={defaultModel} ask={ask} mockProject={project.provider.id === 'mock'} onChange={setPickedModel} />
+                  </SettingTile>
+                  <SettingTile label="Effort" help="How hard the lead thinks.">
+                    <EffortControl picked={pickedEffort} defaultEffort={defaultEffort} adapter={runAdapter} onChange={setPickedEffort} />
+                  </SettingTile>
+                  <SettingTile label="Asking you" help={pickedMode === null ? 'From this project’s settings.' : 'Changed for this run only.'}>
+                    <PermissionModeControl
+                      value={shownMode}
+                      choices={permissionChoices}
+                      baseline={project.permissionMode}
+                      isDefault={pickedMode === null}
+                      defaultMode={project.permissionMode}
+                      onChoose={(m) => {
+                        const same = m === project.permissionMode
+                        setPickedMode(same ? null : m)
+                        setPickedModeBaseline(same ? null : project.permissionMode)
+                      }}
+                    />
+                  </SettingTile>
+                  {showGoal && (
+                    <SettingTile label="Goal" help="Between speed, cost and care.">
+                      <GoalControl goal={goal} isDefault={pickedGoal === null} onChange={(g) => setPickedGoal(g === staffingGoalOf(project) ? null : g)} />
+                    </SettingTile>
+                  )}
+                </RunSettingsRow>
+                <p className="run-settings-note" data-testid="run-settings-note">
+                  These choices apply to this run only. Project settings stay as they are.
+                </p>
+              </>
+            )}
+
+            {canChooseMode && <PickUpList project={project} />}
+          </div>
+          {canChooseMode && <WhoWorksPanel project={project} mode={ask ? 'ask' : 'team'} rootName={rootName} />}
+        </div>
 
         {dialog}
 
