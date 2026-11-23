@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useMemo } from 'react'
 import { BarChart3 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { activityMap } from '../../lib/activityMap'
+import { activityMap, freshNow } from '../../lib/activityMap'
 import { isWorkRun, statCards, weekRecap, type StatCard } from '../../lib/weekRecap'
 import { DashSection, useDashboard } from './DashboardContext'
 import { StatCards } from './StatCards'
@@ -24,9 +24,11 @@ export function WeekSection(): ReactElement | null {
   const historyByProject = useAppStore((s) => s.historyByProject)
   const openUsage = useAppStore((s) => s.openUsage)
   const summaries = useAllSummaries()
-  const now = useNow(60_000)
+  const tick = useNow(60_000)
 
   const ready = projects.every((p) => p.id in historyByProject)
+  // The tick can be up to a minute old: a run that started since is not "after now" (it is in progress and counts).
+  const now = useMemo(() => freshNow(tick, Date.now()), [tick, summaries])
   const recap = useMemo(() => weekRecap(summaries, projects, now), [summaries, projects, now])
   const cards = useMemo(() => statCards(recap, layout.focus), [recap, layout.focus])
   const map = useMemo(() => activityMap(summaries.filter(isWorkRun), now), [summaries, now])

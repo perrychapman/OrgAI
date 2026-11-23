@@ -175,6 +175,23 @@ export default function InboxView(): ReactElement {
   useEffect(() => {
     decisionFocus.suppress = false
   }, [selected])
+  // Arrival: focus goes to the list's first row (the heading when empty), so J, K and Enter work at once. Never taken from
+  // someone typing, from a dialog, or from a place inside the Inbox. The Enter (or Space) that activated the nav row may
+  // still be down: for a moment after arrival a fresh Enter on a row does nothing (its repeats are always swallowed).
+  const arrivedAt = useRef(0)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const a = document.activeElement
+      if (a && a !== document.body && (rootRef.current?.contains(a) || typingTarget(a))) return
+      if (dialogOpen()) return
+      const rows = listRef.current?.querySelectorAll<HTMLElement>('[data-testid=inbox-row]')
+      const row = rows ? ([...rows].find((r) => r.tabIndex === 0) ?? rows[0]) : undefined
+      arrivedAt.current = Date.now()
+      if (row) row.focus()
+      else rootRef.current?.querySelector<HTMLElement>('.inbox-title')?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [])
   const choose = useCallback(
     (id: string | null): void => {
       if (!id) return
@@ -289,6 +306,11 @@ export default function InboxView(): ReactElement {
           if (inList) e.preventDefault()
           return
         }
+        // The Enter that opened the Inbox from the sidebar may be doubled: it must not reach a row or a card.
+        if (inList && Date.now() - arrivedAt.current < ENTER_DWELL_MS) {
+          e.preventDefault()
+          return
+        }
         if (focusMainAction(detailRef.current)) {
           e.preventDefault()
           guard.current = guardArrive(guard.current, Date.now(), ENTER_DWELL_MS)
@@ -347,7 +369,7 @@ export default function InboxView(): ReactElement {
             <EmptyState
               icon={InboxIcon}
               title="Nothing is waiting on you"
-              description={workingTeams === 0 ? 'No teams are working right now. Anything they need from you shows up here.' : `${workingTeams} ${workingTeams === 1 ? 'team is' : 'teams are'} working. Anything they need from you shows up here.`}
+              description={workingTeams === 0 ? 'No team has a run going. Anything they need from you shows up here.' : `${workingTeams} ${workingTeams === 1 ? 'team has' : 'teams have'} a run going. Anything they need from you shows up here.`}
               actions={
                 <Button variant="secondary" testId="inbox-see-running" onClick={() => setView('projects')}>
                   See what is running

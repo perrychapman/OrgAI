@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activityMap, blockRange, firstDayLabel, mapText, MIN_STRENGTH, todayText } from './activityMap'
+import { activityMap, blockRange, freshNow, firstDayLabel, mapText, MIN_STRENGTH, todayText } from './activityMap'
 
 const at = (y: number, m: number, d: number, h = 12, min = 0): number => new Date(y, m - 1, d, h, min, 0).getTime()
 // Saturday 7 November 2026, 15:30: block 3 (12:00 to 16:00) of today has started, blocks 4 and 5 have not.
@@ -112,5 +112,16 @@ describe('activityMap words', () => {
   it('names a block range, wrapping the last to midnight', () => {
     expect(blockRange(0)).toBe('00:00 to 04:00')
     expect(blockRange(5)).toBe('20:00 to 00:00')
+  })
+})
+
+describe('freshNow (runs in progress count in the map)', () => {
+  it('uses the wall clock when the tick is older, so a run started since the tick is counted', () => {
+    const tick = at(2026, 11, 7, 9)
+    const wall = tick + 30_000
+    const started = [r('live', wall - 5_000)]
+    expect(activityMap(started, tick).total).toBe(0)
+    expect(activityMap(started, freshNow(tick, wall)).total).toBe(1)
+    expect(freshNow(wall, tick)).toBe(wall)
   })
 })

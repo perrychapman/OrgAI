@@ -70,7 +70,8 @@ function instance(a: SampleAgent, index: number): AgentInstance {
     inputTokens: 12_000 + index * 3_000,
     outputTokens: 2_400 + index * 600,
     costUsd: 0,
-    startedAt: base,
+    // No start time: the preview shows no elapsed figure (a made-up date would read as years of work).
+    startedAt: 0,
     ...(a.done || a.state === 'error' ? { endedAt: base + 90_000 } : {})
   }
 }

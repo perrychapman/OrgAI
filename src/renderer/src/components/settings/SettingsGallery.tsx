@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Chip } from '../ui/Chip'
 import { useRovingFocus } from '../connectors/useRovingFocus'
+import { scrollContainerOf, scrollWithin } from '../../lib/scrollWithin'
 
 /**
  * Gallery with a detail panel (ui-overhaul Providers, Tools, Skills and Templates boards): a search field and filter
@@ -64,6 +65,19 @@ export interface GalleryFilter {
   label: string
 }
 
+/**
+ * Brings a detail panel that sits below the grid (narrow windows) into view after a tile is picked. It scrolls the
+ * settings scroller only (never the window or the shell) and in one jump, so reduced motion needs no special case; focus
+ * stays on the tile. A panel already beside the grid or on screen is left alone.
+ */
+export function revealAside(el: Element | null | undefined): void {
+  if (!el) return
+  const box = scrollContainerOf(el)
+  const view = box ? box.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
+  const at = el.getBoundingClientRect()
+  if (at.top > view.bottom - 120 || at.bottom < view.top + 40) scrollWithin(el, 'start')
+}
+
 export function SettingsGallery({
   label,
   items,
@@ -122,13 +136,7 @@ export function SettingsGallery({
 
   const pick = (id: string): void => {
     onSelect(id)
-    const el = aside.current
-    if (!el) return
-    const box = el.getBoundingClientRect()
-    if (box.top > window.innerHeight - 80 || box.bottom < 0) {
-      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.reduceMotion === 'on'
-      el.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' })
-    }
+    revealAside(aside.current)
   }
 
   const shownSections = sections

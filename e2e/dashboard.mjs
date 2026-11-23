@@ -1735,7 +1735,7 @@ async function setName(name) {
     // ---- Empty first: nothing waits, nothing is working.
     await openInbox()
     check((await I('inbox-empty').count()) === 1 && /Nothing is waiting on you/.test(ibClean(await I('inbox-empty').innerText())), 'IB an empty Inbox says "Nothing is waiting on you"')
-    check(/(No teams are|\d+ teams? (is|are)) working/.test(ibClean(await I('inbox-empty').innerText())), 'IB the empty state says how many teams are working', ibClean(await I('inbox-empty').innerText()))
+    check(/(No team has|\d+ teams? (has|have)) a run going/.test(ibClean(await I('inbox-empty').innerText())), 'IB the empty state says how many teams have a run going', ibClean(await I('inbox-empty').innerText()))
     check((await summary()).text === '0 waiting on you · 0 finished', 'IB the summary reads 0 waiting · 0 finished', (await summary()).text)
     check((await I('inbox-answer-order').count()) === 0 && (await I('inbox-chips').count()) === 0, 'IB no "Answer in order" button or chips while the Inbox is empty')
 
@@ -1771,6 +1771,29 @@ async function setName(name) {
     check(rowsNamed.every((t) => /^(Permission|Question|Rule|Proposal|Review|New tool|Plan|Team files|Finished|Failed): /.test(t) && /(run started|waiting) /.test(t)), 'IB each row is named with its kind, ask, who, project and age', JSON.stringify(rowsNamed.slice(0, 2)))
     await ip.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
     await launched.shot('waiting-dark-1440')
+
+    // ---- M5: arriving by the keyboard from the sidebar. Focus lands on the first row, J / K work at once, and the Enter
+    // that activated the nav row (held, repeating, doubled) reaches neither a row nor a card.
+    const waitingBeforeHeld = await waitRows().count()
+    await I('nav-home').click()
+    await I('dashboard').waitFor({ timeout: 10_000 })
+    await I('nav-inbox').focus()
+    await ip.keyboard.down('Enter')
+    await ip.keyboard.down('Enter')
+    await ip.keyboard.down('Enter')
+    await I('inbox-view').waitFor({ timeout: 10_000 })
+    await sleep(500)
+    check((await focusedRowId()) === ids0[0], 'IB M5 opening the Inbox from its sidebar row moves focus to the first row', JSON.stringify(await ip.evaluate(() => document.activeElement?.getAttribute('data-testid'))))
+    await ip.keyboard.down('Enter')
+    await sleep(150)
+    await ip.keyboard.up('Enter')
+    await sleep(200)
+    check((await waitRows().count()) === waitingBeforeHeld && !(await focusIn('[data-testid=inbox-detail-pane]')), 'IB M5 the held Enter that opened the Inbox answered nothing and did not enter a card', `${await waitRows().count()} of ${waitingBeforeHeld}`)
+    await ip.keyboard.press('j')
+    check((await selectedId()) === ids0[1] && (await focusedRowId()) === ids0[1], 'IB M5 J works straight after arriving by keyboard (no click first)', String(await selectedId()))
+    await ip.keyboard.press('k')
+    check((await selectedId()) === ids0[0], 'IB M5 K works straight after arriving by keyboard')
+    await ip.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
 
     // ---- Click selects and keeps focus on the list.
     await rows().nth(1).click()
@@ -1986,6 +2009,12 @@ async function setName(name) {
     check((await waitRows().count()) === 0, 'IB every waiting decision was answered from the Inbox')
     check((await badge()) === 0 && (await I('nav-inbox-count').count()) === 0, 'IB the sidebar badge is gone with the last decision')
     check((await I('inbox-empty').count()) === 1, 'IB the empty state returns when the last decision is answered')
+    {
+      // M4: the team count in the empty state is the sidebar's own count of project rows with a working dot.
+      const said = /(\d+) teams? (?:has|have) a run going/.exec(ibClean(await I('inbox-empty').innerText()))
+      const sidebarWorking = await ip.locator('.sidebar .dot.is-running').count()
+      check(sidebarWorking === (said ? Number(said[1]) : 0), 'IB M4 the empty Inbox names the same number of working teams as the sidebar dots', `${said?.[0] ?? 'no teams'} / ${sidebarWorking} sidebar dots`)
+    }
     await launched.shot('empty-dark-1440')
     await setTheme('light')
     await launched.shot('empty-light-1440')

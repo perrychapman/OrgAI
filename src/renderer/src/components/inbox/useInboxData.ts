@@ -8,6 +8,7 @@ import { decisionLocationLabel } from '../../lib/chatPermissions'
 import { displayRunName } from '../../lib/orgChange'
 import {
   INBOX_READ_CAP,
+  openTeamCount,
   buildFinished,
   buildWaiting,
   readReadIds,
@@ -80,7 +81,7 @@ export function useInboxData(now: number): {
     [summaries, seen.seenAt, read, now, projects]
   )
 
-  const workingTeams = useMemo(() => new Set(live.filter((r) => r.summary.status === 'running' || r.summary.status === 'starting').map((r) => r.summary.projectId)).size, [live])
+  const workingTeams = useMemo(() => openTeamCount(live.map((r) => r.summary)), [live])
 
   const markRead = useCallback((runId: string) => {
     setSeen((cur) => {
