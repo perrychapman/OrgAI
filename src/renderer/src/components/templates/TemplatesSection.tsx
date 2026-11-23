@@ -25,6 +25,7 @@ export default function TemplatesSection(): ReactElement {
   const { confirm, dialog } = useConfirm()
   const [status, setStatus] = useState('')
   const [removeError, setRemoveError] = useState<string | null>(null)
+  const [duplicateFailed, setDuplicateFailed] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const kinds = [...new Set((templates ?? []).map((t) => t.kind))]
 
@@ -41,6 +42,7 @@ export default function TemplatesSection(): ReactElement {
     })
     if (!ok) return
     setRemoveError(null)
+    setDuplicateFailed(false)
     try {
       await removeTemplate(id)
       setStatus(`Removed the template ${name}.`)
@@ -58,12 +60,20 @@ export default function TemplatesSection(): ReactElement {
 
   const duplicate = async (id: string, name: string): Promise<void> => {
     setRemoveError(null)
+    setDuplicateFailed(false)
     try {
       const copy = await window.orgai.templatesExtra.duplicate(id)
       await useAppStore.getState().loadTemplates()
       setSelected(copy.id)
       setStatus(`Made a copy of ${name}: ${copy.name}.`)
+      // The panel now shows the copy (and the Duplicate button that had focus was replaced): land on the copy's name.
+      window.setTimeout(() => {
+        const h = document.querySelector<HTMLElement>('[data-testid=template-detail] .settings-detail-name')
+        h?.setAttribute('tabindex', '-1')
+        h?.focus()
+      }, 60)
     } catch (e) {
+      setDuplicateFailed(true)
       setRemoveError(cleanIpcError(e))
     }
   }
@@ -81,7 +91,7 @@ export default function TemplatesSection(): ReactElement {
         {status}
       </p>
       {(removeError || (templatesError && templates === null)) && (
-        <Banner tone="danger" title={removeError ? 'Could not remove the template' : 'Could not load the templates'}>
+        <Banner tone="danger" title={removeError ? (duplicateFailed ? 'Could not copy the template' : 'Could not remove the template') : 'Could not load the templates'}>
           {removeError ?? templatesError}
         </Banner>
       )}

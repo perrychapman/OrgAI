@@ -39,9 +39,10 @@ export function BranchRulesSection({ project, patch }: { project: Project; patch
     patch({ testCommand: v || undefined })
     setCmd(null)
   }
-  const detected = branches?.[0]
+  // Main lists the branch merges land on first: the detected default only while no main branch is chosen.
+  const detected = project.mainBranch ? undefined : branches?.[0]
   const branchOptions = [
-    { value: '', label: detected ? `Detected: ${detected}` : branches === null ? 'Loading…' : 'Detected default' },
+    { value: '', label: branches === null ? 'Loading…' : detected ? `Automatic (${detected})` : "Automatic (the repository's default)" },
     ...(branches ?? []).map((b) => ({ value: b, label: b })),
     ...(project.mainBranch && branches && !branches.includes(project.mainBranch) ? [{ value: project.mainBranch, label: `${project.mainBranch} (not found)` }] : [])
   ]
@@ -87,7 +88,7 @@ export function BranchRulesSection({ project, patch }: { project: Project; patch
         <SettingRow
           id={row('cmd')}
           title="Test command"
-          description={project.requireTestsPass && !command.trim() ? 'Needed while "Tests must pass" is on.' : 'One line, run in the finished copy, for example npm test.'}
+          description={project.requireTestsPass && !command.trim() ? 'No tests run until you add a command: merges go ahead untested.' : 'One line, run in the finished copy, for example npm test.'}
           width="select"
           control={
             <Input
@@ -111,7 +112,7 @@ export function BranchRulesSection({ project, patch }: { project: Project; patch
         <SettingRow
           id={row('keep')}
           title="Keep branches of failed runs for"
-          description="So you can look at what went wrong. Cleaning up then removes the finished copy."
+          description="So you can look at what went wrong. After that, failed copies are removed when OrgAI starts with no run working."
           width="select"
           control={
             <Select

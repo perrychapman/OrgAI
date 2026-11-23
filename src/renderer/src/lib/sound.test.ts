@@ -1,25 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import { CHIME_MIN_GAP_MS, chimeDecision, chimesPlayed, playChime, setAudioFactory } from './sound'
+import { CHIME_MIN_GAP_MS, EMPTY_CHIME, chimeDecision, chimesPlayed, playChime, setAudioFactory } from './sound'
+
+const known = (keys: string[], runs = ['r1']): typeof EMPTY_CHIME => ({ seen: new Set(keys), runs: new Set(runs), lastAt: 0 })
 
 describe('chimeDecision', () => {
   it('never chimes on the first observation (decisions already waiting)', () => {
-    const r = chimeDecision({ seen: null, lastAt: 0 }, ['a'], true, 10_000)
+    const r = chimeDecision(EMPTY_CHIME, [['r1', 'a']], ['r1'], true, 10_000)
     expect(r.chime).toBe(false)
     expect([...r.next.seen!]).toEqual(['a'])
   })
-  it('chimes for a new key when on, never when off', () => {
-    const s = { seen: new Set(['a']), lastAt: 0 }
-    expect(chimeDecision(s, ['a', 'b'], true, 10_000).chime).toBe(true)
-    expect(chimeDecision(s, ['a', 'b'], false, 10_000).chime).toBe(false)
-    expect(chimeDecision(s, ['a'], true, 10_000).chime).toBe(false)
-    expect(chimeDecision(s, [], true, 10_000).chime).toBe(false)
+  it('chimes for a new key on a known run when on, never when off', () => {
+    const s = known(['a'])
+    expect(chimeDecision(s, [['r1', 'a'], ['r1', 'b']], ['r1'], true, 10_000).chime).toBe(true)
+    expect(chimeDecision(s, [['r1', 'a'], ['r1', 'b']], ['r1'], false, 10_000).chime).toBe(false)
+    expect(chimeDecision(s, [['r1', 'a']], ['r1'], true, 10_000).chime).toBe(false)
+    expect(chimeDecision(s, [], ['r1'], true, 10_000).chime).toBe(false)
+  })
+  it('stays silent when a run loads with decisions already waiting (start, history)', () => {
+    const s = known([], [])
+    const hydrated = chimeDecision(s, [['r2', 'x']], ['r2'], true, 10_000)
+    expect(hydrated.chime).toBe(false)
+    expect(chimeDecision(hydrated.next, [['r2', 'x'], ['r2', 'y']], ['r2'], true, 20_000).chime).toBe(true)
   })
   it('is rate-limited', () => {
-    const first = chimeDecision({ seen: new Set(['a']), lastAt: 0 }, ['a', 'b'], true, 10_000)
+    const first = chimeDecision(known(['a']), [['r1', 'a'], ['r1', 'b']], ['r1'], true, 10_000)
     expect(first.chime).toBe(true)
-    const soon = chimeDecision(first.next, ['a', 'b', 'c'], true, 10_000 + CHIME_MIN_GAP_MS - 1)
+    const soon = chimeDecision(first.next, [['r1', 'a'], ['r1', 'b'], ['r1', 'c']], ['r1'], true, 10_000 + CHIME_MIN_GAP_MS - 1)
     expect(soon.chime).toBe(false)
-    expect(chimeDecision(soon.next, ['a', 'b', 'c', 'd'], true, 10_000 + CHIME_MIN_GAP_MS).chime).toBe(true)
+    expect(chimeDecision(soon.next, [['r1', 'a'], ['r1', 'b'], ['r1', 'c'], ['r1', 'd']], ['r1'], true, 10_000 + CHIME_MIN_GAP_MS).chime).toBe(true)
   })
 })
 
@@ -28,6 +36,7 @@ describe('playChime', () => {
     const made: string[] = []
     class FakeCtx {
       currentTime = 0
+      state = 'running'
       destination = {}
       createOscillator(): unknown {
         made.push('osc')

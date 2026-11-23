@@ -10,20 +10,26 @@ export const CHIME_MIN_GAP_MS = 4000
 export interface ChimeState {
   /** Decision keys seen so far (null until the first observation, which never chimes). */
   seen: ReadonlySet<string> | null
+  /** Runs seen so far: a run that appears (loaded at start, opened from history) brings its waiting decisions silently. */
+  runs: ReadonlySet<string>
   lastAt: number
 }
 
+export const EMPTY_CHIME: ChimeState = { seen: null, runs: new Set(), lastAt: 0 }
+
 /**
- * Whether a new observation of the waiting decision keys should chime: only when the sound is on, never on the first
- * observation (decisions already waiting at app start or when the setting turns on), only for a key not seen before,
- * and at most once per CHIME_MIN_GAP_MS. Returns the next state either way.
+ * Whether a new observation of the waiting decisions (`[runId, key]` pairs over every run in view, `runIds` every
+ * run in view) should chime: only when the sound is on, never on the first observation, never for a run seen for the
+ * first time (its decisions were already waiting when it loaded), only for a key not seen before on a known run, and at
+ * most once per CHIME_MIN_GAP_MS. Returns the next state either way.
  */
-export function chimeDecision(state: ChimeState, keys: readonly string[], enabled: boolean, now: number): { chime: boolean; next: ChimeState } {
-  const seen = new Set(keys)
-  if (state.seen === null || !enabled) return { chime: false, next: { seen, lastAt: state.lastAt } }
-  const fresh = keys.some((k) => !state.seen!.has(k))
+export function chimeDecision(state: ChimeState, entries: readonly (readonly [string, string])[], runIds: readonly string[], enabled: boolean, now: number): { chime: boolean; next: ChimeState } {
+  const seen = new Set(entries.map(([, k]) => k))
+  const runs = new Set(runIds)
+  if (state.seen === null || !enabled) return { chime: false, next: { seen, runs, lastAt: state.lastAt } }
+  const fresh = entries.some(([run, k]) => state.runs.has(run) && !state.seen!.has(k))
   const chime = fresh && now - state.lastAt >= CHIME_MIN_GAP_MS
-  return { chime, next: { seen, lastAt: chime ? now : state.lastAt } }
+  return { chime, next: { seen, runs, lastAt: chime ? now : state.lastAt } }
 }
 
 type AudioCtor = typeof AudioContext
@@ -36,6 +42,8 @@ export function playChime(): void {
     if (!Ctor) return
     ctx ??= new Ctor()
     const c = ctx
+    // A context created before any user gesture can start suspended; resuming is a no-op otherwise.
+    if (c.state === 'suspended') void c.resume?.().catch(() => undefined)
     const start = c.currentTime + 0.01
     for (const [i, freq] of [880, 1320].entries()) {
       const osc = c.createOscillator()
@@ -64,7 +72,7 @@ export function setAudioFactory(f: AudioCtor | null): void {
   audioFactory = f
   ctx = null
 }
-/** How many chimes this window played (e2e reads it through window.__orgaiChimes). */
+/** How many chimes this window played (useAttentionSound mirrors it on <html data-chime-count> for e2e). */
 export function chimesPlayed(): number {
   return chimeCount
 }

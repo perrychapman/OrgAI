@@ -64,7 +64,7 @@ export default function TestResultPanel({
               <ul className="mcp-tools mono">
                 {tools.map((t) => {
                   const d = details.get(t)
-                  const mark = d?.destructive ? 'Can change or delete' : d?.readOnly ? 'Reads only' : ''
+                  const mark = d?.destructive ? 'Server says: can change or delete' : d?.readOnly ? 'Server says: reads only' : ''
                   return (
                     <li key={t} title={d?.description ? `${t}: ${d.description}` : t} data-tool-kind={d?.destructive ? 'destructive' : d?.readOnly ? 'read' : 'unknown'}>
                       {t}

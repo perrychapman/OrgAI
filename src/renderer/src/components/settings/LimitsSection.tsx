@@ -27,6 +27,39 @@ const PLAN_GUARD_OPTIONS = [
 /** Concurrency choices; a saved value outside the list is added. */
 const CONCURRENCY_CHOICES = [1, 2, 4, 8, 12, 16, 24, 32]
 
+/**
+ * A dollar amount typed freely and saved on blur or Enter (so "0.5" can be typed): empty, zero or not a number = no
+ * limit (undefined).
+ */
+function UsdInput({ id, label, describedBy, testId, value, onCommit }: { id: string; label: string; describedBy: string; testId: string; value: number | undefined; onCommit: (v: number | undefined) => void }): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = (): void => {
+    if (draft === null) return
+    const n = Number(draft)
+    const next = draft.trim() && Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : undefined
+    if (next !== value) onCommit(next)
+    setDraft(null)
+  }
+  return (
+    <Input
+      id={id}
+      aria-label={label}
+      aria-describedby={describedBy}
+      data-testid={testId}
+      type="number"
+      min={0}
+      step={0.5}
+      value={draft ?? (value ?? '')}
+      placeholder="No limit"
+      onChange={setDraft}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+      }}
+    />
+  )
+}
+
 const WARN_OPTIONS = [
   { value: 'off', label: 'Off' },
   { value: '50', label: '50% of a limit' },
@@ -55,6 +88,7 @@ function SpendWarnRow(): ReactElement {
   }, [])
   const save = async (v: string): Promise<void> => {
     const pct = v === 'off' ? null : Number(v)
+    const before = value
     setValue(pct)
     setError(null)
     try {
@@ -62,6 +96,7 @@ function SpendWarnRow(): ReactElement {
       const { dataDir: _d, appVersion: _v, ...settings } = s
       await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...settings, spendWarnPercent: pct }))
     } catch (e) {
+      setValue(before)
       setError((e as Error).message)
     }
   }
@@ -191,20 +226,13 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           description={`Runs do not start, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it. Counts runs and schedules.`}
           width="number"
           control={
-            <Input
+            <UsdInput
               id={`${uid}-${key}`}
-              aria-label={`Spending limit for ${title.toLowerCase()}`}
-              aria-describedby={desc(key)}
-              data-testid={`limit-${word}-input`}
-              type="number"
-              min={0}
-              step={1}
-              value={project[key] ?? ''}
-              placeholder="No limit"
-              onChange={(v) => {
-                const n = Number(v)
-                patch({ [key]: v && Number.isFinite(n) && n > 0 ? n : undefined })
-              }}
+              label={`Spending limit for ${title.toLowerCase()}`}
+              describedBy={desc(key)}
+              testId={`limit-${word}-input`}
+              value={project[key]}
+              onCommit={(v) => patch({ [key]: v })}
             />
           }
         />

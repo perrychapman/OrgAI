@@ -120,7 +120,7 @@ function SupportRows({ onError }: { onError: (e: string | null) => void }): Reac
       <SettingRow
         id="licences-row"
         title="Licences"
-        description="The open source software OrgAI is built with."
+        description="Licences of Electron and Chromium, which OrgAI is built on."
         control={
           <Button
             size="sm"
@@ -434,6 +434,8 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
   }
 
   const defaultConnLabel = connectionLabel(defaultConn)
+  // Main writes the login item only for a packaged Windows or macOS install (appBehaviour.ts); elsewhere the switch is off with a reason.
+  const loginCapable = !!appInfo?.packaged && (appInfo.platform === 'win32' || appInfo.platform === 'darwin')
   const openPane = (id: string): void => setPane(id)
 
   /** Tiers (with what each resolves to on the effective default connection), then the exact models. */
@@ -515,7 +517,7 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
                 />
                 {(
                   [
-                    ['notifyNeedsMe', 'When a team needs me', 'A permission, a question or a review is waiting.'],
+                    ['notifyNeedsMe', 'When a team needs me', 'A permission, a question or a review is waiting, a turn ends waiting for your reply, or a plan limit pauses a run.'],
                     ['notifyRunFinished', 'When a run finishes', undefined],
                     ['notifyScheduleFindings', 'When a schedule finds something', 'Quiet when there is nothing to report.']
                   ] as const
@@ -558,10 +560,11 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
                 <SettingRow
                   id="open-at-login-row"
                   title="Open OrgAI when I sign in"
-                  description="So schedules can run without you opening it."
+                  description={loginCapable ? 'So schedules can run without you opening it.' : 'Only an installed OrgAI on Windows or macOS can open at sign-in.'}
                   control={
                     <Switch
-                      checked={info.openAtLogin === true}
+                      disabled={!loginCapable}
+                      checked={loginCapable && info.openAtLogin === true}
                       label="Open OrgAI when I sign in"
                       testId="open-at-login-switch"
                       describedBy={settingDescId('open-at-login-row')}
@@ -571,7 +574,7 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
                 />
                 <SettingRow
                   title="When I close the window"
-                  description="Runs and schedules need OrgAI to keep running. Keep running hides the window while they are live; opening OrgAI again shows it."
+                  description="Runs and schedules need OrgAI to keep running. Keep running hides the window while they are live; opening OrgAI again shows it. Quit still asks first while a run is working."
                   width="select"
                   control={
                     <SegmentedControl
