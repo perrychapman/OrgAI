@@ -35,11 +35,16 @@ const budgetCap = (v: unknown): number => (typeof v === 'number' && Number.isFin
  * - `mainBranch`: never changed (it decides where merges land).
  *
  * Every change that only narrows what a run may do or delete stays allowed from other surfaces; every widening is refused.
- * Team files never carry any of these (teamFiles/parse.ts ignores unknown team.json keys). The settings proposal list
- * (PROJECT_SETTINGS_PROPOSABLE_FIELDS) DOES name three of them (`maxBudgetUsd`, `maxSubagentDepth`,
- * `maxConcurrentSubagents`; a `maxBudgetUsd: null` removes the cap): approving such a card from any surface but the window
- * applies the same rule (SetupService.applyProposal `nonDesktop`, set by RunManager from the decision's `decidedBy`). The same
- * rule also covers a project removed and created again (`guardedFieldsOf`) and the services that replace roles
+ * Team files carry three of the spending and agent limits: `maxBudgetUsd`, `maxSubagentDepth` and `maxConcurrentSubagents`
+ * (teamFiles/parse.ts, serialize.ts). They do not go through this function: the team-file gate (teamFiles/gate.ts `loosens`,
+ * compared as effective values: no budget is no cap, an unset depth or concurrency is automatic) holds any change that raises
+ * one of them for the user's review in the window before it is applied, so a file in the folder cannot raise them either.
+ * Every other field named here is not a team-file key (parse.ts ignores unknown team.json keys). The settings proposal list
+ * (PROJECT_SETTINGS_PROPOSABLE_FIELDS) also names those three (a `maxBudgetUsd: null` removes the cap): approving such a card
+ * from any surface but the window applies the same rule (SetupService.applyProposal `nonDesktop`, set by RunManager from the
+ * decision's `decidedBy`), as does approving an org chart card, whose merge drops the roles it omits (a role's
+ * `maxConcurrent` or `knowledgeWrite: false` cannot be shed that way), and a settings card that turns `reviewMerges` off. The
+ * same rule also covers a project removed and created again (`guardedFieldsOf`) and the services that replace roles
  * (templates:apply, projects:applyImport: `widenGuard` in the dispatcher). Pure.
  */
 export function desktopOnlyProjectChanges(stored: Project, incoming: Project): string[] {
@@ -111,7 +116,8 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
  * starts with none). Read by comparing the project with a copy that has every guarded field cleared and every role's limit
  * dropped, through the same rule a save follows, so it names exactly the fields desktopOnlyProjectChanges guards (a spending
  * cap or an agent cap, a role's cap or restriction, the test gate, the main branch, the spend-limit action ...). Empty for a
- * project that carries none. Pure.
+ * project that carries none. `keepFailedBranchesDays` is deliberately not counted: a new project starts without it, which keeps
+ * finished copies longer (the rule above allows clearing it), so removing a project for it sheds no protection. Pure.
  */
 export function guardedFieldsOf(project: Project): string[] {
   const {

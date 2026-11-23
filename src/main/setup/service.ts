@@ -357,7 +357,15 @@ export class SetupService {
           return rest
         })
         const m = mergeOrgChart(project, proposed)
-        return this.projects.save({ ...project, roles: m.roles, ...(m.mcpServers ? { mcpServers: m.mcpServers } : {}), setup })
+        const merged: Project = { ...project, roles: m.roles, ...(m.mcpServers ? { mcpServers: m.mcpServers } : {}), setup }
+        if (opts.nonDesktop) {
+          // The merge drops every current role the proposal omits, and a second proposal can add a same-named role with no
+          // cap: either would shed a role's maxConcurrent or knowledgeWrite: false. A card approved from another surface
+          // follows the same rule a project save from there does (desktopOnlyProjectChanges); the window is unchanged.
+          const widened = desktopOnlyProjectChanges(project, merged)
+          if (widened.length) throw new Error(desktopOnlyProjectMessage(widened))
+        }
+        return this.projects.save(merged)
       }
       case 'settings': {
         const p = proposal.payload
@@ -395,6 +403,9 @@ export class SetupService {
         }
         if (opts.nonDesktop) {
           const widened = desktopOnlyProjectChanges(project, next)
+          // Turning review of merges off removes the person who looks at a report's changes before they land (a project
+          // save from a terminal still may; an approval card from another surface may not).
+          if (project.reviewMerges === true && next.reviewMerges !== true) widened.push('reviewMerges')
           if (widened.length) throw new Error(desktopOnlyProjectMessage(widened))
         }
         // The safe-command allowlist lives with the other saved rules: .claude/settings.local.json for code projects,
