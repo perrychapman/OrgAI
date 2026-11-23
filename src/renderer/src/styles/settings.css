@@ -93,7 +93,7 @@
   font: inherit;
   font-size: var(--text-body);
   font-weight: var(--weight-medium);
-  padding: 0 var(--space-2h, 10px);
+  padding: 0 var(--space-3);
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
@@ -137,7 +137,7 @@
     gap: var(--space-0h);
   }
   .settings-nav-head {
-    padding: var(--space-2h, 10px) var(--space-2h, 10px) var(--space-1);
+    padding: var(--space-3) var(--space-3) var(--space-1);
     max-width: none;
   }
   .settings-nav-tabs,
@@ -862,4 +862,384 @@
   max-height: 240px;
   overflow: auto;
   margin: 0;
+}
+
+/* ---------- Settings top bar: search and the autosave note ---------- */
+.settings-topbar {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+.settings-topbar h1 {
+  font-family: var(--font-display, inherit);
+}
+.settings-autosave {
+  font-size: var(--text-small);
+  white-space: nowrap;
+}
+@media (max-width: 1100px) {
+  .settings-autosave {
+    display: none;
+  }
+}
+.settings-search {
+  position: relative;
+  flex: 1 1 200px;
+  max-width: 320px;
+  min-width: 160px;
+}
+.settings-search-icon {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  translate: 0 -50%;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.settings-search-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--space-3) 0 calc(var(--space-3) + 20px);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-line, var(--border-default));
+  background: var(--glass, var(--field-bg));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-body);
+}
+.settings-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+.settings-search-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.settings-search-pop {
+  position: absolute;
+  z-index: var(--z-popover);
+  top: calc(100% + var(--space-1));
+  left: 0;
+  width: max(100%, 320px);
+  max-width: min(420px, calc(100vw - var(--space-8)));
+  padding: var(--space-1);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-line, var(--border-default));
+  background: var(--glass-strong, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  box-shadow: var(--elev-2);
+}
+.settings-search-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 360px;
+  overflow: auto;
+}
+.settings-search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-search-hit:hover,
+.settings-search-hit:focus-visible {
+  background: var(--field-bg);
+}
+.settings-search-hit:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.settings-search-label {
+  font-weight: var(--weight-semibold);
+}
+.settings-search-where {
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.settings-search-empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+/* A row's read-only value beside its action (General > AI provider), and a long path in a row. */
+.settings-inline-value {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+.settings-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-1h) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--field-bg);
+  font-size: var(--text-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- App settings > Appearance (ui-overhaul Appearance board) ---------- */
+.appearance-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.appearance-main {
+  flex: 999 1 420px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.appearance-modes-card {
+  padding: var(--space-3);
+}
+.appearance-modes-card > * {
+  padding: 0;
+}
+.appearance-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+}
+.appearance-mode {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-xl);
+  border: 1.5px solid var(--border-subtle);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+.appearance-mode:hover {
+  border-color: var(--border-strong);
+}
+.appearance-mode.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.appearance-mode-input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.appearance-mode:has(.appearance-mode-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* Thumbnails show the mode itself, whatever the current theme is, so they mix from black and white. */
+.appearance-mode-art {
+  --art-ground: color-mix(in srgb, black 86%, var(--accent));
+  --art-pane: color-mix(in srgb, white 14%, transparent);
+  height: 76px;
+  border-radius: var(--radius-md);
+  background: var(--art-ground);
+  border: 1px solid var(--border-subtle);
+  padding: var(--space-2);
+  display: flex;
+  gap: var(--space-1h);
+}
+.appearance-mode[data-mode='light'] .appearance-mode-art {
+  --art-ground: color-mix(in srgb, white 92%, var(--accent));
+  --art-pane: color-mix(in srgb, black 10%, transparent);
+}
+.appearance-mode[data-mode='system'] .appearance-mode-art {
+  --art-pane: color-mix(in srgb, white 30%, color-mix(in srgb, black 30%, transparent));
+  background: linear-gradient(90deg, color-mix(in srgb, black 86%, var(--accent)) 50%, color-mix(in srgb, white 92%, var(--accent)) 50%);
+}
+.appearance-mode-pane {
+  width: 26%;
+  border-radius: var(--radius-sm);
+  background: var(--art-pane);
+}
+.appearance-mode-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding-top: var(--space-1h);
+}
+.appearance-mode-bar {
+  width: 44%;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+}
+.appearance-mode-tiles {
+  display: flex;
+  gap: var(--space-1);
+  width: 100%;
+}
+.appearance-mode-tiles > span {
+  flex: 1 1 0;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--art-pane);
+}
+.appearance-mode-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) var(--space-0h);
+}
+.appearance-mode-name {
+  flex: 1 1 auto;
+  font-weight: var(--weight-semibold);
+}
+.appearance-mode-note {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.appearance-preview {
+  flex: 1 1 240px;
+  max-width: 340px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  position: sticky;
+  top: 0;
+}
+.appearance-preview-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+}
+.appearance-preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.appearance-preview-avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-weight: var(--weight-semibold);
+}
+.appearance-preview-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.appearance-preview-name {
+  font-weight: var(--weight-semibold);
+}
+.appearance-preview-doing {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.appearance-preview-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--text-small);
+}
+.appearance-preview-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.appearance-preview-row.is-working .appearance-preview-dot {
+  background: var(--working, var(--info));
+}
+.appearance-preview-row.is-working {
+  color: var(--working-text, var(--text-primary));
+}
+.appearance-preview-row.is-waiting {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+}
+.appearance-preview-row.is-waiting .appearance-preview-dot {
+  background: var(--warning-text);
+}
+.appearance-preview-row.is-done .appearance-preview-dot {
+  background: var(--success-text);
+}
+.appearance-preview-row.is-done {
+  color: var(--text-tertiary);
+}
+.appearance-preview-dot.is-live {
+  animation: appearance-live var(--dur-pulse) var(--ease-in-out) infinite;
+}
+@keyframes appearance-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .appearance-preview-dot.is-live {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .appearance-preview-dot.is-live {
+  animation: none;
+}
+.appearance-preview-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.appearance-preview-btn {
+  height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  border: 1px solid var(--border-strong);
+}
+.appearance-preview-btn.is-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--text-on-accent);
+}
+.appearance-preview-note {
+  margin: 0;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
 }

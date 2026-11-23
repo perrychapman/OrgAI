@@ -1,24 +1,25 @@
-import type { CSSProperties, ReactElement } from 'react'
+import type { ReactElement } from 'react'
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
-import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
-import { PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { DEFAULT_APPEARANCE } from '@shared/defaults'
+import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode } from '@shared/types'
+import { PERMISSION_MODE_OPTIONS, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_APPEARANCE, projectKindOf } from '@shared/defaults'
 import { cleanDisplayName, DISPLAY_NAME_MAX_CHARS } from '@shared/displayName'
 import { NAME_NOT_SAVED, NAME_REFUSED, saveDisplayName } from '../lib/dashboardName'
 import { useAppStore } from '../store/useAppStore'
-import { setAppearance, normalizeHex } from '../lib/theme'
+import { setAppearance } from '../lib/theme'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { CopyButton } from '../components/ui/CopyButton'
 import { Input } from '../components/ui/Input'
-import { SegmentedControl } from '../components/ui/SegmentedControl'
-import { Icon } from '../components/ui/Icon'
 import { SettingRow, settingDescId } from '../components/ui/SettingRow'
 import { Switch } from '../components/ui/Switch'
 import { SaveIndicator } from '../components/layout/SaveIndicator'
-import type { SettingsNavItem } from '../components/settings/SettingsNav'
+import type { SettingsNavLink, SettingsNavOtherGroup } from '../components/settings/SettingsNav'
+import { AppearanceSection } from '../components/settings/AppearanceSection'
+import { SettingsSearch } from '../components/settings/SettingsSearch'
+import { APP_MENU_PANES, APPEARANCE_PANE, appSettingsPaneFor, projectMenuPanes } from '../lib/settingsMenu'
+import { openKeyboardShortcuts } from '../lib/menuActions'
 import { SettingsAdvanced, openSettingsAdvanced } from '../components/settings/SettingsAdvanced'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
@@ -52,34 +53,30 @@ const SAVE_DELAY_MS = 350
 const MAKER_NAME = 'Cybrid Software LLC'
 const MAKER_URL = 'https://cybridsoftware.com'
 
-const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
-  { value: 'dark', label: 'Dark' },
-  { value: 'light', label: 'Light' },
-  { value: 'system', label: 'System' }
-]
-const MOTION_OPTIONS: { value: AppearanceSettings['reduceMotion']; label: string }[] = [
-  { value: 'system', label: 'Follow system' },
-  { value: 'on', label: 'Always reduce' }
-]
-/** Accent choices; the first is the default. Any other color can be typed as hex. */
-const ACCENT_SWATCHES: { name: string; hex: string }[] = [
-  { name: 'Violet', hex: DEFAULT_APPEARANCE.accent },
-  { name: 'Blue', hex: '#3b82f6' },
-  { name: 'Teal', hex: '#14b8a6' },
-  { name: 'Green', hex: '#22a559' },
-  { name: 'Amber', hex: '#d98e04' },
-  { name: 'Rose', hex: '#e5486a' }
-]
+/** Panes with a gallery and a detail panel use the wide column. */
+const WIDE_PANES = new Set<string>([APP_SETTINGS_PANES.connections, APP_SETTINGS_PANES.mcpLibrary, APP_SETTINGS_PANES.skillLibrary, APP_SETTINGS_PANES.kit])
 
-/** Panes in nav order; each holds the sections whose ids are mapped in lib/settingsTarget. */
-const PANES: SettingsNavItem[] = [
-  { id: APP_SETTINGS_PANES.general, label: 'General' },
-  { id: APP_SETTINGS_PANES.connections, label: 'Connections' },
-  { id: APP_SETTINGS_PANES.mcpLibrary, label: 'Connectors' },
-  { id: APP_SETTINGS_PANES.skillLibrary, label: 'Skill library' },
-  { id: APP_SETTINGS_PANES.kit, label: 'Templates and kit' },
-  { id: APP_SETTINGS_PANES.about, label: 'About' }
-]
+/**
+ * The Project group of the shared settings menu, for the project the user last selected (none for Chat and the other
+ * virtual projects, or before any project exists). Each entry opens that project's Settings tab on the pane.
+ */
+function useProjectMenuGroup(): SettingsNavOtherGroup | undefined {
+  const projectId = useAppStore((s) => s.selectedProjectId)
+  const project = useAppStore((s) => (s.selectedProjectId && !isVirtualProjectId(s.selectedProjectId) ? s.projects.find((p) => p.id === s.selectedProjectId) : undefined))
+  if (!projectId || !project) return undefined
+  const engagement = projectKindOf(project) === 'engagement'
+  const links: SettingsNavLink[] = projectMenuPanes(engagement).map((p) => ({
+    id: `project-${p.id}`,
+    label: p.label,
+    onOpen: () => {
+      const st = useAppStore.getState()
+      st.setProjectSettingsPane(project.id, p.id)
+      st.setView('settings')
+    }
+  }))
+  const heading = `${engagement ? 'Engagement' : 'Project'}: ${project.name}`
+  return { heading, label: `${heading} settings`, links, position: 'after' }
+}
 
 function stripInfo(info: AppSettingsInfo): AppSettings {
   const { dataDir: _dataDir, appVersion: _appVersion, ...settings } = info
@@ -157,9 +154,7 @@ function DisplayNameRow({ stored, onSaved }: { stored: string | undefined; onSav
 export default function AppSettingsView(): ReactElement {
   const [info, setInfo] = useState<AppSettingsInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [hexDraft, setHexDraft] = useState<string | null>(null)
-  const [customRequested, setCustomRequested] = useState(false)
-  const focusHex = useRef(false)
+  const projectGroup = useProjectMenuGroup()
   // Set by a deep link; the first render that has the page loaded moves focus to the pane heading or the target.
   const pendingFocus = useRef<{ section?: string } | null>(null)
   const [focusTick, setFocusTick] = useState(0)
@@ -186,7 +181,7 @@ export default function AppSettingsView(): ReactElement {
       const target = takeAppSettingsSection()
       if (target) {
         // A removed id (the old Defaults pane or its rows) opens General.
-        setPane(appPaneForSection(target) ?? APP_SETTINGS_PANES.general)
+        setPane(appSettingsPaneFor(target) ?? APP_SETTINGS_PANES.general)
         pendingFocus.current = { section: ADVANCED_SECTIONS[target] || target === APP_SETTINGS_SECTIONS.canvas ? target : undefined }
         setFocusTick((t) => t + 1)
       }
@@ -228,12 +223,6 @@ export default function AppSettingsView(): ReactElement {
     title?.setAttribute('tabindex', '-1')
     ;(title as HTMLElement | null)?.focus({ preventScroll: true })
   }, [ready, pane, focusTick])
-  // The Custom swatch revealed the hex field: move focus into it.
-  useEffect(() => {
-    if (!focusHex.current) return
-    focusHex.current = false
-    document.getElementById('accent-hex')?.focus()
-  })
   const loadAppInfo = useAppStore((s) => s.loadAppInfo)
   const connections = useAppStore((s) => s.connections)
   const loadConnections = useAppStore((s) => s.loadConnections)
@@ -312,7 +301,7 @@ export default function AppSettingsView(): ReactElement {
     return (
       <>
         <div className="topbar">
-          <h1>App settings</h1>
+          <h1>Settings</h1>
         </div>
         <div className={`settings-loading${error ? ' is-error' : ''}`}>{error ?? 'Loading…'}</div>
       </>
@@ -350,28 +339,8 @@ export default function AppSettingsView(): ReactElement {
     patch({ appearance: next }, true)
   }
 
-  // The hex field stays hidden unless asked for or the current accent is not a preset.
-  const isPreset = ACCENT_SWATCHES.some((sw) => sw.hex === appearance.accent)
-  const customOpen = customRequested || !isPreset
-  const openCustom = (): void => {
-    const el = document.getElementById('accent-hex')
-    if (el) el.focus()
-    else focusHex.current = true
-    setCustomRequested(true)
-  }
-  const hexValue = hexDraft ?? appearance.accent
-  const hexOk = normalizeHex(hexValue) !== null
-  /** Apply the typed color on Enter or blur, not on every keystroke. */
-  const commitHex = (): void => {
-    const hex = normalizeHex(hexValue)
-    if (hex && hex !== appearance.accent) patchAppearance({ accent: hex })
-    if (hex) setHexDraft(null)
-  }
-  const setAccent = (hex: string): void => {
-    setHexDraft(null)
-    setCustomRequested(false)
-    patchAppearance({ accent: hex })
-  }
+  const defaultConnLabel = connectionLabel(defaultConn)
+  const openPane = (id: string): void => setPane(id)
 
   /** Tiers (with what each resolves to on the effective default connection), then the exact models. */
   const modelSelect = (label: string, rowId: string, value: string, allowInherit: boolean, onChange: (v: string) => void): ReactElement => (
@@ -387,13 +356,25 @@ export default function AppSettingsView(): ReactElement {
 
   return (
     <>
-      <div className="topbar">
-        <h1>App settings</h1>
+      <div className="topbar settings-topbar">
+        <h1>Settings</h1>
+        <SettingsSearch />
         <div className="spacer" />
+        <span className="settings-autosave muted">Changes save as you make them</span>
         <SaveIndicator />
       </div>
       <AppNavigateBanner />
-      <SettingsPage idBase="app-settings" label="App settings sections" panes={PANES} active={pane} onSelect={setPane}>
+      <SettingsPage
+        idBase="app-settings"
+        label="App settings sections"
+        panes={[...APP_MENU_PANES]}
+        active={pane}
+        onSelect={setPane}
+        scope="App"
+        navHeading="App"
+        other={projectGroup}
+        wide={WIDE_PANES.has(pane)}
+      >
         {error && (
           <p className="field-error" role="alert">
             {error}
@@ -406,84 +387,11 @@ export default function AppSettingsView(): ReactElement {
                 <DisplayNameRow stored={info.displayName} onSaved={(displayName) => setInfo((i) => (i ? { ...i, displayName } : i))} />
               </SettingsCard>
             </SettingsSection>
-            <SettingsSection id={APP_SETTINGS_SECTIONS.appearance} title="Appearance" testId="appearance-section">
-              <SettingsCard>
-                  <SettingRow
-                    title="Theme"
-                    description="System follows your operating system."
-                    width="select"
-                    control={<SegmentedControl label="Theme" value={appearance.theme} options={THEME_OPTIONS} onChange={(theme) => patchAppearance({ theme })} />}
-                  />
-                  <SettingRow
-                    title="Accent colour"
-                    id="accent-title"
-                    width="select"
-                    control={
-                      <div className="accent-swatches" role="group" aria-label="Accent colour presets">
-                        {ACCENT_SWATCHES.map((s) => (
-                          <button
-                            key={s.hex}
-                            type="button"
-                            className="accent-swatch"
-                            style={{ '--swatch': s.hex } as CSSProperties}
-                            aria-label={s.name}
-                            title={s.name}
-                            aria-pressed={appearance.accent === s.hex}
-                            onClick={() => setAccent(s.hex)}
-                          />
-                        ))}
-                        <button
-                          type="button"
-                          className="accent-swatch custom"
-                          aria-label="Custom colour"
-                          title="Custom colour"
-                          aria-pressed={!isPreset}
-                          aria-expanded={customOpen}
-                          aria-controls="accent-hex"
-                          onClick={openCustom}
-                        >
-                          <Icon icon={Plus} size="sm" />
-                        </button>
-                      </div>
-                    }
-                    hint={
-                      customOpen ? (
-                        <span className="accent-custom">
-                          <label htmlFor="accent-hex" className="accent-custom-label">
-                            Hex
-                          </label>
-                          <Input
-                            id="accent-hex"
-                            aria-label="Custom accent hex"
-                            mono
-                            value={hexValue}
-                            invalid={!hexOk}
-                            aria-describedby={hexOk ? undefined : 'accent-hex-error'}
-                            maxLength={7}
-                            spellCheck={false}
-                            onChange={setHexDraft}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitHex()
-                            }}
-                            onBlur={commitHex}
-                          />
-                          {!hexOk && (
-                            <span className="field-error" id="accent-hex-error" aria-live="polite">
-                              Use a hex colour like #7c5cff.
-                            </span>
-                          )}
-                        </span>
-                      ) : undefined
-                    }
-                  />
-              </SettingsCard>
-            </SettingsSection>
-            <CanvasSection canvas={appearance.canvas} onChange={(canvas) => patchAppearance({}, canvas)} />
             <SettingsSection id={APP_SETTINGS_SECTIONS.notifications} title="Notifications">
               <SettingsCard>
                 <SettingRow
                   title="Notify me when a run needs attention or finishes"
-                  description="Shown by your operating system while OrgAI is in the background."
+                  description="A permission, a question or a review is waiting, or a run ended. Shown by your operating system while OrgAI is in the background."
                   control={
                     <Switch
                       checked={info.notifications !== false}
@@ -497,8 +405,8 @@ export default function AppSettingsView(): ReactElement {
             </SettingsSection>
             <SettingsSection
               id={APP_SETTINGS_SECTIONS.newProjects}
-              title="New projects"
-              description="Starting values for new projects. Existing projects keep their own."
+              title="New projects start with"
+              description="Each project can change these. Existing projects keep their own."
               testId="new-projects-section"
             >
               <SettingsCard>
@@ -524,19 +432,46 @@ export default function AppSettingsView(): ReactElement {
                     </select>
                   }
                 />
+                <SettingRow
+                  id="default-provider-row"
+                  title="AI provider"
+                  description="Chat, the helpers and new projects use the default provider."
+                  control={
+                    <span className="settings-inline-value">
+                      <span data-testid="default-provider-name">{defaultConnLabel}</span>
+                      <Button size="sm" testId="default-provider-change" onClick={() => openPane(APP_SETTINGS_PANES.connections)}>
+                        Change
+                      </Button>
+                    </span>
+                  }
+                />
+              </SettingsCard>
+            </SettingsSection>
+            <SettingsSection id="appsettings-section-this-computer" title="On this computer">
+              <SettingsCard>
+                <CliCommandRow />
+                {appInfo && (
+                  <SettingRow
+                    id="data-folder-row"
+                    title="Where OrgAI keeps its data"
+                    description="Run history, settings and knowledge. Not your project files."
+                    width="full"
+                    control={
+                      <span className="about-path">
+                        <span className="mono settings-path" title={appInfo.dataDir}>
+                          {appInfo.dataDir}
+                        </span>
+                        <CopyButton text={appInfo.dataDir} label="Copy data folder path" />
+                        <Button size="sm" onClick={() => void window.orgai.app.openPath(appInfo.dataDir).then((err) => err && setError(err))}>
+                          Open folder
+                        </Button>
+                      </span>
+                    }
+                  />
+                )}
               </SettingsCard>
             </SettingsSection>
             <SettingsAdvanced paneKey="app-general">
-              <SettingsGroup title="Motion">
-                <SettingsCard>
-                  <SettingRow
-                    title="Motion"
-                    description="Reduce animation across the app."
-                    width="select"
-                    control={<SegmentedControl label="Motion" value={appearance.reduceMotion} options={MOTION_OPTIONS} onChange={(reduceMotion) => patchAppearance({ reduceMotion })} />}
-                  />
-                </SettingsCard>
-              </SettingsGroup>
               <SettingsGroup title="Assistant models (used now by every project)" id={APP_SETTINGS_SECTIONS.assistantModels}>
                 <SettingsCard>
                   <SettingRow
@@ -548,17 +483,17 @@ export default function AppSettingsView(): ReactElement {
                   />
                   <SettingRow
                     id="mcp-assist-model-row"
-                    title="MCP assistant model"
-                    description="Writes and tests connectors with you."
+                    title="Tools helper model"
+                    description="Sets up and tests tools and services with you."
                     width="select"
-                    control={modelSelect('MCP assistant model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
+                    control={modelSelect('Tools helper model', 'mcp-assist-model-row', info.mcpAssistModel, false, (mcpAssistModel) => patch({ mcpAssistModel }))}
                   />
                   <SettingRow
                     id="skill-assist-model-row"
-                    title="Skill assistant model"
+                    title="Skills helper model"
                     description="Writes and revises skills."
                     width="select"
-                    control={modelSelect('Skill assistant model', 'skill-assist-model-row', info.skillAssistModel ?? 'deep', false, (skillAssistModel) => patch({ skillAssistModel }))}
+                    control={modelSelect('Skills helper model', 'skill-assist-model-row', info.skillAssistModel ?? 'deep', false, (skillAssistModel) => patch({ skillAssistModel }))}
                   />
                   <SettingRow
                     id="quick-run-model-row"
@@ -569,7 +504,7 @@ export default function AppSettingsView(): ReactElement {
                   />
                 </SettingsCard>
                 <p className="muted" data-testid="assistant-models-note">
-                  Chat and the MCP and Skill assistants run on {connectionLabel(defaultConn)}, the default connection. Setup uses each project's connection.
+                  Chat, the Tools helper and the Skills helper run on {defaultConnLabel}, the default provider. Setup uses each project's provider.
                 </p>
               </SettingsGroup>
               <SettingsGroup title="New projects (advanced)">
@@ -590,12 +525,13 @@ export default function AppSettingsView(): ReactElement {
                   />
                 </SettingsCard>
               </SettingsGroup>
-              <SettingsGroup title="Terminal">
-                <SettingsCard>
-                  <CliCommandRow />
-                </SettingsCard>
-              </SettingsGroup>
             </SettingsAdvanced>
+          </>
+        )}
+        {pane === APPEARANCE_PANE && (
+          <>
+            <AppearanceSection appearance={appearance} onChange={(p) => patchAppearance(p)} />
+            <CanvasSection canvas={appearance.canvas} onChange={(canvas) => patchAppearance({}, canvas)} />
           </>
         )}
         {pane === 'connections' && (
@@ -635,7 +571,10 @@ export default function AppSettingsView(): ReactElement {
         {pane === 'kit' && <TemplatesSection />}
         {pane === 'kit' && <KitSection />}
         {pane === 'about' && appInfo && (
-          <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About" testId="about-block">
+          <UpdatesSection autoCheck={info.autoUpdateCheck !== false} onAutoCheckChange={(autoUpdateCheck) => patch({ autoUpdateCheck }, true)} />
+        )}
+        {pane === 'about' && appInfo && (
+          <SettingsSection id={APP_SETTINGS_SECTIONS.about} title="About OrgAI" testId="about-block">
             <SettingsCard>
               <dl className="about-list">
                 <dt>Version</dt>
@@ -684,17 +623,33 @@ export default function AppSettingsView(): ReactElement {
                   </Fragment>
                 ))}
               </dl>
-              <p className="about-ask">
-                <span className="muted">Not sure where something is?</span>{' '}
-                <Button size="sm" testId="ask-orgai-button" onClick={() => void askOrgAI()}>
-                  Ask OrgAI about itself
-                </Button>
-              </p>
             </SettingsCard>
           </SettingsSection>
         )}
         {pane === 'about' && appInfo && (
-          <UpdatesSection autoCheck={info.autoUpdateCheck !== false} onAutoCheckChange={(autoUpdateCheck) => patch({ autoUpdateCheck }, true)} />
+          <SettingsSection id="appsettings-section-help" title="Help" testId="about-help">
+            <SettingsCard>
+              <SettingRow
+                id="ask-orgai-row"
+                title="Ask how OrgAI works"
+                description="Chat answers from the built-in guide and can take you to the right place."
+                control={
+                  <Button size="sm" testId="ask-orgai-button" onClick={() => void askOrgAI()}>
+                    Ask OrgAI about itself
+                  </Button>
+                }
+              />
+              <SettingRow
+                id="shortcuts-row"
+                title="Keyboard shortcuts"
+                control={
+                  <Button size="sm" testId="about-shortcuts" onClick={openKeyboardShortcuts}>
+                    Show shortcuts
+                  </Button>
+                }
+              />
+            </SettingsCard>
+          </SettingsSection>
         )}
       </SettingsPage>
     </>

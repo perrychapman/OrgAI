@@ -115,7 +115,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
 
   return (
     <>
-      <SettingsSection id="settings-section-limits" title="Limits">
+      <SettingsSection id="settings-section-limits" title="Spending limits">
         {metered && <SettingsCard>{costRow()}</SettingsCard>}
         {metering === 'subscription' && (
           <p className="perm-plan-line" data-testid="plan-guard-line">
