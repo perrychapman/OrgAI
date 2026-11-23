@@ -1,0 +1,236 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { EngagementDocumentInfo, EngagementNote, KnowledgeGraph, McpServerInfo, Project, RunSummary, TodoItem, UsageOverview } from '@shared/types'
+import { todoScopeFor } from '@shared/view/todos'
+import { itemsOf, type KnowledgeItem } from '@shared/view/knowledge'
+import { isRunLive, useAppStore } from '../../store/useAppStore'
+import { useTodosStore } from '../../store/todosStore'
+import { monthStart } from '../../lib/projectHome'
+import { normalizeGit, type HomeGit } from '../../lib/projectHomeGit'
+
+/**
+ * Data the Home tab reads beyond the store. Each hook answers `undefined` while the first answer is on its way and
+ * `null` when the call is missing or failed: a section draws only on a real answer. A failure keeps the earlier answer.
+ * Nothing here is sample data.
+ */
+
+/** The least time between two refreshes of one source triggered by run activity. */
+export const HOME_REFRESH_MIN_MS = 15_000
+
+type Api = typeof window.orgai
+
+function api(): Api | undefined {
+  return typeof window !== 'undefined' ? window.orgai : undefined
+}
+
+/** A run left the live set or a new one started: the key changes, so month spend and the like can refresh. */
+export function useLiveKey(projectId: string): string {
+  const runs = useAppStore((s) => s.runs)
+  return useMemo(
+    () =>
+      Object.values(runs)
+        .filter((r) => r.summary.projectId === projectId && isRunLive(r))
+        .map((r) => r.summary.id)
+        .sort()
+        .join(','),
+    [runs, projectId]
+  )
+}
+
+/** Month-to-date usage of the project from `runs.usageOverview` (the same numbers as the Usage page). */
+export function useMonthOverview(projectId: string, refreshKey: string): UsageOverview | null | undefined {
+  const [state, setState] = useState<UsageOverview | null | undefined>(undefined)
+  const last = useRef(0)
+  useEffect(() => {
+    const a = api()
+    if (!a?.runs?.usageOverview) {
+      setState(null)
+      return
+    }
+    let alive = true
+    const wait = Math.max(0, last.current + HOME_REFRESH_MIN_MS - Date.now())
+    const t = window.setTimeout(() => {
+      last.current = Date.now()
+      a.runs.usageOverview({ since: monthStart(Date.now()), projectIds: [projectId], limit: 500 }).then(
+        (o) => {
+          if (alive) setState(o)
+        },
+        () => {
+          if (alive) setState((s) => s ?? null)
+        }
+      )
+    }, wait)
+    return () => {
+      alive = false
+      window.clearTimeout(t)
+    }
+  }, [projectId, refreshKey])
+  return state
+}
+
+type GitReader = (projectId: string) => Promise<unknown>
+
+/** The main process's git read for a code project, when this build has it (it lands with the Home brief's runtime half). */
+function gitReader(): GitReader | null {
+  const projects = (api() as unknown as { projects?: { gitSummary?: GitReader } } | undefined)?.projects
+  const fn = projects?.gitSummary
+  return typeof fn === 'function' ? (id) => fn.call(projects, id) : null
+}
+
+/**
+ * The repository facts of a code project, normalized (lib/projectHomeGit `normalizeGit`). undefined while the first answer
+ * is on its way, null when this build has no git read, the folder is not a repository or the read failed. Refreshed when
+ * `refreshKey` changes (a run started or ended), never more than once per HOME_REFRESH_MIN_MS.
+ */
+export function useProjectGit(projectId: string, refreshKey: string): HomeGit | null | undefined {
+  const [state, setState] = useState<HomeGit | null | undefined>(() => (gitReader() ? undefined : null))
+  const last = useRef(0)
+  useEffect(() => {
+    const read = gitReader()
+    if (!read) {
+      setState(null)
+      return
+    }
+    let alive = true
+    const t = window.setTimeout(
+      () => {
+        last.current = Date.now()
+        read(projectId).then(
+          (raw) => {
+            if (alive) setState(normalizeGit(raw))
+          },
+          () => {
+            if (alive) setState((s) => s ?? null)
+          }
+        )
+      },
+      Math.max(0, last.current + HOME_REFRESH_MIN_MS - Date.now())
+    )
+    return () => {
+      alive = false
+      window.clearTimeout(t)
+    }
+  }, [projectId, refreshKey])
+  return state
+}
+
+/** The project's open and done to-dos (shared store, follows todos:changed). undefined until loaded, null when unavailable. */
+export function useProjectTodos(projectId: string): TodoItem[] | null | undefined {
+  const scope = useMemo(() => todoScopeFor(projectId), [projectId])
+  const key = scope ? `project:${projectId}` : ''
+  const items = useTodosStore((s) => (key ? s.byScope[key] : undefined))
+  const error = useTodosStore((s) => (key ? s.errorByScope[key] : undefined))
+  useEffect(() => {
+    if (scope) void useTodosStore.getState().load(scope)
+  }, [scope])
+  if (!scope) return null
+  if (items) return items
+  return error ? null : undefined
+}
+
+/** The project's MCP servers with their secret and sign-in state (engagement Home, Connections). */
+export function useProjectMcp(project: Project): McpServerInfo[] | null | undefined {
+  const [state, setState] = useState<McpServerInfo[] | null | undefined>(undefined)
+  const servers = project.mcpServers
+  const key = (servers ?? []).map((s) => `${s.id}:${s.enabled ? 1 : 0}`).join(',')
+  useEffect(() => {
+    const a = api()
+    if (!a?.mcp?.list) {
+      setState(null)
+      return
+    }
+    let alive = true
+    a.mcp.list(project.id).then(
+      (list) => {
+        if (alive) setState(Array.isArray(list) ? list : [])
+      },
+      () => {
+        if (alive) setState((s) => s ?? null)
+      }
+    )
+    return () => {
+      alive = false
+    }
+  }, [project.id, key])
+  return state
+}
+
+export interface EngagementData {
+  document: EngagementDocumentInfo | null | undefined
+  /** Graph nodes and notes as one list of items; undefined until the graph answered, null when it could not be read. */
+  items: KnowledgeItem[] | null | undefined
+}
+
+/** The engagement document, the knowledge graph and the context notes, refreshed on `engagement changed` pushes. */
+export function useEngagementData(projectId: string): EngagementData {
+  const [document, setDocument] = useState<EngagementDocumentInfo | null | undefined>(undefined)
+  const [graph, setGraph] = useState<KnowledgeGraph | null | undefined>(undefined)
+  const [notes, setNotes] = useState<EngagementNote[] | null | undefined>(undefined)
+  useEffect(() => {
+    const a = api()
+    let alive = true
+    const loadDoc = (): void => {
+      if (!a?.engagement?.document) return setDocument(null)
+      a.engagement.document(projectId).then(
+        (d) => alive && setDocument(d),
+        () => alive && setDocument((s) => s ?? null)
+      )
+    }
+    const loadGraph = (): void => {
+      if (!a?.knowledge?.get) return setGraph(null)
+      a.knowledge.get(projectId).then(
+        (g) => alive && setGraph(g),
+        () => alive && setGraph((s) => s ?? null)
+      )
+    }
+    const loadNotes = (): void => {
+      if (!a?.engagement?.listNotes) return setNotes(null)
+      a.engagement.listNotes(projectId).then(
+        (n) => alive && setNotes(Array.isArray(n) ? n : []),
+        () => alive && setNotes((s) => s ?? null)
+      )
+    }
+    loadDoc()
+    loadGraph()
+    loadNotes()
+    let off: (() => void) | undefined
+    try {
+      off = a?.onEngagementChanged?.((ev) => {
+        if (ev?.projectId !== projectId) return
+        if (ev.what === 'document') loadDoc()
+        else if (ev.what === 'knowledge') loadGraph()
+        else if (ev.what === 'notes') loadNotes()
+      })
+    } catch {
+      /* an older preload without the push: the page refreshes when it is opened again */
+    }
+    return () => {
+      alive = false
+      off?.()
+    }
+  }, [projectId])
+  const items = useMemo<KnowledgeItem[] | null | undefined>(() => {
+    if (graph === undefined || notes === undefined) return undefined
+    if (graph === null && notes === null) return null
+    return itemsOf(graph ?? { nodes: [] }, notes ?? [])
+  }, [graph, notes])
+  return { document, items }
+}
+
+/** Summaries of one project (the persisted history merged with live runs, newest first), as the History tab holds them. */
+export function useProjectHistory(projectId: string): RunSummary[] {
+  const history = useAppStore((s) => s.historyByProject[projectId])
+  const runs = useAppStore((s) => s.runs)
+  const loadHistory = useAppStore((s) => s.loadHistory)
+  const selected = useAppStore((s) => s.selectedProjectId)
+  const selectedHistory = useAppStore((s) => s.history)
+  useEffect(() => {
+    // `history` holds the selected project's list; Home is always shown for the selected project.
+    if (selected === projectId && history === undefined) void loadHistory()
+  }, [selected, projectId, history, loadHistory])
+  return useMemo(() => {
+    const byId = new Map<string, RunSummary>()
+    for (const h of history ?? (selected === projectId ? selectedHistory : [])) byId.set(h.id, h)
+    for (const r of Object.values(runs)) if (r.summary.projectId === projectId) byId.set(r.summary.id, r.summary)
+    return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt)
+  }, [history, runs, projectId, selected, selectedHistory])
+}

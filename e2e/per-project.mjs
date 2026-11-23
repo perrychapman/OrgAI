@@ -1,7 +1,10 @@
 // Token-free (mock adapter). Per-project MCP values: a library entry with perProjectSecrets and a per-project env name,
 // linked to a project; the row's "For this project" block, the Needs values badge, filling the value, and the
-// "Make a project-only copy" dialog. Needs the runtime side (window.orgai.mcpProject); skips without it.
+// "Make a project-only copy" dialog. Needs the runtime side (window.orgai.mcpProject); skips without it. Also the code
+// project's Home tab (e2e/home-checks.mjs), which needs nothing from the runtime half.
+import * as path from 'node:path'
 import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
+import { codeHomeChecks } from './home-checks.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E per-project (orgai test)'
@@ -14,15 +17,19 @@ const setSize = async (w, h) => {
 }
 
 try {
-  if (!(await page.evaluate(() => typeof window.orgai.mcpProject !== 'undefined'))) {
-    console.log('SKIP (runtime not merged)')
-    await cleanup(app, page, NAME).catch(() => {})
-    removeFixture(repo)
-    process.exit(0)
-  }
   await createProject(page, { mode: 'existing', path: repo, name: NAME })
   const pid = await page.evaluate(async (n) => (await window.orgai.projects.list()).find((p) => p.name === n)?.id, NAME)
   check(!!pid, 'project created')
+  // The Home tab of a code project (UI overhaul, e2e/home-checks.mjs). Needs nothing from the runtime half.
+  await codeHomeChecks({ app, page, shot, pid, name: NAME, folderName: path.basename(repo) })
+  await setSize(1440, 900)
+  if (!(await page.evaluate(() => typeof window.orgai.mcpProject !== 'undefined'))) {
+    console.log('SKIP the per-project MCP checks (runtime not merged)')
+    await cleanup(app, page, NAME).catch(() => {})
+    removeFixture(repo)
+    finish('e2e/per-project')
+    process.exit(process.exitCode ?? 0)
+  }
   const libId = await page.evaluate(async () => {
     const list = await window.orgai.mcpLibrary.upsert({
       id: 'lib-per-project',

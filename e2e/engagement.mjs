@@ -6,6 +6,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { TMP, check, createProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, sleep, windowShift } from './lib.mjs'
+import { engagementHomeChecks } from './home-checks.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-eng-'))
@@ -421,6 +422,13 @@ try {
       check(shiftN.ok, `${tag}: no window shift in Permissions`, JSON.stringify(shiftN))
     }
   }
+
+  // ---- Home tab of an engagement (UI overhaul; the shared block is e2e/home-checks.mjs). Last, because it starts a run. ----
+  await setSize(1600, 1000)
+  await setTheme('dark')
+  await page.locator(`.sidebar [data-testid=nav-project][data-name="${AUDIT}"]`).first().click()
+  await sleep(500)
+  await engagementHomeChecks({ app, page, shot, name: AUDIT, client: 'Acme Corp', refFolderName: path.basename(refFolder) })
 } catch (e) {
   check(false, 'script ran to the end', e.stack ?? e.message)
   await shot('failure').catch(() => {})
