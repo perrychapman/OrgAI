@@ -420,10 +420,12 @@ try {
       await sleep(200)
       check((await page.locator('[data-testid=permissions-summary-toggle]').getAttribute('aria-expanded')) === 'false', `the Rules and folders summary starts hidden ${tag} ${theme}`)
       const fit = await scrollFits()
-      if (w === 1024) check(fit.sh <= fit.ch, `Permissions at rest needs no scrolling ${tag} ${theme}`, JSON.stringify(fit))
-      // (5) tab stops at rest.
+      // ui-overhaul: the mode is a card group with its effects table, so the pane may scroll; the cards are in view.
+      const cards = await page.locator('[data-testid=permission-mode-cards]').boundingBox()
+      check(!!cards && cards.y + cards.height <= h, `the mode cards are in view at rest ${tag} ${theme}`, JSON.stringify({ fit, cards }))
+      // (5) tab stops at rest: the mode group (one stop), More options, the rules summary and Advanced.
       const perm = await tabStops()
-      check(perm.length <= 3, `Permissions has at most 3 tab stops at rest ${tag} ${theme}`, perm.join(' | '))
+      check(perm.length <= 4, `Permissions has at most 4 tab stops at rest ${tag} ${theme}`, perm.join(' | '))
       await shot(`pane-permissions-${tag}-${theme}`)
       await paneTab('Basics')
       const gen = await tabStops()
@@ -437,7 +439,8 @@ try {
       await setAdvanced('project-limits', false)
       await sleep(200)
       const lim = await tabStops()
-      check(lim.length <= 2, `Limits has at most 2 tab stops at rest ${tag} ${theme}`, lim.join(' | '))
+      // ui-overhaul Limits board: "See where it went", the two run-size selects and Advanced.
+      check(lim.length <= 4, `Limits has at most 4 tab stops at rest ${tag} ${theme}`, lim.join(' | '))
       check((await page.locator('[data-testid=plan-guard-line]').count()) === 1, `Limits shows the plan guard line on a subscription project ${tag} ${theme}`)
       check((await page.locator('[role=tabpanel] input[type=number]:visible').count()) === 0, `no number input is visible at rest on a subscription project ${tag} ${theme}`)
       // N2: the line says only what runs: no five-hour promise unless the share is set.
@@ -485,8 +488,8 @@ try {
   // N8: one short-name table for the permission mode on both settings pages.
   {
     await paneTab('Permissions')
-    const projectModes = await page.locator('[role=tabpanel] select').first().locator('option').allTextContents()
-    check(projectModes.includes('Ask for everything risky') && projectModes.includes('Auto-accept edits'), 'the project mode select uses the shared short names', projectModes.join(' | '))
+    const projectModes = await page.locator('[data-testid=permission-mode-cards] .perm-card-mode').allTextContents()
+    check(projectModes.includes('Ask for everything risky') && projectModes.includes('Auto-accept edits'), 'the project mode cards use the shared short names', projectModes.join(' | '))
   }
 
   // N10: with worktrees off, the review switch says why it is disabled.

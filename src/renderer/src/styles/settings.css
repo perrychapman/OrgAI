@@ -1194,6 +1194,32 @@
   color: var(--text-tertiary);
 }
 
+/* ---------- Project > Spending limits: this month's spend (ui-overhaul Limits board hero) ---------- */
+.month-spend {
+  padding: var(--space-4);
+}
+.month-spend > .month-spend-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0;
+}
+.month-spend-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.month-spend-title {
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.month-spend-line {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
 /* ---------- App settings > Appearance (ui-overhaul Appearance board) ---------- */
 .appearance-layout {
   display: flex;
