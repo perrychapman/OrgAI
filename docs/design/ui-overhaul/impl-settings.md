@@ -120,15 +120,51 @@ new menu (self-help breadcrumbs).
 - **Branches**: "Where work happens" (engagements: "Separate copies", only once opted in) holds worktree isolation and
   merge review, moved from Permissions > Advanced (`WorkCopiesSection.tsx`, same fields and rules).
 
+### Runtime-backed settings (ov-runtime branch worktree-agent-af7cf20682e2c8be9, merged with git merge)
+
+- **General**: Notifications gains "When a team needs me", "When a run finishes", "When a schedule finds something"
+  (under the master switch, disabled while it is off) and "Play a sound" (off by default). New section "While OrgAI
+  runs": "Open OrgAI when I sign in", "When I close the window" (Keep running / Quit), "Keep the computer awake during
+  runs". Main stores and applies each (store/settings.ts, appBehaviour.ts, notifications.ts).
+- **Play a sound**: `lib/sound.ts` (pure `chimeDecision`, WebAudio two-note chime, no asset, no network) and
+  `lib/useAttentionSound.ts`, mounted once in App.tsx: chimes when a new decision key appears in any run, never for
+  decisions already waiting at start or when the switch turns on, at most once per 4 s. `<html data-chime-count>`
+  mirrors the count for e2e. Each window that renders App chimes for its own runs (a run window too).
+- **Appearance** "Panels and text": See-through panels, Text size (Small / Default / Large), Spacing (Comfortable /
+  Compact), Activity dots in the sidebar. `lib/theme.ts` writes `data-glass='off'`, `data-text-size`,
+  `data-density='compact'`, `data-activity-dots='off'` (only for non-default values, before first paint from the
+  cache); `tokens.css` adds attribute-scoped blocks (glass off = opaque surfaces, no blur; text ramp +/-; compact
+  control heights and middle spacing). `noMotion` sets the existing `data-reduce-motion`; the Motion control keeps its
+  two choices because Off and Always reduce behave the same under that rule. Sidebar keeps a quiet dot when activity
+  dots are off (counts stay).
+- **Branches** (code projects) "Before anything reaches main": Main branch (from `gitInfo.branches`, detected default
+  first), Tests must pass, Test command (one line, saved on blur or Enter), Keep branches of failed runs for. Main
+  enforces: the merge test gate in integration.ts, retention in maintenance.ts.
+- **About** Help: Report a problem (opens the prefilled new-issue page), Details for support (copied), Licences.
+- **Templates**: built-in charts in "Comes with OrgAI" (read only, test id `template-builtin`, no Remove), "Used N
+  times" from `appliedCount`, Duplicate on every template.
+- **Tools**: the test result marks each tool "Reads only" / "Can change or delete" from the server's MCP annotations
+  when it gives them, with a one-line summary that says nothing enforces them.
+- **Providers**: the plan window closest to its limit and its reset time per plan sign-in (`usageByConnection`).
+- **Skills**: Updated date; the preview re-reads on `updatedAt`.
+
 ### Deviations
 
 - Tools: the board's one mixed gallery would replace the services dialog that presets.mjs and team.mjs drive; the
   panel sits beside the existing tiles instead, and custom servers stay in "Your own tools (advanced)".
-- Providers: no "Signed in as", "Limit resets", "Last checked N min ago" rows beyond what the cards already show;
-  no cost words per tier (a proxy's mapping makes them unreliable).
-- Templates: no built-in templates, usage counts or Duplicate (no data). Skills: no Duplicate or Export.
-- Branches board rows that need runtime (main branch, branch name pattern, tests must pass, keep failed branches) are
-  not drawn.
+- Providers: the signed-in account and "updated N ago" stay in each card's status line; the plan limit and its reset
+  show on the tile; no cost words per tier (a proxy's mapping makes them unreliable).
+- Not built (ov-runtime: no main support, by decision): Language, Download updates by themselves (the consent model
+  never downloads on its own), Name new branches (the SDK names worktree branches), Ask before using a more capable
+  model, size of finished copies, Skills Duplicate and Export, "Let schedules run when I am near the limit" (no
+  near-limit skip of scheduled runs exists to switch), "Dates look like" (main stores it; no renderer date formatting
+  reads it yet, so no control ships), Show the welcome tour again (About board; onboarding is not a settings file).
+- Motion "Off" (`noMotion`) is not offered separately: by rule it uses the Reduce motion switch, so it would behave
+  exactly like "Always reduce".
+- Day / month caps and the run-size "Most agents in one run" sit at rest only for metered projects; on a plan sign-in
+  they are in Advanced (the at-rest tab-stop budget of the Limits pane, permissions.mjs).
+- Built-in templates make the new-project form show its setup choices on every fresh profile (orchestrator decision);
+  `e2e/lib.mjs` `pickSetup` drives either the checkbox or the choices.
 
 ### Verified
 
