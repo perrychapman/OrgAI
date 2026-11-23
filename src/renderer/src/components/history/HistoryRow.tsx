@@ -15,7 +15,7 @@ import { displayRunName, isOrgChangeRun, runKindWord } from '../../lib/orgChange
 import { statusOfRun, statusText } from '../../lib/runStatus'
 import { outputsCountLabel, outputsOfRuns } from '../../lib/outputs'
 import { quickFolderLabel } from '../../lib/assistants'
-import { agentsLabel, chainFacts, resultLine } from '../../lib/runHistory'
+import { agentsLabel, chainFacts, resultLine, type OutputsPhase } from '../../lib/runHistory'
 import { groupStatus } from './groupStatus'
 import { openChainOutputs } from './openChainOutputs'
 
@@ -39,6 +39,7 @@ export function HistoryRow({
   onSelect,
   onOpen,
   chat,
+  outputsPhase,
   menu,
   fallbackFocus
 }: {
@@ -53,6 +54,8 @@ export function HistoryRow({
   onSelect: () => void
   onOpen: (id: string) => Promise<void>
   chat: boolean
+  /** Whether the outputs index is loading or failed: the row then says so instead of showing no file count. */
+  outputsPhase: OutputsPhase
   menu: ContextMenuControl<string>
   fallbackFocus: () => HTMLElement | null
 }): ReactElement {
@@ -71,6 +74,8 @@ export function HistoryRow({
   const name = first.title || orgChange ? displayRunName(first) : promptLine(first.prompt)
   // What the conversation produced (docs/design/outputs.md section 12): every member run, from the loaded index.
   const outputCount = useAppStore((s) => (first.kind === 'work' && !first.quick ? outputsOfRuns(s.outputsByProject[first.projectId], members.map((m) => m.id)).length : 0))
+  // A work run whose index is not here yet has an unknown file count, not zero.
+  const filesUnknown = outputsPhase !== 'ready' && first.kind === 'work' && !first.quick && outputCount === 0
   const openOutputs = (): void => openChainOutputs(newest.id, onOpen)
   const onRowKeyDown = (e: ReactKeyboardEvent<HTMLElement>): void => {
     const btn = e.target instanceof Element ? e.target.closest<HTMLElement>('button.run-open, button.hb-main') : null
@@ -112,15 +117,20 @@ export function HistoryRow({
                 </span>
               </span>
             </button>
-            {(viewed || outputCount > 0) && (
+            {(viewed || outputCount > 0 || filesUnknown) && (
               <span className="hb-tags">
                 {viewed && (
                   <Badge tone="accent" title="This conversation is open on the Live tab">
                     Open in Live
                   </Badge>
                 )}
+                {filesUnknown && (
+                  <span className="hb-files-unknown" data-testid="history-files-unknown">
+                    {outputsPhase === 'loading' ? 'Checking files…' : 'Files not loaded'}
+                  </span>
+                )}
                 {outputCount > 0 && (
-                  <Button size="sm" variant="ghost" icon={Files} className="history-outputs" testId="history-outputs" ariaLabel={`Open ${outputCount} ${outputCount === 1 ? 'output' : 'outputs'} of ${tag}`} title="Open this conversation on its Outputs tab" onClick={openOutputs}>
+                  <Button size="sm" variant="ghost" icon={Files} className="history-outputs" testId="history-outputs" ariaLabel={`Open ${outputCount} ${outputCount === 1 ? 'file' : 'files'} of ${tag}`} title="Open this conversation on its Outputs tab" onClick={openOutputs}>
                     {outputsCountLabel(outputCount)}
                   </Button>
                 )}

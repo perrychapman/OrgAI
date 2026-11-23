@@ -1,5 +1,5 @@
-import type { ReactElement } from 'react'
-import { useId, useMemo, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Check, CalendarClock, Files, Minus, TriangleAlert } from 'lucide-react'
 import type { RunOutput, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
@@ -7,22 +7,23 @@ import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
-import { useConfirm } from '../ui/ConfirmDialog'
-import { useAppStore } from '../../store/useAppStore'
+import { selectedProject, useAppStore } from '../../store/useAppStore'
+import { openNewRunWith } from '../home/startRun'
 import { formatDuration, runCostInput, sumCosts } from '../../lib/cost'
 import { canContinueIn, type ChainGroup } from '../../lib/runChains'
 import { displayRunName, isOrgChangeRun, runKindWord } from '../../lib/orgChange'
-import { promptLine, runTag } from '../../lib/runLabels'
+import { promptLine, runTag, shortPrompt } from '../../lib/runLabels'
 import { statusText, type RunStatusView } from '../../lib/runStatus'
 import { kindLabel, outputsCountLabel } from '../../lib/outputs'
-import { cleanIpcError } from '../../lib/ipcError'
 import { formatDateTime } from '../../lib/dates'
-import { agentTally, agentsLabel, chainFacts, runSummaryText, STEP_WORD, stepTone, tallyText, MARK_WORD, type AgentMark } from '../../lib/runHistory'
+import { agentTally, agentsLabel, chainFacts, filesNote, rerunPlan, runSummaryText, RERUN_NOT_CARRIED, STEP_WORD, stepTone, tallyText, MARK_WORD, type AgentMark, type OutputsPhase } from '../../lib/runHistory'
 import { STATUS_BADGE } from './groupStatus'
 import { useRunRecord } from './useRunRecord'
 
 const STEPS_SHOWN = 8
 const OUTPUTS_SHOWN = 5
+/** The request quoted beside "Run it again" (plain text, one line). */
+const REQUEST_CHARS = 140
 
 const MARK_ORDER: readonly AgentMark[] = ['error', 'waiting', 'working', 'idle', 'done']
 
@@ -36,6 +37,7 @@ export function HistoryDetail({
   indexes,
   status,
   outputs,
+  outputsPhase,
   onOpen,
   onContinue,
   onOpenOutputs
@@ -45,6 +47,8 @@ export function HistoryDetail({
   status: RunStatusView
   /** The outputs of every session of the conversation, from the loaded index. */
   outputs: RunOutput[]
+  /** Whether that index is still loading or failed: then "none" would be a guess. */
+  outputsPhase: OutputsPhase
   onOpen: (id: string) => void
   onContinue: (id: string) => void
   onOpenOutputs: (id: string) => void
@@ -53,9 +57,9 @@ export function HistoryDetail({
   const headingId = useId()
   const tag = runTag(indexes.get(first.id))
   const record = useRunRecord(newest)
-  const startRun = useAppStore((s) => s.startRun)
   const openSchedules = useAppStore((s) => s.openSchedules)
-  const { confirm, dialog } = useConfirm()
+  const project = useAppStore(selectedProject)
+  const selectedProjectId = project?.id
   const [again, setAgain] = useState<{ runId: string; state: 'busy' | 'error'; message?: string } | null>(null)
   const orgChange = isOrgChangeRun(first)
   const name = first.title || orgChange ? displayRunName(first) : promptLine(first.prompt)
@@ -73,21 +77,50 @@ export function HistoryDetail({
   const steps = record?.plan?.steps ?? []
   const busy = again?.runId === first.id && again.state === 'busy'
   const failure = again?.runId === first.id && again.state === 'error' ? again.message : undefined
+  const request = shortPrompt(first.prompt, REQUEST_CHARS)
 
-  const runAgain = async (): Promise<void> => {
-    const ok = await confirm({
-      title: 'Run it again?',
-      body: 'This starts a new run with the same request and the team as it is now. It uses your plan or budget like any other run.',
-      confirmLabel: 'Run it again'
-    })
-    if (!ok) return
-    setAgain({ runId: first.id, state: 'busy' })
-    try {
-      await startRun(first.prompt, first.team === 'single' ? { team: 'single' } : undefined)
-      setAgain(null)
-    } catch (e) {
-      setAgain({ runId: first.id, state: 'error', message: cleanIpcError(e, 'Could not start the run.') })
+  // "Run it again" never starts anything: it opens the New run page of the run's own project with the request filled in,
+  // so every start guard of that page applies (setup pending, a project that cannot start, the permission-mode
+  // confirmation) and the user presses Start there. The guard ref makes a double click or a held Enter act once.
+  const opening = useRef(false)
+  const armed = useRef(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  useEffect(() => {
+    // Another conversation was selected: the guard belongs to the one before.
+    opening.current = false
+    armed.current = false
+    clearTimeout(timer.current)
+    setAgain(null)
+  }, [first.id])
+  const runAgain = (): void => {
+    if (opening.current) return
+    const plan = rerunPlan(first, selectedProjectId)
+    if (!plan.ok) {
+      setAgain({ runId: first.id, state: 'error', message: plan.reason })
+      return
     }
+    opening.current = true
+    setAgain({ runId: first.id, state: 'busy' })
+    openNewRunWith(first.projectId, plan.text, plan.mode)
+    // The page replaces History; if it somehow does not, the button comes back.
+    timer.current = setTimeout(() => {
+      opening.current = false
+      setAgain(null)
+    }, 1500)
+  }
+  // Enter acts once, when the key comes up: a held Enter repeats keydown, and a repeat landing on the composer that the
+  // New run page focuses would send the request. Space and the mouse use the button's own click.
+  const onAgainKeyDown = (e: ReactKeyboardEvent<HTMLElement>): void => {
+    if (e.key !== 'Enter' || !(e.target instanceof Element) || !e.target.closest('button')) return
+    e.preventDefault()
+    if (!e.repeat) armed.current = true
+  }
+  const onAgainKeyUp = (e: ReactKeyboardEvent<HTMLElement>): void => {
+    if (e.key !== 'Enter' || !armed.current) return
+    armed.current = false
+    e.preventDefault()
+    runAgain()
   }
 
   const startedText = formatDateTime(first.startedAt)
@@ -133,9 +166,11 @@ export function HistoryDetail({
             Open the run
           </Button>
           {canRerun && (
-            <Button loading={busy} onClick={() => void runAgain()} testId="history-detail-again" title="Start a new run with the same request">
-              Run it again
-            </Button>
+            <span className="hb-again" onKeyDownCapture={onAgainKeyDown} onKeyUpCapture={onAgainKeyUp} onBlurCapture={() => (armed.current = false)}>
+              <Button loading={busy} onClick={runAgain} testId="history-detail-again" ariaDescribedBy={`${headingId}-again`} title="Open the New run page with this request filled in. Nothing is sent until you start it there.">
+                Run it again
+              </Button>
+            </span>
           )}
           {canContinue && (
             <Button onClick={() => onContinue(newest.id)} testId="history-detail-continue" title="Open this run and continue its session with its memory">
@@ -148,8 +183,15 @@ export function HistoryDetail({
             </Button>
           )}
         </div>
+        {canRerun && (
+          <p className="hb-note" id={`${headingId}-again`} data-testid="history-again-note">
+            Run it again opens the New run page for {project?.name ?? 'this project'} with {'“'}
+            {request}
+            {'”'} filled in; nothing is sent until you start it there. {RERUN_NOT_CARRIED}
+          </p>
+        )}
         {failure && (
-          <p className="hb-error" role="alert">
+          <p className="hb-error" role="alert" data-testid="history-again-error">
             {failure}
           </p>
         )}
@@ -204,8 +246,10 @@ export function HistoryDetail({
             <h4 className="hb-section-title" id={`${headingId}-left`}>
               What it left
             </h4>
-            {outputs.length === 0 ? (
-              <p className="hb-note">No outputs registered.</p>
+            {filesNote(outputsPhase, outputs.length) ? (
+              <p className="hb-note" data-testid="history-left-note">
+                {filesNote(outputsPhase, outputs.length)}
+              </p>
             ) : (
               <>
                 <ul className="hb-left" data-testid="history-left">
@@ -219,7 +263,7 @@ export function HistoryDetail({
                   ))}
                 </ul>
                 <Button size="sm" variant="ghost" icon={Files} testId="history-detail-outputs" onClick={() => onOpenOutputs(newest.id)}>
-                  {outputs.length > OUTPUTS_SHOWN ? `See all ${outputs.length} outputs` : `Open ${outputsCountLabel(outputs.length)}`}
+                  {outputs.length > OUTPUTS_SHOWN ? `See all ${outputs.length} files` : `Open ${outputsCountLabel(outputs.length)}`}
                 </Button>
               </>
             )}
@@ -227,7 +271,6 @@ export function HistoryDetail({
         )}
 
       </div>
-      {dialog}
     </aside>
   )
 }

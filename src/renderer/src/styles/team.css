@@ -998,3 +998,100 @@
 .delegate-other[open] > summary {
   margin-bottom: var(--space-2);
 }
+
+/* ---------- UI overhaul: glass side panel, Ask bar, Catalog cards (Team and EngagementTeam boards) ----------
+   --glass, --glass-blur, --glass-line and the display and serif faces come from the shared theme tokens; each use has a
+   fallback so the panel reads the same before they land. */
+
+/* The panel floats on the stage as one glass card; the collapsed rail keeps the flat column. */
+.editor > .side-panel:has(.team-panel):not([data-collapsed='true']) {
+  background: transparent;
+  border-left-color: transparent;
+}
+.team-panel {
+  margin: 0 var(--space-2) var(--space-2);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-xl);
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  box-shadow: var(--elev-2);
+  overflow: hidden;
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+}
+.team-panel-tabs {
+  background: transparent;
+  border-bottom-color: var(--glass-line, var(--border-default));
+}
+
+/* Catalog: each group is a glass card. */
+.team-catalog {
+  gap: var(--space-3);
+}
+.catalog-group {
+  padding: var(--space-3);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong, var(--surface-1));
+}
+.catalog-group-title {
+  font-family: var(--font-display, inherit);
+}
+.catalog-chip {
+  background: var(--field-bg);
+}
+
+/* The Team assistant tray: the glass "Ask the Architect" bar. */
+.team-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.team-ask-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  color: var(--accent-text);
+}
+.team-ask-bar:has(.team-ask-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.team-ask-bar > svg {
+  flex: none;
+}
+.team-ask-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--space-8);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-body);
+}
+.team-ask-input::placeholder {
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+}
+.team-ask-hint {
+  padding: 0 var(--space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-panel {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .team-panel {
+  animation: none;
+}

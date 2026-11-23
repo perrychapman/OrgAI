@@ -7,8 +7,8 @@ const m = (id: string, family: ProviderModel['family']): ProviderModel => ({ id,
 
 describe('role model choice', () => {
   it('labels tiers with the model they resolve to', () => {
-    expect(tierOptionLabel('everyday', tiers)).toBe('Everyday (sonnet)')
-    expect(tierOptionLabel('top', {})).toBe('Top')
+    expect(tierOptionLabel('everyday', tiers)).toBe('Standard (sonnet)')
+    expect(tierOptionLabel('top', {})).toBe('Most capable')
   })
   it('reads inherit, a tier and custom', () => {
     expect(roleModelChoice({ model: 'inherit' }, tiers)).toBe('inherit')
@@ -18,7 +18,7 @@ describe('role model choice', () => {
   })
   it('summarises without a concrete id', () => {
     expect(roleModelSummary({ model: 'inherit' }, tiers)).toBe('Inherited')
-    expect(roleModelSummary({ model: 'sonnet' }, tiers)).toBe('Everyday')
+    expect(roleModelSummary({ model: 'sonnet' }, tiers)).toBe('Standard')
     expect(roleModelSummary({ model: 'gpt-x' }, tiers)).toBe('Custom')
   })
   it('writes the tier model or inherit', () => {
@@ -40,7 +40,7 @@ describe('role model choice', () => {
     expect(exactModelValue({ model: 'opus', tier: 'deep' }, tiers)).toBe('')
     expect(exactModelValue({ model: 'inherit' }, tiers)).toBe('')
     expect(exactModelValue({ model: 'gpt-x' }, tiers)).toBe('gpt-x')
-    expect(roleChipLabel({ model: 'opus', tier: 'deep' })).toBe('Deep')
+    expect(roleChipLabel({ model: 'opus', tier: 'deep' })).toBe('Advanced')
     expect(roleChipLabel({ model: 'inherit' })).toBe('Inherit')
     expect(roleChipLabel({ model: 'gpt-x' })).toBe('gpt-x')
   })
@@ -78,12 +78,12 @@ describe('effort view', () => {
 
 describe('multi-provider labels', () => {
   it('adds the connection to the chip and summary only when pinned elsewhere', () => {
-    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'openai', 'anthropic')).toBe('Standard · OpenAI')
     expect(roleChipLabel({ model: 'gpt-6-sol' }, 'openai', 'anthropic')).toBe('gpt-6-sol · OpenAI')
-    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'anthropic', 'anthropic')).toBe('Everyday')
-    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' })).toBe('Everyday')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'anthropic', 'anthropic')).toBe('Standard')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' })).toBe('Standard')
     expect(roleModelSummary({ model: 'gpt-x' }, tiers, 'openai', 'anthropic')).toBe('Custom · OpenAI')
-    expect(roleModelSummary({ model: 'sonnet' }, tiers, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
+    expect(roleModelSummary({ model: 'sonnet' }, tiers, 'openai', 'anthropic')).toBe('Standard · OpenAI')
     expect(roleModelSummary({ model: 'inherit' }, tiers, 'openai', 'anthropic')).toBe('Inherited · OpenAI')
   })
   it('names the connection when an effort is dropped', () => {

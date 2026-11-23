@@ -1,5 +1,5 @@
 import type { Effort, ModelTier, Project, ProviderId, ReviewPolicy, Role, RoleStaffing, StaffingGoal, StaffingMode } from '@shared/types'
-import { MODEL_TIERS } from '@shared/types'
+import { MODEL_TIERS, ROLE_MAX_CONCURRENT_LIMIT } from '@shared/types'
 import { cleanRoleStaffing, compareTier, effectiveRoleStaffing, effortOptionsFor, reviewPolicyOf, staffingGoalOf, staffingModeOf } from '@shared/defaults'
 import { roleTier } from './remap'
 import { TIER_LABEL } from './roleModels'
@@ -239,4 +239,60 @@ export function kitRoleSpend(role: object, project: Pick<Project, 'staffing'>): 
   const r = role as { model?: unknown; tier?: ModelTier; effort?: Effort; staffing?: RoleStaffing; reportsTo?: string | null }
   if (typeof r.model !== 'string' || !r.model) return null
   return importedRoleSpend({ model: r.model, tier: r.tier, effort: r.effort, staffing: r.staffing }, project, r.reportsTo === null)
+}
+
+// ---------- Role panel: count, knowledge write, required by the manager (UI overhaul, Team board) ----------
+
+/**
+ * "How many at once" (`Role.maxConcurrent`, 1..ROLE_MAX_CONCURRENT_LIMIT; missing = no per-role cap, the project's
+ * limit still applies) and "Records what it learns in Knowledge" (`Role.knowledgeWrite`, engagements; missing = today's
+ * behaviour, it may write; false = reads only). Contract from the runtime lead, 2026-11-22.
+ */
+export const ROLE_CONCURRENCY_SUPPORTED = true
+export const ROLE_KNOWLEDGE_WRITE_SUPPORTED = true
+export const CONCURRENCY_MIN = 1
+export const CONCURRENCY_MAX = ROLE_MAX_CONCURRENT_LIMIT
+
+const clampCount = (n: number): number => Math.min(CONCURRENCY_MAX, Math.max(CONCURRENCY_MIN, Math.round(n)))
+
+/** The role's own cap, or undefined when it has none. */
+export function roleConcurrency(role: Pick<Role, 'maxConcurrent'>): number | undefined {
+  const v = role.maxConcurrent
+  return typeof v === 'number' && Number.isFinite(v) ? clampCount(v) : undefined
+}
+
+/** The patch that sets the count, clamped to 1..limit; undefined clears the cap. */
+export function withConcurrency(n: number | undefined): Partial<Role> {
+  return { maxConcurrent: n === undefined ? undefined : clampCount(n) }
+}
+
+/** "No limit of its own", "One at a time", "Up to 4". */
+export function concurrencyText(n: number | undefined): string {
+  return n === undefined ? 'No limit of its own' : n <= 1 ? 'One at a time' : `Up to ${n}`
+}
+
+/** Does the role record what it learns in Knowledge? Missing means yes (today's behaviour). */
+export function roleKnowledgeWrite(role: Pick<Role, 'knowledgeWrite'>): boolean {
+  return role.knowledgeWrite !== false
+}
+
+/** Off writes false; on clears the field (the default). */
+export function withKnowledgeWrite(on: boolean): Partial<Role> {
+  return { knowledgeWrite: on ? undefined : false }
+}
+
+/**
+ * Can the role's manager hand it work (so "Every change must pass this role" can mean something)? True for a non-root
+ * role whose manager may delegate and lists it as spawnable.
+ */
+export function canRequireReview(roles: readonly Role[], role: Pick<Role, 'id' | 'reportsTo'>): boolean {
+  if (role.reportsTo === null) return false
+  const manager = roles.find((r) => r.id === role.reportsTo)
+  return !!manager && manager.canSpawn && manager.spawnable.includes(role.id)
+}
+
+/** Is the role in its manager's `requiredReports`? */
+export function isRequiredByManager(roles: readonly Role[], role: Pick<Role, 'id' | 'reportsTo'>): boolean {
+  const manager = roles.find((r) => r.id === role.reportsTo)
+  return !!manager && (manager.requiredReports ?? []).includes(role.id)
 }

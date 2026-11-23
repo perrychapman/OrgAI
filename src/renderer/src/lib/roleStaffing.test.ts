@@ -9,8 +9,16 @@ import {
   minTierChoices,
   projectStaffingPatch,
   projectStaffingView,
+  CONCURRENCY_MAX,
+  canRequireReview,
+  concurrencyText,
+  isRequiredByManager,
+  roleConcurrency,
+  roleKnowledgeWrite,
   roleStaffingControls,
   roleStaffingLine,
+  withConcurrency,
+  withKnowledgeWrite,
   withMaxEffort,
   withMinTier,
   withStaffingMode
@@ -23,27 +31,27 @@ const project = (p: Partial<Project> = {}): Project => ({ id: 'p', roles: [root,
 
 describe('roleStaffingLine', () => {
   it('automatic with an effort', () => {
-    expect(roleStaffingLine(role({ effort: 'medium' }), project(), false)).toEqual({ text: 'Automatic, up to Deep / medium' })
+    expect(roleStaffingLine(role({ effort: 'medium' }), project(), false)).toEqual({ text: 'Automatic, up to Advanced / medium' })
   })
   it('automatic without an effort says it goes up to high', () => {
     const l = roleStaffingLine(role(), project(), false)
-    expect(l.text).toBe('Automatic, up to Deep / high')
+    expect(l.text).toBe('Automatic, up to Advanced / high')
     expect(l.note).toMatch(/up to high/)
   })
   it('automatic with an effort cap', () => {
-    expect(roleStaffingLine(role({ effort: 'xhigh', staffing: { mode: 'auto', maxEffort: 'medium' } }), project(), false).text).toBe('Automatic, up to Deep / medium')
+    expect(roleStaffingLine(role({ effort: 'xhigh', staffing: { mode: 'auto', maxEffort: 'medium' } }), project(), false).text).toBe('Automatic, up to Advanced / medium')
   })
   it('automatic with a floor', () => {
-    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'auto', minTier: 'fast' } }), project(), false).text).toBe('Automatic, from Fast up to Deep / high')
+    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'auto', minTier: 'fast' } }), project(), false).text).toBe('Automatic, from Fast up to Advanced / high')
   })
   it('fixed', () => {
-    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'fixed' } }), project(), false)).toEqual({ text: 'Always Deep / high' })
+    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'fixed' } }), project(), false)).toEqual({ text: 'Always Advanced / high' })
     const none = roleStaffingLine(role({ staffing: { mode: 'fixed' } }), project(), false)
-    expect(none.text).toBe('Always Deep / default effort')
+    expect(none.text).toBe('Always Advanced / default effort')
     expect(none.note).toMatch(/default/)
   })
   it('a fixed project makes every role fixed', () => {
-    expect(roleStaffingLine(role({ effort: 'low' }), project({ staffing: 'fixed' }), false).text).toBe('Always Deep / low')
+    expect(roleStaffingLine(role({ effort: 'low' }), project({ staffing: 'fixed' }), false).text).toBe('Always Advanced / low')
   })
   it('an exact model with no tier is fixed', () => {
     expect(roleStaffingLine(role({ model: 'gpt-x', tier: undefined, effort: 'low' }), project(), false).text).toBe('Always gpt-x / low')
@@ -53,7 +61,7 @@ describe('roleStaffingLine', () => {
     expect(roleStaffingLine(role({ model: 'inherit', tier: undefined, effort: 'low', staffing: { mode: 'fixed' } }), project(), false).text).toBe('Always the model of the agent that started it / low')
   })
   it('the root always runs as configured', () => {
-    expect(roleStaffingLine(role({ reportsTo: null, effort: 'high' }), project(), true).text).toBe('Always Deep / high')
+    expect(roleStaffingLine(role({ reportsTo: null, effort: 'high' }), project(), true).text).toBe('Always Advanced / high')
   })
 })
 
@@ -145,11 +153,42 @@ describe('project settings', () => {
 
 describe('import and kit lines', () => {
   it('shows what an imported role may spend', () => {
-    expect(importedRoleSpend({ model: 'opus', tier: 'deep', effort: 'high' }, {}, false)?.text).toBe('Automatic, up to Deep / high')
+    expect(importedRoleSpend({ model: 'opus', tier: 'deep', effort: 'high' }, {}, false)?.text).toBe('Automatic, up to Advanced / high')
     expect(importedRoleSpend(undefined, {}, false)).toBeNull()
   })
   it('kit roles show a line only when the preview carries a model', () => {
     expect(kitRoleSpend({ name: 'x', slug: 'x', prompt: '', elevatedTools: [] }, {})).toBeNull()
     expect(kitRoleSpend({ model: 'haiku', tier: 'fast', effort: 'low', staffing: { mode: 'fixed' }, reportsTo: 'a' }, {})?.text).toBe('Always Fast / low')
+  })
+})
+
+describe('count, knowledge and required review', () => {
+  it('reads and clamps the count', () => {
+    expect(roleConcurrency(role())).toBeUndefined()
+    expect(roleConcurrency({ maxConcurrent: 4 })).toBe(4)
+    expect(roleConcurrency({ maxConcurrent: 99 })).toBe(CONCURRENCY_MAX)
+    expect(roleConcurrency({ maxConcurrent: 0 })).toBe(1)
+    expect(withConcurrency(20)).toEqual({ maxConcurrent: 8 })
+    expect(withConcurrency(undefined)).toEqual({ maxConcurrent: undefined })
+    expect(concurrencyText(undefined)).toBe('No limit of its own')
+    expect(concurrencyText(1)).toBe('One at a time')
+    expect(concurrencyText(3)).toBe('Up to 3')
+  })
+  it('reads the knowledge flag (missing means it may write)', () => {
+    expect(roleKnowledgeWrite(role())).toBe(true)
+    expect(roleKnowledgeWrite({ knowledgeWrite: false })).toBe(false)
+    expect(withKnowledgeWrite(true)).toEqual({ knowledgeWrite: undefined })
+    expect(withKnowledgeWrite(false)).toEqual({ knowledgeWrite: false })
+  })
+  it('offers required review only when the manager can hand it work', () => {
+    const lead = role({ id: 'lead', reportsTo: 'root', canSpawn: true, spawnable: ['r1'], requiredReports: ['r1'] })
+    const r1 = role({ id: 'r1', reportsTo: 'lead' })
+    const roles = [root, lead, r1]
+    expect(canRequireReview(roles, r1)).toBe(true)
+    expect(isRequiredByManager(roles, r1)).toBe(true)
+    expect(canRequireReview(roles, root)).toBe(false)
+    expect(canRequireReview([root, { ...lead, canSpawn: false }, r1], r1)).toBe(false)
+    expect(canRequireReview([root, { ...lead, spawnable: [] }, r1], r1)).toBe(false)
+    expect(isRequiredByManager([root, { ...lead, requiredReports: undefined }, r1], r1)).toBe(false)
   })
 })

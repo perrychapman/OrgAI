@@ -50,6 +50,7 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       inline
       who={who}
       agentId={question.agentId}
+      waitingSince={question.createdAt}
       helper={
         <>
           {clipped && <span className="question-full">{question.question} </span>}

@@ -1,8 +1,15 @@
 import type { ReactElement, ReactNode } from 'react'
 import type { KeyboardEvent } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { isValidElement, useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { decisionFocus } from './DecisionCard'
+import PermissionCard from './PermissionCard'
+import QuestionCard from './QuestionCard'
+import RuleRequestCard from './RuleRequestCard'
+import ProposalCard from './ProposalCard'
+import MergeReviewCard from './MergeReviewCard'
+import McpInstallCard from './McpInstallCard'
+import { breakdownLine, setAlwaysAllowReceipt, useAlwaysAllowReceipt, type DecisionKindName } from '../lib/decisionCard'
 import { useArrival } from '../lib/useArrival'
 import { Icon } from './ui/Icon'
 
@@ -11,6 +18,72 @@ export interface DecisionItem {
   /** Short action text for the list ("Run npm test", "Question"). Rendered as plain text, never as markup. */
   label: string
   node: ReactNode
+}
+
+/** The kind of a pending card, from the component its node renders (the tray's callers hand over nodes, not kinds). */
+function kindOf(node: ReactNode): DecisionKindName | null {
+  const t = isValidElement(node) ? node.type : null
+  if (t === PermissionCard) return 'permission'
+  if (t === QuestionCard) return 'question'
+  if (t === RuleRequestCard) return 'rules'
+  if (t === ProposalCard) return 'proposal'
+  if (t === MergeReviewCard) return 'merge'
+  if (t === McpInstallCard) return 'install'
+  return null
+}
+
+function runIdOf(node: ReactNode): string | null {
+  const id = isValidElement(node) ? (node.props as { runId?: unknown }).runId : undefined
+  return typeof id === 'string' ? id : null
+}
+
+/** After "Always allow": says what was saved, that the allowed action stays done, and offers to remove the saved rule. */
+function AlwaysAllowReceiptLine({ runId }: { runId: string | null }): ReactElement | null {
+  const receipt = useAlwaysAllowReceipt()
+  const [state, setState] = useState<{ key: string; phase: 'idle' | 'busy' | 'removed' | 'failed' }>({ key: '', phase: 'idle' })
+  const key = receipt ? `${receipt.runId}|${receipt.rules.join('|')}` : ''
+  const phase = state.key === key ? state.phase : 'idle'
+  // A receipt is a short-lived note, not a record: it goes after a minute (or at once when another run is shown).
+  useEffect(() => {
+    if (!receipt) return undefined
+    const t = setTimeout(() => setAlwaysAllowReceipt(null), 60_000)
+    return () => clearTimeout(t)
+  }, [receipt])
+  if (!receipt || (runId && receipt.runId !== runId)) return null
+  const undo = async (): Promise<void> => {
+    setState({ key, phase: 'busy' })
+    try {
+      for (const rule of receipt.rules) await window.orgai.permissions.remove({ projectId: receipt.projectId, rule })
+      setState({ key, phase: 'removed' })
+    } catch {
+      setState({ key, phase: 'failed' })
+    }
+  }
+  const many = receipt.rules.length > 1
+  return (
+    <div className="decision-receipt" data-testid="decision-receipt" data-phase={phase}>
+      <p role="status" className="decision-receipt-text">
+        {phase === 'removed'
+          ? `${many ? 'Rules' : 'Rule'} removed. Matching calls will ask again.`
+          : phase === 'failed'
+            ? `The ${many ? 'rules were' : 'rule was'} not removed. You can remove ${many ? 'them' : 'it'} in project Settings.`
+            : `Saved ${many ? `${receipt.rules.length} rules` : 'a rule'}: `}
+        {phase !== 'removed' && phase !== 'failed' && (
+          <>
+            <code className="decision-receipt-rule">{receipt.rules.join(', ')}</code>. Removing it does not take back the action you already allowed.
+          </>
+        )}
+      </p>
+      {(phase === 'idle' || phase === 'busy') && (
+        <button type="button" className="btn ghost sm" data-testid="decision-receipt-undo" disabled={phase === 'busy'} onClick={() => void undo()}>
+          Undo
+        </button>
+      )}
+      <button type="button" className="btn ghost sm" data-testid="decision-receipt-dismiss" onClick={() => setAlwaysAllowReceipt(null)}>
+        Dismiss
+      </button>
+    </div>
+  )
 }
 
 /**
@@ -49,10 +122,15 @@ export default function DecisionTray({
     const hadCard = motion.current.key !== undefined
     motion.current = { key: shownKey, cls: isNew(shownKey) ? 'motion-enter-xl motion-ring' : hadCard ? 'motion-view' : undefined }
   }
+  // The run these cards belong to; remembered so the receipt still shows once the last card has gone.
+  const lastRun = useRef<string | null>(null)
+  const nowRun = items.length > 0 ? runIdOf(items[0].node) : null
+  if (nowRun) lastRun.current = nowRun
   if (items.length === 0) {
     motion.current = { key: undefined, cls: undefined }
-    return null
+    return lastRun.current ? <AlwaysAllowReceiptLine runId={lastRun.current} /> : null
   }
+  const breakdown = breakdownLine(items.map((it) => kindOf(it.node)).filter((k): k is DecisionKindName => k !== null))
   const rover = Math.min(focused ?? selected, items.length - 1)
   const onChipKey = (e: KeyboardEvent<HTMLButtonElement>, i: number): void => {
     const to = e.key === 'ArrowRight' ? Math.min(i + 1, items.length - 1) : e.key === 'ArrowLeft' ? Math.max(i - 1, 0) : e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : -1
@@ -73,6 +151,11 @@ export default function DecisionTray({
           <span className="decision-stepper-title">
             <span className="decision-waiting-dot motion-breathe" aria-hidden="true" />
             <span className="decision-count">{items.length}</span> waiting on you
+            {breakdown && (
+              <span className="decision-breakdown" data-testid="decision-breakdown">
+                {breakdown}
+              </span>
+            )}
           </span>
           <ul
             className="decision-list"
@@ -134,6 +217,7 @@ export default function DecisionTray({
       <div key={current.key} className={motion.current.cls ? `decision ${motion.current.cls}` : 'decision'} onPointerDownCapture={onPin} onKeyDownCapture={onPin}>
         {current.node}
       </div>
+      <AlwaysAllowReceiptLine runId={lastRun.current} />
     </>
   )
 }

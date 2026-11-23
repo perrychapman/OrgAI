@@ -65,22 +65,27 @@ async function sectionEditor(page) {
   await selectReviewer(page)
   const pane = page.locator('.team-panel-pane')
   const order = await pane.evaluate((root) =>
-    ['role-section-who', 'role-section-does', 'role-capabilities', 'role-section-delegate', 'role-section-model'].map((id) => {
+    ['role-section-job', 'role-section-model', 'role-capabilities', 'role-section-does', 'role-section-delegate', 'role-section-who'].map((id) => {
       const el = root.querySelector(`[data-testid=${id}]`)
-      return el ? el.getBoundingClientRect().top : null
+      return el ? el.getBoundingClientRect().top + root.scrollTop : null
     })
   )
-  check(order.every((t) => t !== null) && order.every((t, i) => i === 0 || t > order[i - 1]), 'role editor order: Who it is, What it does, What it can use, Who it can delegate to, Model and effort', JSON.stringify(order))
+  check(order.every((t) => t !== null) && order.every((t, i) => i === 0 || t > order[i - 1]), 'role editor order: What this role does, Model, What it can use, Instructions, Who it can delegate to, Who it is', JSON.stringify(order))
   const reports = page.locator('[data-testid=role-reports-to]')
   check((await reports.locator('option', { hasText: /Nobody/ }).count()) === 0, 'a non-root Reports to has no Nobody option')
   check(await reports.evaluate((el) => !!el.closest('[data-testid=role-section-who]')), 'Reports to is in Who it is')
-  check(/What is this role for\?/.test(await page.locator('[data-testid=role-section-who]').innerText()), 'the description is labelled "What is this role for?"')
+  check(/What this role does/.test(await page.locator('[data-testid=role-section-job]').innerText()), 'the description is labelled "What this role does"')
+  check(/Cannot edit files|Read files/.test(await page.locator('[data-testid=role-use-chips]').innerText()), 'What it can use shows chips for the tools')
+  check(await page.locator('[data-testid=role-model-tiers] input[type=radio]').count() > 0 || (await page.locator('[data-testid=role-model-tiers]').count()) === 0, 'the Model section offers the tiers as one radio group')
+  check(/reports to/.test(await page.locator('[data-testid=role-subline]').innerText()), 'the panel header names the group and the manager', await page.locator('[data-testid=role-subline]').innerText())
+  check((await page.locator('[data-testid=role-model-advanced] > summary').innerText()).trim() === 'Choose an exact model', 'the exact model controls sit behind "Choose an exact model"')
+  check((await page.locator('[data-testid=role-section-count]').count()) === 0, 'How many at once stays hidden until Role carries the field')
   const preview = page.locator('[data-testid=role-preview-prompt]')
   check((await preview.getAttribute('aria-disabled')) === 'true' || (await preview.isDisabled()), '"Preview final prompt" is disabled')
   check(/Not available yet\./.test(await page.locator('[data-testid=role-section-does]').innerText({ timeout: 2000 }).catch(() => '')) || (await page.locator('#' + ((await preview.getAttribute('aria-describedby')) ?? 'x')).count()) === 1, '"Preview final prompt" explains "Not available yet."')
   // Model and effort: one sentence, one select; Staffing details closed with the renamed labels.
   check((await page.locator('[data-testid=role-model-sentence]').innerText()).trim().length > 0, 'Model and effort shows its sentence')
-  await page.evaluate(() => { const d = document.querySelector('[data-testid=role-section-model]'); if (d && !d.open) d.open = true })
+  await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-advanced]'); if (d && !d.open) d.open = true })
   const staffing = page.locator('[data-testid=role-staffing-fold]')
   check(!(await staffing.evaluate((d) => d.open)), 'Staffing details is closed by default')
   await staffing.evaluate((d) => { d.open = true })
@@ -165,6 +170,47 @@ async function openAdvancedModel(page) {
   )
 }
 
+/**
+ * UI overhaul: the panel's "Every change must pass this role before merging" box is the manager's requiredReports entry
+ * (the same fact as the manager's "Always involve"), and the tray's Ask the Architect bar is a labelled input with an Ask
+ * button that stays disabled until something is typed. Nothing is submitted (that would start a session).
+ */
+async function sectionPanelAndAskBar(page) {
+  await selectReviewer(page)
+  const project = await findProject(page, NAME)
+  const rev = project.roles.find((r) => r.name === 'Reviewer')
+  const manager = project.roles.find((r) => r.id === rev.reportsTo)
+  const box = page.locator('[data-testid=role-must-pass]')
+  if (manager.canSpawn && manager.spawnable.includes(rev.id)) {
+    await box.waitFor({ state: 'attached', timeout: 10_000 })
+    const before = await box.isChecked()
+    await box.setChecked(!before, { force: true })
+    let saved
+    for (let i = 0; i < 30 && (saved?.requiredReports ?? []).includes(rev.id) === before; i++) {
+      saved = (await findProject(page, NAME)).roles.find((r) => r.id === manager.id)
+      if ((saved?.requiredReports ?? []).includes(rev.id) === before) await sleep(200)
+    }
+    check((saved?.requiredReports ?? []).includes(rev.id) === !before, 'the panel checkbox patches the manager requiredReports', JSON.stringify(saved?.requiredReports))
+    await box.setChecked(before, { force: true })
+    await sleep(500)
+  } else {
+    check((await box.count()) === 0, 'no must-pass box when the manager cannot delegate to the role')
+  }
+  const root = project.roles.find((r) => r.reportsTo === null)
+  await page.locator(`.react-flow__node[data-id="${root.id}"]`).click()
+  await teamPanelTab(page, 'Role').waitFor()
+  check((await page.locator('[data-testid=role-must-pass]').count()) === 0, 'the root has no must-pass box')
+  check(/Leads the team/.test(await page.locator('[data-testid=role-subline]').innerText()), 'the root header says "Leads the team"')
+  const ask = page.getByRole('textbox', { name: 'Ask the Architect' })
+  check((await ask.count()) === 1, 'the tray has a labelled "Ask the Architect" input')
+  check(/add someone who writes docs/.test((await ask.getAttribute('placeholder')) ?? ''), 'the Ask input carries the example placeholder')
+  const send = page.locator('[data-testid=team-ask-send]')
+  check(await send.isDisabled(), 'Ask is disabled while the input is empty')
+  await ask.fill('add someone who writes docs')
+  check(await send.isEnabled(), 'Ask is enabled once there is text')
+  await ask.fill('')
+}
+
 /** ux-review-config-2 N3: a tier role's Exact model reads Not set; Not set on a custom role returns Model to a tier, never Inherit. */
 async function sectionExactModel(page) {
   await selectReviewer(page)
@@ -231,13 +277,10 @@ async function sectionProxyExactModel(page, app, shot) {
     await openProject(page, NAME)
     await openTeam(page)
     await selectReviewer(page)
-    await page.evaluate(() => {
-      const fold = document.querySelector('[data-testid=role-section-model]')
-      if (fold) fold.open = true
-    })
+    await openAdvancedModel(page)
     const exactSel = page.locator('[data-testid=role-exact-model]')
     await exactSel.waitFor({ state: 'visible', timeout: 20_000 })
-    check(await exactSel.evaluate((el) => !el.closest('[data-testid=role-model-advanced]')), 'on a proxy project Exact model is in the main role panel, not under Advanced')
+    check(await exactSel.evaluate((el) => !!el.closest('[data-testid=role-model-advanced]')), 'on a proxy project Exact model is in the "Choose an exact model" reveal beside Model')
     for (const [w, h] of SIZES) {
       await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
       await sleep(500)
@@ -728,8 +771,8 @@ async function sectionNodeMenu(page) {
   await menu.waitFor({ timeout: 5000 })
   check((await menu.getAttribute('aria-label')) === 'Actions for Reviewer', 'the node menu is named for the role', await menu.getAttribute('aria-label'))
   check(
-    (await menu.locator('[role=menuitem]').allInnerTexts()).map((t) => t.trim()).join('|') === 'Edit role|Add a report|Remove role',
-    'the node menu offers Edit role, Add a report and Remove role'
+    (await menu.locator('[role=menuitem]').allInnerTexts()).map((t) => t.trim()).join('|') === 'Edit role|Add a report|Duplicate role|Remove role',
+    'the node menu offers Edit role, Add a report, Duplicate role and Remove role'
   )
   check((await page.locator('[data-testid=role-menu-remove]').getAttribute('aria-disabled')) !== 'true', 'Remove role is enabled on a non-root role')
   await page.keyboard.press('Escape')
@@ -758,6 +801,30 @@ async function sectionNodeMenu(page) {
   const after = (await findProject(page, NAME)).roles
   const added = after.filter((r) => !before.some((b) => b.id === r.id))
   check(added.length === 1 && added[0].reportsTo === reviewerId, 'Add a report adds a role reporting to that role', JSON.stringify(added.map((r) => r.reportsTo)))
+
+  // UI overhaul (Team board): the selected role's toolbar. Duplicate adds "{name} copy" beside it; Undo takes it back.
+  const reviewer = before.find((r) => r.name === 'Reviewer')
+  await node.click()
+  const toolbar = page.locator('[data-testid=role-node-toolbar] [role=toolbar]')
+  await toolbar.waitFor({ timeout: 5000 })
+  check((await toolbar.getAttribute('aria-label')) === 'Actions for Reviewer', 'the selected role shows its action toolbar', await toolbar.getAttribute('aria-label'))
+  const beforeDup = (await findProject(page, NAME)).roles
+  await page.locator('[data-testid=role-node-duplicate]').click()
+  await sleep(500)
+  const afterDup = (await findProject(page, NAME)).roles
+  const copy = afterDup.find((r) => !beforeDup.some((b) => b.id === r.id))
+  check(
+    !!copy && copy.name === 'Reviewer copy' && copy.reportsTo === reviewer?.reportsTo && copy.prompt === reviewer?.prompt && copy.slug !== reviewer?.slug,
+    'Duplicate adds "Reviewer copy" under the same manager with the same instructions and its own ID',
+    JSON.stringify(copy && { name: copy.name, reportsTo: copy.reportsTo, slug: copy.slug })
+  )
+  // Review H1: the toolbar's click must not re-select the original; the copy is selected and its description has focus.
+  const panelTitle = ((await page.locator('aside.side-panel .side-header h2').first().textContent()) ?? '').trim()
+  const focusedDesc = await page.evaluate(() => document.activeElement?.id === 'role-description')
+  check(panelTitle === 'Reviewer copy' && focusedDesc, 'after Duplicate the copy is selected and its description has focus', `${panelTitle} / ${focusedDesc}`)
+  await page.locator('[data-testid=team-notice-undo]').click()
+  await sleep(400)
+  check((await findProject(page, NAME)).roles.length === beforeDup.length, 'Undo removes the duplicate')
 
   const rootName = before.find((r) => r.reportsTo === null)?.name
   await page.locator('.react-flow__node', { hasText: rootName }).first().click({ button: 'right' })
@@ -956,6 +1023,9 @@ async function sectionAddAndDrag(page, app, shot) {
 
   // Review L1: let the root delegate to Implementer as well, then drop Implementer on the manager it already reports to.
   // That drop must change nothing (it used to strip the root's delegation through setReportsTo).
+  // The drops can leave the root under the side panel's edge: fit the chart first so the click lands on the node.
+  await page.locator('.editor .react-flow__controls-fitview').click()
+  await sleep(400)
   await page.locator(`.react-flow__node[data-id="${root.id}"]`).click()
   await teamPanelTab(page, 'Role').waitFor()
   await page.evaluate(() => document.querySelectorAll('[data-testid=role-delegate-other]').forEach((d) => d.setAttribute('open', '')))
@@ -1158,7 +1228,8 @@ async function sectionAddIdsAndLongName(page, app, shot) {
     const hd = document.querySelector('aside.side-panel .side-header, .team-panel-pane .side-header') ?? document.querySelector('.side-header')
     const h2 = hd.querySelector('h2')
     const btn = [...hd.querySelectorAll('button')].find((b) => /Remove/.test(b.textContent ?? ''))
-    const hb = hd.getBoundingClientRect(), tb = h2.getBoundingClientRect(), bb = btn.getBoundingClientRect()
+    // The name and its "{group} · reports to {manager}" line form one block (.ri-heading); Remove is centred beside it.
+    const hb = hd.getBoundingClientRect(), tb = (hd.querySelector('.ri-heading') ?? h2).getBoundingClientRect(), bb = btn.getBoundingClientRect()
     return { headH: hb.height, h2Mid: tb.top + tb.height / 2, btnMid: bb.top + bb.height / 2, btnBottom: bb.bottom, headBottom: hb.bottom, btnRight: bb.right, headRight: hb.right, title: h2.getAttribute('title'), ellipsis: getComputedStyle(h2).textOverflow }
   })
   check(Math.abs(head.h2Mid - head.btnMid) <= 3 && head.btnBottom <= head.headBottom && head.btnRight <= head.headRight + 0.5, 'the role editor header keeps Remove on the name row (QA P4)', JSON.stringify(head))
@@ -1217,6 +1288,7 @@ try {
   await sectionDismiss(page, shot, app)
   await sectionDesignDecisions(page, shot)
   await sectionExactModel(page)
+  await sectionPanelAndAskBar(page)
   await sectionProxyExactModel(page, app, shot)
   // Last among the sections: it reloads the page, which would let the Team tray decide its "since your last run" line
   // before sectionRunsEnded's runs end.

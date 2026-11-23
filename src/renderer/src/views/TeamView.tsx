@@ -1,10 +1,13 @@
 import type { KeyboardEvent, MouseEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MousePointerClick, Pencil, Trash2, UserPlus } from 'lucide-react'
+import { Copy, Maximize, Minus, MousePointerClick, Pencil, Plus, Trash2, UserPlus, Wand2 } from 'lucide-react'
 import {
   ReactFlow,
   Controls,
+  ControlButton,
   MarkerType,
+  useReactFlow,
+  useViewport,
   type Connection,
   type OnConnectEnd,
   type Edge,
@@ -75,8 +78,50 @@ import {
   type TeamNotice
 } from '../lib/teamNotices'
 import type { ImportNotice } from '../store/useAppStore'
+import { RoleNodeActionsContext, type RoleNodeActions } from '../components/team/roleNodeActions'
+import TeamProvenance from '../components/team/TeamProvenance'
+import { projectKindOf } from '@shared/defaults'
+import { Icon } from '../components/ui/Icon'
+import { duplicateName } from '../lib/roleOps'
+import { serverGranted, teamGroupCount } from '../lib/roleCapabilities'
 
 const nodeTypes = { role: RoleNode }
+
+/**
+ * The chart's zoom group (Team board): zoom out, the zoom level, zoom in, fit and Tidy (lay every role out again).
+ * Inside React Flow's own Controls panel, so the reveal logic and e2e keep finding `.react-flow__controls` and its
+ * `-fitview` button.
+ */
+function TeamZoomControls({ onTidy, padding }: { onTidy: () => void; padding: `${number}%` }): ReactElement {
+  const { zoomIn, zoomOut, fitView } = useReactFlow()
+  const { zoom } = useViewport()
+  // React Flow's defaults (minZoom 0.5, maxZoom 2): the buttons say when they can go no further (review L6).
+  const atMin = zoom <= 0.5 + 0.001
+  const atMax = zoom >= 2 - 0.001
+  const pct = `${Math.round(zoom * 100)}%`
+  const reduced = useReducedMotion()
+  const ms = reduced ? 0 : 160
+  return (
+    <Controls showInteractive={false} showZoom={false} showFitView={false} position="bottom-right" orientation="horizontal" className="team-zoom" aria-label="Zoom">
+      <ControlButton className="react-flow__controls-zoomout" onClick={() => void zoomOut({ duration: ms })} disabled={atMin} aria-label="Zoom out" title="Zoom out">
+        <Icon icon={Minus} size="sm" />
+      </ControlButton>
+      <span className="team-zoom-level" data-testid="team-zoom-level" aria-live="off" title="Zoom level">
+        {pct}
+      </span>
+      <ControlButton className="react-flow__controls-zoomin" onClick={() => void zoomIn({ duration: ms })} disabled={atMax} aria-label="Zoom in" title="Zoom in">
+        <Icon icon={Plus} size="sm" />
+      </ControlButton>
+      <ControlButton className="react-flow__controls-fitview" onClick={() => void fitView({ padding, maxZoom: 1, duration: reduced ? 0 : 200 })} aria-label="Fit the chart" title="Fit the chart">
+        <Icon icon={Maximize} size="sm" />
+      </ControlButton>
+      <ControlButton className="team-zoom-tidy" data-testid="team-tidy" onClick={onTidy} aria-label="Tidy: arrange every role" title="Arrange every role automatically">
+        <Icon icon={Wand2} size="sm" />
+        <span>Tidy</span>
+      </ControlButton>
+    </Controls>
+  )
+}
 
 type PanelTab = 'role' | 'catalog'
 const PANEL_TABS = [
@@ -296,7 +341,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   /** The Add role popover asked to open with a manager (node menu, editor). */
   const [addRequest, setAddRequest] = useState<AddRoleRequest | null>(null)
   /** Which inspector field takes focus once the new selection's editor is mounted. */
-  const focusTarget = useRef<'role-name-input' | 'role-description' | null>(null)
+  const focusTarget = useRef<'role-name-input' | 'role-description' | 'role-reports-to' | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const templates = useAppStore((s) => s.templates)
   const [templateDialog, setTemplateDialog] = useState<'save' | 'apply' | null>(null)
@@ -366,6 +411,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
 
   const root = project.roles.find((r) => r.reportsTo === null)
+  const engagement = projectKindOf(project) === 'engagement'
   const selectedRole = project.roles.find((r) => r.id === selectedRoleId)
 
   // Agent files in the folder that the chart has not taken in: re-read when the project or its import state changes.
@@ -713,6 +759,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         }
       },
       { id: 'add-report', label: 'Add a report', icon: UserPlus, testId: 'role-menu-add-report', onSelect: () => openAddRole(role.id) },
+      {
+        id: 'duplicate',
+        label: 'Duplicate role',
+        icon: Copy,
+        disabled: isRoot,
+        disabledReason: isRoot ? 'The root role cannot be duplicated.' : undefined,
+        testId: 'role-menu-duplicate',
+        onSelect: () => duplicateRole(roleId)
+      },
       'separator',
       {
         id: 'remove',
@@ -758,7 +813,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         inStage(stage.querySelector(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)) ??
         { x: pos.x * vp.zoom + vp.x, y: pos.y * vp.zoom + vp.y, w: size.width * vp.zoom, h: size.height * vp.zoom }
       // QA S1: the zoom controls and the minimap float over the stage's bottom corners; the new node must clear both.
-      const obstacles = [stage.querySelector('.react-flow__controls'), stage.querySelector('.react-flow__minimap')]
+      const obstacles = [stage.querySelector('.react-flow__controls'), stage.querySelector('.react-flow__minimap'), stage.querySelector('.team-provenance')]
         .map(inStage)
         .filter((r): r is StageRect => r !== null)
       const { dx, dy } = revealShift(node, { w: view.width, h: view.height }, REVEAL_MARGIN, obstacles)
@@ -770,7 +825,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
    * Adds a role named `name` under `parentId` (null: the first role of an empty team) with the phase 1 defaults, selects
    * it, pans to it and sends focus to its Description. Posts "Added {name} under {Parent}." with Undo.
    */
-  const addRole = (name: string, parentId: string | null): void => {
+  const addRole = (name: string, parentId: string | null, from?: Role): void => {
     const current = storedRoles(project.id, project.roles)
     const manager = parentId ? current.find((r) => r.id === parentId) : undefined
     if (parentId && !manager) throw new Error('That role is gone. Pick another to report to.')
@@ -783,7 +838,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     const position = placeNewRole(current, manager?.id ?? null, ROLE_SIZE, { layout: layoutDir, sizeOf: (id) => nodeDims.dims[id] })
     const roleId = newId('role')
     const storeProject = useAppStore.getState().projects.find((p) => p.id === project.id) ?? project
-    const role: Role = {
+    const base: Role = {
       id: roleId,
       slug: newRoleSlug(storeProject, current, roleId, name),
       name,
@@ -799,6 +854,28 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       position,
       color: ROLE_COLORS[current.length % ROLE_COLORS.length]
     }
+    // A duplicate keeps what the role is and can use; it gets its own id, slug, place and no reports of its own.
+    const role: Role = from
+      ? {
+          ...from,
+          id: base.id,
+          slug: base.slug,
+          name,
+          reportsTo: base.reportsTo,
+          position,
+          canSpawn: false,
+          spawnable: [],
+          requiredReports: undefined,
+          responsibilities: [...from.responsibilities],
+          tools: [...from.tools],
+          // Servers granted to the original by slug are granted to the copy by id (its slug is new).
+          ...(() => {
+            const ids = (storeProject.mcpServers ?? []).filter((s) => s.roles !== undefined && serverGranted(s, from)).map((s) => s.id)
+            return ids.length > 0 ? { mcpServers: ids } : {}
+          })(),
+          ...(from.skills ? { skills: [...from.skills] } : {})
+        }
+      : base
     const after = addRoleUnder(current, role)
     const edit = snapshotAdd(current, after, role.id)
     updateRoles(project.id, (roles) => addRoleUnder(roles, role))
@@ -807,7 +884,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       if (useAppStore.getState().selectedRoleId === role.id) selectRole(null)
       focusNode(edit.managerId)
     }
-    post({ key: NOTICE_ROLE_EDIT, kind: 'edit', text: addedText(name, manager?.name ?? null), actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }] }, EDIT_NOTICE_MS)
+    // A duplicate says what it copied (review L9): it carries the original's tools, services, skills and model.
+    const text = from ? `${addedText(name, manager?.name ?? null).replace(/\.$/, '')}, with the same tools, services and model as ${from.name}.` : addedText(name, manager?.name ?? null)
+    post({ key: NOTICE_ROLE_EDIT, kind: 'edit', text, actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }] }, EDIT_NOTICE_MS)
     clear('error:drop')
     setSelectedEdgeId(null)
     focusTarget.current = 'role-description'
@@ -817,6 +896,40 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     selectRole(role.id)
     revealRole(role.id, position, ROLE_SIZE)
   }
+
+  /** Duplicate a role beside it (same manager), named "{name} copy". */
+  const duplicateRole = (roleId: string): void => {
+    const current = storedRoles(project.id, project.roles)
+    const from = current.find((r) => r.id === roleId)
+    if (!from || from.reportsTo === null) return
+    addRole(duplicateName(current, from.name), from.reportsTo, from)
+  }
+  /** Move: the inspector's Reports to takes focus (the one place a manager is chosen from a list). */
+  const moveRole = (roleId: string): void => {
+    setSelectedEdgeId(null)
+    focusTarget.current = 'role-reports-to'
+    setPanelOpen(true)
+    setPanelTab('role')
+    setFocusTick((t) => t + 1)
+    selectRole(roleId)
+  }
+  // One stable context value (review L4): the callbacks read the latest closures through a ref, so the nodes' memo holds.
+  const latestActions = useRef<RoleNodeActions | null>(null)
+  latestActions.current = {
+    addReport: (id) => openAddRole(id),
+    duplicate: duplicateRole,
+    move: moveRole,
+    remove: (id) => void requestRemove(id)
+  }
+  const nodeActions = useMemo<RoleNodeActions>(
+    () => ({
+      addReport: (id) => latestActions.current?.addReport(id),
+      duplicate: (id) => latestActions.current?.duplicate(id),
+      move: (id) => latestActions.current?.move(id),
+      remove: (id) => latestActions.current?.remove(id)
+    }),
+    []
+  )
 
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
   // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.
@@ -899,7 +1012,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
 
   return (
-    <div className="editor" ref={rootRef} onKeyDownCapture={onRootKeyDownCapture}>
+    <RoleNodeActionsContext.Provider value={nodeActions}>
+    <div className="editor team-editor" data-kind={engagement ? 'engagement' : 'code'} ref={rootRef} onKeyDownCapture={onRootKeyDownCapture}>
       <a
         href="#team-panel"
         className="skip-link"
@@ -927,6 +1041,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         <FrameToolbar label="Team actions">
           <TeamHeader
             roleCount={project.roles.length}
+            groupCount={teamGroupCount(project.roles)}
+            onAddGroup={root ? () => openAddRole(root.id) : undefined}
+            onImport={() => setImportDialog({ fresh: false })}
             layout={layoutDir}
             onLayoutChange={changeLayout}
             onArrange={() => arrange(layoutDir)}
@@ -1003,9 +1120,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             edgesFocusable={false}
           >
             <CanvasBackdrop />
-            <Controls showInteractive={false} position="bottom-right" />
+            <TeamZoomControls onTidy={() => arrange(layoutDir)} padding={TEAM_FIT_PADDING} />
             <CanvasMinimap ariaLabel="Org chart minimap" />
           </ReactFlow>
+          {engagement && <TeamProvenance project={project} />}
           <LiveChangeNote surface="orgChart" projectId={project.id} />
         </FrameStage>
         <FrameTray label={showCard ? 'Team files approval' : 'Team assistant'}>
@@ -1112,5 +1230,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       )}
       {dialog}
     </div>
+    </RoleNodeActionsContext.Provider>
   )
 }

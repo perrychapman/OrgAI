@@ -329,7 +329,7 @@
 /* Past runs only: a small solid square. */
 .tile-mark[data-kind='idle']::before {
   inset: 3px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--text-tertiary);
 }
 /* No runs yet: a dashed hollow ring. */
