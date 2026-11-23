@@ -77,6 +77,12 @@ import type {
   RunRosterChange,
   RunSummary,
   SwitchRunModelInput,
+  AddRunBudgetInput,
+  MessageAgentInput,
+  RetryRunInput,
+  RunHold,
+  SkipReviewInput,
+  StopAgentResult,
   SwitchRunModelResult,
   SetRunPermissionModeInput,
   SetRunPermissionModeResult,
@@ -5629,6 +5635,44 @@ export class RunManager {
     const updated = this.patchSummary(run.id, { modelSelection: selection })!
     this.broadcast({ type: 'run.model', runId: run.id, selection })
     return { run: updated, applied: !active || ['finished', 'error', 'paused'].includes(run.status) ? false : true, ...(!active || ['finished', 'error', 'paused'].includes(run.status) ? { reason: 'Model will be used when the run continues.' } : {}) }
+  }
+
+  // ---------- UI overhaul run actions (desktop only, main/overhaulIpc.ts; docs/design/ui-overhaul/impl-runtime.md) ----------
+  // CONTRACT STUBS: implemented in this file by the Runtime Engineer who owns runManager.ts for the overhaul.
+
+  /** The run's hold (RunSummary.hold), or null. */
+  holdOf(runId: string): RunHold | null {
+    return this.summary(runId)?.hold ?? null
+  }
+
+  /** runs:addBudget. Desktop only. Resolves to the continuation. */
+  async addBudget(input: AddRunBudgetInput): Promise<RunSummary> {
+    void input
+    throw new Error('Adding budget is not available yet.')
+  }
+
+  /** runs:retry. Desktop only. Resolves to the continuation. */
+  async retryRun(input: RetryRunInput): Promise<RunSummary> {
+    void input
+    throw new Error('Retrying is not available yet.')
+  }
+
+  /** runs:skipReview. Desktop only. */
+  async skipReview(input: SkipReviewInput): Promise<void> {
+    void input
+    throw new Error('Skipping review is not available yet.')
+  }
+
+  /** runs:messageAgent. Desktop only. */
+  async messageAgent(input: MessageAgentInput): Promise<void> {
+    void input
+    throw new Error('Messaging one agent is not available yet.')
+  }
+
+  /** runs:stopAgent. Desktop only. */
+  async stopAgent(input: { runId: string; agentId: string }): Promise<StopAgentResult> {
+    void input
+    return { stopped: false, reason: 'Stopping one agent is not available yet.' }
   }
 
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
