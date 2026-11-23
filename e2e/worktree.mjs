@@ -18,7 +18,7 @@ try {
   await projectTab(page, 'Live').click()
   await sleep(500)
   await page.locator('.composer textarea').fill(TASK)
-  await page.getByRole('button', { name: 'Start', exact: true }).click()
+  await page.getByRole('button', { name: /^Start( run)?$/ }).click()
   await page.waitForSelector('.agent-node', { timeout: 120_000 })
   log('work run started')
 

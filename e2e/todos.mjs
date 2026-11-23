@@ -41,7 +41,11 @@ const menu = (id) =>
   }, id)
 const chatField = () => page.locator('[data-testid=assistant-start-quick] .composer textarea')
 const addedShown = (t) => /Added\b[\s\S]*?to your to-do/.test(t)
-const sendLabel = async () => clean(await page.locator('.composer-row > span button').first().innerText())
+// The page's own send button: the New run aside's "Start run" (its key hint is not part of the label) or the composer's.
+const sendLabel = async () => {
+  const aside = page.locator('[data-testid=new-run-start] > span').first()
+  return clean(await ((await aside.count()) ? aside : page.locator('.composer-actions button.btn.primary').first()).innerText())
+}
 const mainText = () => page.evaluate(() => document.querySelector('#main-content')?.textContent ?? '')
 
 /** Back on the To-dos tab, press Start session on the changelog item and wait for the composer. */

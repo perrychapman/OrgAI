@@ -41,13 +41,31 @@ interface Props {
   onSubmit: (text: string, images: ImageAttachment[] | undefined) => Promise<void>
   /** Return true when the error was handled elsewhere; otherwise it shows as a notice. */
   onFail?: (err: unknown) => boolean
+  /**
+   * Content that belongs to the composer's own element but is laid out beside the field (the New run page's "Who will
+   * work on it" panel, which carries the one visible Start). Rendered after the field, inside `.composer`.
+   */
+  side?: (api: ComposerSendApi) => ReactNode
+  /** The single Start is drawn by `side` (through the api), so the field shows no button of its own. Needs `side`. */
+  sendInSide?: boolean
+}
+
+/** What `side` needs to draw the Start of this composer. */
+export interface ComposerSendApi {
+  /** Same as the field's own button and Enter: sends the draft. */
+  submit: () => void
+  canSend: boolean
+  busy: boolean
+  /** Why Start is off (empty draft); read it through `reasonId` on the button. */
+  reason: string
+  reasonId: string
 }
 
 /**
  * The message box shared by the run page and the New run page. Its text and images live in the store under
  * `draftKey`, so a half-typed task survives switching tabs, runs and projects and never lands in the wrong run.
  */
-export default function Composer({ draftKey, modeLabel, primaryLabel, placeholder, modeSwitch, settings, primaryVariant = 'primary', plainPlaceholder, notices, describedBy, autoFocus, focusToken, onSubmit, onFail }: Props): ReactElement {
+export default function Composer({ draftKey, modeLabel, primaryLabel, placeholder, modeSwitch, settings, primaryVariant = 'primary', plainPlaceholder, notices, describedBy, autoFocus, focusToken, onSubmit, onFail, side, sendInSide }: Props): ReactElement {
   const fieldPlaceholder = plainPlaceholder ? placeholder : composerPlaceholder(placeholder)
   const draft = useAppStore((s) => s.composerDrafts[draftKey])
   const setDraft = useAppStore((s) => s.setComposerDraft)
@@ -76,6 +94,28 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
     if (focusToken && focusToken !== mountToken.current) ref.current?.focus()
   }, [focusToken])
   useEffect(() => setNotice(null), [draftKey])
+  // An Enter that went down before this field had focus (it opened the page, or pressed a button that moved focus here)
+  // must never send: only a fresh keydown that starts in the field does. Cleared when the key comes up or the window blurs.
+  const enterDownElsewhere = useRef(false)
+  useEffect(() => {
+    const down = (e: KeyboardEvent): void => {
+      if (e.key === 'Enter' && e.target !== ref.current) enterDownElsewhere.current = true
+    }
+    const up = (e: KeyboardEvent): void => {
+      if (e.key === 'Enter') enterDownElsewhere.current = false
+    }
+    const clear = (): void => {
+      enterDownElsewhere.current = false
+    }
+    window.addEventListener('keydown', down, true)
+    window.addEventListener('keyup', up, true)
+    window.addEventListener('blur', clear)
+    return () => {
+      window.removeEventListener('keydown', down, true)
+      window.removeEventListener('keyup', up, true)
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
   // Button takes no aria-describedby; point the Send button at the reason it is disabled.
   useEffect(() => {
     const btn = sendRef.current?.querySelector('button')
@@ -112,7 +152,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
 
   return (
     <div
-      className={`composer ${dragOver ? 'drag' : ''}`}
+      className={`composer ${dragOver ? 'drag' : ''}${side ? ' composer--with-side' : ''}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('Files')) {
           e.preventDefault()
@@ -186,6 +226,8 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
+                // Enter and Ctrl+Enter send once per press: a held key (repeat) or a press that began elsewhere does not.
+                if (e.repeat || enterDownElsewhere.current) return
                 void submit()
               }
             }}
@@ -194,17 +236,20 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
           />
           <div className="composer-actions">
             <IconButton icon={Paperclip} label="Attach images" size="sm" onClick={() => fileRef.current?.click()} />
-            <span ref={sendRef}>
-              <Button variant={primaryVariant} disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
-                {primaryLabel}
-              </Button>
-              <span id={reasonId} className="sr-only">
-                {canSend ? '' : `Type a message to enable ${primaryLabel}`}
+            {!(side && sendInSide) && (
+              <span ref={sendRef}>
+                <Button variant={primaryVariant} disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
+                  {primaryLabel}
+                </Button>
+                <span id={reasonId} className="sr-only">
+                  {canSend ? '' : `Type a message to enable ${primaryLabel}`}
+                </span>
               </span>
-            </span>
+            )}
           </div>
         </div>
       </div>
+      {side?.({ submit: () => void submit(), canSend, busy, reason: canSend ? '' : `Type a message to enable ${primaryLabel}`, reasonId })}
     </div>
   )
 }

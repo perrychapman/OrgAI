@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Effort, PermissionMode, Project, StaffingGoal } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
@@ -18,6 +18,7 @@ import { Button } from './ui/Button'
 import { EmptyState } from './ui/EmptyState'
 import TeamFilesPointer from './team/TeamFilesPointer'
 import Composer from './Composer'
+import type { ComposerSendApi } from './Composer'
 import { goalToSend, selectedGoal, showsGoalChoice } from '../lib/runGoal'
 import { staffingGoalOf } from '@shared/defaults'
 import { EMPTY_RUN_SETTINGS, defaultRunEffort, defaultRunModel, isWideningMode, newRunPermissionChoices, startChoicesToSend, wideningConfirmOptions } from '../lib/runSettings'
@@ -34,7 +35,13 @@ import { GoalControl } from './runSettings/GoalControl'
 import { SettingTile } from './newRun/SettingTile'
 import { PickUpList } from './newRun/PickUpList'
 import { WhoWorksPanel } from './newRun/WhoWorksPanel'
+import { SpendLimitControl } from './newRun/SpendLimitControl'
+import { parseRunLimit, teamGroups, validExcluded } from './newRun/newRunData'
+import ScheduleEditor from './schedules/ScheduleEditor'
 import '../styles/new-run.css'
+
+/** The page is laid out in two columns (task, then who will work on it with the one Start) from this width. */
+const SIDE_BY_SIDE_MIN_PX = 800
 
 const SCAFFOLD_PROMPT =
   'The project folder is empty or nearly empty. If it is not a git repository yet, run git init and make an initial commit before delegating, so reports can work in isolated worktrees. Then scaffold the project according to .orgai/ARCHITECTURE.md: create the structure, tooling, build and test commands, and a minimal end-to-end slice that runs. Keep every decision consistent with the architecture document, and report what you created.'
@@ -96,8 +103,23 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const engagement = kind === 'engagement'
   const rootName =project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
   const canChooseMode = !needsSetup && !isVirtualProjectId(project.id)
-  const [mode, setModeState] = useState<NewRunMode>(() => readNewRunMode(project.id))
-  useEffect(() => setModeState(readNewRunMode(project.id)), [project.id])
+  // A caller (Home's Start) may ask for a mode for this opening only: read once, never written to the sticky choice.
+  const [mode, setModeState] = useState<NewRunMode>(() => {
+    const once = useAppStore.getState().newRunMode
+    return once && once.projectId === project.id ? once.mode : readNewRunMode(project.id)
+  })
+  const projectSeen = useRef(project.id)
+  useEffect(() => {
+    if (projectSeen.current === project.id) return
+    projectSeen.current = project.id
+    setModeState(readNewRunMode(project.id))
+  }, [project.id])
+  const oneShotMode = useAppStore((s) => s.newRunMode)
+  useEffect(() => {
+    if (!oneShotMode || oneShotMode.projectId !== project.id) return
+    setModeState(oneShotMode.mode)
+    useAppStore.getState().takeNewRunMode(project.id)
+  }, [oneShotMode, project.id])
   const ask = canChooseMode && mode === 'ask'
   const setMode = (m: NewRunMode): void => {
     setModeState(m)
@@ -119,10 +141,19 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
     setPickedMode(null)
     setPickedModeBaseline(null)
   }
+  // Who will work on it: the groups the user turned off (their roles and everyone below stay out of this run), and the
+  // optional spending limit for this run only. Both belong to this draft like the picks above.
+  const [offGroups, setOffGroups] = useState<string[]>([])
+  const [limitText, setLimitText] = useState('')
+  const groups = useMemo(() => teamGroups(project.roles), [project.roles])
+  const excluded = useMemo(() => (ask ? [] : validExcluded(groups, offGroups)), [ask, groups, offGroups])
+  const limit = parseRunLimit(limitText, project.maxBudgetUsd)
   const resetPicks = (): void => {
     setPickedGoal(null)
     setPickedModel(null)
     setPickedEffort(null)
+    setOffGroups([])
+    setLimitText('')
     resetMode()
   }
   useEffect(resetPicks, [project.id])
@@ -165,6 +196,36 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   }
 
   const wide = canChooseMode
+
+  // Two columns when the window has room: then the aside carries the page's one Start; narrower, the composer keeps it.
+  const colsRef = useRef<HTMLDivElement>(null)
+  const [sideBySide, setSideBySide] = useState(false)
+  useLayoutEffect(() => {
+    const el = colsRef.current
+    if (!el) return undefined
+    const measure = (): void => setSideBySide(el.offsetWidth >= SIDE_BY_SIDE_MIN_PX)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [wide])
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const draftText = useAppStore((s) => s.composerDrafts[newRunDraftKey(project.id)]?.text ?? '')
+  const startLabel = ask ? 'Ask' : 'Start run'
+  // Two columns: inside the composer element, carrying the page's one Start. One column: after the settings, no Start of its own.
+  const whoPanel = (api: ComposerSendApi | null): ReactElement => (
+    <WhoWorksPanel
+      project={project}
+      mode={ask ? 'ask' : 'team'}
+      rootName={rootName}
+      excluded={excluded}
+      onToggleGroup={(id, on) => setOffGroups((cur) => (on ? cur.filter((x) => x !== id) : cur.includes(id) ? cur : [...cur, id]))}
+      send={api}
+      startLabel={startLabel}
+      limitUsd={limit.ok ? limit.usd : null}
+      onSchedule={() => setScheduleOpen(true)}
+    />
+  )
 
   const lead = ask ? (
     <p className="nr-lead" data-testid="new-run-ask-lead">
@@ -214,8 +275,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           </Banner>
         )}
 
-        <div className={wide ? 'nr-cols' : undefined}>
-          <div className={wide ? 'nr-main motion-enter-lg' : 'nr-single'}>
+        <div ref={colsRef} className={wide ? `nr-cols nr-cols--${sideBySide ? 'side' : 'stack'} motion-enter-lg` : undefined}>
+          <div className={wide ? 'nr-main' : 'nr-single'}>
             {wide && (
               <>
                 <h2 className="nr-heading" data-testid="new-run-heading">
@@ -226,7 +287,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             )}
         <Composer
           draftKey={newRunDraftKey(project.id)}
-          modeLabel={ask ? 'Ask one assistant' : 'New run'}
+          modeLabel={ask ? 'New question' : 'New run'}
           primaryLabel={ask ? 'Ask' : needsSetup ? 'Start without setup' : 'Start'}
           primaryVariant={needsSetup ? 'secondary' : 'primary'}
           plainPlaceholder
@@ -235,11 +296,11 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             canChooseMode ? (
               <span className="new-run-mode" data-testid="new-run-mode">
                 <SegmentedControl<NewRunMode>
-                  label="Who works on it"
+                  label="Who does it"
                   value={mode}
                   options={[
                     { value: 'team', label: 'Team' },
-                    { value: 'ask', label: 'Ask' }
+                    { value: 'ask', label: 'Ask one assistant' }
                   ]}
                   onChange={setMode}
                 />
@@ -256,6 +317,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           autoFocus
           describedBy={todoDrafted ? todoNoteId : undefined}
           focusToken={focusToken}
+          sendInSide={wide && sideBySide}
+          side={wide && sideBySide ? (api) => whoPanel(api) : undefined}
           onFail={(err) => err instanceof DeclinedStart}
           onSubmit={linkedStart(newRunDraftKey(project.id), async (text, images) => {
             // A staged mode that asks less than the project's mode now and was not confirmed against it is confirmed first.
@@ -268,6 +331,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               // The confirmation covered those two values only: if either moved meanwhile, nothing is sent.
               if (modeNow.current.project !== project.permissionMode || modeNow.current.picked !== pickedMode) throw new DeclinedStart()
             }
+            // A limit that cannot apply is refused here, with its reason and the draft kept (main would only narrow it silently).
+            if (canChooseMode && !limit.ok) throw new Error(limit.problem)
             const sendGoal = goalToSend(project, ask, pickedGoal)
             // Setup pending and virtual projects show no settings row, so nothing of the draft applies there.
             const choices = canChooseMode
@@ -279,14 +344,21 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               : {}
             // The run this start opened (startRun shows it); unchanged means nothing started, so no to-do is linked.
             const shownBefore = useAppStore.getState().activeRunByProject[project.id]
-            await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}), ...(sendGoal ? { goal: sendGoal } : {}), ...choices })
+            await startRun(text, {
+              ...(images ? { images } : {}),
+              ...(ask ? { team: 'single' as const } : {}),
+              ...(sendGoal ? { goal: sendGoal } : {}),
+              ...(canChooseMode && !ask && excluded.length > 0 ? { excludeRoleIds: excluded } : {}),
+              ...(canChooseMode && limit.ok && limit.usd !== null ? { maxBudgetUsd: limit.usd } : {}),
+              ...choices
+            })
             // Started: the next draft begins from the project's defaults again. A refused start throws above and keeps every pick.
             resetPicks()
             const shown = useAppStore.getState().activeRunByProject[project.id]
             return shown !== shownBefore ? shown : undefined
           }, (runId) => runId)}
         />
-        {todoDrafted && <TodoDraftNote id={todoNoteId} sendLabel={ask ? 'Ask' : needsSetup ? 'Start without setup' : 'Start'} />}
+        {todoDrafted && <TodoDraftNote id={todoNoteId} sendLabel={ask ? 'Ask' : needsSetup ? 'Start without setup' : sideBySide ? startLabel : 'Start'} />}
 
             {canChooseMode && (
               <>
@@ -316,6 +388,9 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
                       <GoalControl goal={goal} isDefault={pickedGoal === null} onChange={(g) => setPickedGoal(g === staffingGoalOf(project) ? null : g)} />
                     </SettingTile>
                   )}
+                  <SettingTile label="Spending limit" help="Pauses and asks at the limit. Can only be lower than the project’s limit.">
+                    <SpendLimitControl value={limitText} onChange={setLimitText} projectCapUsd={project.maxBudgetUsd} />
+                  </SettingTile>
                 </RunSettingsRow>
                 <p className="run-settings-note" data-testid="run-settings-note">
                   These choices apply to this run only. Project settings stay as they are.
@@ -324,11 +399,23 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             )}
 
             {canChooseMode && <PickUpList project={project} />}
+            {wide && !sideBySide && whoPanel(null)}
           </div>
-          {canChooseMode && <WhoWorksPanel project={project} mode={ask ? 'ask' : 'team'} rootName={rootName} />}
         </div>
 
         {dialog}
+        {wide && (
+          <ScheduleEditor
+            open={scheduleOpen}
+            editing={null}
+            initial={{ projectId: project.id, prompt: draftText, single: ask }}
+            onClose={() => setScheduleOpen(false)}
+            onSaved={(saved) => {
+              setScheduleOpen(false)
+              useAppStore.getState().openSchedules({ scheduleId: saved.id })
+            }}
+          />
+        )}
 
         {others.length > 0 && (
           <section className="new-run-others" aria-label="Other runs of this project">
