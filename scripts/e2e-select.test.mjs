@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { RULES, SMOKE, ciPlan, changedFilesBetween, globToRegExp, loadChain, parseArgs, parseChain, runScripts, selectE2e } from './e2e-select.mjs'
+import { RULES, SMOKE, ciPlan, changedFilesBetween, globToRegExp, loadChain, parseArgs, parseChain, runScripts, scriptTimeoutMs, SCRIPT_TIMEOUT_MS, selectE2e } from './e2e-select.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const all = loadChain()
@@ -310,6 +310,14 @@ test('the CLI exits non-zero on an empty chain', async () => {
   assert.equal(r.status, 2)
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': 'node e2e/a.mjs && echo hi' } }))
   assert.equal(spawnSync(process.execPath, [join(dir, 'scripts', 'e2e-select.mjs'), '--full'], { encoding: 'utf8' }).status, 2)
+})
+
+test('scriptTimeoutMs gives factory-floor more room, keeps the default elsewhere and honours the override', () => {
+  assert.equal(scriptTimeoutMs('layout', {}), SCRIPT_TIMEOUT_MS)
+  assert.ok(scriptTimeoutMs('factory-floor', {}) > SCRIPT_TIMEOUT_MS)
+  assert.equal(scriptTimeoutMs('factory-floor', { E2E_SCRIPT_TIMEOUT_MS: '2000' }), 2000)
+  assert.equal(scriptTimeoutMs('layout', { E2E_SCRIPT_TIMEOUT_MS: '2000' }), 2000)
+  assert.equal(scriptTimeoutMs('layout', { E2E_SCRIPT_TIMEOUT_MS: 'x' }), SCRIPT_TIMEOUT_MS)
 })
 
 test('runScripts keeps going after a failure and lists every failed script', async () => {

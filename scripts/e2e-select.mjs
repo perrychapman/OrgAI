@@ -363,6 +363,16 @@ async function main() {
 
 /** One script's wall-clock budget. The slowest macOS script took about 4.5 minutes; the whole job has 50. E2E_SCRIPT_TIMEOUT_MS overrides. */
 export const SCRIPT_TIMEOUT_MS = 10 * 60 * 1000
+/**
+ * Scripts that need more than the default. factory-floor runs a SwiftShader WebGL2 scene with a 40-agent stress and a
+ * 121-agent case on windows-latest (the 2026-11-23 push run 45208950226 spent 600 s there and was killed in its leak phase,
+ * after every check had passed); macOS skips the WebGL2 phases. The rest keep the default.
+ */
+export const SCRIPT_TIMEOUTS_MS = { 'factory-floor': 15 * 60 * 1000 }
+/** The wall-clock budget of one script: E2E_SCRIPT_TIMEOUT_MS wins, then the per-script entry, then the default. */
+export function scriptTimeoutMs(name, env = process.env) {
+  return Number(env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUTS_MS[name] || SCRIPT_TIMEOUT_MS
+}
 /** After SIGTERM a timed-out script gets this long to close its Electron app (playwright closes it on SIGTERM) before the kill. */
 const TERM_GRACE_MS = 10_000
 
@@ -409,7 +419,7 @@ function killTree(child, signal) {
 }
 
 /** Runs e2e/<name>.mjs with inherited output and a wall-clock limit (E2E_SCRIPT_TIMEOUT_MS or SCRIPT_TIMEOUT_MS). */
-export function runScript(name, timeoutMs = Number(process.env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUT_MS) {
+export function runScript(name, timeoutMs = scriptTimeoutMs(name)) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [join('e2e', `${name}.mjs`)], { cwd: ROOT, stdio: 'inherit' })
     let timedOut = false
