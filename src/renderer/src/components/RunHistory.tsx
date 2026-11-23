@@ -29,10 +29,13 @@ import {
   bucketOf,
   groupByDay,
   inPeriod,
+  isRunningNow,
   matchesQuery,
   runsLabel,
+  scopeCounts,
   takeDays,
   type HistoryBucket,
+  type OutputsPhase,
   type HistoryPeriod
 } from '../lib/runHistory'
 import { HistoryRow } from './history/HistoryRow'
@@ -92,9 +95,17 @@ export default function RunHistory(): ReactElement {
   const outputsLoaded = useAppStore((s) => (project ? s.outputsByProject[project.id] !== undefined : true))
   const loadOutputs = useAppStore((s) => s.loadOutputs)
   const outputsIndex = useAppStore((s) => (project ? s.outputsByProject[project.id] : undefined))
+  // loadOutputs swallows a failure and leaves the index unset, so an unset index after it settles means it failed.
+  const [failedFor, setFailedFor] = useState<string | null>(null)
   useEffect(() => {
-    if (project && !outputsLoaded) void loadOutputs(project.id)
+    if (!project || outputsLoaded) return
+    const id = project.id
+    void loadOutputs(id).then(() => {
+      if (useAppStore.getState().outputsByProject[id] === undefined) setFailedFor(id)
+    })
   }, [project, outputsLoaded, loadOutputs])
+  // Until the index is here "no files" would be a guess; a Chat or scratch project has no index to wait for.
+  const outputsPhase: OutputsPhase = outputsLoaded || !project || isVirtualProjectId(project.id) ? 'ready' : failedFor === project.id ? 'failed' : 'loading'
 
   const groups = useMemo(() => chainGroups(summaries), [summaries])
   // The shared status word of every conversation, as one string so a store change that moves no status re-renders nothing here.
@@ -112,19 +123,20 @@ export default function RunHistory(): ReactElement {
     })
   }, [groups, wordsKey, outputsIndex])
 
-  // "Running now": conversations whose newest session is working or waiting on the user (the shared status words).
-  const runningNow = useMemo(() => entries.filter((e) => e.word === 'Running' || e.word === 'Needs you').length, [entries])
-  // Scope, kind, period and search narrow the list; the chips count what is left, then the chip narrows it once more.
-  const narrowed = useMemo(
+  // Kind, period and search narrow the list; the scope narrows it once more and the chips count what is left.
+  const fitting = useMemo(
     () =>
-      entries.filter(({ group: g, word, outputTitles }) => {
-        if (scope === 'running' && word !== 'Running' && word !== 'Needs you') return false
+      entries.map((e) => {
+        const { group: g, word, outputTitles } = e
         const kindOk = filter === 'all' || (filter === 'ask' ? g.first.team === 'single' : filter === 'work' ? g.first.kind === 'work' && g.first.team !== 'single' : g.first.kind === 'setup')
-        if (!kindOk || !inPeriod(g.newest.startedAt, period, now)) return false
-        return matchesQuery([displayRunName(g.first), g.first.prompt, g.newest.prompt, runTag(indexes.get(g.first.id)), word, g.newest.error, ...outputTitles], query)
+        const fits = kindOk && inPeriod(g.newest.startedAt, period, now) && matchesQuery([displayRunName(g.first), g.first.prompt, g.newest.prompt, runTag(indexes.get(g.first.id)), word, g.newest.error, ...outputTitles], query)
+        return { e, fits }
       }),
-    [entries, scope, filter, period, query, indexes, now]
+    [entries, filter, period, query, indexes, now]
   )
+  const narrowed = useMemo(() => fitting.filter((f) => f.fits && (scope === 'all' || isRunningNow(f.e.word))).map((f) => f.e), [fitting, scope])
+  // The scope counts are what each scope would list under the current choices (chips included).
+  const scopeCount = useMemo(() => scopeCounts(fitting.map((f) => ({ word: f.e.word, bucket: f.e.bucket, fits: f.fits })), bucket), [fitting, bucket])
   const counts = useMemo(() => bucketCounts(narrowed.map((e) => e.bucket)), [narrowed])
   const shown = useMemo(() => (bucket === 'all' ? narrowed : narrowed.filter((e) => e.bucket === bucket)), [narrowed, bucket])
   const { days, hidden } = useMemo(() => {
@@ -226,8 +238,8 @@ export default function RunHistory(): ReactElement {
                 label="Which runs"
                 value={scope}
                 options={[
-                  { value: 'running', label: `Running now · ${runningNow}`, title: 'Runs that are working or waiting on you' },
-                  { value: 'all', label: `All runs · ${entries.length}` }
+                  { value: 'running', label: `Running now · ${scopeCount.running}`, title: 'Runs that are working or waiting on you' },
+                  { value: 'all', label: `All runs · ${scopeCount.all}` }
                 ]}
                 onChange={setScope}
               />
@@ -363,6 +375,7 @@ export default function RunHistory(): ReactElement {
                                 onSelect={() => setSelectedKey(e.group.key)}
                                 onOpen={(id) => openRun(id)}
                                 chat={isChat}
+                                outputsPhase={outputsPhase}
                                 menu={menu}
                                 fallbackFocus={fallbackFocus}
                               />
@@ -394,6 +407,7 @@ export default function RunHistory(): ReactElement {
                 indexes={indexes}
                 status={selectedStatus}
                 outputs={selected.group.first.kind === 'work' && !selected.group.first.quick ? outputsOfRuns(outputsIndex, selected.group.members.map((m) => m.id)) : []}
+                outputsPhase={outputsPhase}
                 onOpen={(id) => void openRun(id)}
                 onContinue={(id) => void continueFromHistory(id)}
                 onOpenOutputs={(id) => openChainOutputs(id, openRun)}
