@@ -145,14 +145,14 @@ try {
       }
       await setTheme('dark')
       const effect = await page.locator(`${CARD} [data-testid=perm-scope-project]`).innerText()
-      check(/^Always allow for project: stops asking for .+ in this project\.$/.test(effect), `the effect sentence names what Always allow stops asking for ${tag}`, effect)
+      check(/^Always allow in this project: stops asking for .+\.$/.test(effect), `the effect sentence names what Always allow stops asking for ${tag}`, effect)
       const chips = await page.locator(`${CARD} [data-testid=perm-rule-chip]`).allInnerTexts()
       check(chips.length >= 1 && chips.every((c) => c.trim().length > 0), `the card lists its rule chips ${tag}`, chips.join(' | '))
       // The scope list (behind Details in compact mode) explains all three answers.
       const details = page.locator(`${CARD} .decision-details`)
       if (await details.isVisible()) await details.click()
       const scopes = await page.locator(`${CARD} [data-testid=perm-scopes] li`).allInnerTexts()
-      check(scopes.length === 3 && scopes[0] === 'Allow once: this call only.' && /until you end this session\.$/.test(scopes[1] ?? '') && /^Always allow for project:/.test(scopes[2] ?? ''), `the scope list explains once, session and project ${tag}`, scopes.join(' | '))
+      check(scopes.length === 2 && scopes[0] === 'Allow once: this call only.' && /until you end this session\.$/.test(scopes[1] ?? ''), `the scope list explains once and session ${tag}`, scopes.join(' | '))
       check(await page.locator(`${CARD} [data-testid=perm-settings-link]`).isVisible(), `the Fewer prompts link shows with the scope list ${tag}`)
       await answer('Allow once')
     }
@@ -163,7 +163,7 @@ try {
     if (l2) {
       const loc = page.locator(`${CARD} [data-testid=perm-location]`)
       const text = await loc.innerText()
-      check((await loc.getAttribute('data-kind')) === 'worktree' && text.includes('Starts in worktree agent-e2e1 (inside the project)'), `the compound card is placed in its worktree ${tag}`, text)
+      check((await loc.getAttribute('data-kind')) === 'worktree' && text.includes('Starts in its own copy of the project') && text.includes('worktree agent-e2e1'), `the compound card is placed in its worktree ${tag}`, text)
       const badge = await page.locator(`${CARD} .decision-meta .badge`).allInnerTexts()
       check(badge.some((b) => /3 steps/.test(b)), `the compound card is badged with its step count ${tag}`, badge.join(','))
       await shot(`card-compound-${tag}`)
@@ -749,7 +749,7 @@ try {
         const text = await page.locator(`${CARD} [data-testid=perm-location]`).innerText()
         check(text.includes('Outside the project'), 'the fatigue outside edit says Outside the project', text)
         const effect = await page.locator(`${CARD} [data-testid=perm-scope-project]`).innerText().catch(() => '')
-        check(/allowed folders|Auto-accept edits/.test(effect), 'the outside edit explains what Always allow saves', effect)
+        check(/allowed folders|Edit freely, ask for commands/.test(effect), 'the outside edit explains what Always allow saves', effect)
         await shot('fatigue-outside')
       }
       prev = next

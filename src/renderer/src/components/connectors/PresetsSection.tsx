@@ -131,7 +131,7 @@ export default function PresetsSection(): ReactElement | null {
           <div className="card-block preset-empty" data-testid="presets-empty">
             <Icon icon={Puzzle} size="lg" />
             <strong>No presets yet</strong>
-            <p>Describe a service your team uses that is not in the list, such as a client system. It then shows as a tile with a sign-in or token step.</p>
+            <p>Describe a service your team uses that is not in the list, such as an in-house system. It then shows as a tile with a sign-in or token step.</p>
           </div>
         ) : (
           <ul className="card-block preset-list" aria-label="Your presets">

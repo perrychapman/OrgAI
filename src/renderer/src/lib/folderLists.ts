@@ -62,7 +62,7 @@ export function droppedExtrasMessage(sentRefs: readonly string[], saved: { refer
   const lost = sentRefs.filter((r) => !keep.has(pathKey(r)))
   const parts: string[] = []
   if (lost.length) parts.push(`OrgAI did not keep these folders: ${lost.join(', ')}. Folders must be absolute, and cannot be the working folder, inside it or contain it.`)
-  if (sentClient && !(saved.client ?? '').trim()) parts.push('OrgAI did not keep the client name.')
+  if (sentClient && !(saved.client ?? '').trim()) parts.push('OrgAI did not keep the "Who or what it is for" line.')
   return parts.length ? parts.join(' ') : null
 }
 

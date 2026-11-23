@@ -50,7 +50,7 @@ describe('droppedExtrasMessage', () => {
   })
   it('names dropped folders and a dropped client', () => {
     expect(droppedExtrasMessage(['/a', '/b'], { referenceDirectories: ['/a'] })).toMatch(/did not keep these folders: \/b\./)
-    expect(droppedExtrasMessage([], {}, 'Acme')).toBe('OrgAI did not keep the client name.')
+    expect(droppedExtrasMessage([], {}, 'Acme')).toBe('OrgAI did not keep the "Who or what it is for" line.')
   })
 })
 

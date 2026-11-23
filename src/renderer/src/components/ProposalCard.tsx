@@ -4,10 +4,10 @@ import { Minus, Pencil, Plus, TriangleAlert } from 'lucide-react'
 import type { Project, Proposal, ProposalDecision, ProjectKind, Role } from '@shared/types'
 import { folderName } from '../lib/paths'
 import { connectionLabel } from '../lib/connectionLabel'
-import { projectSettingRows, type ProjectSettingRow } from '../lib/appSettingsCard'
+import { permissionModeWord, projectSettingRows, type ProjectSettingRow } from '../lib/appSettingsCard'
 import { AppSettingsProposalBody } from './proposals/AppSettingsProposalBody'
 import { ProjectSettingsChanges } from './proposals/ProjectSettingsChanges'
-import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, isVirtualProjectId, proposalSecretKey } from '@shared/types'
+import { PROPOSAL_NOTE_MAX_CHARS, isVirtualProjectId, proposalSecretKey } from '@shared/types'
 import { isOpenStatus } from '../lib/runChains'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
@@ -605,9 +605,9 @@ function targetSettingsNote(payload: Extract<Proposal, { kind: 'settings' }>['pa
 function SettingsBody({ payload, kind, rows: tableRows }: { payload: Extract<Proposal, { kind: 'settings' }>['payload']; kind: ProjectKind; rows?: ProjectSettingRow[] }): ReactElement {
   const rows: [string, string][] = []
   const engagement = kind === 'engagement'
-  if (engagement && payload.client !== undefined) rows.push(['Client or case', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared'])
+  if (engagement && payload.client !== undefined) rows.push(['Who or what it is for', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared'])
   if (payload.permissionMode) {
-    rows.push(['Permission mode', PERMISSION_MODE_OPTIONS.find((o) => o.value === payload.permissionMode)?.label ?? payload.permissionMode])
+    rows.push(['Permission mode', permissionModeWord(payload.permissionMode)])
   }
   if (payload.maxBudgetUsd !== undefined) rows.push(['Spend cap per run', payload.maxBudgetUsd === null ? 'No cap' : `$${payload.maxBudgetUsd}`])
   if (payload.maxSubagentDepth !== undefined) rows.push(['Max subagent depth', String(payload.maxSubagentDepth)])

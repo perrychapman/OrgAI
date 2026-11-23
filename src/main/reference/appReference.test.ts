@@ -99,7 +99,7 @@ describe('query', () => {
   it('locate answers surfaces and settings only', async () => {
     const r = await ref.query({ action: 'locate', query: 'dashboard' }, { status: false })
     expect(r.hits?.every((h) => h.kind === 'surface' || h.kind === 'setting')).toBe(true)
-    expect(r.text).toContain('Dashboard')
+    expect(r.text).toContain('Home')
   })
   it('status is refused unless allowed, and never leaks secrets', async () => {
     expect((await ref.query({ action: 'status' }, { status: false })).text).toBe('Status is not available in this run.')

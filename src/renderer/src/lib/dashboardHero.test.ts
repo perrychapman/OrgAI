@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Project } from '@shared/types'
-import { HERO_CHAT_TARGET, heroCanStart, heroPermissionLabel, heroScopeLabel, heroTargets, pickHeroTarget } from './dashboardHero'
+import { HERO_CHAT_TARGET, heroCanStart,heroScopeLabel, heroTargets, pickHeroTarget } from './dashboardHero'
 
 const project = (id: string, name: string, extra: Partial<Project> = {}): Project => ({ id, name, roles: [], ...extra }) as unknown as Project
 
@@ -30,10 +30,6 @@ describe('labels', () => {
     expect(heroScopeLabel({ roles: new Array(12).fill(null) } as unknown as Project)).toBe('Whole team · 12 roles')
     expect(heroScopeLabel({ roles: [null] } as unknown as Project)).toBe('Whole team · 1 role')
     expect(heroScopeLabel(undefined)).toBe('')
-  })
-  it('puts the permission mode in plain words', () => {
-    expect(heroPermissionLabel('default')).toBe('Asks before risky actions')
-    expect(heroPermissionLabel(undefined)).toBe('')
   })
   it('needs text to start', () => {
     expect(heroCanStart('  \n ')).toBe(false)

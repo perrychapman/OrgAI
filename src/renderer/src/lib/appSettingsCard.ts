@@ -4,7 +4,8 @@
  * No I/O, no React.
  */
 import type { AppSettingChange, AppSettingValue, AppSettingsProposableField, PermissionMode, Project, ProjectKind, SettingsProposalPayload } from '@shared/types'
-import { MODEL_TIER_OPTIONS, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { MODEL_TIER_OPTIONS, PERMISSION_MODES } from '@shared/types'
+import { permissionTitle } from './permissionWords'
 import { APP_SETTING_DOCS, atlasPath, type AtlasSurfaceId } from '@shared/view/atlas'
 import { oneLine } from './decisionTitle'
 import { showHidden } from './hiddenChars'
@@ -60,7 +61,7 @@ export function formatAppSettingValue(field: AppSettingsProposableField, value: 
 }
 
 export function permissionModeWord(mode: string): string {
-  return PERMISSION_MODE_OPTIONS.find((o) => o.value === (mode as PermissionMode))?.label ?? showHidden(oneLine(mode, 60))
+  return PERMISSION_MODES.includes(mode as PermissionMode) ? permissionTitle(mode as PermissionMode) : showHidden(oneLine(mode, 60))
 }
 
 /** A value that is a hex colour (the swatch next to the accent), else null. */
@@ -129,7 +130,7 @@ export function projectSettingRows(payload: SettingsProposalPayload, kind: Proje
   }
   // Every field the payload sets is listed, whatever kind the card guessed (a target project not loaded reads as code;
   // main sends client only for engagements). Review M2: nothing the user approves may be hidden.
-  if (payload.client !== undefined) add('client', 'Client or case', project?.client?.trim() ? showHidden(oneLine(project.client, 120)) : 'Not set', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared')
+  if (payload.client !== undefined) add('client', 'Who or what it is for', project?.client?.trim() ? showHidden(oneLine(project.client, 120)) : 'Not set', payload.client.trim() ? showHidden(oneLine(payload.client, 120)) : 'Cleared')
   if (payload.permissionMode) add('permissionMode', 'Permission mode', project && permissionModeWord(project.permissionMode), permissionModeWord(payload.permissionMode))
   if (payload.maxBudgetUsd !== undefined) add('maxBudgetUsd', 'Estimated-cost cap per run', project && (project.maxBudgetUsd === undefined ? 'No cap' : dollars(project.maxBudgetUsd)), payload.maxBudgetUsd === null ? 'No cap' : dollars(payload.maxBudgetUsd))
   if (payload.maxSubagentDepth !== undefined) add('maxSubagentDepth', 'Max subagent depth', project && (project.maxSubagentDepth === undefined ? 'Automatic' : String(project.maxSubagentDepth)), String(payload.maxSubagentDepth))

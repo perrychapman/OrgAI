@@ -588,7 +588,7 @@ try {
     const loc = (await page.locator('[data-testid=perm-location][data-kind=chat]').first().innerText().catch(() => '')).trim()
     check(/^Runs in this chat's scratch area/.test(loc), 'the Chat card says it runs in the scratch area', loc)
     check((await page.locator('[data-testid=perm-quick-readonly]').count()) === 1, 'the card says the chat started read-only (perm-quick-readonly)')
-    check((await page.locator('[data-testid=perm-scope-project]').count()) === 0 && (await dismissLabel(/Always allow for project/).count()) === 0, 'a Chat card offers no project scope and no "Always allow for project"')
+    check((await page.locator('[data-testid=perm-scope-project]').count()) === 0 && (await dismissLabel(/Always allow in this project/).count()) === 0, 'a Chat card offers no project scope and no "Always allow in this project"')
     check((await page.locator('[data-testid=perm-scope-session]').count()) === 1, 'a Chat card explains Allow for session (perm-scope-session)')
     check((await dismissLabel(/^Allow once$/).count()) === 1 && (await dismissLabel(/^Allow for session$/).count()) === 1 && (await dismissLabel(/^Deny$/).count()) === 1, 'the Chat card has Allow once, Allow for session and Deny')
     const chip = page.locator('[data-testid=run-meta-access]')

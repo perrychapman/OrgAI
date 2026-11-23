@@ -60,8 +60,8 @@ describe('navigationFor', () => {
   it('refuses an unknown surface and cleans the agent label', () => {
     expect(navigationFor(ev('nowhere'), { projects: PROJECTS })).toEqual({ ok: false, message: 'Assistant tried to open a place OrgAI does not know.' })
     const plan = navigationFor(ev('dashboard', { agentLabel: 'Ar‮chi\ntect' }), { projects: PROJECTS })
-    expect(plan.ok && plan.message).toBe('Ar chi tect opened Dashboard for you.')
-    expect(navigationFor(ev('dashboard', { agentLabel: '' }), { projects: [] }).message).toBe('The assistant opened Dashboard for you.')
+    expect(plan.ok && plan.message).toBe('Ar chi tect opened Home for you.')
+    expect(navigationFor(ev('dashboard', { agentLabel: '' }), { projects: [] }).message).toBe('The assistant opened Home for you.')
   })
   it('plainLabel clips', () => {
     expect(plainLabel('a'.repeat(100), 10)).toBe(`${'a'.repeat(9)}…`)

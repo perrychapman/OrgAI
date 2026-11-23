@@ -17,7 +17,7 @@ describe('formatAppSettingValue', () => {
     expect(formatAppSettingValue('appearance.canvas.layout', 'left-right')).toBe('Left to right')
     expect(formatAppSettingValue('appearance.canvas.edges', 'orthogonal')).toBe('Right angle')
     expect(formatAppSettingValue('appearance.canvas.nodeStyle', 'hex')).toBe('Honeycomb')
-    expect(formatAppSettingValue('defaultPermissionMode', 'default')).toBe('Ask for everything risky')
+    expect(formatAppSettingValue('defaultPermissionMode', 'default')).toBe('Ask before risky actions')
     expect(formatAppSettingValue('setupModel', 'deep')).toBe('Deep tier')
     expect(formatAppSettingValue('defaultReportModel', 'claude-x')).toBe('claude-x')
     expect(formatAppSettingValue('defaultKeepRuns', 40)).toBe('40')
@@ -55,7 +55,7 @@ describe('projectSettingRows', () => {
   it('pairs the payload with the stored project', () => {
     const rows = projectSettingRows({ rationale: '', permissionMode: 'acceptEdits', maxBudgetUsd: null, maxSubagentDepth: 2, isolateWriters: false }, 'code', project)
     expect(rows.map((r) => [r.field, r.now, r.next])).toEqual([
-      ['permissionMode', 'Ask for everything risky', 'Auto-accept file edits, ask for commands'],
+      ['permissionMode', 'Ask before risky actions', 'Edit freely, ask for commands'],
       ['maxBudgetUsd', '$2', 'No cap'],
       ['maxSubagentDepth', 'Automatic', '2'],
       ['isolateWriters', 'On', 'Off']
@@ -64,7 +64,7 @@ describe('projectSettingRows', () => {
   it('says Unknown when the project is not loaded and words engagements', () => {
     const rows = projectSettingRows({ rationale: '', isolateWriters: true, client: ' ' }, 'engagement', undefined)
     expect(rows.map((r) => [r.label, r.now, r.next])).toEqual([
-      ['Client or case', 'Unknown', 'Cleared'],
+      ['Who or what it is for', 'Unknown', 'Cleared'],
       ['Give each writer its own copy (git worktrees)', 'Unknown', 'On']
     ])
   })
