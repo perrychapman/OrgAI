@@ -240,3 +240,58 @@ export function kitRoleSpend(role: object, project: Pick<Project, 'staffing'>): 
   if (typeof r.model !== 'string' || !r.model) return null
   return importedRoleSpend({ model: r.model, tier: r.tier, effort: r.effort, staffing: r.staffing }, project, r.reportsTo === null)
 }
+
+// ---------- Role panel: count, knowledge write, required by the manager (UI overhaul, Team board) ----------
+
+/**
+ * "How many at once" (1..8) and "Records what it learns in Knowledge" wait for two Role fields a runtime change adds
+ * (`maxConcurrent`, `knowledgeWrite`). The controls stay hidden while these flags are false; set them once the fields are
+ * in src/shared/types.ts. The accessors read the fields loosely so this file compiles either way.
+ */
+export const ROLE_CONCURRENCY_SUPPORTED = false
+export const ROLE_KNOWLEDGE_WRITE_SUPPORTED = false
+export const CONCURRENCY_MIN = 1
+export const CONCURRENCY_MAX = 8
+
+const clampCount = (n: number): number => Math.min(CONCURRENCY_MAX, Math.max(CONCURRENCY_MIN, Math.round(n)))
+
+/** How many agents of the role may run at once; 1 when none is set. */
+export function roleConcurrency(role: object): number {
+  const v = (role as { maxConcurrent?: unknown }).maxConcurrent
+  return typeof v === 'number' && Number.isFinite(v) ? clampCount(v) : CONCURRENCY_MIN
+}
+
+/** The patch that sets the count, clamped to 1..8. */
+export function withConcurrency(n: number): Partial<Role> {
+  return { maxConcurrent: clampCount(n) } as unknown as Partial<Role>
+}
+
+/** "Up to 4"; "One at a time" for 1. */
+export function concurrencyText(n: number): string {
+  return n <= 1 ? 'One at a time' : `Up to ${n}`
+}
+
+/** Does the role record what it learns in Knowledge? */
+export function roleKnowledgeWrite(role: object): boolean {
+  return (role as { knowledgeWrite?: unknown }).knowledgeWrite === true
+}
+
+export function withKnowledgeWrite(on: boolean): Partial<Role> {
+  return { knowledgeWrite: on } as unknown as Partial<Role>
+}
+
+/**
+ * Can the role's manager hand it work (so "Every change must pass this role" can mean something)? True for a non-root
+ * role whose manager may delegate and lists it as spawnable.
+ */
+export function canRequireReview(roles: readonly Role[], role: Pick<Role, 'id' | 'reportsTo'>): boolean {
+  if (role.reportsTo === null) return false
+  const manager = roles.find((r) => r.id === role.reportsTo)
+  return !!manager && manager.canSpawn && manager.spawnable.includes(role.id)
+}
+
+/** Is the role in its manager's `requiredReports`? */
+export function isRequiredByManager(roles: readonly Role[], role: Pick<Role, 'id' | 'reportsTo'>): boolean {
+  const manager = roles.find((r) => r.id === role.reportsTo)
+  return !!manager && (manager.requiredReports ?? []).includes(role.id)
+}

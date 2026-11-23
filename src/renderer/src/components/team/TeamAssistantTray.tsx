@@ -37,6 +37,7 @@ import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { Select } from '../ui/Select'
 import { AppliedRow, CapabilityCard, DismissedList, DismissedRow, type AppliedInfo } from './CapabilityCard'
 import { CapabilityGaps } from './CapabilityGaps'
+import { useArchitectForm } from './ArchitectDialog'
 
 /** What the Team assistant is looking at: the whole team, or one role. Follows the canvas selection unless pinned. */
 export type TeamScope = { kind: 'team' } | { kind: 'role'; roleId: string }
@@ -96,11 +97,63 @@ export default function TeamAssistantTray({
           onClick={() => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.teamAssistant)}
         />
       </div>
+      <AskBar project={project} />
       {/* An open org change session is always pointed at here (walk H1); the notice row says it too. */}
       <OrgChangePointer project={project} />
       <div className="team-mode-pane">
         <RecommendPane project={project} scope={scope} active onDesign={onOpenArchitect} />
       </div>
+    </div>
+  )
+}
+
+/**
+ * The glass "Ask the Architect" bar (UI overhaul, Team board): one line to describe a change. Ask starts the same org
+ * change session as the Start from menu's dialog (or sends to the open one) through `useArchitectForm`, so nothing changes
+ * until the user approves a proposal on Live. Empty text does nothing here: a full review is asked for in the dialog.
+ */
+function AskBar({ project }: { project: Project }): ReactElement {
+  const form = useArchitectForm(project)
+  const text = form.revision.trim()
+  const ask = (): void => {
+    if (text && !form.busy) void form.submit()
+  }
+  return (
+    <div className="team-ask" data-testid="team-ask">
+      <div className="team-ask-bar">
+        <Icon icon={Sparkles} size="sm" />
+        <label className="sr-only" htmlFor="team-ask-input">
+          Ask the Architect
+        </label>
+        <input
+          id="team-ask-input"
+          type="text"
+          className="team-ask-input"
+          data-testid="team-ask-input"
+          value={form.revision}
+          placeholder="Ask the Architect to change the team, for example: add someone who writes docs"
+          aria-describedby="team-ask-hint"
+          onChange={(e) => form.setRevision(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              ask()
+            }
+          }}
+        />
+        <Button variant="primary" size="sm" loading={form.busy} disabled={!text} onClick={ask} testId="team-ask-send">
+          Ask
+        </Button>
+      </div>
+      <span className="hint team-ask-hint" id="team-ask-hint">
+        {form.liveRunId ? 'A session is open, so this goes to it.' : `The Architect proposes changes and nothing changes until you approve. ${form.cost}`}
+      </span>
+      {form.error && (
+        <p className="capability-warn" role="alert" data-testid="team-ask-error">
+          {form.error}
+        </p>
+      )}
+      {form.confirmDialog}
     </div>
   )
 }

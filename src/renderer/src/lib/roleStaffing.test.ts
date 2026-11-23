@@ -9,8 +9,16 @@ import {
   minTierChoices,
   projectStaffingPatch,
   projectStaffingView,
+  CONCURRENCY_MAX,
+  canRequireReview,
+  concurrencyText,
+  isRequiredByManager,
+  roleConcurrency,
+  roleKnowledgeWrite,
   roleStaffingControls,
   roleStaffingLine,
+  withConcurrency,
+  withKnowledgeWrite,
   withMaxEffort,
   withMinTier,
   withStaffingMode
@@ -151,5 +159,33 @@ describe('import and kit lines', () => {
   it('kit roles show a line only when the preview carries a model', () => {
     expect(kitRoleSpend({ name: 'x', slug: 'x', prompt: '', elevatedTools: [] }, {})).toBeNull()
     expect(kitRoleSpend({ model: 'haiku', tier: 'fast', effort: 'low', staffing: { mode: 'fixed' }, reportsTo: 'a' }, {})?.text).toBe('Always Fast / low')
+  })
+})
+
+describe('count, knowledge and required review', () => {
+  it('reads and clamps the count', () => {
+    expect(roleConcurrency(role())).toBe(1)
+    expect(roleConcurrency({ maxConcurrent: 4 })).toBe(4)
+    expect(roleConcurrency({ maxConcurrent: 99 })).toBe(CONCURRENCY_MAX)
+    expect(roleConcurrency({ maxConcurrent: 0 })).toBe(1)
+    expect(withConcurrency(20)).toEqual({ maxConcurrent: 8 })
+    expect(concurrencyText(1)).toBe('One at a time')
+    expect(concurrencyText(3)).toBe('Up to 3')
+  })
+  it('reads the knowledge flag', () => {
+    expect(roleKnowledgeWrite(role())).toBe(false)
+    expect(roleKnowledgeWrite({ knowledgeWrite: true })).toBe(true)
+    expect(withKnowledgeWrite(true)).toEqual({ knowledgeWrite: true })
+  })
+  it('offers required review only when the manager can hand it work', () => {
+    const lead = role({ id: 'lead', reportsTo: 'root', canSpawn: true, spawnable: ['r1'], requiredReports: ['r1'] })
+    const r1 = role({ id: 'r1', reportsTo: 'lead' })
+    const roles = [root, lead, r1]
+    expect(canRequireReview(roles, r1)).toBe(true)
+    expect(isRequiredByManager(roles, r1)).toBe(true)
+    expect(canRequireReview(roles, root)).toBe(false)
+    expect(canRequireReview([root, { ...lead, canSpawn: false }, r1], r1)).toBe(false)
+    expect(canRequireReview([root, { ...lead, spawnable: [] }, r1], r1)).toBe(false)
+    expect(isRequiredByManager([root, { ...lead, requiredReports: undefined }, r1], r1)).toBe(false)
   })
 })
