@@ -19,7 +19,7 @@ const OWNERSHIP_PRIMITIVE = 'ownership primitive: part of the cross-process data
 const REPO_LOCK_PRIMITIVE = 'repo lock primitive: part of the cross-process repository lock itself (runtime/repoLock.ts)'
 const REPO_LOCK = 'repo lock: runs inside withRepoLock for the repository (cross-process)'
 const OUTSIDE_DATA_FOLDER = 'outside data folder: project file shared with other tools, no OrgAI lock yet (later phase)'
-const SCRATCH_TEMP = 'scratch file: a uniquely named temp git index in the OS temp folder, made by git for one call and removed by that call; nothing else reads or writes it'
+const SCRATCH_TEMP = 'scratch file: a uniquely named temp git index in the OrgAI scratch folder of the OS temp folder (orgai-merge-scratch), made by git for one call and removed by that call, or by the next start\'s sweep when a crash left it (older than ten minutes only); nothing else reads or writes it'
 const HOST_OWN = "hostRegistry: this host's own registry and evidence files, written under its own host-<id> osLock via atomicWrite"
 const HOST_OWN_RELEASE =
   "hostRegistry: this host's own files, removed only by this host at a clean exit (its lock file after releasing it, spec 4.1)"
@@ -246,6 +246,8 @@ export const WRITE_SITES: Record<string, string> = {
     'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
   'src/main/runtime/worktrees.ts:evacuateNested:mkdirSync': 'single owner',
   'src/main/runtime/worktrees.ts:mergeAttributeRefusal:unlinkSync': SCRATCH_TEMP,
+  'src/main/runtime/worktrees.ts:newMergeScratchPath:mkdirSync': SCRATCH_TEMP,
+  'src/main/runtime/worktrees.ts:sweepMergeScratch:unlinkSync': SCRATCH_TEMP,
   'src/main/runtime/worktrees.ts:prepareRepoUnlocked:appendFileSync': REPO_LOCK,
   'src/main/runtime/worktrees.ts:prepareRepoUnlocked:mkdirSync': REPO_LOCK,
   'src/main/runtime/worktrees.ts:removeExcludeLine:writeFileSync': 'single owner',

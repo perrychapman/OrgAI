@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { scrubControlEnv } from './childEnv'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { devNull, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
@@ -149,6 +149,15 @@ export const GIT_NULL_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null'
  */
 const NEUTRAL_ENV: Record<string, string> = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: GIT_NULL_FILE, GIT_ATTR_NOSYSTEM: '1' }
 const NEUTRAL_OVERRIDES = ['-c', `core.attributesFile=${GIT_NULL_FILE}`, '-c', 'merge.default=text']
+
+/**
+ * git's safe values for the two settings that stop a tree from writing through a name that aliases `.git` (".git ", "git~1",
+ * ".git::$INDEX_ALLOCATION", HFS-ignorable characters), forced on every guarded call on every platform. A `-c` on the command
+ * line wins over every config file, so neither the repository's config nor the user's (which a test command, repository code
+ * run as the user, can edit) can switch them off for a merge, a branch switch or a worktree removal. They are never carried
+ * from config (mergeCarriedConfigArgs).
+ */
+const WRITE_SAFETY_OVERRIDES = ['-c', 'core.protectNTFS=true', '-c', 'core.protectHFS=true']
 
 /** True when `<root>/.git` is a real directory: not a file (`gitdir:` redirect), not a symlink or junction. */
 export function hasPlainGitDir(root: string): boolean {
@@ -686,6 +695,12 @@ export type GateDecision =
        * the merge lands in changed while repository code ran (rootPin.ts), else undefined.
        */
       verify?: () => Promise<string | undefined>
+      /**
+       * The git settings the merge carries from the user's own config (mergeCarriedConfigArgs), read BEFORE the test command
+       * ran, with the root pin, under the repository lock. The command is repository code run as the user and can rewrite the
+       * global config, so nothing is read from config at merge time. Absent: the snapshot taken when integrateWorktree started.
+       */
+      carried?: readonly string[]
     }
   | { behavior: 'refuse'; reason: 'tests'; message: string }
 
@@ -721,6 +736,7 @@ export async function ensureMainBranch(root: string, mainBranch: string | undefi
   // changed the repository's config or hooks.
   const exists = await gitGuarded(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])
   if (!exists.ok) return null
+  const targetCommit = exists.out
   const head = await gitGuarded(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
   if (head.ok && head.out === name) return null
   const current = head.ok ? head.out : 'another branch'
@@ -728,8 +744,12 @@ export async function ensureMainBranch(root: string, mainBranch: string | undefi
   if (!dirty.ok || dirty.out) {
     return `The project's main branch is ${name} but the main checkout is on ${current} with uncommitted changes, so nothing was merged. Commit or stash them, or switch to ${name}, then integrate again.`
   }
+  // The state the switch starts from is read right before it, and only the exact move it made is recorded in the ledger.
+  const before = await readHeadState(root)
   const sw = await gitGuarded(root, ['checkout', '--quiet', name, '--'])
   if (!sw.ok) return `The project's main branch is ${name} but the main checkout could not switch to it from ${current} (${sw.err.slice(0, 200)}), so nothing was merged.`
+  const after = await readHeadState(root)
+  if (after.head === targetCommit && after.branch === `refs/heads/${name}`) recordOrgAiMove(root, before, after)
   return null
 }
 
@@ -758,7 +778,7 @@ export async function integrateWorktree(
   // The target's lock is held for the git work but not while the user reviews the merge, which can take as
   // long as the user likes; another run's merge into the same checkout then waits only for git.
   // `tip` is the branch's commit recorded before the gate (review card, test command) runs; that commit is what merges.
-  const prepared = await withRepoLock(root, () => recordingMoves(root, async (): Promise<IntegrateResult | { changedFiles: string[]; tip: string; merged?: IntegrateResult }> => {
+  const prepared = await withRepoLock(root, async (): Promise<IntegrateResult | { changedFiles: string[]; tip: string; carried: readonly string[]; merged?: IntegrateResult }> => {
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
     }
@@ -787,19 +807,26 @@ export async function integrateWorktree(
     const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
     const tip = await branchTip(root, info.branch)
     if (!tip) return { info: { ...info, status: 'conflict' }, message: `Could not read branch ${info.branch}; it is kept at ${wt}.` }
+    // The settings the merge carries are read here, before any repository code (the test command) can run; a gate hands back
+    // its own earlier snapshot (GateDecision.carried), this one serves a merge with no gate and a gate that gave none.
+    const carried = await mergeCarriedConfigArgs(root)
     // Without a review gate the merge follows under the same lock.
-    return review ? { changedFiles, tip } : { changedFiles, tip, merged: await mergeInto(root, info, commitMessage, changedFiles, tip) }
-  }))
+    return review ? { changedFiles, tip, carried } : { changedFiles, tip, carried, merged: await mergeInto(root, info, commitMessage, changedFiles, tip, carried) }
+  })
   if ('info' in prepared) return prepared
   if (prepared.merged) return prepared.merged
   const { changedFiles } = prepared
   let approvedTip = prepared.tip
+  let carried: readonly string[] = prepared.carried
   let verifyRoot: (() => Promise<string | undefined>) | undefined
 
   if (review) {
     const decision = await review(changedFiles, prepared.tip)
     if (decision.behavior === 'merge' && decision.sha) approvedTip = decision.sha
-    if (decision.behavior === 'merge') verifyRoot = decision.verify
+    if (decision.behavior === 'merge') {
+      verifyRoot = decision.verify
+      if (decision.carried) carried = decision.carried
+    }
     if (decision.behavior === 'refuse') {
       return { info: { ...info, status: 'conflict', changedFiles }, message: decision.message, refused: decision.reason }
     }
@@ -820,7 +847,7 @@ export async function integrateWorktree(
     }
   }
 
-  return withRepoLock(root, () => recordingMoves(root, async () => {
+  return withRepoLock(root, async () => {
     // The lock was released during the review: maintenance or another run may have removed the worktree meanwhile.
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
@@ -843,8 +870,8 @@ export async function integrateWorktree(
         message: `Not merged: branch ${info.branch} changed after it was reviewed or before the tests finished, so the new commits were not approved. It is kept at ${wt}; integrate it again to review it as it is now.`
       }
     }
-    return mergeInto(root, info, commitMessage, changedFiles, approvedTip)
-  }))
+    return mergeInto(root, info, commitMessage, changedFiles, approvedTip, carried)
+  })
 }
 
 /** A merge prints a diffstat of every file it touches. */
@@ -859,19 +886,31 @@ const MERGE_OUTPUT = { maxBuffer: 8 * 1024 * 1024 }
  * own system or global config names. The caller checks the repository's config and hooks did not change while the tests
  * ran (rootPin.ts); what was there before is the user's own.
  */
-async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[], sha: string): Promise<IntegrateResult> {
+async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[], sha: string, carried: readonly string[]): Promise<IntegrateResult> {
   const wt = info.path
   // A merge driver or the built-in `union` selected by an attribute would make the merged content differ from the reviewed
   // commit: refused, not merged (the config's own drivers are pinned by rootPin.ts, the user's global ones are ignored below).
+  // So is a filter (git-lfs and the like): the merge runs no filter program and would write the stored form of the file.
   const attrRefusal = await mergeAttributeRefusal(root, sha, changedFiles)
   if (attrRefusal) return { info: { ...info, status: 'conflict', changedFiles }, message: `Not merged: ${attrRefusal} Branch ${info.branch} is kept at ${wt}.` }
-  const carried = await mergeCarriedConfigArgs(root)
+  // `carried` is the snapshot taken before the test command ran: nothing is read from the user's config here.
   const mergeArgs = [...carried, 'merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, sha]
-  let merge = await gitGuarded(root, mergeArgs, { ...MERGE_OUTPUT, neutral: true })
+  // HEAD is read immediately before each attempt: the ledger records a move only when this merge made it (mergeMadeMove).
+  const attempt = async (args: string[]): Promise<{ res: Awaited<ReturnType<typeof gitGuarded>>; before: HeadState }> => {
+    const before = await readHeadState(root)
+    return { res: await gitGuarded(root, args, { ...MERGE_OUTPUT, neutral: true }), before }
+  }
+  let { res: merge, before } = await attempt(mergeArgs)
   if (!merge.ok && IDENTITY_ERROR.test(merge.err)) {
     // No git identity (fresh CI runner, new machine): undo any half-made merge and retry with OrgAI's, as commits do.
     await gitGuarded(root, ['merge', '--abort'])
-    merge = await gitGuarded(root, [...FALLBACK_IDENTITY, ...mergeArgs], { ...MERGE_OUTPUT, neutral: true })
+    const retry = await attempt([...FALLBACK_IDENTITY, ...mergeArgs])
+    merge = retry.res
+    before = retry.before
+  }
+  if (merge.ok) {
+    const after = await readHeadState(root)
+    if (await mergeMadeMove(root, before, after, sha)) recordOrgAiMove(root, before, after)
   }
   if (!merge.ok) {
     const conflicts = await gitGuarded(root, ['diff', '--no-ext-diff', '--name-only', '--diff-filter=U'])
@@ -895,40 +934,165 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
   }
 }
 
+/** git's boolean spellings, as `git config --type=bool` reads them; null for anything else. */
+function parseGitBool(v: string): 'true' | 'false' | null {
+  const t = v.trim().toLowerCase()
+  if (t === 'true' || t === 'yes' || t === 'on' || t === '1') return 'true'
+  if (t === 'false' || t === 'no' || t === 'off' || t === '0') return 'false'
+  return null
+}
+
+/** Each carried key and what its value may be: a value outside it is dropped, never passed on. */
+const CARRIED_VALUES: Record<string, (v: string) => string | null> = {
+  'core.autocrlf': (v) => (v.trim().toLowerCase() === 'input' ? 'input' : parseGitBool(v)),
+  'core.eol': (v) => (['lf', 'crlf', 'native'].includes(v.trim().toLowerCase()) ? v.trim().toLowerCase() : null),
+  'core.safecrlf': (v) => (v.trim().toLowerCase() === 'warn' ? 'warn' : parseGitBool(v)),
+  'core.filemode': parseGitBool,
+  'core.symlinks': parseGitBool,
+  'user.name': (v) => (v.length > 0 && v.length <= 200 && !/[\0\r\n<>]/.test(v) ? v : null),
+  'user.email': (v) => (v.length > 0 && v.length <= 200 && !/[\0\r\n<>\s]/.test(v) ? v : null)
+}
+
+/** Two paths name the same folder: slashes and a trailing one ignored, case ignored where the file system is case-insensitive. */
+function samePathText(a: string, b: string): boolean {
+  const norm = (p: string): string => {
+    const s = p.replace(/\\/g, '/').replace(/\/+$/, '')
+    return process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s
+  }
+  return norm(a) === norm(b)
+}
+
 /**
  * The settings the merge needs from the user's own (system and global) git config, which the merge itself ignores (NEUTRAL_*),
- * as git reads them for a commit here: the identity, and the settings that decide how the files on disk compare with the index
- * (line endings: `core.autocrlf` is on in a stock Git for Windows install, and a merge that ignored it would see every CRLF file
- * as edited and refuse to touch it; file mode, links, case, long paths) and which folders git trusts (`safe.directory`). None
- * of them names a program. Only these keys are carried, as `-c` values; the identity only when both name and email exist (the
- * OrgAI fallback identity applies when git then complains).
+ * as git reads them for a commit here: the identity (`user.name`, `user.email`) and how files on disk compare with the index
+ * (`core.autocrlf` is on in a stock Git for Windows install, and a merge that ignored it would see every CRLF file as edited
+ * and refuse to touch it): `core.autocrlf`, `core.eol`, `core.safecrlf`, `core.filemode`, `core.symlinks`. Exactly these keys,
+ * each validated against its allowed values (CARRIED_VALUES); none names a program or a path. `core.protectNTFS` and
+ * `core.protectHFS` are never carried: they are forced to git's safe values on every guarded call (WRITE_SAFETY_OVERRIDES).
+ * `core.ignorecase` is not carried either: a checkout's own setting lives in the repository config, which the merge reads.
+ *
+ * `safe.directory` is never carried as a value from config. When the user's config already trusts `root` (the exact path, or `*`)
+ * a linked worktree, which has no pinned GIT_DIR, still has to be opened by the neutral merge, so the path OrgAI itself
+ * computed (`root`) is passed, never the string read from config.
+ *
+ * Read ONCE, before the project's test command runs (the command is repository code run as the user and can rewrite the global
+ * config): the caller keeps the result with the root pin and hands it to mergeInto. Nothing reads config at merge time. The
+ * identity is carried only when both name and email exist (the OrgAI fallback identity applies when git then complains).
  */
-const CARRIED_CONFIG = /^(core\.(autocrlf|eol|safecrlf|filemode|symlinks|ignorecase|longpaths|fscache|precomposeunicode|protectntfs|protecthfs|checkstat|trustctime)|safe\.directory|user\.(name|email))$/
 export async function mergeCarriedConfigArgs(root: string): Promise<string[]> {
-  const res = await gitGuarded(root, ['config', '--get-regexp', '^(core|safe|user)\\.'], { maxBuffer: 1024 * 1024 })
+  const res = await gitGuarded(root, ['config', '-z', '--get-regexp', '^(core\\.(autocrlf|eol|safecrlf|filemode|symlinks)|user\\.(name|email)|safe\\.directory)$'], { maxBuffer: 1024 * 1024 })
   if (!res.ok) return []
-  const clean = (v: string): boolean => v.length > 0 && v.length <= 500 && !/[\0\r\n]/.test(v)
   const single = new Map<string, string>()
-  const multi: string[] = []
-  for (const line of res.out.split(/\r?\n/)) {
-    const space = line.indexOf(' ')
-    const key = (space < 0 ? line : line.slice(0, space)).toLowerCase()
-    const value = space < 0 ? '' : line.slice(space + 1)
-    if (!CARRIED_CONFIG.test(key) || !clean(value)) continue
-    if (key === 'safe.directory') multi.push(value)
-    else single.set(key, value)
+  let trustsRoot = false
+  // `git config -z` prints "key\nvalue\0" (a key with no value: "key\0"); later scopes and later lines win.
+  for (const entry of res.out.split('\0')) {
+    if (!entry) continue
+    const nl = entry.indexOf('\n')
+    const key = (nl < 0 ? entry : entry.slice(0, nl)).toLowerCase()
+    const value = nl < 0 ? '' : entry.slice(nl + 1)
+    if (key === 'safe.directory') {
+      if (value === '*' || samePathText(value, root)) trustsRoot = true
+      continue
+    }
+    const check = CARRIED_VALUES[key]
+    if (!check) continue
+    // A boolean written with no value at all (`[core] filemode`) means true.
+    const clean = check(nl < 0 && key !== 'user.name' && key !== 'user.email' ? 'true' : value)
+    if (clean === null) single.delete(key)
+    else single.set(key, clean)
   }
   const args: string[] = []
   for (const [k, v] of single) if (k !== 'user.name' && k !== 'user.email') args.push('-c', `${k}=${v}`)
-  for (const v of multi) args.push('-c', `safe.directory=${v}`)
   const name = single.get('user.name')
   const email = single.get('user.email')
   if (name && email) args.push('-c', `user.name=${name}`, '-c', `user.email=${email}`)
+  if (trustsRoot) args.push('-c', `safe.directory=${root}`)
   return args
 }
 
 /** `merge` attribute values that cannot change merged content: git's own text merge, or a conflict where both sides changed. */
 const PLAIN_MERGE_ATTRS = new Set(['unspecified', 'set', 'unset', 'text', 'binary'])
+
+/** A `filter` attribute set to nothing (or unset) names no program. */
+const NO_FILTER_ATTRS = new Set(['unspecified', 'unset'])
+
+/**
+ * The scratch index of the attribute check lives under one OrgAI temp folder, so a crash between its creation and removal
+ * leaves a file the next start can find and remove (sweepMergeScratch), not a stray file among the OS temp files.
+ */
+const SCRATCH_DIR_NAME = 'orgai-merge-scratch'
+const SCRATCH_STALE_MS = 10 * 60_000
+let scratchSwept = false
+
+export function mergeScratchDir(): string {
+  return join(tmpdir(), SCRATCH_DIR_NAME)
+}
+
+/** Remove scratch indexes (and their lock files) older than ten minutes: a live check takes seconds. Never throws. */
+export function sweepMergeScratch(now: number = Date.now()): number {
+  let removed = 0
+  try {
+    const dir = mergeScratchDir()
+    for (const name of readdirSync(dir)) {
+      if (!/\.index(\.lock)?$/.test(name)) continue
+      try {
+        const full = join(dir, name)
+        if (now - statSync(full).mtimeMs < SCRATCH_STALE_MS) continue
+        unlinkSync(full)
+        removed++
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* no folder yet */
+  }
+  return removed
+}
+
+/** A fresh scratch index path; the first use in this process sweeps what an earlier crash left. */
+function newMergeScratchPath(): string {
+  const dir = mergeScratchDir()
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch {
+    return join(tmpdir(), `orgai-attr-${randomUUID()}.index`)
+  }
+  if (!scratchSwept) {
+    scratchSwept = true
+    sweepMergeScratch()
+  }
+  return join(dir, `${randomUUID()}.index`)
+}
+
+/**
+ * Every path the merge of `sha` into HEAD can treat as a file, with a rename's old name as well as its new one (an attribute
+ * may sit on either): the changes of the merged side since the fork, and the renames of the checkout's own side. null when git
+ * could not say.
+ */
+async function mergePaths(root: string, sha: string, files: readonly string[]): Promise<string[] | null> {
+  const all = new Set<string>(files)
+  const read = async (range: string, onlyRenames: boolean): Promise<boolean> => {
+    const res = await gitGuarded(root, ['diff', '--no-ext-diff', '--name-status', '-M', '-z', ...(onlyRenames ? ['--diff-filter=RC'] : []), range], { maxBuffer: 8 * 1024 * 1024 })
+    if (!res.ok) return false
+    const parts = res.out.split('\0')
+    for (let i = 0; i < parts.length; i++) {
+      const status = parts[i] ?? ''
+      if (!status) continue
+      const two = status[0] === 'R' || status[0] === 'C'
+      const first = parts[++i]
+      if (first) all.add(first)
+      if (two) {
+        const second = parts[++i]
+        if (second) all.add(second)
+      }
+    }
+    return true
+  }
+  if (!(await read(`HEAD...${sha}`, false))) return null
+  if (!(await read(`${sha}...HEAD`, true))) return null
+  return [...all]
+}
 
 /** Paths per check-attr call (a Windows command line holds about 32 000 characters). */
 const ATTR_CHUNK_CHARS = 12_000
@@ -942,10 +1106,13 @@ const ATTR_CHUNK_CHARS = 12_000
  */
 export async function mergeAttributeRefusal(root: string, sha: string, files: readonly string[]): Promise<string | undefined> {
   if (!files.length) return undefined
+  // A renamed file is looked up under both names (the old one is where an attribute of the checkout's side may sit).
+  const paths = await mergePaths(root, sha, files)
+  if (!paths) return 'git could not read the changes of the commit to merge, so the merge attributes were not checked.'
   const chunks: string[][] = []
   let chunk: string[] = []
   let size = 0
-  for (const f of files) {
+  for (const f of paths) {
     if (size + f.length + 1 > ATTR_CHUNK_CHARS && chunk.length) {
       chunks.push(chunk)
       chunk = []
@@ -955,19 +1122,26 @@ export async function mergeAttributeRefusal(root: string, sha: string, files: re
     size += f.length + 1
   }
   if (chunk.length) chunks.push(chunk)
-  const scratch = join(tmpdir(), `orgai-attr-${randomUUID()}.index`)
-  const find = async (cached: boolean): Promise<{ path: string; value: string }[] | string> => {
-    const bad: { path: string; value: string }[] = []
-    for (const paths of chunks) {
-      const res = await gitGuarded(root, ['check-attr', '-z', ...(cached ? ['--cached'] : []), 'merge', '--', ...paths], { neutral: true, maxBuffer: 8 * 1024 * 1024, ...(cached ? { env: { GIT_INDEX_FILE: scratch } } : {}) })
+  const scratch = newMergeScratchPath()
+  interface Found {
+    merge: { path: string; value: string }[]
+    filter: { path: string; value: string }[]
+  }
+  const find = async (cached: boolean): Promise<Found | string> => {
+    const found: Found = { merge: [], filter: [] }
+    for (const group of chunks) {
+      // `merge` and `filter` are read together; no filter program is run (check-attr only reads attribute files).
+      const res = await gitGuarded(root, ['check-attr', '-z', ...(cached ? ['--cached'] : []), 'merge', 'filter', '--', ...group], { neutral: true, maxBuffer: 8 * 1024 * 1024, ...(cached ? { env: { GIT_INDEX_FILE: scratch } } : {}) })
       if (!res.ok) return `git could not read the merge attributes (${res.err.slice(0, 120)}).`
       const parts = res.out.split('\0')
       for (let i = 0; i + 2 < parts.length; i += 3) {
+        const attr = parts[i + 1]
         const value = parts[i + 2] ?? ''
-        if (!PLAIN_MERGE_ATTRS.has(value)) bad.push({ path: parts[i] ?? '', value })
+        if (attr === 'merge' && !PLAIN_MERGE_ATTRS.has(value)) found.merge.push({ path: parts[i] ?? '', value })
+        if (attr === 'filter' && !NO_FILTER_ATTRS.has(value)) found.filter.push({ path: parts[i] ?? '', value })
       }
     }
-    return bad
+    return found
   }
   try {
     const here = await find(false)
@@ -976,7 +1150,15 @@ export async function mergeAttributeRefusal(root: string, sha: string, files: re
     if (!read.ok) return `git could not read the attributes of the commit to merge (${read.err.slice(0, 120)}).`
     const there = await find(true)
     if (typeof there === 'string') return there
-    const bad = [...here, ...there]
+    const filters = [...here.filter, ...there.filter]
+    if (filters.length) {
+      const named = [...new Set(filters.map((b) => `${b.path} (filter=${b.value})`))].slice(0, 3).join(', ')
+      return (
+        `a filter is set for ${named}${filters.length > 3 ? ', ...' : ''} (git-lfs, or another clean/smudge filter). OrgAI's merge runs no filter program, so it would write the stored form of those files ` +
+        `(for git-lfs, pointer files instead of the content) and the folder would show them as modified. Merge it by hand with git in the project folder (git merge ${sha.slice(0, 12)}), where your filters run; the branch is kept.`
+      )
+    }
+    const bad = [...here.merge, ...there.merge]
     if (!bad.length) return undefined
     const named = [...new Set(bad.map((b) => `${b.path} (merge=${b.value})`))].slice(0, 3).join(', ')
     return `a merge attribute selects a custom merge for ${named}${bad.length > 3 ? ', ...' : ''}, which could make the merged content differ from the reviewed commit. Only git's own text merge is used here: remove the merge attribute (in .gitattributes or .git/info/attributes), then integrate again.`
@@ -997,17 +1179,21 @@ export async function readHeadState(root: string): Promise<HeadState> {
 }
 
 /**
- * Run `fn` (holding the repository lock) and record in OrgAI's ledger (orgaiMoves.ts) every move it made to `root`'s HEAD: a
- * merge, or the switch to Project.mainBranch before one. The merge gate reads a moved HEAD against this ledger, so a parallel
- * report's merge is not mistaken for a change by someone else.
+ * True when HEAD went from `before` to `after` BECAUSE OF the merge of `sha` OrgAI just ran: `before` was read immediately
+ * before `git merge`, and the new HEAD is a merge commit whose first parent is exactly `before` and whose second parent is
+ * `sha`, or (a fast-forward) is `sha` itself with `before` an ancestor of it. A ref somebody else moved inside OrgAI's window
+ * (a plumbing `update-ref` from another report's test command, between an earlier read and the merge) matches neither, so it is
+ * not recorded in OrgAI's ledger (orgaiMoves.ts) and the merge gate reports it as someone else's change. Never a snapshot from
+ * function entry.
  */
-async function recordingMoves<T>(root: string, fn: () => Promise<T>): Promise<T> {
-  const before = await readHeadState(root)
-  try {
-    return await fn()
-  } finally {
-    recordOrgAiMove(root, before, await readHeadState(root))
-  }
+export async function mergeMadeMove(root: string, before: HeadState, after: HeadState, sha: string): Promise<boolean> {
+  if (before.head === 'none' || after.head === 'none' || before.head === after.head || before.branch !== after.branch) return false
+  const line = await gitGuarded(root, ['rev-list', '--parents', '-n', '1', after.head])
+  if (!line.ok) return false
+  const parents = line.out.split(/\s+/).slice(1)
+  if (parents.length === 2 && parents[0] === before.head && parents[1] === sha) return true
+  if (after.head === sha) return (await gitGuarded(root, ['merge-base', '--is-ancestor', before.head, sha])).ok
+  return false
 }
 
 /** Largest patch sent to the renderer; bigger diffs are cut with a note. */
@@ -1050,7 +1236,7 @@ export function gitGuarded(
   if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   const env: NodeJS.ProcessEnv = { ...guardedGitEnv(root), ...(opts.neutral ? NEUTRAL_ENV : {}), ...(opts.env ?? {}) }
   return new Promise((resolve) => {
-    const child = execFile(bin, ['--no-pager', ...HOSTILE_CONFIG_OVERRIDES, ...(opts.neutral ? NEUTRAL_OVERRIDES : []), ...args], { cwd: root, env, windowsHide: true, timeout: 60_000, maxBuffer: opts.maxBuffer ?? 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(bin, ['--no-pager', ...HOSTILE_CONFIG_OVERRIDES, ...WRITE_SAFETY_OVERRIDES, ...(opts.neutral ? NEUTRAL_OVERRIDES : []), ...args], { cwd: root, env, windowsHide: true, timeout: 60_000, maxBuffer: opts.maxBuffer ?? 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
     trackChildProcess(child, 'git')
