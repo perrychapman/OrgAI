@@ -1,0 +1,634 @@
+/* History board (UI overhaul, docs/design/ui-overhaul/project/History.dc.html): toolbar, day groups, rows, detail panel.
+   Tokens only. The run-tabs.css rules for .history (the flex column and its container) still apply to the root. */
+
+/* ---------- Header ---------- */
+
+.hb-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4) 0;
+}
+.hb-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.hb-head-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* ---------- Layout: list and detail side by side when the page is wide enough, stacked below ---------- */
+
+.hb-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+.hb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+.hb-list {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  container-type: inline-size;
+  container-name: hbl;
+}
+@container history (min-width: 720px) {
+  .hb-body {
+    overflow: hidden;
+  }
+  .hb-grid {
+    height: 100%;
+    grid-template-columns: minmax(0, 1fr) clamp(calc(var(--space-16) * 4), 34cqw, calc(var(--space-16) * 6));
+    align-items: stretch;
+  }
+  .hb-list,
+  .hb-detail {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .hb-detail {
+    align-self: start;
+    max-height: 100%;
+  }
+  /* Room for the focus ring and the glass edge of the groups inside the scroller. */
+  .hb-list {
+    padding: var(--space-0h) var(--space-1) var(--space-1) 0;
+  }
+}
+
+/* ---------- Toolbar ---------- */
+
+.hb-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.hb-search {
+  position: relative;
+  flex: 1 1 calc(var(--space-16) * 3);
+  max-width: calc(var(--space-16) * 5);
+}
+.hb-search .input {
+  width: 100%;
+  padding-inline-start: calc(var(--space-2) * 4);
+}
+.hb-search-icon {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: var(--space-3);
+  display: flex;
+  align-items: center;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.hb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.hb-selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+.hb-selects .select {
+  width: auto;
+}
+
+/* ---------- Empty ---------- */
+
+.hb-empty {
+  padding: var(--space-8) var(--space-4);
+}
+
+/* ---------- A day ---------- */
+
+.hb-day {
+  border-radius: var(--radius-xl);
+  padding: var(--space-2);
+}
+.hb-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0 var(--space-0h);
+  font-size: var(--text-small);
+}
+.hb-table caption {
+  caption-side: top;
+  padding: 0;
+  text-align: start;
+}
+.hb-day-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-3) var(--space-1h);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.hb-day-total {
+  font-weight: var(--weight-regular, 400);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* ---------- A row ---------- */
+
+.hb-row > td {
+  padding: var(--space-2) var(--space-2);
+  border-block: 1px solid transparent;
+  vertical-align: middle;
+  color: var(--text-secondary);
+  background: transparent;
+}
+.hb-row > td:first-child {
+  border-inline-start: 1px solid transparent;
+  border-start-start-radius: var(--radius-lg);
+  border-end-start-radius: var(--radius-lg);
+}
+.hb-row > td:last-child {
+  border-inline-end: 1px solid transparent;
+  border-start-end-radius: var(--radius-lg);
+  border-end-end-radius: var(--radius-lg);
+}
+.hb-row:hover > td {
+  background: color-mix(in oklab, var(--text-primary) 5%, transparent);
+}
+.hb-row.is-selected > td {
+  background: var(--accent-soft);
+  border-block-color: var(--accent-soft-border);
+}
+.hb-row.is-selected > td:first-child {
+  border-inline-start-color: var(--accent-soft-border);
+}
+.hb-row.is-selected > td:last-child {
+  border-inline-end-color: var(--accent-soft-border);
+}
+/* The conversation shown on the Live tab keeps a quiet accent edge. */
+.hb-row.active > td:first-child {
+  box-shadow: inset var(--space-0h) 0 0 var(--accent);
+}
+
+/* Column widths live on the <col>s (fixed layout reads them before any row); the title column takes the rest. */
+.hb-col-agents {
+  width: calc(var(--space-16) * 1.25);
+}
+.hb-col-time {
+  width: calc(var(--space-16) * 1);
+}
+.hb-col-cost {
+  width: calc(var(--space-16) * 1);
+}
+.hb-col-folder {
+  width: calc(var(--space-16) * 1.5);
+}
+.hb-col-act {
+  width: calc(var(--space-16) * 1.75);
+}
+.hb-c-agents {
+  text-align: end;
+  white-space: nowrap;
+}
+.hb-c-time {
+  text-align: end;
+  white-space: nowrap;
+}
+.hb-c-cost {
+  text-align: end;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.hb-c-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hb-actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.hb-main-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0h) var(--space-1);
+  min-width: 0;
+}
+.hb-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-1);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.hb-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.hb-text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.hb-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.hb-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.hb-result-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hb-row[data-tone='danger'] .hb-result-text {
+  color: var(--danger-text);
+}
+.hb-kind {
+  flex: none;
+}
+.hb-tags {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline-start: calc(var(--space-3) + var(--space-2) + var(--space-1) + var(--space-1));
+}
+
+/* Sessions of an expanded conversation sit quietly under it. */
+.hb-member > td {
+  padding: var(--space-1) var(--space-2);
+  vertical-align: middle;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.hb-member .run-member {
+  display: flex;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-inline-start: var(--space-8);
+}
+.hb-member .run-member-no {
+  flex: none;
+  color: var(--text-tertiary);
+}
+.hb-member .run-member-prompt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.hb-member .hb-c-agents {
+  white-space: normal;
+}
+
+/* The status dot. Filled = ended well or live, ring = ended without a verdict or not working now. Words carry the status too. */
+.hb-dot {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  inline-size: var(--space-2);
+  block-size: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.hb-dot[data-tone='is-running'] {
+  background: var(--working);
+}
+.hb-dot[data-tone='warn'] {
+  background: var(--warning);
+}
+.hb-dot[data-tone='ok'] {
+  background: var(--success);
+}
+.hb-dot[data-tone='danger'] {
+  background: var(--danger);
+}
+.hb-dot[data-tone='idle'],
+.hb-dot[data-tone='paused'],
+.hb-dot[data-tone='stopped'] {
+  background: transparent;
+  border: 2px solid var(--text-tertiary);
+}
+.hb-dot-sm {
+  inline-size: var(--space-1h);
+  block-size: var(--space-1h);
+}
+
+.hb-older {
+  align-self: flex-start;
+  min-height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.hb-older:hover {
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+}
+.hb-older:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* A narrower list drops its numbers in this order: agents, time, folder. */
+@container hbl (max-width: 640px) {
+  .hb-c-folder,
+  .hb-col-folder {
+    display: none;
+  }
+}
+@container hbl (max-width: 560px) {
+  .hb-c-agents,
+  .hb-col-agents {
+    display: none;
+  }
+}
+@container hbl (max-width: 440px) {
+  .hb-c-time,
+  .hb-col-time {
+    display: none;
+  }
+}
+
+/* ---------- Detail ---------- */
+
+.hb-detail {
+  min-width: 0;
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+}
+.hb-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.hb-detail-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1h);
+}
+.hb-detail-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.hb-detail-meta {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.hb-summary {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  overflow-wrap: anywhere;
+}
+.hb-summary-bad {
+  color: var(--danger-text);
+}
+.hb-stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.hb-stats > div {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--field-bg);
+}
+.hb-stats dt {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.hb-stats dd {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.hb-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1h);
+}
+.hb-section-title {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.hb-note {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+
+/* Agents: one small mark per agent, final state. The counts under it say the same in words. */
+.hb-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-0h);
+  max-inline-size: 100%;
+}
+.hb-mark {
+  box-sizing: border-box;
+  inline-size: var(--space-1h);
+  block-size: var(--space-1h);
+  border-radius: var(--radius-xs);
+  background: var(--success);
+}
+.hb-mark[data-mark='error'] {
+  background: var(--danger);
+}
+.hb-mark[data-mark='working'] {
+  background: var(--working);
+}
+.hb-mark[data-mark='waiting'] {
+  background: var(--warning);
+}
+.hb-mark[data-mark='idle'] {
+  background: transparent;
+  border: 1px solid var(--text-tertiary);
+}
+.hb-marks-more {
+  margin-inline-start: var(--space-1);
+  font-size: var(--text-caption);
+  line-height: var(--space-1h);
+  color: var(--text-tertiary);
+}
+
+.hb-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  align-self: stretch;
+}
+.hb-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.hb-step-mark {
+  flex: none;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+  margin-block-start: var(--space-0h);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-strong);
+  color: var(--text-on-accent);
+}
+.hb-step[data-tone='ok'] .hb-step-mark {
+  background: var(--success);
+  border-color: var(--success);
+  color: var(--text-on-success);
+}
+.hb-step[data-tone='bad'] .hb-step-mark {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--text-on-danger);
+}
+.hb-step[data-tone='working'] .hb-step-mark {
+  border-color: var(--working);
+  background: var(--working-soft);
+}
+.hb-step[data-tone='skipped'] .hb-step-mark {
+  color: var(--text-tertiary);
+}
+.hb-step[data-tone='pending'] {
+  color: var(--text-secondary);
+}
+.hb-step-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hb-left {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.hb-left li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-line);
+  background: var(--glass-strong);
+  font-size: var(--text-body);
+}
+.hb-left-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-semibold);
+}
+.hb-left-kind {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.hb-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.hb-error {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--danger-text);
+}
+
+/* ---------- Trends ---------- */
+
+.hb-trends {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: var(--space-3) var(--space-4) var(--space-4);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}

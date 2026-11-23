@@ -164,7 +164,7 @@ describe('brand tokens (ui-review-2.md C)', () => {
   }
 })
 
-const OVERHAUL_TOKENS = ['--bg-art', '--glass', '--glass-strong', '--glass-line', '--glass-blur', '--working', '--working-soft', '--working-text', '--glow-working', '--eng', '--eng-soft', '--eng-line']
+const OVERHAUL_TOKENS = ['--bg-art', '--glass', '--glass-strong', '--glass-line', '--sheen', '--glass-blur', '--working', '--working-soft', '--working-text', '--glow-working', '--eng', '--eng-soft', '--eng-line']
 
 /** Parses `rgb(r g b / a)` into channels and alpha. */
 function rgba(v: string): [number[], number] {
@@ -199,6 +199,25 @@ describe('ui overhaul tokens (docs/design/ui-overhaul)', () => {
         for (const t of ['--text-primary', '--text-secondary', '--text-tertiary', '--accent-text', '--success-text', '--warning-text', '--danger-text', '--working-text']) {
           expect(contrast(v(t), bg), `${t} on ${g}`).toBeGreaterThanOrEqual(4.5)
         }
+      }
+    })
+
+    it(`soft-fill badges, focus ring and input border hold on glass, ${name}`, () => {
+      const v = (t: string): string => value(body, t)
+      const peak = over([...ground], alpha, v('--surface-0'))
+      for (const g of ['--glass', '--glass-strong']) {
+        const [c, a] = rgba(v(g))
+        const bg = over(c, a, peak)
+        // Soft-fill badges (amber tray row, kind chips): text over its own tint over glass.
+        for (const tone of ['accent', 'warning', 'success', 'danger', 'working', 'info']) {
+          const soft = tone === 'working' ? v('--working-soft') : v(`--${tone}-soft`)
+          const text = v(`--${tone}-text`)
+          const mix = soft.match(/var\((--[a-z-]+)\)\s+(\d+)%/)
+          const fill = mix ? blend(v(mix[1]), Number(mix[2]), bg) : (() => { const [sc, sa] = rgba(soft); return over(sc, sa, bg) })()
+          expect(contrast(text, fill), `${tone}-text on ${tone}-soft on ${g}`).toBeGreaterThanOrEqual(4.5)
+        }
+        expect(contrast(v('--focus-ring'), bg), `focus ring on ${g}`).toBeGreaterThanOrEqual(3)
+        expect(contrast(v('--border-input'), bg), `--border-input on ${g}`).toBeGreaterThanOrEqual(3)
       }
     })
   }

@@ -23,7 +23,7 @@ import {
 import { useAppStore } from '../../store/useAppStore'
 import { CostText } from './RankedBars'
 import type { UsagePanelProps } from './panelProps'
-import { RunDetailRow, RunToggle, SortTh, useOverflowX } from './usageTableParts'
+import { RunDetailRow, RunStatusMark, RunToggle, SortTh, useOverflowX } from './usageTableParts'
 import '../../styles/usage-tables.css'
 import '../../styles/usage-runs.css'
 
@@ -33,7 +33,7 @@ export interface AllRunsProps extends UsagePanelProps {
   onToggle: (open: boolean) => void
 }
 
-const COLUMNS = 9
+const COLUMNS = 10
 
 function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactElement {
   const openRun = useAppStore((s) => s.openUsageRun)
@@ -122,6 +122,7 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
             <tr {...(windowed ? { 'aria-rowindex': 1 } : {})}>
               <SortTh label="Run" col="run" active={sort.key} dir={sort.dir} onSort={onSort} sticky />
               <th scope="col">Project</th>
+              <th scope="col">Result</th>
               <SortTh label="When" col="when" active={sort.key} dir={sort.dir} onSort={onSort} />
               <th scope="col">Kind</th>
               <th scope="col">Models</th>
@@ -169,11 +170,13 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
                         {name}
                       </button>
                     )}
-                    {r.live && <span className="usage-tag" title={status.note}>{status.word}</span>}
                   </th>
                   <td title={r.projectRemoved ? `${r.projectName}. Project removed` : r.projectName}>
                     <span className="usage-clip">{r.projectName}</span>
                     {r.projectRemoved && <span className="usage-cell-sub">Project removed</span>}
+                  </td>
+                  <td className="nowrap">
+                    <RunStatusMark status={status} />
                   </td>
                   <td className="nowrap">{formatDateTime(r.startedAt)}</td>
                   <td className="nowrap">{rowKindWord(r)}</td>

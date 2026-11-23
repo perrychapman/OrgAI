@@ -8,6 +8,7 @@ import { IconButton } from '../ui/IconButton'
 import { Popover } from '../ui/Popover'
 import { Switch } from '../ui/Switch'
 import { KindMark } from './KindMark'
+import { KnowledgeChip } from './KnowledgeChip'
 
 /** How long typing in the search box waits before the list filters (spec 2). */
 export const SEARCH_DEBOUNCE_MS = 150
@@ -117,12 +118,12 @@ export function KnowledgeFilters({
   }
   const originChips = (
     <>
-      <button type="button" className="knowledge-chip" data-testid="knowledge-origin" data-origin="user" aria-pressed={filter.origins.includes('user')} onClick={() => toggleOrigin('user')}>
-        You<span className="knowledge-chip-n"> {origins.user}</span>
-      </button>
-      <button type="button" className="knowledge-chip" data-testid="knowledge-origin" data-origin="agent" aria-pressed={filter.origins.includes('agent')} onClick={() => toggleOrigin('agent')}>
-        Agents<span className="knowledge-chip-n"> {origins.agent}</span>
-      </button>
+      <KnowledgeChip testId="knowledge-origin" origin="user" selected={filter.origins.includes('user')} count={origins.user} onClick={() => toggleOrigin('user')}>
+        You
+      </KnowledgeChip>
+      <KnowledgeChip testId="knowledge-origin" origin="agent" selected={filter.origins.includes('agent')} count={origins.agent} onClick={() => toggleOrigin('agent')}>
+        Agents
+      </KnowledgeChip>
     </>
   )
   const retiredSwitch = (
@@ -139,7 +140,7 @@ export function KnowledgeFilters({
   )
   const moreOn = filter.origins.length + (filter.showRetired ? 1 : 0) + (showInferred ? 1 : 0)
   const shownKinds = band ? kinds.filter((k) => k.kind !== NOTE_KIND) : kinds
-  const mark = (kind: string): ReactNode => (kind === NOTE_KIND ? <span className="knowledge-kind-mark knowledge-note-dot" data-testid="knowledge-kind-mark" data-mark="dot" aria-hidden="true" /> : <KindMark kind={kind} />)
+  const mark = (kind: string): ReactNode => <KindMark kind={kind} />
 
   return (
     <form
@@ -238,15 +239,13 @@ export function KnowledgeFilters({
       <fieldset className="knowledge-chips-set knowledge-kinds">
         <legend className={band ? 'knowledge-legend sr-only' : 'knowledge-legend'}>Kind</legend>
         <div className="knowledge-chips">
-          <button type="button" className="knowledge-chip" data-testid="knowledge-kind-all" aria-pressed={filter.kinds.length === 0} onClick={() => onChange({ kinds: [] })}>
+          <KnowledgeChip testId="knowledge-kind-all" selected={filter.kinds.length === 0} onClick={() => onChange({ kinds: [] })}>
             All kinds
-          </button>
+          </KnowledgeChip>
           {shownKinds.map((k) => (
-            <button key={k.kind} type="button" className="knowledge-chip" data-testid="knowledge-kind" data-kind={k.kind} aria-pressed={filter.kinds.includes(k.kind)} onClick={() => toggleKind(k.kind)}>
-              {mark(k.kind)}
+            <KnowledgeChip key={k.kind} testId="knowledge-kind" kind={k.kind} mark={mark(k.kind)} selected={filter.kinds.includes(k.kind)} count={k.count} onClick={() => toggleKind(k.kind)}>
               {k.label}
-              <span className="knowledge-chip-n"> {k.count}</span>
-            </button>
+            </KnowledgeChip>
           ))}
         </div>
       </fieldset>

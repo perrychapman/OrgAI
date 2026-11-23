@@ -1,6 +1,17 @@
 /* Run outputs, run surfaces (docs/design/outputs.md sections 3 to 7): the Outputs side tab, the shared detail and
    menu, the RunMeta chip and the transcript row. Tokens only. */
 
+/* Local glass aliases for the Files tab and the run side tab. The foundation tokens (--glass, --glass-strong, --glass-line,
+   --glass-blur) win once present; until then each falls back to the older surface token so the look stays readable. */
+.outputs,
+.run-outputs {
+  --o-glass: var(--glass, var(--surface-1));
+  --o-glass-strong: var(--glass-strong, var(--surface-2));
+  --o-glass-line: var(--glass-line, var(--border-default));
+  --o-blur: var(--glass-blur, none);
+  --o-hover: color-mix(in oklab, var(--text-primary) 7%, transparent);
+}
+
 /* ---------- Side tab ---------- */
 .run-outputs {
   display: flex;
@@ -73,9 +84,12 @@
   gap: var(--space-1);
   min-width: 0;
   padding: var(--space-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-1);
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--o-glass);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 /* The row's open target: one native button over the icon and the text (the row has no separate Show button). */
 .run-output-show {
@@ -87,11 +101,11 @@
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-1);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 .run-output-show:hover {
-  background: var(--surface-3);
+  background: var(--o-hover);
 }
 .run-output-badges {
   display: inline-flex;
@@ -105,7 +119,7 @@
 }
 .run-output-row[data-current='true'] {
   border-color: var(--accent);
-  background: var(--surface-2);
+  background: var(--accent-soft);
 }
 .run-output-row[data-missing='true'] .run-output-title {
   text-decoration: line-through;
@@ -189,9 +203,11 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
-  font-size: var(--text-h3, var(--text-body));
-  line-height: var(--text-body-lh);
+  font-family: var(--font-display, var(--font-sans));
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }

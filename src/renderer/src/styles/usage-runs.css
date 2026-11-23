@@ -84,15 +84,43 @@
 .usage-run-kind {
   margin-inline-start: var(--space-2);
 }
+/* Result (RunStatusMark): a dot and the status word. Working cyan, Finished green, a stop at the budget amber, Failed red,
+   everything else neutral. The dot never carries the state alone: the word is always beside it. */
+.usage-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  margin-inline-start: var(--space-2);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.usage-status .usage-status-word {
+  margin-inline-start: 0;
+  font-size: var(--text-small);
+}
+.usage-status[data-tone='working'] .usage-status-word {
+  color: var(--working-text);
+}
+.usage-status[data-tone='ok'] .usage-status-word {
+  color: var(--success-text);
+}
+.usage-status[data-tone='warn'] .usage-status-word {
+  color: var(--warning-text);
+}
+.usage-status[data-tone='bad'] .usage-status-word {
+  color: var(--danger-text);
+}
+.usage-tbl td > .usage-status {
+  margin-inline-start: 0;
+}
 .usage-status-dot {
+  position: relative;
   display: inline-block;
   flex: none;
   inline-size: 8px;
   block-size: 8px;
-  margin-inline-start: var(--space-2);
   border-radius: var(--radius-full);
   background: var(--text-tertiary);
-  vertical-align: middle;
 }
 .usage-status-dot[data-tone='ok'] {
   background: var(--success);
@@ -100,8 +128,30 @@
 .usage-status-dot[data-tone='bad'] {
   background: var(--danger);
 }
-.usage-status-dot[data-tone='live'] {
-  background: var(--accent);
+.usage-status-dot[data-tone='warn'] {
+  background: var(--warning);
+}
+.usage-status-dot[data-tone='working'] {
+  background: var(--working);
+}
+/* Working pulses (transform and opacity on a ring, never the dot itself) only while motion is allowed; Pause motion on the
+   Dashboard does not reach this page, reduced motion does. */
+.usage-status-dot[data-tone='working']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1.5px solid var(--working);
+  pointer-events: none;
+  animation: motion-pulse-ring var(--dur-pulse) var(--ease-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-status-dot[data-tone='working']::after {
+    display: none;
+  }
+}
+:root[data-reduce-motion='on'] .usage-status-dot[data-tone='working']::after {
+  display: none;
 }
 
 :root[data-reduce-motion='on'] .usage-run-toggle svg,

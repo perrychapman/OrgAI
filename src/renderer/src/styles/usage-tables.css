@@ -38,9 +38,13 @@
   top: 0;
   z-index: 2;
   background: var(--usage-tbl-bg, var(--surface-0));
-  color: var(--text-secondary);
-  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
+}
+/* A run's row reads like the board's recent-runs list: hairlines, a soft hover wash, the last row open. */
+.usage-tbl tbody tr:last-child > :is(th, td) {
+  border-bottom: 0;
 }
 .usage-tbl tbody th[scope='row'] {
   font-weight: var(--weight-regular, 400);
@@ -52,11 +56,19 @@
 .usage-tbl .nowrap {
   white-space: nowrap;
 }
-/* First column stays while the table scrolls sideways. */
+/* First column stays while the table scrolls sideways. Cells are see-through on the glass card until a table really scrolls
+   (the wrapper is then a region) or its rows are windowed, where they need a fill to cover what passes under them. */
 .usage-tbl th.sticky {
   position: sticky;
   left: 0;
   z-index: 1;
+  background: transparent;
+}
+.usage-tbl thead th {
+  background: transparent;
+}
+.usage-tbl-wrap[role='region'] :is(thead th, th.sticky),
+.usage-runs-scroll[data-windowed='true'] thead th {
   background: var(--usage-tbl-bg, var(--surface-0));
 }
 .usage-tbl thead th.sticky {
@@ -208,9 +220,11 @@
   font-size: var(--text-caption);
 }
 .usage-runs-details > summary h2 {
-  font-size: var(--text-body);
-  line-height: var(--text-body-lh);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
 }
 .usage-wasteful-table .usage-run-cell .usage-tag {
   margin-inline-start: var(--space-2);
@@ -321,8 +335,9 @@
   max-width: 100%;
   cursor: pointer;
   color: var(--text-primary);
-  font-size: var(--text-title);
-  line-height: var(--text-title-lh);
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
   font-variant-numeric: tabular-nums;
   border-radius: var(--radius-xs);

@@ -51,6 +51,27 @@ On the plain ground (no violet): dark glass primary 15.29, tertiary 7.64; light 
 White on `--accent`: 4.88 dark, 5.97 light. `--border-input` on `--field-bg`: 3.25+ dark, 3.26 light. The existing
 surface, soft-fill badge and focus-ring checks in `tokens.test.ts` all pass with the new values.
 
+Review round 2 changes (values only; token names unchanged):
+
+- Light `--glass-line` is now `rgb(24 28 56 / 0.12)` in both light blocks (was white at 95 %, no edge on near-white
+  glass). It is a decorative soft edge (about 1.3:1, estimated, not a script measurement). A clickable card tile
+  (`.card` as button, link or role=button) takes `--border-input` (3:1) in `controls.css` because its boundary is the
+  only cue.
+- New glass checks in `tokens.test.ts` (worst case, violet corner): every tone's text on its own soft fill on glass at
+  4.5, `--focus-ring` on glass at 3, `--border-input` on glass at 3. They found two real failures, fixed by values:
+  dark `--danger-text` `#ff8a80` to `#ff9a92` (danger soft badge was 4.12) and dark `--border-input` `#737d99` to
+  `#8089a6` (was 2.73 on glass; field and surface-2 pairs only get better).
+- `--sheen` is a themed token (white 35 % dark, 55 % light); `.motion-sheen` uses it.
+- `.agent-node` / `.role-node` no longer override `--glow-working`: working is cyan (owner decision 1); the role colour
+  stays on the node's role border and other cues. No test or e2e asserted the role glow.
+- `.ui-chip.is-selected` has a forced-colors rule (Highlight fill, HighlightText, outline).
+- The quiet Deny on decision cards has a resting `--danger-border` border.
+- `--panel` legacy alias stays `--surface-1` (existing TSX); the design boards mean `--surface-2`. Comment warns.
+
+Known limits: the tray's breathing dot stops only under reduced motion (the app's reduce-motion setting), because only
+the dashboard sets `[data-motion-paused]`. CLI `running` and `identityCyan` are close in light as well as in dark, so
+the two must not be the only distinction between a running CLI and an identity mark.
+
 ## Display font
 
 Space Grotesk (variable, weight 300 to 700) is bundled at `src/renderer/src/assets/fonts/SpaceGrotesk-Variable.ttf`

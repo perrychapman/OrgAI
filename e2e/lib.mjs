@@ -219,7 +219,7 @@ export function removeFixture(root) {
  * Launch the built app and wait until the renderer is up. Returns { app, page, shot }.
  * Dialogs (confirm()) are accepted automatically; renderer console errors are logged.
  */
-export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
+export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome = false } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
@@ -247,6 +247,18 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
     await page.reload()
     await page.waitForSelector('.sidebar', { timeout: 60_000 })
   }
+  // First launch opens on the three setup steps (FirstLaunch, ui-overhaul Welcome). Scripts start past them, on the
+  // start choice and its New project form, unless they ask for the steps with `welcome: true`.
+  if (!welcome) {
+    const onSetup = await page.evaluate(() => {
+      localStorage.setItem('orgai.welcome.done', '1')
+      return !!document.querySelector('[data-testid=welcome-setup]')
+    })
+    if (onSetup) {
+      await page.reload()
+      await page.waitForSelector('.sidebar', { timeout: 60_000 })
+    }
+  }
   // A relaunch on existing data may open on the dashboard or a run.
   if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
   let n = 0
@@ -273,8 +285,10 @@ export async function screenshot(page, name) {
 }
 
 export async function gotoProjects(page) {
+  // The Home row (data-testid nav-home, also in the rail) first; older trees fall back to the Dashboard / Projects row.
   await page
-    .locator('.sidebar .nav-item', { hasText: /^\s*(Dashboard|Projects)\s*$/ })
+    .locator('[data-testid=nav-home]')
+    .or(page.locator('.sidebar .nav-item', { hasText: /^\s*(Home|Dashboard|Projects)\s*$/ }))
     .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
     .first()
     .click()
@@ -293,6 +307,9 @@ export async function openProjectForm(page) {
     await form.waitFor({ timeout: 10_000 })
     return form
   }
+  // First launch on the setup steps (a script that launched the app itself): skip to the start choice.
+  const skip = page.locator('[data-testid=welcome-setup] [data-testid=welcome-skip]')
+  if (await skip.isVisible().catch(() => false)) await skip.click()
   // First launch: "Start a project" is checked by default.
   const choice = page.locator('[data-testid=dash-start-choice]').getByRole('radio', { name: 'Start a project' })
   if (!(await choice.isChecked())) await choice.check({ force: true })

@@ -2,10 +2,29 @@ import type { ReactElement, ReactNode, RefObject } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { UsageOverviewRow } from '@shared/types'
 import { formatTokens } from '../../lib/cost'
+import { HOST_END_NOTE, type StatusWord } from '../../lib/runStatus'
 import { rowCacheHit, rowCostInput, rowName } from '../../lib/usageRuns'
 import { useAppStore } from '../../store/useAppStore'
 import '../../styles/usage-tables.css'
 import '../../styles/usage-runs.css'
+
+/**
+ * The result of a run: a dot and the status word (lib/runStatus.ts words only). The word is always visible beside the dot,
+ * so status never rests on colour. Working is cyan and pulses only while motion is allowed, Finished green, a stop at the
+ * budget or by policy amber, Failed red; every other word is neutral.
+ */
+export function RunStatusMark({ status, live }: { status: { word: StatusWord; note?: string }; live?: boolean }): ReactElement {
+  const stopped = status.word === 'Stopped' && (status.note === HOST_END_NOTE.budget || status.note === HOST_END_NOTE.policy)
+  const tone = live || status.word === 'Running' ? 'working' : status.word === 'Finished' ? 'ok' : status.word === 'Failed' ? 'bad' : stopped || status.word === 'Needs you' ? 'warn' : 'idle'
+  return (
+    <span className="usage-status" data-testid="usage-run-status" data-tone={tone}>
+      <span className="usage-status-dot" data-tone={tone} aria-hidden="true" />
+      <span className="usage-status-word" title={status.note ? `${status.word}. ${status.note}` : status.word}>
+        {stopped && status.note ? status.note : status.word}
+      </span>
+    </span>
+  )
+}
 
 /** The chevron button at the start of a run row: toggles its detail row (one disclosure level, plan 2.7). */
 export function RunToggle({ open, detailId, mounted, onToggle, name }: { open: boolean; detailId: string; mounted: boolean; onToggle: () => void; name: string }): ReactElement {

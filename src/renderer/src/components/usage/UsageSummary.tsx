@@ -169,7 +169,10 @@ export default function UsageSummary({
           />
         ))}
       </ul>
-      <span ref={barRef} className="usage-kpi-indicator" data-testid="usage-kpi-indicator" aria-hidden="true" />
+      {/* The rail clips the sliding bar to the band's rounded top corners (the tiles' own tips must not be clipped). */}
+      <span className="usage-kpi-rail" aria-hidden="true">
+        <span ref={barRef} className="usage-kpi-indicator" data-testid="usage-kpi-indicator" aria-hidden="true" />
+      </span>
     </div>
   )
 }
