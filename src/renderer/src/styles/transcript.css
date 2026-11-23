@@ -13,11 +13,46 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* The user's message: a right-aligned bubble with a small tail corner (board "Conversation"). */
 .entry.user {
+  align-self: flex-end;
+  max-width: min(88%, 90ch);
   background: var(--accent-soft);
-  border: 1px solid var(--accent-soft-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-xs) var(--radius-lg);
   padding: var(--space-2) var(--space-3);
+}
+.entry.user .tag {
+  justify-content: flex-end;
+  margin-bottom: var(--space-0h);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+/* Assistant text: plain, --text-secondary, with a small avatar chip in the root conversation. */
+.entry.text {
+  color: var(--text-secondary);
+}
+.entry.text.has-avatar {
+  display: block;
+  position: relative;
+  padding-left: calc(var(--space-6) + var(--space-2));
+  min-height: var(--space-6);
+}
+.entry.text.has-avatar::before {
+  content: attr(data-initial);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--space-6);
+  height: var(--space-6);
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
 }
 .panel-note {
   margin: 0;
@@ -75,22 +110,33 @@
   border: 1px solid var(--border-default);
 }
 .entry.thinking {
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   font-style: italic;
   font-size: var(--text-small);
   border-left: 2px solid var(--border-default);
   padding-left: var(--space-3);
 }
-/* Where a continuation starts in the merged feed: one quiet centred line. */
+/* Where a continuation starts in the merged feed: a subtle centred pill on a hairline. */
 .chain-divider {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   color: var(--text-tertiary);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   text-align: center;
   margin: var(--space-2) 0;
+}
+.chain-divider > span:not(.sr-only) {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: var(--space-0h) var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
 }
 .chain-divider::before,
 .chain-divider::after {
@@ -112,17 +158,63 @@
   justify-content: center;
   margin: var(--space-1) 0 var(--space-2);
 }
-/* Compact one-line rows: tool calls, tool results and harness lines. */
+/* "Load earlier sessions": a quiet pill, not a button block. */
+.chain-load-earlier .btn {
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+/* Compact quiet rows: tool calls, tool results and harness lines. */
 .entry.tool_use,
 .entry.tool_result,
 .entry.system {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  color: var(--text-secondary);
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
   white-space: normal;
+}
+.entry.system .md,
+.entry.tool_use .entry-detail summary,
+.entry.tool_result .entry-detail summary {
+  font-size: var(--text-caption);
+}
+/* A non-root agent's transcript reads as a vertical timeline: a hairline down the left, a dot on each tool row. */
+.transcript.timeline {
+  gap: 0;
+  padding-left: var(--space-4);
+}
+.transcript.timeline > .entry {
+  margin-block: var(--space-1h);
+}
+.transcript.timeline > .entry.tool_use,
+.transcript.timeline > .entry.tool_result,
+.transcript.timeline > .entry.system {
+  position: relative;
+  margin-block: 0;
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  border-left: 1px solid var(--border-default);
+}
+.transcript.timeline > .entry.tool_use::before,
+.transcript.timeline > .entry.tool_result::before,
+.transcript.timeline > .entry.system::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--space-0h) * -1 - 1px);
+  top: calc(var(--space-1) + var(--space-1));
+  width: var(--space-1h);
+  height: var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+}
+.transcript.timeline > .entry.tool_use::before {
+  background: var(--accent);
+}
+.transcript.timeline > .entry.tool_result.error::before {
+  background: var(--danger);
 }
 .entry.tool_use > svg,
 .entry.tool_result > svg,
@@ -224,7 +316,6 @@
 }
 /* Very wide panels: keep reading lines short, left aligned. Tool rows and the composer stay full width. */
 .entry.text,
-.entry.user,
 .entry.thinking {
   max-width: 90ch;
 }
@@ -304,12 +395,12 @@
   margin: 10px 0;
 }
 .entry.system .md {
-  font-size: var(--text-small);
+  font-size: var(--text-caption);
 }
 .entry-detail summary {
   cursor: pointer;
   color: var(--text-tertiary);
-  font-size: var(--text-small);
+  font-size: var(--text-caption);
 }
 .entry-detail summary:hover {
   color: var(--text-secondary);
