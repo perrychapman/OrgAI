@@ -768,10 +768,12 @@ export interface RunManagerOptions {
   /**
    * Mid-run org changes (runRoster.ts liveRosterApplies): true only on a host whose approval surface renders the org
    * chart diff against OrgChartProposalPayload.runBaseline with every field that can move. The desktop app sets it
-   * (bootstrap.ts with `desktop`, whose only decision path for an org chart card is the renderer's ProposalCard). The
-   * CLI / TUI / exec host leaves it unset (its approval surface shows no diff), and so does any future host until it
-   * opts in: absent = an approved org chart applies from the next run, exactly as before the feature (no runBaseline,
-   * ctx.roles untouched, card effect 'next-run').
+   * (bootstrap.ts with `desktop`, whose only decision path for an org chart card is the renderer's ProposalCard), and
+   * since 2026-11-23 the orgai command's own host (hostKind 'inproc'): its only approving path is the TUI tray, which
+   * shows the same shared diff (src/shared/view/orgDiff.ts through src/cli/tui/orgChartCard.ts) and asks a second key
+   * press before a card changes a live run; exec never approves a proposal. Any future host stays off until it opts
+   * in: absent = an approved org chart applies from the next run (no runBaseline, ctx.roles untouched, card effect
+   * 'next-run').
    */
   liveRosterCards?: true
   /**

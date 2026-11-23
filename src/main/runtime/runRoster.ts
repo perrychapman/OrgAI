@@ -2,10 +2,10 @@ import { isVirtualProjectId, type Role, type RunRosterChange, type RunRosterRole
 
 /**
  * Whether an approved org chart reaches this run's roles: only on a host whose approval surface renders the org chart
- * diff against runBaseline with every field that can move (`host.liveRosterCards`, RunManagerOptions; the desktop app
- * sets it, the CLI / TUI / exec host does not: fail closed, a host is off until it opts in), and only for a team work
- * run of a stored project (never setup-like, assistant, quick / Chat or single-agent runs) whose session declares
- * RuntimeSession.liveRoster. Pure.
+ * diff against runBaseline with every field that can move (`host.liveRosterCards`, RunManagerOptions: the desktop app
+ * and, since its tray shows that diff, the orgai command's own host; fail closed, any other host is off until it opts
+ * in), and only for a team work run of a stored project (never setup-like, assistant, quick / Chat or single-agent
+ * runs) whose session declares RuntimeSession.liveRoster. Pure.
  */
 export function liveRosterApplies(
   summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>,

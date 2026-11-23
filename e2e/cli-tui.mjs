@@ -36,6 +36,8 @@
 //    Then /team raises a report role's effort (y confirms): the status line says the live run uses the change now.
 //    Then /mcp turns the project's one server off with Space (the live run says it uses the change now), and /skills
 //    opens on a project without skills.
+// j. A team change an agent proposes mid-run (`[mock:org-change]`): the card says what changes compared with this run's
+//    team, v shows the diff, y asks before it changes the live run, and after the second y the new role works in it.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
 //
 // Not covered here (unit tests only): merge review cards (the mock has no worktrees), the pager, TERM=dumb Enter
@@ -642,6 +644,42 @@ try {
       await t.waitFor((s) => !s.includes('Skills of '), 10_000)
       const e = await quit(t, { confirm: true })
       check(e?.code === 0, 'i: quitting exits 0', JSON.stringify(e))
+    } finally {
+      await t.close()
+    }
+  }
+
+  // ---------- j: a team change an agent proposes mid-run ----------
+  {
+    const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 44, script: '', cwd: repo })
+    open.push(t)
+    try {
+      await t.waitFor(UI.statusReady, 30_000)
+      // The mock's default script: [mock:org-change] makes the root propose "Add a Roster Tester" (one new role).
+      await type(t, '[mock:org-change] E2E add a tester')
+      t.key('enter')
+      await t.waitFor('Add a Roster Tester', 40_000)
+      const summary = await t.waitFor((s) => s.includes("1 added, 1 changed (compared with this run's team)"), 10_000).then(() => true, () => false)
+      check(summary, "j: the org chart card says what changes, compared with this run's team", esc(t.screen()))
+      check(t.screen().includes('Takes effect now.'), 'j: ... and that it takes effect in this run', esc(t.screen()))
+      // v: the whole diff, in the app's own text view.
+      t.key('f2')
+      await sleep(400)
+      t.write('v')
+      const full = await t.waitFor((s) => s.includes('+ Roster Tester (reports to ') && s.includes('~ ') && /spawns: .* -> .*Roster Tester/.test(s), 10_000).then(() => true, () => false)
+      check(full, 'j: v shows the added role and the changed field of the role that may now start it', esc(t.screen()))
+      t.key('escape')
+      await sleep(600)
+      // y asks first: this card changes the team of a live run.
+      t.write('y')
+      const asked = await t.waitFor((s) => s.includes("Change this run's team now (1 added, 1 changed)?"), 10_000).then(() => true, () => false)
+      check(asked, 'j: y on a card that changes a live run asks before it approves', esc(t.screen()))
+      check(!t.screen().includes('roster-tester-1'), 'j: ... and nothing has changed yet', esc(t.screen()))
+      t.write('y')
+      const used = await t.waitFor((s) => s.includes('roster-tester-1') && s.includes('Org change approved'), 40_000).then(() => true, () => false)
+      check(used, 'j: after the second y the new role joins this run and takes work in it', esc(t.screen()))
+      const e = await quit(t, { confirm: true })
+      check(e?.code === 0, 'j: quitting exits 0', JSON.stringify(e))
     } finally {
       await t.close()
     }

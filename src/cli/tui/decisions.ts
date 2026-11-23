@@ -35,6 +35,7 @@ import {
 } from '../../shared/view/mcpProposal'
 import { pinnedVersionOf } from '../../shared/view/mcpVersion'
 import { collapseRules, noRuleLine, permissionOffer, referenceEffect, referenceLocation, ruleChip } from '../../shared/view/permissionCopy'
+import { orgChartAppliesNow, orgChartCardDiff, orgChartCardLines, orgChartSummaryLine } from './orgChartCard'
 import { graphemes, graphemeWidth, textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import type { DecisionCall, TrayCard } from './types'
@@ -125,7 +126,8 @@ export function bindingsFor(card: TrayCard): TrayBinding[] {
         { key: 'n', label: 'Deny', act: 'deny', text: 'optional' }
       ]
     case 'proposal': {
-      const out: TrayBinding[] = [{ key: 'y', label: 'Approve', act: 'approve' }]
+      // Approving a team change this run takes now re-teams a live run: the tray asks for a second key press.
+      const out: TrayBinding[] = [{ key: 'y', label: 'Approve', act: 'approve', ...(orgChartAppliesNow(card.card) ? { twoStep: true } : {}) }]
       if (secretSlotsFor(card).length > 0) out.push({ key: 's', label: 'Enter secrets', act: 'secrets' })
       out.push({ key: 'e', label: 'Revise', act: 'revise', text: 'required' })
       if (card.runKind === 'work') out.push({ key: 'd', label: 'Decline', act: 'decline', text: 'optional' })
@@ -171,6 +173,15 @@ export function confirmQuestion(card: TrayCard, b: TrayBinding): string {
       return 'Install this MCP server and save it to the project?'
     case 'save-library':
       return 'Install this MCP server and save it to the global library?'
+    case 'approve': {
+      // A team change this live run takes now: name what it does before the second key press.
+      if (card.kind === 'proposal' && card.card.kind === 'orgChart' && orgChartAppliesNow(card.card)) {
+        const d = orgChartCardDiff(card.card.payload, card.savedRoles)
+        // Short: the tray adds "y to confirm · Esc cancels" on the same line, and [v] Review is among the keys below.
+        return `Change this run's team now (${d ? d.diff.summary : 'the proposed team'})?`
+      }
+      return `${b.label} (${cardTitle(card)})?`
+    }
     default:
       return `${b.label} (${cardTitle(card)})?`
   }
@@ -413,6 +424,12 @@ function proposalLines(card: Extract<TrayCard, { kind: 'proposal' }>, full: bool
       break
     }
     case 'orgChart': {
+      const diff = orgChartCardLines(p.payload, card.savedRoles, full, { one: oneText, text })
+      if (diff) {
+        out.push(...diff)
+        break
+      }
+      // Nothing to compare with (no run baseline, no saved roles): list the proposed chart as before.
       const roles = Array.isArray(p.payload.roles) ? p.payload.roles : []
       out.push(`${roles.length} ${roles.length === 1 ? 'role' : 'roles'}:`)
       for (const r of roles) {
@@ -622,11 +639,20 @@ export interface CardDetail {
 }
 
 const detailCache = new WeakMap<object, Map<string, CardDetail>>()
+/** One number per saved-roles list, so a card compared with the saved team is built again when that list is replaced. */
+const rolesIds = new WeakMap<object, number>()
+let nextRolesId = 1
+function rolesId(roles: object | undefined): number {
+  if (!roles) return 0
+  let id = rolesIds.get(roles)
+  if (id === undefined) rolesIds.set(roles, (id = nextRolesId++))
+  return id
+}
 
 /** The card's wrapped body (memoised per card data and width) and whether it was cut. */
 export function cardDetail(card: TrayCard, width: number): CardDetail {
   const data = card.card as object
-  const key = `${Math.floor(width)}|${card.kind}|${card.projectKind ?? ''}|${card.runKind}`
+  const key = `${Math.floor(width)}|${card.kind}|${card.projectKind ?? ''}|${card.runKind}|${rolesId(card.savedRoles)}`
   let perCard = detailCache.get(data)
   const hit = perCard?.get(key)
   if (hit) return hit
@@ -650,7 +676,7 @@ export function proposalPreview(card: TrayCard, width: number): string[] | undef
   const p = card.card
   const lines = [oneText(p.title, 200)]
   if (p.kind === 'architecture' && p.payload.summary) lines.push(oneText(p.payload.summary, 160))
-  if (p.kind === 'orgChart') lines.push(`${p.payload.roles.length} roles proposed`)
+  if (p.kind === 'orgChart') lines.push(orgChartSummaryLine(p.payload, card.savedRoles) ?? `${p.payload.roles.length} roles proposed`)
   const effect = p.effect === 'next-run' ? 'Applies to the next run.' : proposalEffectCopy(p.effect)
   if (effect) lines.push(effect)
   if (anyHidden(card.card)) lines.unshift(HIDDEN_BADGE)

@@ -66,6 +66,7 @@ import type {
   Proposal,
   ProviderModel,
   QuickRunPromoteResult,
+  Role,
   RpcHelloResult,
   RunOverrides,
   RunPlan,
@@ -423,6 +424,8 @@ export type TrayCard = {
   runTag: string
   runKind: RunSummary['kind']
   projectKind?: ProjectKind
+  /** The open project's saved roles, when this card's run belongs to it: what an org chart card without a run baseline is compared with. */
+  savedRoles?: readonly Role[]
   /** Arrival order (TuiState.cardSeq at arrival). */
   arrivedSeq: number
   /** The agent the card is about (every card kind carries one) and its sanitized label. */

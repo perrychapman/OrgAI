@@ -118,6 +118,8 @@ const CARD_KINDS = Object.keys(CARD_BUCKETS) as CardKind[]
 function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
   const out: TrayCard[] = []
   const projectKind = s.project && run.summary.projectId === s.project.id ? (s.project.kind === 'engagement' ? 'engagement' : 'code') : undefined
+  // An org chart card of a run of the open project compares with that project's saved roles when the host gave it no run baseline.
+  const savedRoles = s.project && run.summary.projectId === s.project.id ? s.project.roles : undefined
   // A card of a run the user is not following names that run ("R3 Build the report"), so it is not mistaken for the followed one (R2-L2).
   const foreign = !s.activeChain.includes(run.summary.id)
   const name = foreign ? clipLine(safeLine(runName(run.summary)), 24) : ''
@@ -137,6 +139,7 @@ function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
         ...(agentId ? { agentId, ...(foreign && !run.agents[agentId] ? {} : { agentLabel: agentLabel(run.agents[agentId]) }) } : {}),
         runKind: run.summary.kind,
         ...(projectKind ? { projectKind } : {}),
+        ...(savedRoles ? { savedRoles } : {}),
         arrivedSeq: cardArrivalSeq(card) ?? 0,
         kind,
         card
