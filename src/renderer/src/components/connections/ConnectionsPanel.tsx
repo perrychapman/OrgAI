@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Bot, Network, Sparkles } from 'lucide-react'
-import type { AnthropicConnection, ConnectionInfo, ModelTier, OpenAIConnection, ProxyConnection } from '@shared/types'
+import type { AnthropicConnection, ConnectionInfo, ModelTier, OpenAIConnection, ProxyConnection, UsageStatus } from '@shared/types'
 import { PROXIES_MAX, isProxyConnection, isVirtualProjectId } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
@@ -50,6 +50,34 @@ function statusOf(c: ConnectionInfo): { text: string; tone: GalleryTone } {
   }
 }
 
+/** "3 h 40 min" / "25 min" / "2 days" until a moment; null when past or unknown. */
+export function untilText(at: number | null | undefined, now: number): string | null {
+  if (!at || at <= now) return null
+  const min = Math.round((at - now) / 60_000)
+  if (min < 60) return `${Math.max(1, min)} min`
+  const h = Math.floor(min / 60)
+  if (h < 48) return min % 60 ? `${h} h ${min % 60} min` : `${h} h`
+  return `${Math.round(h / 24)} days`
+}
+
+/**
+ * The plan window closest to its limit, from the provider's last usage report for this connection (plan sign-ins
+ * only; API keys report none). Null when nothing was reported.
+ */
+export function planLimit(u: UsageStatus | undefined, now: number): { pct: number; resets: string | null; label: string } | null {
+  if (!u || !u.available || u.authMode !== 'subscription') return null
+  const wins = [
+    ['five-hour', u.windows.fiveHour],
+    ['weekly', u.windows.sevenDay]
+  ] as const
+  let best: { pct: number; resets: string | null; label: string } | null = null
+  for (const [label, w] of wins) {
+    if (!w || w.utilization === null) continue
+    if (!best || w.utilization > best.pct) best = { pct: Math.round(w.utilization), resets: untilText(w.resetsAt, now), label }
+  }
+  return best
+}
+
 function howOf(c: ConnectionInfo): string {
   const conn = c.connection
   if (isProxyConnection(conn)) {
@@ -69,6 +97,7 @@ export default function ConnectionsPanel(): ReactElement {
   const loadModels = useAppStore((s) => s.loadModels)
   const projects = useAppStore((s) => s.projects)
   const allModels = useAppStore((s) => s.models)
+  const usageByConnection = useAppStore((s) => s.usageByConnection)
   const [busy, setBusy] = useState(false)
   /** The pane's one polite live region; cards announce through ConnectionsAnnounceContext. */
   const [live, setLive] = useState('')
@@ -144,12 +173,14 @@ export default function ConnectionsPanel(): ReactElement {
     const name = isProxyConnection(c.connection) ? c.connection.name : (BUILTIN_NAME[id] ?? id)
     const used = proxy ? (c.usedBy?.length ?? 0) : (usage.get(id)?.projects ?? 0)
     const count = allModels[id]?.length ?? (c.status.state === 'connected' ? c.modelCount : 0)
+    const plan = planLimit(usageByConnection[id], Date.now())
+    const planText = plan ? `Plan ${plan.pct}% used${plan.resets ? `, resets in ${plan.resets}` : ''}` : ''
     return {
       id,
       name,
       section: proxy ? 'proxy' : 'builtin',
       tag: howOf(c),
-      summary: [c.isDefault ? 'Default for new projects' : '', used === 0 ? 'Not used by a project' : `Used by ${used} ${used === 1 ? 'project' : 'projects'}`, c.status.state === 'connected' && count ? `${count} models` : '']
+      summary: [c.isDefault ? 'Default for new projects' : '', used === 0 ? 'Not used by a project' : `Used by ${used} ${used === 1 ? 'project' : 'projects'}`, c.status.state === 'connected' && count ? `${count} models` : '', planText]
         .filter(Boolean)
         .join(' · '),
       status: statusOf(c),

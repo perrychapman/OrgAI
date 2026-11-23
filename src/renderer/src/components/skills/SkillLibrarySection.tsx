@@ -221,6 +221,13 @@ export default function SkillLibrarySection(): ReactElement {
   )
 }
 
+/** "Updated 18 Nov 2026" from an ISO timestamp; '' when unknown. */
+function updatedLine(iso: string | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : `Updated ${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`
+}
+
 /** Most characters of a skill's instructions shown in the detail panel's preview (plain text, never rendered). */
 const PREVIEW_CHARS = 1200
 
@@ -258,14 +265,18 @@ function SkillDetail({
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry.id, entry.description, entry.files.length, tick])
+  }, [entry.id, entry.updatedAt, tick])
   // Bidi overrides and isolates would let untrusted text reorder what the preview shows: shown as a visible mark instead.
   const visible = body === null ? null : body.replace(/[‪-‮⁦-⁩‎‏]/g, '�')
   const cut = visible !== null && visible.length > PREVIEW_CHARS
   const preview = visible === null ? null : cut ? visible.slice(0, PREVIEW_CHARS).trimEnd() : visible
   return (
     <div className="skill-detail" data-testid="skill-library-detail" data-id={entry.id}>
-      <DetailHeader mark={entry.name.slice(0, 1).toUpperCase()} name={entry.name} tag={`${sourceLabel(entry.source)} · ${entry.files.length} file${entry.files.length === 1 ? '' : 's'}`} />
+      <DetailHeader
+        mark={entry.name.slice(0, 1).toUpperCase()}
+        name={entry.name}
+        tag={[sourceLabel(entry.source), `${entry.files.length} file${entry.files.length === 1 ? '' : 's'}`, updatedLine(entry.updatedAt)].filter(Boolean).join(' · ')}
+      />
       {hint ? (
         <DetailNote tone="warn">{hint}. Look at its files before you give it to a role that can run commands.</DetailNote>
       ) : (
