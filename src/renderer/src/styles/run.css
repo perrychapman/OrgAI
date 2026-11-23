@@ -520,15 +520,25 @@
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
+/* The composer is a strong glass card (UI overhaul board "Conversation"). Inside .live-composer-region the region is the
+   card and the composer is flattened (live-model-switch.css), so the settings row and the box read as one. */
 .composer {
   grid-row: 2;
   grid-column: 1;
-  border-top: 1px solid var(--border-default);
-  background: var(--surface-1);
-  padding: var(--space-1h) var(--space-3);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-1);
+  margin: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   display: flex;
   min-width: 0;
   container: composer / inline-size;
+}
+.composer:has(textarea:focus-visible) {
+  border-color: var(--focus-ring);
 }
 .composer.drag {
   outline: 2px dashed var(--accent);
@@ -544,13 +554,15 @@
 /* Label line (28 px): what Send does, the mode toggle right next to it, a "?" for the keyboard hints. */
 .composer-mode {
   display: flex;
+  flex-wrap: wrap; /* a wide mode switch drops to its own line instead of truncating the label */
   align-items: center;
   min-height: calc(var(--control-sm) - var(--space-1));
-  gap: var(--space-3);
+  gap: var(--space-1) var(--space-3);
   min-width: 0;
 }
 .composer-mode-label {
   flex: 0 1 auto;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -618,22 +630,56 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Input row: attach, a two-line textarea (56 px), Send centred beside it. */
+/* Input: a borderless two-line textarea on top, then attach on the left and Send on the right. */
 .composer-row {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
 }
 .composer-row textarea {
-  flex: 1;
+  width: 100%;
   min-width: 0;
-  min-height: 55px;
+  min-height: 48px;
   max-height: 160px;
   resize: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: var(--space-1) var(--space-1h);
+}
+.composer-row textarea:focus,
+.composer-row textarea:focus-visible {
+  outline: none; /* the card draws the focus border (.composer:has(textarea:focus-visible)) */
+  box-shadow: none;
+}
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
 }
 .composer-row .btn {
   flex: none;
+}
+/* Short windows: attach, the field and Send share one line so the card stays low and the canvas keeps its room. */
+@media (max-height: 760px) {
+  .composer-row {
+    flex-direction: row;
+    align-items: center;
+  }
+  .composer-actions {
+    display: contents;
+  }
+  .composer-actions > :first-child {
+    order: -1;
+  }
+  .composer-row textarea {
+    flex: 1;
+    width: auto;
+    min-height: 44px;
+  }
 }
 .composer-notice {
   font-size: var(--text-caption);
