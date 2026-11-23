@@ -452,6 +452,7 @@ export class WorktreeIntegrator {
       // and may commit to the branch: if the tip moved, the approval does not cover it, so the user is asked again about
       // the new tip (once), and only the approved commit is handed back to be merged (GateDecision.sha).
       let approved = tip
+      let gateCarried: readonly string[] | undefined
       for (let round = 1; round <= MERGE_REVIEW_ROUNDS; round++) {
         const checks: NonNullable<MergeReview['checks']> = { tests: 'unknown', review: 'unknown' }
         if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
@@ -475,10 +476,11 @@ export class WorktreeIntegrator {
         // runs (runTests); with no test command no repository code runs here, so they are read now, after the approval.
         let carried: readonly string[] | undefined
         if (testCommand) {
-          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true, targetRoot, changedFiles, true)
+          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true, targetRoot, changedFiles, true, gateCarried)
           if (gate.refusal) return gate.refusal
           verify = gate.verify
           carried = gate.carried
+          gateCarried = gate.carried
           if (gate.reask) {
             // Something other than OrgAI changed the project folder while the tests ran (the user, or the test command: git
             // cannot tell them apart). The user is asked once more, with the reason, before the merge lands in it as it is.
@@ -534,7 +536,9 @@ export class WorktreeIntegrator {
     targetRoot: string,
     changedFiles: readonly string[],
     /** A review card is part of this merge, so the user can be asked once more when the project folder changed meanwhile. */
-    canAsk: boolean
+    canAsk: boolean,
+    /** The carried git settings read before the gate's first test command (a later round reuses them). */
+    firstCarried?: readonly string[]
   ): Promise<{ detail: string; refusal?: GateDecision; verify?: () => Promise<string | undefined>; reask?: { note: string; pin: RootPin }; carried: readonly string[] }> {
     this.log('info', `${ownerName}: running the project's tests in ${info.path} before merging ${info.branch}${afterApproval ? ' (the merge was approved)' : ''}.`)
     // The command is repository code run as the user: it can reach the checkout the merge lands in through the shared git
@@ -546,7 +550,15 @@ export class WorktreeIntegrator {
     const attrDirs = attributeDirsOf(changedFiles)
     // The settings the merge carries from the user's own git config are read in the same locked reading, BEFORE the command: it
     // can rewrite the global config, so the merge uses this snapshot and reads no config of its own (worktrees.ts mergeInto).
-    const { pin, carried } = await withRepoLock(targetRoot, async () => ({ pin: await pinRoot(targetRoot, { attrDirs }), carried: await mergeCarriedConfigArgs(targetRoot) }))
+    const { pin, carried: fresh } = await withRepoLock(targetRoot, async () => ({ pin: await pinRoot(targetRoot, { attrDirs }), carried: await mergeCarriedConfigArgs(targetRoot) }))
+    // A later review round keeps the snapshot of the first one: the first test command may have rewritten the global config,
+    // which the root pin does not cover. A fresh reading that differs from it refuses the merge before another command runs.
+    const carried = firstCarried ?? fresh
+    if (firstCarried && JSON.stringify(firstCarried) !== JSON.stringify(fresh)) {
+      const message = `Not merged: your git settings (name, email or line endings) changed while the tests ran. Branch ${info.branch} is kept as it is at ${info.path}; check them, then call ${INTEGRATE_TOOL} again.`
+      this.log('warn', `${ownerName}: ${message}`)
+      return { detail: '', carried, refusal: { behavior: 'refuse', reason: 'tests', message } }
+    }
     const result = await runTestGate(command, info.path)
     const verdict = await withRepoLock(targetRoot, () => rootVerdict(targetRoot, pin))
     if (verdict.kind === 'hard' || (verdict.kind === 'folder' && !(canAsk && result.outcome === 'passed'))) {

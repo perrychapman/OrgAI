@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, WorktreeInfo } from '@shared/types'
 import { WorktreeIntegrator } from './integration'
-import { gitGuarded, integrateWorktree, mergeAttributeRefusal, mergeCarriedConfigArgs, mergeMadeMove, mergeScratchDir, prepareRepo, sweepMergeScratch } from './worktrees'
-import { pinRoot, rootDrift, rootVerdict } from './rootPin'
+import { ensureMainBranch, gitGuarded, gitVersionRefusal, integrateWorktree, parseGitVersion, setGitVersionForTest, mergeAttributeRefusal, mergeCarriedConfigArgs, mergeMadeMove, mergeScratchDir, prepareRepo, sweepMergeScratch } from './worktrees'
+import { pinRoot, plainRepositoryText, rootDrift, rootVerdict } from './rootPin'
 import { resetOrgAiMoves } from './orgaiMoves'
 import { fakeCtx, project } from './testHelpers'
 
@@ -180,6 +180,30 @@ describe('H1: the merge carries a snapshot taken before the test command, and gi
     const out = await g.i.integratePending(wt)
     expect(out, out).toMatch(/Merged worktree-agent-h1c/)
     expect(execFileSync('git', ['log', '-1', '--format=%an'], { cwd: root, encoding: 'utf8' }).trim()).toBe('Before Person')
+  }, 60_000)
+
+  it('review round 2 keeps the first snapshot: a round-1 command that moves the tip and rewrites the global settings gets a refusal, never the rewritten values', async () => {
+    await prepareRepo(root)
+    git(root, 'config', '--unset', 'user.name')
+    git(root, 'config', '--unset', 'user.email')
+    writeFileSync(join(home, '.gitconfig'), '[user]\n\tname = Before Person\n\temail = before@example.test\n[core]\n\tautocrlf = false\n')
+    useGlobalHome()
+    const wt = addWorktree('h1r2')
+    const script = join(scripts, 'round1.js')
+    writeFileSync(
+      script,
+      "const { execFileSync } = require('child_process'), fs = require('fs'), p = require('path');\n" +
+        "const marker = p.join(process.argv[2], 'ran'); if (fs.existsSync(marker)) process.exit(0); fs.writeFileSync(marker, '1');\n" +
+        "const g = (a) => execFileSync('git', a, { stdio: 'ignore' });\n" +
+        "g(['config', '--global', 'user.name', 'Evil Person']); g(['config', '--global', 'core.autocrlf', 'true']);\n" +
+        "g(['-c', 'user.name=T', '-c', 'user.email=t@x.test', 'commit', '--allow-empty', '-q', '-m', 'moved by the tests']);\n"
+    )
+    const g = integrator(`node "${script}" "${scripts}"`, true)
+    const out = await g.i.integratePending(wt)
+    expect(readFileSync(join(home, '.gitconfig'), 'utf8')).toContain('Evil Person')
+    expect(out).toMatch(/git settings .* changed while the tests ran/)
+    expect(out).not.toMatch(/Merged worktree-agent-h1r2/)
+    expect(git(root, 'log', '-1', '--format=%an')).not.toBe('Evil Person')
   }, 60_000)
 
   /** Remove a key from the repository's own config (a fresh Windows repo carries filemode and symlinks there). */
@@ -374,6 +398,32 @@ describe('M2: the re-ask shows what changed in the project folder', () => {
     expect(hidden).toEqual([])
   }, 60_000)
 
+  it('repository text loses every invisible character: file names and commit subjects made of the usual disguises', () => {
+    const hiddenSet = [0x34f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x2800, 0x3164, 0xffa0, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0xe0000, 0xe0041, 0xe007f, 0x200b, 0x202e, 0xad, 0x9, 0x1b]
+    const disguised = (word: string): string => [...word].map((ch) => ch + String.fromCodePoint(...hiddenSet)).join('')
+    for (const text of [`src/${disguised('app')}.js | 2 ++`, `abc1234 ${disguised('fix')} it`]) {
+      const plain = plainRepositoryText(text, 12, 1600)
+      expect(plain).toBe(text.replace(/[^\x20-\x7e]/g, ''))
+    }
+    expect(plainRepositoryText('a\nb', 12, 1600)).toBe('a\nb')
+  })
+
+  it('says untracked files are not listed, and names the old and new short sha when HEAD moved backwards', async () => {
+    await prepareRepo(root)
+    put(root, 'src/second.js', 'export const s = 1\n')
+    git(root, 'add', '-A')
+    git(root, 'commit', '-q', '-m', 'second')
+    const before = headOf(root)
+    let after = ''
+    const { g } = await withUserChange(() => {
+      git(root, 'reset', '-q', '--hard', 'HEAD~1')
+      after = headOf(root)
+    })
+    const note = vi.mocked(g.ctx.requestMergeReview).mock.calls[1]![0].stat
+    expect(note).toContain('Untracked files are not listed.')
+    expect(note).toContain(`HEAD moved backwards from ${before.slice(0, 7)} to ${after.slice(0, 7)}`)
+  }, 60_000)
+
   it('is bounded: a folder change of many files lists a few lines of stat and says how many more', async () => {
     const { g } = await withUserChange(() => {
       for (let i = 0; i < 60; i++) put(root, `bulk/file-${String(i).padStart(2, '0')}.txt`, 'x\n')
@@ -439,6 +489,52 @@ describe('M4: filters (git-lfs and other clean/smudge programs)', () => {
 })
 
 describe('Lows', () => {
+  it('parses git versions, and an installed git below 2.32 refuses the automatic merge with both versions named; the branch is kept', async () => {
+    expect(parseGitVersion('git version 2.43.0.windows.1')).toEqual([2, 43, 0])
+    expect(parseGitVersion('git version 2.31')).toEqual([2, 31, 0])
+    expect(parseGitVersion('nonsense')).toBeNull()
+    expect(gitVersionRefusal('git version 2.31.1')).toBe('the installed git is 2.31.1 and the automatic merge needs 2.32 or newer.')
+    expect(gitVersionRefusal('git version 2.32.0')).toBeNull()
+    expect(gitVersionRefusal('git version 3.0.0')).toBeNull()
+    expect(gitVersionRefusal('')).toBeNull()
+    await prepareRepo(root)
+    const wt = addWorktree('old')
+    try {
+      setGitVersionForTest('git version 2.30.2')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'OLD')
+      expect(res.info.status).toBe('conflict')
+      expect(res.message).toMatch(/installed git is 2\.30\.2 and the automatic merge needs 2\.32 or newer/)
+      expect(existsSync(wt.path)).toBe(true)
+      expect(existsSync(join(root, 'src/old.js'))).toBe(false)
+    } finally {
+      setGitVersionForTest()
+    }
+  })
+
+  it('the mainBranch checkout with the snapshot runs neutral: a global attributes file (eol=crlf) does not change what it writes', async () => {
+    put(root, 'a.txt', 'one\ntwo\n')
+    git(root, 'add', '-A')
+    git(root, 'commit', '-q', '-m', 'a')
+    git(root, 'branch', 'feat')
+    git(root, 'checkout', '-q', 'feat')
+    put(root, 'a.txt', 'one\ntwo\nthree\n')
+    git(root, 'commit', '-q', '-am', 'a2')
+    git(root, 'checkout', '-q', 'main')
+    writeFileSync(join(home, 'attrs'), '*.txt eol=crlf\n')
+    writeFileSync(join(home, '.gitconfig'), `[core]\n\tattributesFile = ${norm(join(home, 'attrs'))}\n`)
+    useGlobalHome()
+    const carried = await mergeCarriedConfigArgs(root)
+    expect(await ensureMainBranch(root, 'feat', carried)).toBeNull()
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('one\ntwo\nthree\n')
+    // Contrast: without the snapshot the checkout is not neutral and the global attributes file applies.
+    git(root, 'checkout', '-q', '-f', 'main')
+    git(root, 'rm', '-q', '--cached', 'a.txt')
+    rmSync(join(root, 'a.txt'))
+    git(root, 'reset', '-q', '--hard')
+    expect(await ensureMainBranch(root, 'feat')).toBeNull()
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('one\r\ntwo\r\nthree\r\n')
+  })
+
   it('a renamed file is looked up under both names: an attribute on the old name refuses the merge', async () => {
     put(root, 'src/old.js', 'export const old = 1\n')
     git(root, 'add', '-A')
@@ -456,6 +552,23 @@ describe('Lows', () => {
     expect(existsSync(join(root, 'src/new.js'))).toBe(false)
     // Directly: the changed-file list names only the new path, the check adds the old one.
     expect(await mergeAttributeRefusal(root, git(root, 'rev-parse', 'worktree-agent-r1'), ['src/new.js'])).toMatch(/src\/old\.js \(merge=union\)/)
+  })
+
+  it('each scratch use gets its own mkdtemp folder under the shared one, removed after the check; a stale one a crash left is swept whole', async () => {
+    const dir = mergeScratchDir()
+    mkdirSync(dir, { recursive: true })
+    const before = readdirSync(dir).filter((n) => n.startsWith('use-'))
+    await mergeAttributeRefusal(root, headOf(root), ['src/app.js'])
+    expect(readdirSync(dir).filter((n) => n.startsWith('use-'))).toEqual(before)
+    const stale = mkdtempSync(join(dir, 'use-'))
+    writeFileSync(join(stale, 'scratch.index'), 'x')
+    const fresh = mkdtempSync(join(dir, 'use-'))
+    const old = new Date(Date.now() - 60 * 60_000)
+    utimesSync(stale, old, old)
+    expect(sweepMergeScratch()).toBe(1)
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    rmSync(fresh, { recursive: true, force: true })
   })
 
   it('the scratch index lives under one OrgAI temp folder, is gone after a check, and a stale one a crash left is swept', async () => {

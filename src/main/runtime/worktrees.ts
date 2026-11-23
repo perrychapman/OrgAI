@@ -1,7 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { scrubControlEnv } from './childEnv'
-import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { devNull, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
@@ -148,7 +147,35 @@ export const GIT_NULL_FILE = process.platform === 'win32' ? 'NUL' : '/dev/null'
  * Needs git 2.32 for GIT_CONFIG_GLOBAL; an older git still reads the global config (unverified).
  */
 const NEUTRAL_ENV: Record<string, string> = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: GIT_NULL_FILE, GIT_ATTR_NOSYSTEM: '1' }
-const NEUTRAL_OVERRIDES = ['-c', `core.attributesFile=${GIT_NULL_FILE}`, '-c', 'merge.default=text']
+const MIN_NEUTRAL_GIT = [2, 32] as const
+
+/** The numbers of a `git --version` line ("git version 2.43.0.windows.1" gives [2, 43, 0]); null when it cannot be read. */
+export function parseGitVersion(text: string): number[] | null {
+  const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/i.exec(text)
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null
+}
+
+/** A plain sentence when the installed git is older than the neutral merge needs (GIT_CONFIG_GLOBAL); null when it is new enough or unknown. */
+export function gitVersionRefusal(versionText: string): string | null {
+  const v = parseGitVersion(versionText)
+  if (!v) return null
+  const [maj, min] = MIN_NEUTRAL_GIT
+  if (v[0]! > maj || (v[0] === maj && v[1]! >= min)) return null
+  return `the installed git is ${v.join('.')} and the automatic merge needs ${maj}.${min} or newer.`
+}
+
+let gitVersionText: Promise<string> | undefined
+/** `git --version`, read once per process. */
+function installedGitVersion(root: string): Promise<string> {
+  gitVersionText ??= gitGuarded(root, ['--version']).then((r) => (r.ok ? r.out : ''))
+  return gitVersionText
+}
+/** Test hook: forget (or set) the cached version line. */
+export function setGitVersionForTest(text?: string): void {
+  gitVersionText = text === undefined ? undefined : Promise.resolve(text)
+}
+
+const NEUTRAL_OVERRIDES =['-c', `core.attributesFile=${GIT_NULL_FILE}`, '-c', 'merge.default=text']
 
 /**
  * git's safe values for the two settings that stop a tree from writing through a name that aliases `.git` (".git ", "git~1",
@@ -434,10 +461,12 @@ async function evacuateNested(root: string, parentPath: string): Promise<string[
  * fsmonitor and the other program-naming keys off): it runs after a merge, when a test command may have changed the
  * repository's config.
  */
-async function removeWorktree(root: string, path: string): Promise<void> {
+async function removeWorktree(root: string, path: string, carried?: readonly string[]): Promise<void> {
   if (existsSync(path)) {
     await evacuateNested(root, path)
-    await gitGuarded(root, ['worktree', 'remove', '--force', path])
+    // After a merge (`carried` given) the removal runs neutral, with the snapshot's line-ending settings: a filter or
+    // core.attributesFile in the user's global config cannot change what it writes.
+    await gitGuarded(root, [...(carried ?? []), 'worktree', 'remove', '--force', path], carried ? { neutral: true } : {})
   }
   await gitGuarded(root, ['worktree', 'prune'])
 }
@@ -729,7 +758,7 @@ export interface IntegrateOptions {
  * checkout has no uncommitted change to tracked files; otherwise, or when git refuses (the branch is checked out in
  * another worktree), the sentence says nothing was merged. Call it holding the repository lock.
  */
-export async function ensureMainBranch(root: string, mainBranch: string | undefined): Promise<string | null> {
+export async function ensureMainBranch(root: string, mainBranch: string | undefined, carried?: readonly string[]): Promise<string | null> {
   const name = mainBranch?.trim()
   if (!name || name.startsWith('-') || /[\0\r\n]/.test(name)) return null
   // Guarded: a checkout runs post-checkout hooks and a status runs fsmonitor, and this runs after a test command may have
@@ -746,7 +775,9 @@ export async function ensureMainBranch(root: string, mainBranch: string | undefi
   }
   // The state the switch starts from is read right before it, and only the exact move it made is recorded in the ledger.
   const before = await readHeadState(root)
-  const sw = await gitGuarded(root, ['checkout', '--quiet', name, '--'])
+  // With the snapshot (`carried`) the checkout runs neutral, as the merge does: the user's global filters and attributes file
+  // cannot change what it writes, and the snapshot's line-ending settings keep the files from reading as edited.
+  const sw = await gitGuarded(root, [...(carried ?? []), 'checkout', '--quiet', name, '--'], carried ? { neutral: true } : {})
   if (!sw.ok) return `The project's main branch is ${name} but the main checkout could not switch to it from ${current} (${sw.err.slice(0, 200)}), so nothing was merged.`
   const after = await readHeadState(root)
   if (after.head === targetCommit && after.branch === `refs/heads/${name}`) recordOrgAiMove(root, before, after)
@@ -791,8 +822,11 @@ export async function integrateWorktree(
       return { info: { ...info, status: 'conflict' }, message: `Could not commit the worktree changes: ${commit.error}` }
     }
 
+    // The settings the merge carries are read here, before any repository code (the test command) can run; a gate hands back
+    // its own earlier snapshot (GateDecision.carried), this one serves a merge with no gate and a gate that gave none.
+    const carried = await mergeCarriedConfigArgs(root)
     // Project.mainBranch: the merge lands there (the checkout is switched to it only when that loses nothing).
-    const branchRefusal = await ensureMainBranch(root, opts.mainBranch)
+    const branchRefusal = await ensureMainBranch(root, opts.mainBranch, carried)
     if (branchRefusal) return { info: { ...info, status: 'conflict' }, message: branchRefusal }
 
     // Anything to merge at all?
@@ -807,9 +841,6 @@ export async function integrateWorktree(
     const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
     const tip = await branchTip(root, info.branch)
     if (!tip) return { info: { ...info, status: 'conflict' }, message: `Could not read branch ${info.branch}; it is kept at ${wt}.` }
-    // The settings the merge carries are read here, before any repository code (the test command) can run; a gate hands back
-    // its own earlier snapshot (GateDecision.carried), this one serves a merge with no gate and a gate that gave none.
-    const carried = await mergeCarriedConfigArgs(root)
     // Without a review gate the merge follows under the same lock.
     return review ? { changedFiles, tip, carried } : { changedFiles, tip, carried, merged: await mergeInto(root, info, commitMessage, changedFiles, tip, carried) }
   })
@@ -859,7 +890,7 @@ export async function integrateWorktree(
     if (drift) return { info: { ...info, status: 'conflict', changedFiles }, message: `${drift} Branch ${info.branch} is kept at ${wt}.` }
     const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
     if (refusal) return { info: { ...info, status: 'conflict', changedFiles }, message: refusal.message }
-    const branchRefusal = await ensureMainBranch(root, opts.mainBranch)
+    const branchRefusal = await ensureMainBranch(root, opts.mainBranch, carried)
     if (branchRefusal) return { info: { ...info, status: 'conflict', changedFiles }, message: branchRefusal }
     // Only the commit the user approved (or the one recorded before the test command ran) may land. The gate (the review
     // card, the tests) can run repository code that commits to the branch: a moved tip is refused, never merged unseen.
@@ -888,6 +919,9 @@ const MERGE_OUTPUT = { maxBuffer: 8 * 1024 * 1024 }
  */
 async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[], sha: string, carried: readonly string[]): Promise<IntegrateResult> {
   const wt = info.path
+  // The neutral merge relies on GIT_CONFIG_GLOBAL (git 2.32): an older git would read the user's global config, so no merge.
+  const tooOld = gitVersionRefusal(await installedGitVersion(root))
+  if (tooOld) return { info: { ...info, status: 'conflict', changedFiles }, message: `Not merged: ${tooOld} Branch ${info.branch} is kept at ${wt}.` }
   // A merge driver or the built-in `union` selected by an attribute would make the merged content differ from the reviewed
   // commit: refused, not merged (the config's own drivers are pinned by rootPin.ts, the user's global ones are ignored below).
   // So is a filter (git-lfs and the like): the merge runs no filter program and would write the stored form of the file.
@@ -926,8 +960,8 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
   }
 
   const into = await targetName(root)
-  await removeWorktree(root, wt)
-  await gitGuarded(root, ['branch', '-d', info.branch])
+  await removeWorktree(root, wt, carried)
+  await gitGuarded(root, ['branch', '-d', info.branch], { neutral: true })
   return {
     info: { ...info, status: 'merged', changedFiles },
     message: `Merged ${info.branch} into ${into} (${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}: ${changedFiles.slice(0, 12).join(', ')}${changedFiles.length > 12 ? ', …' : ''}).`
@@ -1029,6 +1063,7 @@ const NO_FILTER_ATTRS = new Set(['unspecified', 'unset'])
  * leaves a file the next start can find and remove (sweepMergeScratch), not a stray file among the OS temp files.
  */
 const SCRATCH_DIR_NAME = 'orgai-merge-scratch'
+const SCRATCH_USE_PREFIX = 'use-'
 const SCRATCH_STALE_MS = 10 * 60_000
 let scratchSwept = false
 
@@ -1042,11 +1077,15 @@ export function sweepMergeScratch(now: number = Date.now()): number {
   try {
     const dir = mergeScratchDir()
     for (const name of readdirSync(dir)) {
-      if (!/\.index(\.lock)?$/.test(name)) continue
+      const perUse = name.startsWith(SCRATCH_USE_PREFIX)
+      if (!perUse && !/\.index(\.lock)?$/.test(name)) continue
       try {
         const full = join(dir, name)
-        if (now - statSync(full).mtimeMs < SCRATCH_STALE_MS) continue
-        unlinkSync(full)
+        const st = statSync(full)
+        if (now - st.mtimeMs < SCRATCH_STALE_MS) continue
+        // A per-use folder (made by mkdtemp) goes whole; a loose index file is what an older version left.
+        if (perUse && st.isDirectory()) rmSync(full, { recursive: true, force: true })
+        else unlinkSync(full)
         removed++
       } catch {
         /* ignore */
@@ -1060,17 +1099,33 @@ export function sweepMergeScratch(now: number = Date.now()): number {
 
 /** A fresh scratch index path; the first use in this process sweeps what an earlier crash left. */
 function newMergeScratchPath(): string {
-  const dir = mergeScratchDir()
+  const parent = mergeScratchDir()
+  let dir: string
   try {
-    mkdirSync(dir, { recursive: true })
+    // The shared parent holds one folder per use, made by mkdtemp (owner-only where the platform has modes), so another local
+    // user cannot plant or pre-create the index path.
+    mkdirSync(parent, { recursive: true, mode: 0o700 })
+    if (!scratchSwept) {
+      scratchSwept = true
+      sweepMergeScratch()
+    }
+    dir = mkdtempSync(join(parent, SCRATCH_USE_PREFIX))
   } catch {
-    return join(tmpdir(), `orgai-attr-${randomUUID()}.index`)
+    dir = mkdtempSync(join(tmpdir(), `${SCRATCH_DIR_NAME}-`))
   }
-  if (!scratchSwept) {
-    scratchSwept = true
-    sweepMergeScratch()
+  return join(dir, 'scratch.index')
+}
+
+/** Remove the per-use folder of a scratch index made by newMergeScratchPath (never any other folder). */
+function removeMergeScratch(scratch: string): void {
+  const dir = dirname(scratch)
+  const name = basename(dir)
+  if (!name.startsWith(SCRATCH_USE_PREFIX) && !name.startsWith(`${SCRATCH_DIR_NAME}-`)) return
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    /* ignore */
   }
-  return join(dir, `${randomUUID()}.index`)
 }
 
 /**
@@ -1173,11 +1228,7 @@ export async function mergeAttributeRefusal(root: string, sha: string, files: re
     const named = [...new Set(bad.map((b) => `${b.path} (merge=${b.value})`))].slice(0, 3).join(', ')
     return `a merge attribute selects a custom merge for ${named}${bad.length > 3 ? ', ...' : ''}, which could make the merged content differ from the reviewed commit. Only git's own text merge is used here: remove the merge attribute (in .gitattributes or .git/info/attributes), then integrate again.`
   } finally {
-    try {
-      unlinkSync(scratch)
-    } catch {
-      /* ignore */
-    }
+    removeMergeScratch(scratch)
   }
 }
 

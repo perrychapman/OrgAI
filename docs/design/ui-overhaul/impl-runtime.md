@@ -518,7 +518,8 @@ Reviewer blocked the push on H1; fixed here with real-git tests (`runtime/integr
   with a repository `filter.*.clean` configured both merge, no re-ask); it passed before this round as well.
 - **Lows.** `mergeAttributeRefusal` looks up attributes under both names of a renamed file (`git diff --name-status -M -z` on
   `HEAD...sha`, plus the renames of the checkout's own side) and refuses when the paths cannot be read. The scratch index of that
-  check is named under `<tmp>/orgai-merge-scratch/`, and the first use in a process removes `*.index` / `*.index.lock` files older
+  check lives in its own `mkdtemp` folder (`use-xxxx`, owner-only where the platform has modes) under `<tmp>/orgai-merge-scratch/`,
+  removed after the check, and the first use in a process removes `use-*` folders and loose `*.index` / `*.index.lock` files older
   than ten minutes there (`sweepMergeScratch`); it is not called from the desktop boot.
 
 ### Behaviour changes for existing users
@@ -590,6 +591,19 @@ Reviewer blocked the push on H1; fixed here with real-git tests (`runtime/integr
   - `templates:apply` and `projects:applyImport` (the org commands that replace a chart) fail when the resulting chart drops a
     role's cap or knowledge restriction; adding to a chart ("merge") is unaffected;
   - the window is unchanged in every case.
+- **Automatic merges need git 2.32 or newer** (`GIT_CONFIG_GLOBAL`, which the neutral merge relies on). `git --version` is read once
+  per process; on an older git the merge is refused before it runs with "the installed git is X and the automatic merge needs 2.32
+  or newer", and the branch is kept. The checkout to `mainBranch`, the worktree removal and the branch deletion after a merge now
+  run neutral too, with the line-ending settings of the snapshot taken before the tests. A second review round reuses the snapshot
+  of the first; if your git name, email or line-ending settings differ when the second round starts (a test command rewrote them),
+  the merge is refused with "your git settings changed while the tests ran".
+- **The re-ask note does not list untracked files** (it says so), and when the folder's HEAD went backwards it names the old and new
+  short sha. Invisible characters (every format character, variation selectors, tag characters, the Braille blank, Hangul and
+  Khmer fillers) are removed from repository text in it.
+- **`orgai projects set --review-merges off` still works from a terminal, by design**: proposals (cards) cannot turn review off.
+- Known limits, not fixed in this round: configuration pulled in by `include.path` is not pinned; `commit.gpgsign` / `gpg.program`
+  in the repository config are not forced off; `discardWorktree` and `commitLeftovers` still use the unguarded git runner (both are
+  outside the merge path).
 
 ## Not built, and why
 
