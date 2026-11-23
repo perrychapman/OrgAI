@@ -644,6 +644,8 @@ export function NewProjectForm({
             </label>
           ))}
         </div>
+        {/* Only while no kind is chosen: it helps the first choice and never pushes the fields that follow down. */}
+        {!projectKind && (
         <details className="project-kind-diff" data-testid="project-kind-diff">
           <summary>How they differ</summary>
           <table>
@@ -665,6 +667,7 @@ export function NewProjectForm({
             </tbody>
           </table>
         </details>
+        )}
       </fieldset>
 
       {projectKind === 'code' && (

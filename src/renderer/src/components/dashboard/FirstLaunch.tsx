@@ -113,6 +113,44 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
   return (
     <div className="dash-first welcome" data-testid="welcome">
       <div className="welcome-main">
+        <fieldset className="dash-first-choice" data-testid="dash-start-choice">
+          <legend>How do you want to start?</legend>
+          <div className="dash-first-options">
+            {OPTIONS.map((o) => (
+              <label key={o.value} className="dash-first-option glass">
+                <input
+                  type="radio"
+                  name={name}
+                  value={o.value}
+                  checked={start === o.value}
+                  onChange={() => setStart(o.value)}
+                  aria-labelledby={`${name}-${o.value}-t`}
+                  aria-describedby={`${name}-${o.value}-d`}
+                />
+                <span id={`${name}-${o.value}-t`} className="dash-first-option-title">
+                  {o.title}
+                </span>
+                <span id={`${name}-${o.value}-d`} className="dash-first-option-text">
+                  {o.text}
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div className="dash-first-panel" hidden={start !== 'project'}>
+          <NewProjectForm mockAvailable={mockAvailable} variant="inline" autoFocus={false} />
+        </div>
+        {start === 'chat' && (
+          <div className="dash-first-panel">
+            <Button variant="primary" icon={MessageSquare} testId="empty-chat-now" onClick={() => void openNewChat()}>
+              Chat now
+            </Button>
+          </div>
+        )}
+        <p className="welcome-foot">Your files stay on this computer. Teams only touch the folders you pick. You can change all of this later in Settings.</p>
+      </div>
+
+      <aside className="welcome-aside" aria-label="Getting started">
         <div className="welcome-top">
           <ol className="welcome-steps" aria-label="Setup steps">
             {steps.map((s) => (
@@ -158,45 +196,6 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
           </Button>
         </section>
 
-        <fieldset className="dash-first-choice" data-testid="dash-start-choice">
-          <legend>How do you want to start?</legend>
-          <p className="welcome-sub">You can add the other kind any time, and change all of this later in Settings.</p>
-          <div className="dash-first-options">
-            {OPTIONS.map((o) => (
-              <label key={o.value} className="dash-first-option glass">
-                <input
-                  type="radio"
-                  name={name}
-                  value={o.value}
-                  checked={start === o.value}
-                  onChange={() => setStart(o.value)}
-                  aria-labelledby={`${name}-${o.value}-t`}
-                  aria-describedby={`${name}-${o.value}-d`}
-                />
-                <span id={`${name}-${o.value}-t`} className="dash-first-option-title">
-                  {o.title}
-                </span>
-                <span id={`${name}-${o.value}-d`} className="dash-first-option-text">
-                  {o.text}
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <div className="dash-first-panel" hidden={start !== 'project'}>
-          <NewProjectForm mockAvailable={mockAvailable} variant="inline" autoFocus={false} />
-        </div>
-        {start === 'chat' && (
-          <div className="dash-first-panel">
-            <Button variant="primary" icon={MessageSquare} testId="empty-chat-now" onClick={() => void openNewChat()}>
-              Chat now
-            </Button>
-          </div>
-        )}
-        <p className="welcome-foot">Your files stay on this computer. Teams only touch the folders you pick.</p>
-      </div>
-
-      <aside className="welcome-aside" aria-label="What you are setting up">
         <div className="welcome-aside-label">What you are setting up</div>
         {start === 'chat' ? (
           <div className="welcome-card glass motion-rise">
