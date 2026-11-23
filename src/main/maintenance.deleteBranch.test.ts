@@ -21,7 +21,8 @@ function put(dir: string, rel: string, content: string): void {
 }
 
 function localBranches(): string[] {
-  return git(root, "for-each-ref --format=%(refname:short) refs/heads")
+  // Quoted: the helper runs through a shell, and a POSIX shell rejects a bare "(" (macOS CI).
+  return git(root, 'for-each-ref "--format=%(refname:short)" refs/heads')
     .split(/\r?\n/)
     .filter(Boolean)
     .sort()
@@ -305,7 +306,7 @@ describe('deleteBranch: deletes', () => {
     const res = await service().deleteBranch('p1', 'worktree-agent-pushed')
     expect(res.ok).toBe(true)
     expect(localBranches()).toEqual(['main'])
-    expect(git(remote, 'for-each-ref --format=%(refname:short) refs/heads').split(/\r?\n/).sort()).toEqual(['main', 'worktree-agent-pushed'])
-    expect(git(root, 'for-each-ref --format=%(refname:short) refs/remotes')).toContain('origin/worktree-agent-pushed')
+    expect(git(remote, 'for-each-ref "--format=%(refname:short)" refs/heads').split(/\r?\n/).sort()).toEqual(['main', 'worktree-agent-pushed'])
+    expect(git(root, 'for-each-ref "--format=%(refname:short)" refs/remotes')).toContain('origin/worktree-agent-pushed')
   })
 })

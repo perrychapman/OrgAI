@@ -272,7 +272,10 @@ describe('H1: the merge carries a snapshot taken before the test command, and gi
     useGlobalHome()
     const args = (await mergeCarriedConfigArgs(root)).join(' ')
     // (A stock Git for Windows system config may still carry core.symlinks / core.autocrlf of its own; the global ones above are junk.)
-    expect(args).not.toMatch(/core\.eol|core\.filemode|Only Name|safe\.directory|maybe|weird|sometimes/)
+    expect(args).not.toMatch(/core\.eol|core\.filemode|Only Name|maybe|weird|sometimes/)
+    // The global entry above trusts another folder, so it earns nothing. A machine whose SYSTEM config trusts every
+    // folder (a GitHub runner sets safe.directory=*) still gets the root OrgAI computed, never a path read from config.
+    expect(args).not.toContain('/not/this/one')
   })
 
   it('a value the repository\'s own config sets is not copied onto the command line (it would override the repository)', async () => {
