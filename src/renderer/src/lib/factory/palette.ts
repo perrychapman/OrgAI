@@ -7,8 +7,8 @@
 //    booth, machines and robots step up from it. The robot is the lightest body in the hall.
 //  - Light ("day shift") is designed, not inverted: the floor stays pale and every object is a mid or dark tone on it,
 //    so the robot is a dark body with mid-grey limbs (limbs stay readable on the pale floor behind them).
-//  - Floor paint (safety yellow) is never a state colour; lamps take the status tokens (--success, --warning,
-//    --danger) at run time through instanceColor, so they are not in this table.
+//  - Floor paint (safety yellow) is never a state colour; lamps take the status tokens (--working cyan for
+//    Running and the active plan step, --warning amber, --danger red, --success green for a done plan step) at run time through instanceColor, so they are not in this table.
 import type { AgentState } from '@shared/types'
 import type { Lamp } from './types'
 
@@ -130,9 +130,10 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       crate: '#a07a4a',
       // Slice 6: the travellers are the brightest, most saturated things on the floor (slice 4's blue-grey tote and grey
       // capsule sat 1.2 to 2.7:1 from the plate and floor at mid zoom). Hue is distinct from every state colour (lamps are
-      // green, amber and red; the crate is brown; the robot is pale with sky-blue limbs): tote violet, capsule cyan, part white.
+      // cyan running, amber and red; the done step lamp is green; the crate is brown; the robot is pale with sky-blue limbs):
+      // tote violet, capsule magenta, part white.
       tote: '#c9a6ff',
-      capsule: '#4fd6f6',
+      capsule: '#f07ad8',
       part: '#f1f4fb',
       carrierBand: '#0b0e14',
       paint: '#b8932a',
@@ -180,7 +181,7 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       crate: '#94693a',
       // Slice 6: dark and saturated on the pale floor (the white capsule was 1.49:1 against it).
       tote: '#5a2bb5',
-      capsule: '#046b8c',
+      capsule: '#a0237f',
       part: '#f1f4fb',
       carrierBand: '#ffffff',
       paint: '#c99a1a',
