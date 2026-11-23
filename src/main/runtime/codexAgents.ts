@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { z } from 'zod'
-import type { AgentInstance, AgentMessage, Effort, ModelTier, Role } from '@shared/types'
+import type { AgentInstance, AgentMessage, Effort, ModelTier, Project, Role } from '@shared/types'
 import { BRIDGE_BRIEF_MAX_CHARS, EFFORTS, MODEL_TIERS } from '@shared/types'
 import { newId } from '@shared/defaults'
 import { codexToolName, dynamicToolSpec, type DynamicToolSpec } from './codexProtocol'
@@ -10,6 +10,7 @@ import { NETWORK_TOOLS, canonicalNetworkTool } from './codexEvents'
 import { HandleNamer, mapSendMessage, messageTranscriptText, resolveRecipient, spawnHandle } from './network'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL } from './prompts'
 import { ROOT_AGENT_ID } from './types'
+import { spawnCapRefusal } from './spawnCaps'
 import { gitExecutable } from '../host/systemBinaries'
 import { trackChildProcess } from '../host/shutdown'
 import { scrubControlEnv } from './childEnv'
@@ -114,6 +115,8 @@ export interface NetworkOptions {
   root: Role
   maxDepth: number
   maxConcurrent: number
+  /** The run's project as it is now (UI overhaul spawn caps: Project.maxAgentsPerRun); Role.maxConcurrent is read from `roles`. Missing = no total cap. */
+  project?: () => Pick<Project, 'maxAgentsPerRun'>
   handles?: HandleNamer
 }
 
@@ -218,6 +221,16 @@ export class CodexAgentNetwork {
     if (this.liveCount() >= this.opts.maxConcurrent) {
       return { ok: false, message: `Concurrent subagent limit reached (${this.opts.maxConcurrent} running). Wait for a report to finish (its result arrives as a message), then spawn again.` }
     }
+    // UI overhaul caps (one decision for every adapter, spawnCaps.ts). Counted from the members, which hold a spawn from
+    // begin() on (parallel calls included) and every bridged report; a parked agent is not live for the role count, as for
+    // the concurrency limit above (it waits on its own reports and must not block them).
+    const capped = spawnCapRefusal({
+      project: this.opts.project?.() ?? {},
+      roles: this.opts.roles,
+      roleId: target.id,
+      agents: [...this.members.values()].map((m) => ({ id: m.id, roleId: m.role.id, state: m.live && !m.parked ? 'thinking' : 'done' }))
+    })
+    if (capped) return { ok: false, message: capped }
     const name = args.name?.trim()
     if (name) {
       if (!HANDLE_PATTERN.test(name)) return { ok: false, message: `The name "${name}" is not a valid handle. Use letters, digits, - _ . (at most 41 characters).` }

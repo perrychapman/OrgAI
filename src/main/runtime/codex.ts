@@ -186,6 +186,7 @@ import { tmpdir } from 'node:os'
 import { scrubControlEnv } from './childEnv'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import type { ResolvedMcpServer } from './types'
+import { agentBriefOf } from './spawnCaps'
 
 /** Root turn ends with a restart pending but blocked by other turns before the run says so in a warning. */
 export const CODEX_RESTART_WAIT_WARN_TURNS = 3
@@ -348,6 +349,8 @@ interface ThreadInfo {
 /** Turns in which one agent may use Codex's built-in multi-agent tools before it fails (the third one fails it). */
 const NATIVE_STRIKE_LIMIT = 3
 const NATIVE_FAIL_ACTIVITY = 'Used native multi-agent tools'
+/** The activity of a report the user stopped one by one (stopAgent), as in the Claude adapter. */
+const STOPPED_ACTIVITY = 'Stopped by you'
 const NATIVE_AGENTS_NOTICE =
   `Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports. ${NATIVE_RULE_NOTE}`
 
@@ -499,6 +502,8 @@ class CodexSession implements RuntimeSession {
   private bindWaiters: (() => void)[] = []
   /** Foreign threads whose turn was already interrupted. */
   private foreignInterrupted = new Set<string>()
+  /** Reports the user stopped one by one (stopAgent) whose interrupted turn is still to complete: agent id -> tell its parent. */
+  private userStopped = new Map<string, boolean>()
   /** Native multi-agent items seen this run (Phase 3 wires it into the run summary). */
   private nativeItems = 0
   /** Strikes per agent: turns in which it used Codex's built-in multi-agent tools. */
@@ -536,7 +541,8 @@ class CodexSession implements RuntimeSession {
       // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
       ...staffingProfileDep(ctx)
     })
-    this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
+    // `project` is read at each spawn: Project.maxAgentsPerRun can change mid-run (Role.maxConcurrent comes with the live roles).
+    this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency, project: () => this.ctx.project })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
     this.partial = new ThrottledPartial((agentId, text) => this.emit({ type: 'agent.partial', runId: ctx.run.id, agentId, text }))
 
@@ -643,6 +649,71 @@ class CodexSession implements RuntimeSession {
     this.continuation.hold()
     this.nativeTag.clear()
     await this.interruptAll()
+  }
+
+  /**
+   * UI overhaul runs:stopAgent: stop one running report and the reports under it. Never the root; false for an unknown,
+   * bridged (no thread here) or ended agent, or when the app-server refuses the interrupt of the target's turn. A
+   * report in a turn gets turn/interrupt (its turn then completes as interrupted and the usual path ends it, "Stopped by
+   * you", its ledger entry and staffing slot closed, branch neither merged nor held); one waiting for its own reports
+   * (no turn) is settled here. The parent is told once with a harness message, so it does not wait for a report that
+   * will not come.
+   */
+  async stopAgent(agentId: string): Promise<boolean> {
+    if (typeof agentId !== 'string' || agentId === ROOT_AGENT_ID || this.ending || !this.server) return false
+    const target = this.agents.get(agentId)
+    if (!target || target.state === 'done' || target.state === 'error') return false
+    const threadOf = (id: string): string | undefined => [...this.threads].find(([, t]) => t.agentId === id)?.[0]
+    if (!threadOf(agentId)) return false
+    const tree: string[] = []
+    const visit = (id: string, depth: number): void => {
+      if (depth > 50 || tree.includes(id)) return
+      for (const a of this.agents.values()) if (a.parentId === id && a.id !== ROOT_AGENT_ID) visit(a.id, depth + 1)
+      tree.push(id)
+    }
+    visit(agentId, 0)
+    for (const id of tree) {
+      const a = this.agents.get(id)
+      if (!a || a.state === 'done' || a.state === 'error') continue
+      const threadId = threadOf(id)
+      if (!threadId) continue
+      const turnId = this.activeTurn.get(threadId)
+      if (turnId) {
+        this.userStopped.set(id, id === agentId)
+        try {
+          await this.server.request(METHOD.turnInterrupt, { threadId, turnId })
+        } catch (e) {
+          this.userStopped.delete(id)
+          this.log('warn', `Could not stop ${a.handle ?? a.name ?? id}: ${(e as Error).message}`)
+          if (id === agentId) return false
+        }
+        continue
+      }
+      // No turn running (waiting for its own reports): nothing to interrupt, so end it here.
+      this.ctx.delegation?.ended(id)
+      this.heldReports.delete(id)
+      this.finishAgent(id)
+      a.state = 'done'
+      a.activity = STOPPED_ACTIVITY
+      a.endedAt = Date.now()
+      this.upsert(a)
+      this.noteActivity('report')
+      if (id === agentId) {
+        this.tellParentStopped(a)
+        this.recheckParent(a)
+      }
+    }
+    this.log('info', `${target.handle ?? target.name ?? agentId} was stopped${tree.length > 1 ? ` with ${tree.length - 1} report${tree.length === 2 ? '' : 's'} under it` : ''}.`)
+    return true
+  }
+
+  /** Tell a stopped report's parent it will not report (the user stopped it), as a harness message. */
+  private tellParentStopped(child: AgentInstance): void {
+    if (this.ending) return
+    const parentId = child.parentId ?? ROOT_AGENT_ID
+    const who = `${child.handle ?? child.roleSlug} (${child.name})`
+    const text = `Harness: ${who} was stopped by the user before it finished, so it sent no report. Carry on without its work, or ask the user how to proceed.`
+    this.deliverTo(parentId, text).catch((e: Error) => this.log('warn', `Could not tell ${this.agents.get(parentId)?.handle ?? parentId} that ${who} was stopped: ${e.message}`))
   }
 
   /** A message from another run's orchestrator. RunManager writes the transcript block, so none is written here. */
@@ -1778,6 +1849,9 @@ class CodexSession implements RuntimeSession {
   private childTurnCompleted(agentId: string, u: Extract<CodexUpdate, { type: 'turnCompleted' }>): void {
     const child = this.agents.get(agentId)
     if (!child) return
+    // A stop that lost the race to a normal end counts for nothing (read once per turn end).
+    const stoppedByUser = this.userStopped.get(agentId)
+    this.userStopped.delete(agentId)
     if (u.status === 'completed' && this.ctx.delegation && !this.ending) {
       this.evaluateChild(child, u.result)
       return
@@ -1789,7 +1863,7 @@ class CodexSession implements RuntimeSession {
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
       child.state = 'done'
-      child.activity = 'Interrupted'
+      child.activity = stoppedByUser === undefined ? 'Interrupted' : STOPPED_ACTIVITY
     } else if (u.status === 'failed') {
       child.state = 'error'
       child.activity = this.redact(u.error?.message ?? 'Failed').slice(0, 80)
@@ -1802,6 +1876,7 @@ class CodexSession implements RuntimeSession {
     this.noteActivity('report')
     if (u.status === 'completed') void this.integrator.onSubagentFinished(child.id)
     if (u.status === 'interrupted') {
+      if (stoppedByUser) this.tellParentStopped(child)
       this.recheckParent(child)
       return
     }
@@ -2582,6 +2657,8 @@ class CodexSession implements RuntimeSession {
         handle: req.handle,
         state: 'thinking',
         activity: (req.description ?? req.brief).replace(/\s+/g, ' ').slice(0, 90) || 'Reading the brief…',
+        // AgentInstance.brief: what the parent wrote on spawn_report (before known items or a context pack are added).
+        ...(agentBriefOf(req.brief) ? { brief: agentBriefOf(req.brief) } : {}),
         ...(started.model ?? parent?.model ? { model: started.model ?? parent?.model } : {}),
         ...(worktree ? { worktree } : {})
       })
