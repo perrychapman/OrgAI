@@ -678,6 +678,52 @@ try {
       await shot(`proxies-four-${w}x${h}-${theme}`)
     }
   }
+  // Appearance choices (runtime-backed): attributes on <html> after a change and after a reload; General behaviour rows
+  // save; Play a sound is off by default and nothing chimed.
+  {
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
+    await page.locator('[data-testid=appearance-reading]').waitFor({ timeout: 10_000 })
+    const attrs = () => page.evaluate(() => ({ ...document.documentElement.dataset }))
+    await page.locator('[data-testid=appearance-glass-switch]').click()
+    await page.getByRole('radiogroup', { name: 'Text size' }).locator('label', { hasText: 'Large' }).click()
+    await page.getByRole('radiogroup', { name: 'Spacing' }).locator('label', { hasText: 'Compact' }).click()
+    await page.locator('[data-testid=appearance-dots-switch]').click()
+    await sleep(800)
+    let a = await attrs()
+    check(a.glass === 'off' && a.textSize === 'large' && a.density === 'compact' && a.activityDots === 'off', 'Appearance choices set their attributes at once', JSON.stringify(a))
+    const savedAppearance = (await page.evaluate(() => window.orgai.settings.get())).appearance
+    check(savedAppearance.glass === false && savedAppearance.textSize === 'large' && savedAppearance.density === 'compact' && savedAppearance.sidebarActivityDots === false, 'Appearance choices are saved by main', JSON.stringify(savedAppearance))
+    await page.reload()
+    await page.waitForSelector('.nav-item', { timeout: 15_000 })
+    await sleep(800)
+    a = await attrs()
+    check(a.glass === 'off' && a.textSize === 'large' && a.density === 'compact' && a.activityDots === 'off', 'Appearance choices survive a reload', JSON.stringify(a))
+    await page.evaluate(async () => {
+      const s = await window.orgai.settings.get()
+      const { dataDir: _d, appVersion: _v, ...rest } = s
+      await window.orgai.settings.set({ ...rest, appearance: { ...s.appearance, glass: true, textSize: 'default', density: 'comfortable', sidebarActivityDots: true } })
+    })
+    await sleep(800)
+    a = await attrs()
+    check(!a.glass && !a.textSize && !a.density && !a.activityDots, 'default choices remove the attributes', JSON.stringify(a))
+
+    await openAppSettings(page)
+    await page.getByRole('tab', { name: 'General', exact: true }).click()
+    const sound = page.locator('[data-testid=play-sound-switch]')
+    await sound.waitFor({ timeout: 10_000 })
+    check((await sound.getAttribute('aria-checked')) === 'false', 'Play a sound starts off')
+    check((await page.evaluate(() => document.documentElement.dataset.chimeCount)) === undefined, 'no chime has played with the sound off')
+    for (const id of ['notifyNeedsMe-switch', 'notifyRunFinished-switch', 'notifyScheduleFindings-switch', 'open-at-login-switch', 'keep-awake-switch']) {
+      check((await page.locator(`[data-testid=${id}]`).count()) === 1, `General shows ${id}`)
+    }
+    await page.locator('[data-testid=notifyRunFinished-switch]').click()
+    await sleep(700)
+    check((await page.evaluate(() => window.orgai.settings.get())).notifyRunFinished === false, 'turning off "When a run finishes" is saved')
+    await page.locator('[data-testid=notifyRunFinished-switch]').click()
+    await sleep(700)
+  }
+
   // PROXIES_MAX: Add is inert with a reason.
   await page.evaluate(async () => {
     for (let i = 0; i < 16; i++) await window.orgai.connections.createProxy({ name: `Bulk ${i}`, anthropicBaseUrl: 'https://mock-proxy.example.com' }).catch(() => null)

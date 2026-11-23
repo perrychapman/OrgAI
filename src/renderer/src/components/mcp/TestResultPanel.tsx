@@ -56,7 +56,7 @@ export default function TestResultPanel({
             <p className="muted">The server connected but reported no tools.</p>
           ) : (
             <>
-              {details.size > 0 && (
+              {[...details.values()].some((d) => d.readOnly !== undefined || d.destructive !== undefined) && (
                 <p className="muted mcp-tools-summary" data-testid="mcp-tools-summary">
                   As the server describes them: {toolSummary(tools, details)}. Roles that may use this server get every tool.
                 </p>
