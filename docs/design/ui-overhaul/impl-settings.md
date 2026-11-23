@@ -174,8 +174,25 @@ new menu (self-help breadcrumbs).
   1600x1000 dark / light looked at.
 - Reviewer (set2-review): approve, no Critical or High; M1-M8 fixed (M9 is `KitSection.tsx`, reported to its owner),
   L1, L2, L4, L5, L6 fixed.
+- Runtime-backed part: unit tests `sound.test.ts` (first observation, loaded runs, rate limit, off), `theme.test.ts`
+  (attributes), `planLimit.test.ts`, `toolCapabilities.test.ts` (`toolSummary`); e2e connections.mjs (Appearance
+  attributes after a change and after a reload, defaults remove them, Play a sound off and no chime, General rows
+  save, built-in templates read only, Duplicate and remove), permissions.mjs (Main branch Automatic first, Tests must
+  pass and Keep branches save). Reviewer (set2-review2): its High (caps shown while project spend was the stub) is
+  handled by holding the caps back; Mediums M1-M7 fixed in the UI (M2's copy now says merges go untested without a command; the main-side refusal
+  is requested from ov-runtime); Lows L1, L2, L5, L6, L9, L10 fixed.
+- Final run on dev 3b0efe71 + this branch: typecheck clean; unit suite 15323 passed, 6 failed (Windows symlink and
+  CLI timing tests in src/cli and src/main/runtime, failing on the unchanged base too); build; e2e connections,
+  connectors, presets, skills, permissions, maintenance, project-connection, multi-provider, engagement2 all passed.
 
 ### Open
+
+- Waiting on ov-runtime (its branch conflicts with dev in src/main/ipc.ts): the real `projectSpend` (then flip
+  `PERIOD_CAPS_LIVE` in LimitsSection.tsx to show day / month caps, at-cap behaviour and Warn me at; the rows and
+  their e2e are already written), `maxAgentsPerRun` (row not yet added: Advanced > Runs and agents), the main-side
+  refusal of a merge when "Tests must pass" is on with an empty command, and MCP tool annotations from probe.ts (the
+  test panel shows them once present).
+- The attention chime plays in every window that renders App (a run window too).
 
 - `e2e/layout.mjs` clicks `label.seg-item` "Dark" in Colour mode, which part 1's picture cards replaced; it fails on
   dev independent of part 2 (reported to the orchestrator).
