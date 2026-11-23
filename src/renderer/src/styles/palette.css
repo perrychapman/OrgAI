@@ -154,3 +154,13 @@
     display: none;
   }
 }
+/* Windows High Contrast drops backgrounds: the active row and the focused field keep a system outline. */
+@media (forced-colors: active) {
+  .palette-option.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .palette-field:focus-within {
+    outline: 2px solid Highlight;
+  }
+}

@@ -124,9 +124,15 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
     resumeAt = stage === 'start' ? null : { stage, work, connection: chosenConnection, ask }
   }, [stage, work, chosenConnection, ask])
   // After Next / Back, focus the new step's heading (never on mount: Home owns the first focus).
+  // Leaving setup (Skip or the last Continue) lands on the checked start radio, so focus never drops to the page.
   useEffect(() => {
-    if (moved.current) headingRef.current?.focus()
+    if (!moved.current) return
+    if (stage === 'start') startRef.current?.querySelector<HTMLInputElement>('input[type=radio]:checked')?.focus()
+    else headingRef.current?.focus()
   }, [stage])
+  const startRef = useRef<HTMLFieldSetElement>(null)
+  /** Set once the user picked or confirmed a kind of work on step 2; Skip before that leaves the form's own kind alone. */
+  const workChosen = useRef(resumeAt?.stage === 3)
 
   const options = connectOptions(connections, defaultConnection)
   const picked = options.find((o) => o.id === (chosenConnection ?? options[0]?.id)) ?? null
@@ -134,10 +140,11 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
   const go = (to: WelcomeStage): void => {
     moved.current = true
     setError(null)
+    if (stage === 2 && to === 3) workChosen.current = true
     if (to === 'start') {
       writeWelcomeDone()
-      if (work !== 'chat') writeLastProjectKind(work)
-      setStart(work === 'chat' ? 'chat' : 'project')
+      if (workChosen.current && work !== 'chat') writeLastProjectKind(work)
+      setStart(workChosen.current && work === 'chat' ? 'chat' : 'project')
     }
     setStage(to)
   }
@@ -190,7 +197,10 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
       body = (
         <div className="welcome-options" role="radiogroup" aria-labelledby={`${uid}-h`}>
           {WORK_OPTIONS.map((o) => (
-            <Choice key={o.kind} name={`${uid}-work`} value={o.kind} kind={o.kind} checked={work === o.kind} onPick={() => setWork(o.kind)} title={o.name} text={o.sub} />
+            <Choice key={o.kind} name={`${uid}-work`} value={o.kind} kind={o.kind} checked={work === o.kind} onPick={() => {
+                workChosen.current = true
+                setWork(o.kind)
+              }} title={o.name} text={o.sub} />
           ))}
         </div>
       )
@@ -272,7 +282,7 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
   return (
     <div className="dash-first welcome" data-testid="welcome">
       <div className="welcome-main">
-        <fieldset className="dash-first-choice" data-testid="dash-start-choice">
+        <fieldset className="dash-first-choice" data-testid="dash-start-choice" ref={startRef}>
           <legend>How do you want to start?</legend>
           <div className="dash-first-options">
             {OPTIONS.map((o) => (

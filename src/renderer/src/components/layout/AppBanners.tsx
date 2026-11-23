@@ -69,6 +69,9 @@ export function readyUpdate(state: UpdateState | null, dismissed: string | null)
  * offline and sign-in, which are news the user should hear once). Offline and sign-in clear themselves; the update
  * banner can be dismissed for the version, this session.
  */
+/** The connection whose sign-in banner was already announced in this window (null: none showing). */
+let signInAnnouncedFor: string | null = null
+
 export default function AppBanners(): ReactElement | null {
   const view = useAppStore((s) => s.view)
   const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
@@ -97,6 +100,12 @@ export default function AppBanners(): ReactElement | null {
     setView('appSettings')
   }
   const used = needSignIn ? projectsUsing(projects, needSignIn) : 0
+  // The sign-in banner is read out once per connection that needs it (politely); remounts on later pages stay quiet.
+  const [announceSignIn] = useState(() => !!needSignIn && signInAnnouncedFor !== needSignIn)
+  useEffect(() => {
+    if (needSignIn) signInAnnouncedFor = needSignIn
+    else signInAnnouncedFor = null
+  }, [needSignIn])
 
   // Always mounted so a leaving banner can finish its exit; the empty wrapper takes no space (banners.css).
   return (
@@ -124,6 +133,7 @@ export default function AppBanners(): ReactElement | null {
       <BannerPresence show={!!needSignIn && !onSettings}>
         <Banner
           tone="danger"
+          live={announceSignIn || (!!needSignIn && signInAnnouncedFor !== needSignIn) ? 'polite' : 'off'}
           testId="banner-sign-in"
           title={`${connectionLabel(needSignIn ?? 'anthropic')} needs you to sign in.`}
           actions={

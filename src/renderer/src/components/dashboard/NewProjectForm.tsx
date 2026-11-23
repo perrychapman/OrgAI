@@ -651,7 +651,9 @@ export function NewProjectForm({
           <table>
             <thead>
               <tr>
-                <td />
+                <th scope="col">
+                  <span className="sr-only">Aspect</span>
+                </th>
                 <th scope="col">Code project</th>
                 <th scope="col">Engagement</th>
               </tr>

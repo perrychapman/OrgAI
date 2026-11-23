@@ -218,7 +218,7 @@ export default function CommandPalette({
               className="palette-input"
               data-testid="command-palette-input"
               aria-label="Search or jump to"
-              aria-expanded="true"
+              aria-expanded={flat.length > 0}
               aria-controls={listId}
               aria-autocomplete="list"
               aria-activedescendant={activeItem ? optionId(activeItem.id) : undefined}
@@ -231,7 +231,7 @@ export default function CommandPalette({
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                   e.preventDefault()
                   setActive((i) => stepIndex(i, e.key === 'ArrowDown' ? 1 : -1, flat.length))
-                } else if (e.key === 'Enter') {
+                } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                   e.preventDefault()
                   choose(activeItem)
                 }
@@ -241,7 +241,7 @@ export default function CommandPalette({
               Esc
             </kbd>
           </div>
-          <div className="palette-list" id={listId} role="listbox" aria-label="Results" ref={listRef}>
+          <div className="palette-list" id={listId} role="listbox" aria-label="Results" ref={listRef} hidden={flat.length === 0}>
             {sections.map((sec, si) => {
               const rows = sec.items.map((item) => {
                 const index = flat.indexOf(item)
@@ -287,12 +287,12 @@ export default function CommandPalette({
                 </div>
               )
             })}
-            {typed && flat.length === 0 && (
-              <div className="palette-empty" data-testid="command-palette-empty">
-                <EmptyState compact icon={Search} title={`No results for "${typed}"`} description="Check the spelling, or try a project, run or page name." />
-              </div>
-            )}
           </div>
+          {typed && flat.length === 0 && (
+            <div className="palette-empty" data-testid="command-palette-empty">
+              <EmptyState compact icon={Search} title={`No results for "${typed}"`} description="Check the spelling, or try a project, run or page name." />
+            </div>
+          )}
           <div className="palette-foot" aria-hidden="true">
             <span>
               <kbd>↑</kbd> <kbd>↓</kbd> move

@@ -118,7 +118,7 @@ export default function App(): ReactElement {
   const [paletteOpen, setPaletteOpen] = useState(false)
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'k') return
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.repeat || e.isComposing || e.key.toLowerCase() !== 'k') return
       const t = e.target as HTMLElement | null
       if (t?.isContentEditable) return
       e.preventDefault()

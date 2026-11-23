@@ -548,7 +548,7 @@ export default function Sidebar({
                 {needsCount > 0 && (
                   <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
                     <Badge tone="attention" testId="nav-inbox-count">
-                      {needsCount}
+                      <span aria-hidden="true">{needsCount}</span>
                     </Badge>
                     <span className="sr-only">{`, ${needsCount} waiting on you`}</span>
                   </span>
