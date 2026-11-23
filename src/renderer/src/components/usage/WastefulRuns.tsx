@@ -8,11 +8,8 @@ import { useAppStore } from '../../store/useAppStore'
 import DefinedTerm from './DefinedTerm'
 import { CostText } from './RankedBars'
 import type { UsagePanelProps, WastefulSort } from './panelProps'
-import { RunDetailRow, RunToggle, TableWrap } from './usageTableParts'
+import { RunDetailRow, RunStatusMark, RunToggle, TableWrap } from './usageTableParts'
 import '../../styles/usage-runs.css'
-
-/** Status dot colour per word; the dot is decorative (aria-hidden) and the word beside it is visible text. */
-const TONE: Record<string, string> = { Finished: 'ok', Failed: 'bad', Running: 'live', 'Needs you': 'live' }
 
 export interface WastefulRunsProps extends UsagePanelProps {
   sort: WastefulSort
@@ -134,10 +131,7 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                           </button>
                         )}
                         {/* The word is visible beside the dot, so status never rests on colour alone (Reviewer M5). */}
-                        <span className="usage-status-dot" data-tone={TONE[status.word] ?? 'idle'} aria-hidden="true" />
-                        <span className="usage-status-word" title={status.note ? `${status.word}. ${status.note}` : status.word}>
-                          {status.word}
-                        </span>
+                        <RunStatusMark status={status} />
                         <span className="usage-tag usage-run-kind">{rowKindWord(r)}</span>
                         {e.noResult && <span className="usage-tag" data-testid="usage-no-result-tag">No result</span>}
                         <span className="usage-cell-sub">

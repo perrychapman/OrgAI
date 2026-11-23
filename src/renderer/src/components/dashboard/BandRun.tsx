@@ -102,7 +102,7 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
   const captionFull = `${run.word}${caption ? `: ${caption}` : ''}`
   return (
     <li
-      className={enter !== undefined ? 'dash-run motion-enter' : 'dash-run'}
+      className={enter !== undefined ? 'dash-run motion-lift motion-enter' : 'dash-run motion-lift'}
       style={enter !== undefined ? ({ '--i': enter } as CSSProperties) : undefined}
       data-testid="dash-running-row"
       data-status={run.status.word}
@@ -132,7 +132,8 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
               {run.chip && <span className="dash-chip">{run.chip}</span>}
             </span>
             <span className="dash-run-cap" data-warn={run.decisions > 0 ? 'true' : undefined} title={captionFull}>
-              <span className="dash-dot" data-tone={tone} aria-hidden="true" />
+              {/* A working run's dot pulses (motion.css; stops under Pause motion and reduced motion). */}
+              <span className={tone === 'is-running' ? 'dash-dot motion-pulse' : tone === 'warn' ? 'dash-dot motion-breathe' : 'dash-dot'} data-tone={tone} aria-hidden="true" />
               <span className="dash-status">{run.word}</span>
               {caption && <span className="dash-run-cap-text">{caption}</span>}
             </span>

@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import type { CSSProperties } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { BellRing, Folder } from 'lucide-react'
+import { BellRing, Briefcase, Code, Folder, Settings } from 'lucide-react'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { activeRun, openNewChat, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from './store/useAppStore'
@@ -21,13 +21,18 @@ import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import UsageView from './views/UsageView'
 import SchedulesView from './views/SchedulesView'
+import InboxView from './views/InboxView'
+import ProjectHomeView from './views/ProjectHomeView'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
 import { useRunTabShortcuts } from './components/RunTabs'
 import AppMenuLayer from './components/AppMenuLayer'
 import AppNavigateBanner from './components/AppNavigateBanner'
+import AppBanners from './components/layout/AppBanners'
+import CommandPalette from './components/layout/CommandPalette'
 import { Badge } from './components/ui/Badge'
+import { Button } from './components/ui/Button'
 import { Icon } from './components/ui/Icon'
 import { Tabs, type TabItem } from './components/ui/Tabs'
 import { chainOf, needsYou } from './lib/runChains'
@@ -43,8 +48,8 @@ import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } fr
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 import { useBellCue } from './lib/useBellCue'
 
-type SectionView = 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'team' | 'settings'
-const SECTION_VIEWS: readonly string[] = ['run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings']
+type SectionView = 'home' | 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'team' | 'settings'
+const SECTION_VIEWS: readonly string[] = ['home', 'run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings']
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -108,6 +113,26 @@ export default function App(): ReactElement {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Ctrl/Cmd+K opens the command palette (Search or jump to). It works from any field except a rich-text editor, and
+  // never stacks on another open dialog; the sidebar's search button is the pointer way in.
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.repeat || e.isComposing || e.key.toLowerCase() !== 'k') return
+      const t = e.target as HTMLElement | null
+      if (t?.isContentEditable) return
+      e.preventDefault()
+      if (paletteOpen) {
+        setPaletteOpen(false)
+        return
+      }
+      if (document.querySelector('dialog[open]')) return
+      setPaletteOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [paletteOpen])
+
   // Ctrl/Cmd+Shift+N opens a new Chat on its start page (an accelerator only; the buttons stay the way in).
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -131,6 +156,7 @@ export default function App(): ReactElement {
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
     else if (view === 'usage') document.title = 'Usage · OrgAI'
     else if (view === 'schedules') document.title = 'Schedules · OrgAI'
+    else if (view === 'inbox') document.title = 'Inbox · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
     else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${displayRunName(first)} · OrgAI`
     else document.title = `${where} · OrgAI`
@@ -144,10 +170,12 @@ export default function App(): ReactElement {
   const hasTodos = todoScope !== null
   const openTodos = useOpenTodoCount(todoScope)
   const sections: TabItem[] = [
+    // Home (ui-overhaul ProjectHome / EngagementHome): stored projects only, never the assistants.
+    ...(isVirtual ? [] : [{ id: 'home', label: 'Home', testId: 'tab-home' }]),
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
     // Outputs (docs/design/outputs.md section 1): every stored project, never the assistants.
-    ...(isVirtual ? [] : [{ id: 'outputs', label: 'Outputs', testId: 'tab-outputs' }]),
+    ...(isVirtual ? [] : [{ id: 'outputs', label: 'Files', testId: 'tab-outputs' }]),
     ...(hasKnowledge ? [{ id: 'knowledge', label: 'Knowledge', testId: 'tab-knowledge' }] : []),
     ...(hasTodos ? [{ id: 'todos', label: 'To-dos', testId: 'tab-todos', count: openTodos ?? 0, countLabel: todosCountLabel(openTodos ?? 0), countTestId: 'todos-tab-count' }] : []),
     ...(isVirtual
@@ -166,6 +194,20 @@ export default function App(): ReactElement {
   }
   const folder = project && !isVirtual ? folderName(project.path) : ''
   const showFolder = !!project && !!folder && folder !== project.name
+  const onProject = !!project && view !== 'projects' && !['appSettings', 'usage', 'schedules', 'inbox'].includes(view)
+  const engagement = onProject && !!project && !isVirtual && projectKindOf(project) === 'engagement'
+  const activeSection = SECTION_VIEWS.includes(view) && (view !== 'home' || !isVirtual) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) && (view !== 'todos' || hasTodos) ? view : 'run'
+  // The palette offers the open project's other tabs under "This project".
+  const tabsKey = onProject ? sections.map((t) => `${t.id}:${t.label}`).join('|') : ''
+  const paletteTabs = useMemo(
+    () => (tabsKey ? tabsKey.split('|').map((part) => ({ view: part.slice(0, part.indexOf(':')), label: part.slice(part.indexOf(':') + 1) })) : null),
+    [tabsKey]
+  )
+  // The content area rises in when the user moves between app-level places or into or out of a project (not on first
+  // paint); a tab change inside one project keeps the shorter view crossfade below.
+  const routeKey = onProject ? 'project' : view === 'projects' || !project ? 'projects' : view
+  const [seenRoute, setSeenRoute] = useState<{ key: string; rise: boolean }>({ key: routeKey, rise: false })
+  if (seenRoute.key !== routeKey) setSeenRoute({ key: routeKey, rise: true })
 
   return (
     <div className="app" data-sidebar={collapsed ? 'rail' : 'full'} data-sidebar-motion={sidebarMotion ?? undefined} style={{ '--sidebar-w': `${sidebarW}px` } as CSSProperties}>
@@ -189,23 +231,33 @@ export default function App(): ReactElement {
       >
         Skip to sidebar
       </a>
-      <Sidebar resize={{ value: sidebarW, min: SIDEBAR_W.min, max: sidebarMax, onChange: setSavedSidebarW, onReset: () => setSavedSidebarW(null) }} />
+      <Sidebar resize={{ value: sidebarW, min: SIDEBAR_W.min, max: sidebarMax, onChange: setSavedSidebarW, onReset: () => setSavedSidebarW(null) }} onOpenPalette={() => setPaletteOpen(true)} />
 
-      <main className="main" id="main-content" tabIndex={-1}>
+      <main className="main" id="main-content" tabIndex={-1} data-kind={engagement ? 'engagement' : undefined}>
         <ErrorBoundary resetKey={`${view}:${selectedId}:${run?.summary.id ?? ''}`} onReset={() => setView('projects')}>
+          <div className={`main-route${seenRoute.rise ? ' motion-view' : ''}`} key={routeKey}>
+          {!onProject && <AppBanners />}
           {view === 'appSettings' ? (
             <AppSettingsView />
           ) : view === 'usage' ? (
             <UsageView />
           ) : view === 'schedules' ? (
             <SchedulesView />
+          ) : view === 'inbox' ? (
+            <InboxView />
           ) : view === 'projects' || !project ? (
             <DashboardView />
           ) : (
             <>
               <div className="topbar project-topbar">
                 <h1 title={isVirtual ? undefined : project.name}>{selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project.name}</h1>
-                <ProjectClient project={project} />
+                {!isVirtual && (
+                  <span className="kind-chip" data-testid="project-kind-chip" data-kind={engagement ? 'engagement' : 'code'}>
+                    <Icon icon={engagement ? Briefcase : Code} size="xs" />
+                    <span className="kind-chip-word">{engagement ? 'Engagement' : 'Code project'}</span>
+                    <ProjectClient project={project} />
+                  </span>
+                )}
                 {showFolder && (
                   <span className="project-folder" data-testid="project-folder" title={project.path}>
                     <Icon icon={Folder} size="xs" />
@@ -214,7 +266,7 @@ export default function App(): ReactElement {
                 )}
                 <Tabs
                   tabs={sections}
-                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) && (view !== 'todos' || hasTodos) ? view : 'run'}
+                  value={activeSection}
                   onChange={(id) => setView(id as SectionView)}
                   label="Project sections"
                   idPrefix="project"
@@ -241,10 +293,20 @@ export default function App(): ReactElement {
                   </button>
                 )}
                 <SaveIndicator />
+                {!isVirtual && (
+                  <span className="topbar-settings">
+                    <Button size="sm" icon={Settings} testId="project-settings-button" title={engagement ? 'Engagement settings' : 'Project settings'} onClick={() => setView('settings')}>
+                      <span className="topbar-settings-text">{engagement ? 'Engagement settings' : 'Project settings'}</span>
+                    </Button>
+                  </span>
+                )}
               </div>
+              <AppBanners />
               <AppNavigateBanner />
               <div className={`view-root${seenView.fade ? ' motion-view' : ''}`} key={view}>
-              {view === 'settings' ? (
+              {view === 'home' && !isVirtual ? (
+                <ProjectHomeView key={project.id} project={project} />
+              ) : view === 'settings' ? (
                 <SettingsView project={project} />
               ) : view === 'outputs' && !isVirtual ? (
                 <OutputsView key={project.id} project={project} />
@@ -262,8 +324,10 @@ export default function App(): ReactElement {
               </div>
             </>
           )}
+          </div>
         </ErrorBoundary>
       </main>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} tabs={paletteTabs} activeView={activeSection} />
       <AppMenuLayer />
     </div>
   )

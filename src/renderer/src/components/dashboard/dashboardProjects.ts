@@ -187,9 +187,10 @@ export function agoWords(at: number, now: number): string {
  * The tile's one status fact, plain text (dashboard-overhaul.md 7.8), most urgent first: "2 decisions waiting", "Working",
  * "3 runs open", "Last run 9 days ago", "No runs yet". Never a command or an activity line.
  */
-export function tileStatusLine(input: { open: number; decisions: number; working: boolean; newestStartedAt?: number; now: number }): string {
+export function tileStatusLine(input: { open: number; decisions: number; working: boolean; newestStartedAt?: number; now: number; agents?: number }): string {
   if (input.decisions > 0) return `${plural(input.decisions, 'decision', 'decisions')} waiting`
-  if (input.working) return 'Working'
+  // "Working · 16 agents" (Main board) when the agents at work are known.
+  if (input.working) return input.agents && input.agents > 0 ? `Working · ${plural(input.agents, 'agent', 'agents')}` : 'Working'
   if (input.open > 0) return `${plural(input.open, 'run', 'runs')} open`
   if (input.newestStartedAt !== undefined) return `Last run ${agoWords(input.newestStartedAt, input.now)}`
   return 'No runs yet'

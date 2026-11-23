@@ -65,7 +65,7 @@ const removeFromLegacy = (keys) => {
 const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1 && document.body.scrollWidth <= window.innerWidth + 1)
 const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await page.locator(sel).first().isVisible())
 const goDashboard = async () => {
-  await page.locator('.sidebar .nav-item', { hasText: /^\s*Dashboard\s*$/ }).or(page.locator('.sidebar [aria-label="Dashboard"]')).first().click()
+  await page.locator('[data-testid=nav-home]').or(page.locator('.sidebar .nav-item', { hasText: /^\s*(Home|Dashboard)\s*$/ })).or(page.locator('.sidebar [aria-label="Dashboard"]')).first().click()
   await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
 }
 

@@ -17,8 +17,14 @@ export function Banner({
   actions,
   onDismiss,
   label,
+  live,
   testId
 }: {
+  /**
+   * Optional override of the announcement: 'polite' makes even a danger banner a status (not an alert); 'off' drops the
+   * live role (use it, or `label`, when the same notice is mounted again and must not be read out again). Default as before.
+   */
+  live?: 'polite' | 'off'
   tone?: BannerTone
   title?: ReactNode
   children?: ReactNode
@@ -31,7 +37,7 @@ export function Banner({
   return (
     <div
       className={`banner tone-${tone}`}
-      role={label ? 'region' : tone === 'danger' ? 'alert' : 'status'}
+      role={label ? 'region' : live === 'off' ? undefined : live === 'polite' ? 'status' : tone === 'danger' ? 'alert' : 'status'}
       aria-label={label}
       data-testid={testId}
     >

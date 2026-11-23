@@ -1,10 +1,11 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { useId, useState } from 'react'
 import { ChevronDown, ChevronRight, Pause, Pencil, Play, Trash2, Zap } from 'lucide-react'
 import type { ScheduleRowView } from '@shared/view/schedules'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
+import { Switch } from '../ui/Switch'
 import { ContextMenu, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
 import ScheduleHistory from './ScheduleHistory'
 import { showHidden } from '../../lib/hiddenChars'
@@ -17,6 +18,10 @@ export default function ScheduleRow({
   row,
   busy,
   historyKey,
+  selected,
+  colour,
+  tone,
+  onSelect,
   onRunNow,
   onToggle,
   onEdit,
@@ -29,6 +34,13 @@ export default function ScheduleRow({
   busy: boolean
   /** Bumped when schedules:changed names this schedule. */
   historyKey: number
+  /** The detail panel shows this schedule. */
+  selected: boolean
+  /** A token colour (var(--chart-*)) shared with the week strip. */
+  colour: string
+  /** Last outcome dot: ok, bad or none. */
+  tone: 'ok' | 'bad' | 'none'
+  onSelect: () => void
   onRunNow: () => void
   onToggle: () => void
   onEdit: () => void
@@ -47,7 +59,9 @@ export default function ScheduleRow({
     const btn = li.querySelector<HTMLButtonElement>('[data-testid=schedule-run-now]')
     return (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true' ? btn : li.querySelector<HTMLElement>(`[id="${headingId}"]`)) ?? undefined
   }
-  const why = busy ?'Working on it' : undefined
+  const why = busy ? 'Working on it' : undefined
+  const isOff = row.toggle === 'Resume'
+  const nextText = row.next.relative === 'Not scheduled while paused' ? 'Turned off' : row.next.relative
   const menuItems = (): MenuEntry[] => [
     { id: 'run-now', label: 'Run now', icon: Zap, onSelect: onRunNow, disabled: busy, disabledReason: why, testId: 'schedule-menu-run-now' },
     ...(row.toggle ? [{ id: 'toggle', label: row.toggle, icon: row.toggle === 'Pause' ? Pause : Play, onSelect: onToggle, disabled: busy, disabledReason: why, testId: 'schedule-menu-toggle' }] : []),
@@ -57,7 +71,8 @@ export default function ScheduleRow({
   ]
   return (
     <li
-      className="schedule-row"
+      className={`schedule-row glass${selected ? ' is-selected' : ''}${isOff ? ' is-off' : ''}`}
+      style={{ '--schedule-colour': colour } as CSSProperties}
       data-testid="schedule-row"
       data-schedule-id={row.id}
       data-state={row.chip.label}
@@ -69,56 +84,57 @@ export default function ScheduleRow({
         if (t instanceof HTMLElement && t !== e.currentTarget) menu.onKeyDown(e, row.id, { anchor: t, invoker: t, fallbackFocus })
       }}
     >
-      <div className="schedule-row-head">
-        <h2 className="schedule-row-name" id={headingId} tabIndex={-1} title={showHidden(row.name)}>
-          {showHidden(row.name)}
-        </h2>
-        {row.unread > 0 && (
-          <span className="schedule-unread" data-testid="schedule-unread" title={`${row.unread} new in the history`}>
-            <span className="schedule-unread-dot" aria-hidden="true" />
-            <span className="sr-only">{row.unread} new</span>
-          </span>
-        )}
-        <Badge tone={row.chip.tone} testId="schedule-state" title={row.chip.reason}>
-          {row.chip.label}
-        </Badge>
-        {row.fromAgent && <span className="schedule-row-origin">Added from a chat</span>}
+      <div className="schedule-row-main">
+        <div className="schedule-row-head">
+          <h2 className="schedule-row-name" id={headingId} tabIndex={-1} title={showHidden(row.name)}>
+            <button type="button" className="schedule-row-pick" aria-pressed={selected} onClick={onSelect} data-testid="schedule-select" title="Show details">
+              {showHidden(row.name)}
+            </button>
+          </h2>
+          {row.unread > 0 && (
+            <span className="schedule-unread" data-testid="schedule-unread" title={`${row.unread} new in the history`}>
+              <span className="schedule-unread-dot" aria-hidden="true" />
+              <span className="sr-only">{row.unread} new</span>
+            </span>
+          )}
+          <Badge tone={row.chip.tone} testId="schedule-state" title={row.chip.reason}>
+            {row.chip.label}
+          </Badge>
+          {row.fromAgent && <span className="schedule-row-origin">Added from a chat</span>}
+        </div>
+        <p className="schedule-row-sub">
+          <span data-testid="schedule-timing">{row.timing}</span>
+          <span aria-hidden="true"> · </span>
+          <span className="sr-only">, runs as </span>
+          <span data-testid="schedule-target">{showHidden(row.target)}</span>
+        </p>
       </div>
+      <div className="schedule-row-side">
+        <span className="schedule-row-next">
+          <span className="schedule-row-key">Next run </span>
+          <span data-testid="schedule-next" title={row.next.title || undefined}>
+            {nextText}
+            {row.next.absolute && <span className="schedule-row-abs"> · {row.next.absolute}</span>}
+          </span>
+        </span>
+        <span className={`schedule-row-last tone-${tone}`}>
+          <span className="schedule-row-dot" aria-hidden="true" />
+          <span className="schedule-row-key">Last result </span>
+          <span data-testid="schedule-last">{row.lastResult}</span>
+        </span>
+      </div>
+      {row.toggle && (
+        <Switch checked={row.toggle === 'Pause'} onChange={() => !busy && onToggle()} disabled={busy} title={why} label={`${showHidden(row.name)}, ${row.toggle === 'Pause' ? 'on' : 'off'}`} testId="schedule-toggle" />
+      )}
       {row.chip.reason && (
         <p className={`schedule-row-reason${row.chip.label === 'Needs attention' ? ' is-warning' : ''}`} data-testid="schedule-state-reason">
           {row.chip.reason}
         </p>
       )}
-      <dl className="schedule-row-facts">
-        <div>
-          <dt>Runs as</dt>
-          <dd data-testid="schedule-target">{showHidden(row.target)}</dd>
-        </div>
-        <div>
-          <dt>When</dt>
-          <dd data-testid="schedule-timing">{row.timing}</dd>
-        </div>
-        <div>
-          <dt>Next run</dt>
-          <dd data-testid="schedule-next" title={row.next.title || undefined}>
-            {row.next.relative}
-            {row.next.absolute && <span className="schedule-row-abs"> · {row.next.absolute}</span>}
-          </dd>
-        </div>
-        <div>
-          <dt>Last result</dt>
-          <dd data-testid="schedule-last">{row.lastResult}</dd>
-        </div>
-      </dl>
       <div className="schedule-row-actions" role="group" aria-label={`Actions for ${row.name}`}>
         <Button size="sm" icon={Zap} inert={busy} onClick={onRunNow} testId="schedule-run-now" ariaLabel={`Run ${row.name} now`}>
           Run now
         </Button>
-        {row.toggle && (
-          <Button size="sm" icon={row.toggle === 'Pause' ? Pause : Play} inert={busy} onClick={onToggle} testId="schedule-toggle" ariaLabel={`${row.toggle} ${row.name}`}>
-            {row.toggle}
-          </Button>
-        )}
         <Button size="sm" icon={Pencil} inert={busy} onClick={onEdit} testId="schedule-edit" ariaLabel={`Edit ${row.name}`}>
           Edit
         </Button>

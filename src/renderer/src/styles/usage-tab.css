@@ -38,11 +38,12 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+/* Stat tiles: sunk wells inside the side panel (the board's KPI tiles), figures in the display face. */
 .usage-stat {
-  padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--field-bg);
   min-width: 0;
 }
 .usage-stat dt {
@@ -53,8 +54,10 @@
 .usage-stat dd {
   margin: 0;
   color: var(--text-primary);
-  font-size: var(--text-body);
-  line-height: var(--text-body-lh);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
   font-variant-numeric: tabular-nums;
 }
 .usage-signals {
@@ -190,8 +193,10 @@
   background: none;
 }
 .usage-list .usage-stat dd {
+  font-family: var(--font-sans);
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
+  font-weight: var(--weight-regular);
 }
 @container run-usage (max-width: 359px) {
   .usage-list {
@@ -200,10 +205,10 @@
 }
 .usage-unpriced {
   padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--glass-line);
   border-left: 3px solid var(--warning);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  background: var(--warning-soft);
   color: var(--text-secondary);
 }
 .usage-unpriced p {

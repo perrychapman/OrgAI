@@ -52,7 +52,7 @@
   --border-subtle: rgb(255 255 255 / 0.09);
   --border-default: rgb(255 255 255 / 0.13);
   --border-strong: rgb(255 255 255 / 0.19);
-  --border-input: #737d99;
+  --border-input: #8089a6;
 
   --text-primary: #eef0f7;
   --text-secondary: #bcc3d3;
@@ -77,7 +77,7 @@
   --warning-text: #f5b260;
   --warning-soft: color-mix(in oklab, var(--warning) 14%, transparent);
   --danger: #ff6b6b;
-  --danger-text: #ff8a80;
+  --danger-text: #ff9a92;
   --danger-soft: color-mix(in oklab, var(--danger) 14%, transparent);
   --info: #4cc9f0;
   --info-text: #6fd3f3;
@@ -90,6 +90,7 @@
   --glass: rgb(255 255 255 / 0.055);
   --glass-strong: rgb(22 25 38 / 0.72);
   --glass-line: rgb(255 255 255 / 0.11);
+  --sheen: rgb(255 255 255 / 0.35);
   --glass-blur: blur(22px) saturate(1.6);
   --working: #4cc9f0;
   --working-soft: rgb(76 201 240 / 0.16);
@@ -261,7 +262,8 @@
     radial-gradient(820px 620px at 104% 108%, rgb(76 201 240 / 0.22), transparent 60%), #f4f5f9;
   --glass: rgb(255 255 255 / 0.62);
   --glass-strong: rgb(255 255 255 / 0.82);
-  --glass-line: rgb(255 255 255 / 0.95);
+  --glass-line: rgb(24 28 56 / 0.12);
+  --sheen: rgb(255 255 255 / 0.55);
   --glass-blur: blur(18px) saturate(1.4);
   --working: #0a84ad;
   --working-soft: rgb(10 132 173 / 0.12);
@@ -425,7 +427,8 @@
       radial-gradient(820px 620px at 104% 108%, rgb(76 201 240 / 0.22), transparent 60%), #f4f5f9;
     --glass: rgb(255 255 255 / 0.62);
     --glass-strong: rgb(255 255 255 / 0.82);
-    --glass-line: rgb(255 255 255 / 0.95);
+    --glass-line: rgb(24 28 56 / 0.12);
+    --sheen: rgb(255 255 255 / 0.55);
     --glass-blur: blur(18px) saturate(1.4);
     --working: #0a84ad;
     --working-soft: rgb(10 132 173 / 0.12);
@@ -706,28 +709,13 @@
 
 /* ---------- 5. Element-scoped composites (need the element's own --role) ---------- */
 
-.agent-node,
-.role-node {
-  --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 50%, transparent), 0 0 24px color-mix(in oklab, var(--role) 22%, transparent);
-}
+/* Owner decision 1: working is cyan. Nodes no longer override --glow-working with the role colour;
+ * role identity stays on the node's other role cues (--role border, icon, label). */
 
 /* Dashboard Right now band: reporting lines in the parent's role colour (--line-role set inline). */
 .dash-agent-row,
 .dash-run-head {
   --dash-line: color-mix(in oklab, var(--line-role, var(--edge)) 70%, var(--border-default));
-}
-
-/* Glow is invisible on light surfaces; the working border stays. */
-:root[data-theme='light'] .agent-node,
-:root[data-theme='light'] .role-node {
-  --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 70%, transparent);
-}
-
-@media (prefers-color-scheme: light) {
-  :root[data-theme='system'] .agent-node,
-  :root[data-theme='system'] .role-node {
-    --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 70%, transparent);
-  }
 }
 
 /* ---------- 6. LEGACY ALIAS BLOCK ----------
@@ -739,6 +727,7 @@
   --bg: var(--surface-0);
   --bg-elev: var(--surface-2);
   --bg-elev-2: var(--surface-3);
+  /* WARNING: the design boards use --panel for --surface-2; this alias is --surface-1 because existing TSX depends on it. Do not "fix" it here. */
   --panel: var(--surface-1);
   --border: var(--border-default);
   /* --border-strong and --danger keep their names and are defined above. */

@@ -5,6 +5,7 @@ import { FOLDER_CONFIG_FILE_TEXT_MAX } from '@shared/types'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
+import '../../styles/onboarding.css'
 import { Dialog } from '../ui/Dialog'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { SettingsCard } from './SettingsCard'
@@ -246,6 +247,7 @@ function ReviewBody({ review, message, messageRef }: { review: FolderConfigRevie
         </p>
       )}
       {sections.length === 0 && <p className="trust-meta">Nothing in this folder would run or change what agents do.</p>}
+      {sections.length > 0 && <div className="trust-found-label">What it would set up</div>}
       {sections.map((s) => (
         <section key={s.key} className="trust-section" aria-labelledby={`trust-h-${s.key}`}>
           <h3 id={`trust-h-${s.key}`} className="trust-h">
@@ -366,7 +368,7 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
-        title="This folder's own agent settings"
+        title="This folder comes with its own agent settings"
         size="lg"
         testId="folder-trust-dialog"
         footer={
@@ -385,7 +387,10 @@ export function FolderTrustSection({ project, trust }: { project: Project; trust
           </>
         }
       >
-        <div className="trust-dialog">
+        <div className="trust-dialog trust-board">
+          <p className="trust-path" data-testid="folder-trust-path" title={project.path}>
+            {project.path}
+          </p>
           <p ref={framingRef} className="trust-framing" data-autofocus tabIndex={-1}>
             {FOLDER_TRUST_FRAMING}
           </p>

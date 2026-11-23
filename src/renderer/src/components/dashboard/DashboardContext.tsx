@@ -68,7 +68,7 @@ export function useDashboard(): DashboardCtx {
 
 /** Fixed regions drawn through the same frame: never hidden, moved or listed in Customise, drawn only with content. */
 export type FixedSectionId = 'now'
-const FIXED_TITLES: Record<FixedSectionId, string> = { now: 'Right now' }
+const FIXED_TITLES: Record<FixedSectionId, string> = { now: 'Working now' }
 
 export interface DashSectionProps {
   id: DashSectionId | FixedSectionId

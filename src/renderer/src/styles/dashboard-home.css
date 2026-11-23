@@ -1,0 +1,259 @@
+/* ---------- Home (docs/design/ui-overhaul/project/Main.dc.html) ----------
+   The task box (components/dashboard/HomeHero.tsx), the Briefing as a glass card under it, the legend and the quiet states of
+   Working now and Waiting on you (HomeEmpty.tsx). Tokens only; panels are glass over the ambient ground, so no full-window
+   opaque background is drawn here. Specificity: rules start at `.dash-page` where they must beat the shared dashboard.css. */
+
+/* ---- Task box ---- */
+.home-hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.home-hero-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 30px;
+  line-height: 36px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+@container dash (max-width: 559px) {
+  .home-hero-title {
+    font-size: var(--text-display);
+    line-height: var(--text-display-lh);
+  }
+}
+.home-task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-xl);
+}
+.home-task:focus-within {
+  border-color: var(--accent-border);
+}
+.home-task-input {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  max-height: 40vh;
+  padding: var(--space-1);
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  resize: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 15px;
+  line-height: 22px;
+  /* Grows with its text up to the cap (the browser does the sizing). */
+  field-sizing: content;
+}
+.home-task-input::placeholder {
+  color: var(--text-tertiary);
+}
+/* The box carries the focus ring: the textarea itself shows it on the container (the field is borderless). */
+.home-task:has(.home-task-input:focus-visible) {
+  box-shadow: var(--elev-2), 0 0 0 3px var(--accent-soft);
+}
+.home-task-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.home-task-grow {
+  flex: 1 1 0;
+}
+.home-hint {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+/* Chips: the target (a native select inside), the team scope and the permission setting (read only). */
+.home-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  max-width: 100%;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+span.home-chip {
+  color: var(--text-secondary);
+  font-weight: var(--weight-regular);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-target {
+  padding-right: var(--space-2);
+}
+.home-target:hover {
+  border-color: var(--accent-border);
+}
+.home-target:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.home-target-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--dash-hue, var(--text-tertiary));
+}
+.home-target-select {
+  appearance: none;
+  min-width: 0;
+  max-width: 22ch;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.home-target-select option {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.home-target > svg:last-child {
+  flex: none;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.home-try {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-body);
+}
+.home-try-label {
+  color: var(--text-tertiary);
+}
+
+/* ---- The Briefing under the task box: a compact glass card ---- */
+.dash-page .dash-briefing {
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
+}
+.dash-page .dash-salutation {
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  letter-spacing: 0;
+}
+.dash-page .dash-brief-status {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+/* First launch has no task box: the greeting keeps its large line. */
+.dash-page .dash-briefing:not([data-side]) .dash-salutation {
+  font-size: var(--text-display-lg);
+  line-height: var(--text-display-lg-lh);
+  letter-spacing: var(--text-display-lg-ls);
+}
+.dash-page .dash-briefing:not([data-side]) .dash-brief-status {
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+}
+.dash-inner > .dash-briefing {
+  margin-block-end: 0;
+}
+
+/* ---- Working now: header, groups and legend ---- */
+.dash-now .dash-section-head {
+  margin-bottom: var(--space-2);
+}
+.dash-now-counts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: var(--space-1);
+}
+@container dash (max-width: 1099px) {
+  .dash-now-group-count {
+    display: none;
+  }
+}
+.home-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.home-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.home-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+}
+.home-legend-dot[data-state='working'] {
+  background: var(--working);
+}
+.home-legend-dot[data-state='waiting'] {
+  background: var(--warning);
+}
+.home-legend-dot[data-state='done'] {
+  background: var(--success);
+}
+
+/* ---- Quiet states of the two columns ---- */
+.home-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 160px;
+  border-radius: var(--radius-xl);
+}
+.home-empty .empty-state {
+  padding: var(--space-4);
+}
+
+/* ---- Arrival: the task box and the Briefing rise with the page (off under Pause motion and reduced motion) ---- */
+.dash-page[data-arriving] .home-hero {
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+}
+.dash-page[data-motion-paused] .home-hero {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-page[data-arriving] .home-hero {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .dash-page[data-arriving] .home-hero {
+  animation: none;
+}

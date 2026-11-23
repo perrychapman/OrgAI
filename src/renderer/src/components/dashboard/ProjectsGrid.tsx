@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { FolderKanban } from 'lucide-react'
+import { FolderKanban, Plus } from 'lucide-react'
+import { Icon } from '../ui/Icon'
 import type { Project, RunSummary } from '@shared/types'
 import { isRunLive, useAppStore, type RunState } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -26,6 +27,7 @@ import { DashSection, sectionHeadingId, useDashboard } from './DashboardContext'
 import { ProjectTile, type PinSource, type TileModel } from './ProjectTile'
 import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, pinnedFirst, SEARCH_AFTER, tileChips, tileStatusKind, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
 import { projectSpark } from '../../lib/projectSparkline'
+import { isWorkingAgent } from '../../lib/agentActivity'
 
 /** The tile model of one project from its live runs and saved history. */
 function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined, pinned: boolean): TileModel {
@@ -42,12 +44,13 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
   const team = tileTeam(project.roles)
   const continuable = newest && !isLive && canContinue(summaries, newest.id) ? { id: newest.id, name: displayRunName(newest) } : null
   const working = runs.some((r) => r.summary.status === 'running' || r.summary.status === 'starting')
+  const workingAgents = runs.filter((r) => r.summary.status === 'running' || r.summary.status === 'starting').reduce((n, r) => n + Object.values(r.agents).filter((a) => isWorkingAgent(a.state)).length, 0)
   return {
     project,
     decisions,
     live: live.length,
     working,
-    statusLine: tileStatusLine({ open: live.length, decisions, working, newestStartedAt: newest?.startedAt, now }),
+    statusLine: tileStatusLine({ open: live.length, decisions, working, newestStartedAt: newest?.startedAt, now, agents: workingAgents }),
     statusKind: tileStatusKind({ open: live.length, decisions, working, newestStartedAt: newest?.startedAt }),
     spark: projectSpark(summaries, now),
     team,
@@ -100,7 +103,7 @@ const tileSelector = (id: string): string => `[data-testid=project-tile][data-id
  * The Dashboard's project tiles, most urgent first (decisions, open runs, newest run, name). Opening, "Open folder" and
  * "Delete project…" live here; deletes and errors speak through `onAnnounce` (the page's one live region).
  */
-export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => void }): ReactElement {
+export function ProjectsGrid({ onAnnounce, onNewProject }: { onAnnounce: (text: string) => void; onNewProject?: () => void }): ReactElement {
   const projects = useAppStore((s) => s.projects)
   const runs = useAppStore((s) => s.runs)
   const history = useAppStore((s) => s.historyByProject)
@@ -283,6 +286,14 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
               onAnnounce={onAnnounce}
             />
           ))}
+          {onNewProject && !filtering && (
+            <li className="project-tile-new-item">
+              <button type="button" className="project-tile-new motion-lift" data-testid="dash-new-project-tile" onClick={onNewProject}>
+                <Icon icon={Plus} size="sm" />
+                New project
+              </button>
+            </li>
+          )}
         </ul>
         </div>
       )}

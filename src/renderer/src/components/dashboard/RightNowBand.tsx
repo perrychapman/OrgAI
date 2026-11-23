@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState, useEffect } fr
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { BandRun } from './BandRun'
+import { HomeEmpty } from './HomeEmpty'
 import { DashSection, useDashboard } from './DashboardContext'
 import type { DashCaps } from './dashCaps'
 import { useBandSnapshot, useNow } from './useDashboardData'
@@ -30,6 +31,14 @@ function settleFocus(targetId: string | null): void {
     })
   )
 }
+
+/** The dots of a run card's agent strip, by state. */
+const LEGEND: { state: string; text: string }[] = [
+  { state: 'working', text: 'Working' },
+  { state: 'waiting', text: 'Waiting on you' },
+  { state: 'done', text: 'Finished' },
+  { state: 'idle', text: 'Queued' }
+]
 
 function openRun(projectId: string, runId: string, agentId: string | null, rootId: string | null): void {
   void useAppStore
@@ -160,16 +169,20 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
   useLayoutEffect(() => () => reportBreathing(0), [reportBreathing])
 
   const parts = countParts(model.counts)
+  // "2 runs · 23 agents": the agents are the run cards' marks, so the figure is left out while some runs are folded away.
+  const agentCount = model.projects.reduce((n, p) => n + p.runs.reduce((m, r) => m + r.marks.length + r.marksMore, 0), 0)
   const countsLine =
-    parts.length > 0 ? (
+    model.total > 0 ? (
       <p className="dash-now-counts" data-testid="dash-now-counts">
-        {parts.map((p, i) => (
-          <span key={p.group}>
-            {i > 0 && (
-              <span className="dash-sep" aria-hidden="true">
-                {' · '}
-              </span>
-            )}
+        <span className="dash-num" data-testid="dash-now-totals">
+          {`${model.total} ${model.total === 1 ? 'run' : 'runs'}`}
+          {model.hiddenRuns === 0 ? ` · ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}` : ''}
+        </span>
+        {parts.map((p) => (
+          <span key={p.group} className="dash-now-group-count">
+            <span className="dash-sep" aria-hidden="true">
+              {' · '}
+            </span>
             <span className="dash-num" data-group={p.group}>
               {p.text}
             </span>
@@ -177,6 +190,7 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
         ))}
       </p>
     ) : null
+  if (model.total === 0) return <HomeEmpty kind="now" />
   return (
     <DashSection
       id="now"
@@ -208,6 +222,14 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
           </section>
         ))}
       </div>
+      <ul className="home-legend" data-testid="home-legend" aria-label="What the dots mean">
+        {LEGEND.map((l) => (
+          <li key={l.state}>
+            <span className="home-legend-dot" data-state={l.state} aria-hidden="true" />
+            {l.text}
+          </li>
+        ))}
+      </ul>
       {(model.hiddenRuns > 0 || showAll) && model.total > caps.bandRuns && (
         <Button variant="ghost" size="sm" testId="dash-now-more" onClick={toggleAll}>
           {showAll ? 'Show fewer' : moreRunsLabel(model.hiddenRuns)}
