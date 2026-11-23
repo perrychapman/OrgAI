@@ -664,6 +664,22 @@ describe('boot normalization of UI overhaul run fields (untrusted file)', () => 
     expect(n({ hold: full }).hold).toEqual(full)
   })
 
+  it('keeps provider.tries when it is a positive integer and drops only that field otherwise', () => {
+    expect(n({ hold: { ...hold, provider: { connection: 'anthropic', tries: 4 } } }).hold?.provider).toEqual({ connection: 'anthropic', tries: 4 })
+    for (const tries of [0, -1, 1.5, NaN, Infinity, '3', null, {}]) {
+      const h = n({ hold: { ...hold, provider: { connection: 'anthropic', error: 'down', tries } } }).hold
+      expect(h?.provider).toEqual({ connection: 'anthropic', error: 'down' })
+      expect(h?.kind).toBe('budget')
+    }
+  })
+
+  it('deletes providerRetry on boot, whatever the status (it died with the process)', () => {
+    const retry = { attempt: 2, since: 5, nextTryAt: 9, connection: 'anthropic' }
+    expect('providerRetry' in n({ status: 'running', providerRetry: retry })).toBe(false)
+    expect('providerRetry' in n({ status: 'finished', providerRetry: retry })).toBe(false)
+    expect('providerRetry' in n({ status: 'error', providerRetry: 'junk' })).toBe(false)
+  })
+
   it('drops the whole hold when anything is malformed', () => {
     const bad: unknown[] = [
       'x',

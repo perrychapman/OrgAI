@@ -10,12 +10,17 @@ import { trackChildProcess } from '../host/shutdown'
  * The test gate (UI overhaul, Branches settings): before an integration merges a finished copy, run the project's
  * `testCommand` in that copy's directory. Provider-neutral and used by WorktreeIntegrator and the maintenance panel.
  *
+ * The gate executes repository code (the project's own test command over files the agents edited) by the user's choice:
+ * the user turned requireTestsPass on and wrote the command in the window. That is why the environment is scrubbed below,
+ * the command is desktop-only to change, and a project with reviewMerges runs it only after the user approved the merge.
+ *
  * Execution setup:
  * - shell: win32 `%SystemRoot%\System32\cmd.exe /d /s /c "<command>"` (absolute path, verbatim arguments); elsewhere
  *   `/bin/sh -c <command>`. The command is a user-written shell line only the desktop user can set (projects:save).
  * - cwd: the finished copy (its worktree directory).
  * - env: testGateEnv(process.env): the child env helper (routing variables, OrgAI control variables) plus every provider
- *   secret (ANTHROPIC_*, OPENAI_*, CODEX_*, a Claude login, any *_API_KEY) dropped, so a test run never sees them.
+ *   secret (ANTHROPIC_*, OPENAI_*, CODEX_*, a Claude login, any *_API_KEY), any name containing TOKEN / SECRET / PASSWORD
+ *   and the AWS_ / AZURE_ / GH_ / GITHUB_ / NPM_TOKEN names dropped, so a test run never sees them.
  * - stdin closed ('ignore'); stdout and stderr merged into a rolling tail, only the last TEST_GATE_DETAIL_CHARS kept.
  * - timeout TEST_GATE_TIMEOUT_MS; on timeout the whole process tree is killed (taskkill /T /F on win32, the process
  *   group elsewhere: the child leads its own group). The shutdown registry also ends it with the host.
@@ -51,8 +56,34 @@ export function testGateCommand(project: Pick<Project, 'requireTestsPass' | 'tes
   return command ? command : null
 }
 
-/** Provider secrets a test run must not inherit, beyond what isolateClaudeEnv drops. */
-const SECRET_NAME = [/^ANTHROPIC_/i, /^OPENAI_/i, /^CODEX_/i, /^ORGAI_/i, /^CLAUDE_CODE_/i, /^CLAUDE_CONFIG_DIR$/i, /(^|_)API_?KEY$/i]
+/**
+ * The sentence for a project that requires tests to pass but has no test command: such a gate must refuse the merge,
+ * not let it through untested. Null when the gate is off or a command is set. Same on-conditions as testGateCommand.
+ */
+export const TEST_GATE_MISSING_COMMAND_MESSAGE = 'Tests are required before merging, but no test command is set. Add one in Settings > Branches.'
+export function testGateMissingCommand(project: Pick<Project, 'requireTestsPass' | 'testCommand' | 'kind'>): string | null {
+  if (!writesToProjectFolder(project)) return null
+  if (project.requireTestsPass !== true) return null
+  return testGateCommand(project) ? null : TEST_GATE_MISSING_COMMAND_MESSAGE
+}
+
+/**
+ * Names a test run must not inherit, beyond what isolateClaudeEnv drops: provider secrets, any name that says it holds a
+ * token, secret or password, and cloud / source-host credentials (AWS_, AZURE_, GH_, GITHUB_, NPM_TOKEN). PATH, HOME and
+ * the like stay. The command runs repository code the agents edited, so what it can read is limited to what a build needs.
+ */
+const SECRET_NAME = [
+  /^ANTHROPIC_/i,
+  /^OPENAI_/i,
+  /^CODEX_/i,
+  /^ORGAI_/i,
+  /^CLAUDE_CODE_/i,
+  /^CLAUDE_CONFIG_DIR$/i,
+  /(^|_)API_?KEY$/i,
+  /TOKEN|SECRET|PASSWORD/i,
+  /^(AWS|AZURE|GH|GITHUB)_/i,
+  /^NPM_TOKEN/i
+]
 
 /** The environment of a gate run: no routing variables, no OrgAI control variables, no provider secret. */
 export function testGateEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {

@@ -233,7 +233,7 @@ import {
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
-import { desktopOnlyProjectChanges, desktopOnlyProjectMessage } from './projectSaveGuard'
+import { desktopOnlyProjectChanges, desktopOnlyProjectMessage, desktopOnlySettingChanges, desktopOnlySettingMessage } from './projectSaveGuard'
 import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
 import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
 import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
@@ -904,8 +904,15 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   const settingsInfo = (): AppSettingsInfo =>
     buildSettingsInfo(withEffectiveDefault(settings.get(), connections.effectiveDefault()), { dataDir: settings.dataDir, appVersion: env.app.getVersion() })
   handle(IPC.settingsGet, () => settingsInfo())
-  handle(IPC.settingsSet, (_e, next: unknown) => {
-    settings.set(settingsSetArgs(next, settings.get()))
+  handle(IPC.settingsSet, (ctx, next: unknown) => {
+    const merged = settingsSetArgs(next, settings.get())
+    // Start at login, close behaviour, keep awake and the spend warning change how the host lives and what it warns about:
+    // the window only. A round trip that leaves them as stored passes.
+    if (ctx.surface !== 'desktop') {
+      const refused = desktopOnlySettingChanges(settings.get(), merged)
+      if (refused.length) throw new HostRpcFailure('scope_denied', desktopOnlySettingMessage(refused))
+    }
+    settings.set(merged)
     return settingsInfo()
   })
   handle(IPC.appLogPath, () => logPath())

@@ -564,7 +564,7 @@ describe('test gate (requireTestsPass)', () => {
   })
 
   it('does nothing when the gate is off, has no command, or the project is an engagement', async () => {
-    for (const over of [{}, { requireTestsPass: false, testCommand: 'npm test' }, { requireTestsPass: true, testCommand: '   ' }, { ...GATED, kind: 'engagement' as const }]) {
+    for (const over of [{}, { requireTestsPass: false, testCommand: 'npm test' }, { ...GATED, kind: 'engagement' as const }]) {
       vi.mocked(runTestGate).mockReset()
       integrateTo('merged')
       const { integrator, ctx } = setup(false, { behavior: 'merge' }, over)
@@ -578,22 +578,67 @@ describe('test gate (requireTestsPass)', () => {
     }
   })
 
-  it('puts the result on the merge review card, and no card is shown when the tests fail', async () => {
-    vi.mocked(runTestGate).mockResolvedValue(passed)
+  it('with reviewMerges the card shows tests unknown and the command runs only after the user approves (review M3)', async () => {
+    const order: string[] = []
+    vi.mocked(runTestGate).mockImplementation(async () => {
+      order.push('tests')
+      return passed
+    })
     integrateTo('merged')
     const ok = setup(true, { behavior: 'merge' }, GATED)
+    vi.mocked(ok.ctx.requestMergeReview).mockImplementation(async () => {
+      order.push('card')
+      return { behavior: 'merge' }
+    })
     ok.integrator.track('a1', WT)
     await ok.integrator.onSubagentFinished('a1')
-    expect(ok.ctx.requestMergeReview).toHaveBeenCalledWith(
-      expect.objectContaining({ checks: { tests: 'passed', testDetail: passed.detail, review: 'unknown' } })
-    )
+    expect(ok.ctx.requestMergeReview).toHaveBeenCalledWith(expect.objectContaining({ checks: { tests: 'unknown', review: 'unknown' } }))
+    expect(order).toEqual(['card', 'tests'])
+    expect(ok.integrator.worktreeOf('a1')?.status).toBe('merged')
+  })
 
+  it('with reviewMerges a failing test after approval refuses the merge and says so; a discard or hold never runs the tests', async () => {
     vi.mocked(runTestGate).mockResolvedValue(failed)
+    integrateTo('merged')
     const bad = setup(true, { behavior: 'merge' }, GATED)
     bad.integrator.track('a1', WT)
     await bad.integrator.onSubagentFinished('a1')
-    expect(bad.ctx.requestMergeReview).not.toHaveBeenCalled()
+    expect(bad.ctx.requestMergeReview).toHaveBeenCalledTimes(1)
+    expect(runTestGate).toHaveBeenCalledTimes(1)
     expect(bad.integrator.worktreeOf('a1')?.status).toBe('conflict')
+    expect(bad.notes[0]).toContain('after the user approved the merge')
+    expect(bad.logs().some((l) => l.startsWith('warn: Engineer: Not merged: the tests failed (exit code 1) after the user approved the merge'))).toBe(true)
+
+    vi.mocked(runTestGate).mockReset()
+    for (const behavior of ['hold', 'discard'] as const) {
+      integrateTo('merged')
+      const other = setup(true, { behavior }, GATED)
+      other.integrator.track('a1', WT)
+      await other.integrator.onSubagentFinished('a1')
+      expect(runTestGate).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses the merge when tests are required but no command is set, without a card or a run (review)', async () => {
+    for (const command of [undefined, '', '   ']) {
+      for (const review of [false, true]) {
+        vi.mocked(runTestGate).mockReset()
+        integrateTo('merged')
+        const s = setup(review, { behavior: 'merge' }, { requireTestsPass: true, ...(command === undefined ? {} : { testCommand: command }) })
+        s.integrator.track('a1', WT)
+        await s.integrator.onSubagentFinished('a1')
+        expect(runTestGate).not.toHaveBeenCalled()
+        expect(s.ctx.requestMergeReview).not.toHaveBeenCalled()
+        expect(s.integrator.worktreeOf('a1')?.status).toBe('conflict')
+        expect(s.notes[0]).toContain('Tests are required before merging, but no test command is set. Add one in Settings > Branches.')
+      }
+    }
+  })
+
+  it('does not require a command for an engagement', async () => {
+    integrateTo('merged')
+    const { integrator } = setup(false, { behavior: 'merge' }, { requireTestsPass: true, kind: 'engagement' as const })
+    expect(integrator.reviewGate('a1', WT)).toBeUndefined()
   })
 
   it('marks tests unknown on the card when the gate is off', async () => {

@@ -20,7 +20,7 @@ import {
   type GateDecision
 } from './runtime/worktrees'
 import { branchNameMatcher, isValidBranchName, REPORT_BRANCH_PREFIX } from './runtime/branchNames'
-import { runTestGate, testGateCommand } from './runtime/testGate'
+import { runTestGate, testGateCommand, testGateMissingCommand } from './runtime/testGate'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 /** How many of a project's newest stored runs deleteBranch reads to learn which branches were agents' worktrees. */
@@ -83,15 +83,19 @@ export class MaintenanceService {
     const { root, wt } = await this.find(projectId, branch)
     const project = this.project(projectId)
     // The same gates as an integration inside a run: the project's test command, and where merges land.
+    // The panel's own button is the user's approval, so the gate runs right away. It executes repository code by the user's choice (testGate.ts).
     const command = testGateCommand(project)
-    const gate = command
-      ? async (): Promise<GateDecision> => {
-          const run = await runTestGate(command, wt.path)
-          return run.outcome === 'passed'
-            ? { behavior: 'merge' }
-            : { behavior: 'refuse', reason: 'tests', message: `Not merged: the project's tests ${run.outcome === 'timeout' ? 'timed out' : 'failed'}, and this project requires them to pass first. ${wt.branch} is kept at ${wt.path}.\n${run.detail}` }
-        }
-      : undefined
+    const missing = testGateMissingCommand(project)
+    const gate = missing
+      ? (): Promise<GateDecision> => Promise.resolve({ behavior: 'refuse', reason: 'tests', message: `Not merged: ${missing} ${wt.branch} is kept at ${wt.path}.` })
+      : command
+        ? async (): Promise<GateDecision> => {
+            const run = await runTestGate(command, wt.path)
+            return run.outcome === 'passed'
+              ? { behavior: 'merge' }
+              : { behavior: 'refuse', reason: 'tests', message: `Not merged: the project's tests ${run.outcome === 'timeout' ? 'timed out' : 'failed'}, and this project requires them to pass first. ${wt.branch} is kept at ${wt.path}.\n${run.detail}` }
+          }
+        : undefined
     const mainBranch = project.mainBranch?.trim()
     const result = await integrateWorktree(
       root,

@@ -2,7 +2,7 @@ import type { AgentInstance, MergeReview, WorktreeInfo, WorktreeStatus } from '@
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { INTEGRATE_TOOL } from './harnessTools'
 import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision, type IntegrateOptions, type IntegrateResult } from './worktrees'
-import { runTestGate, testGateCommand } from './testGate'
+import { runTestGate, testGateCommand, testGateMissingCommand } from './testGate'
 
 /**
  * The per-run worktree state machine, shared by every adapter whose writing reports work in git
@@ -425,17 +425,25 @@ export class WorktreeIntegrator {
     targetRoot: string = this.root
   ): ((changedFiles: string[]) => Promise<GateDecision>) | undefined {
     const testCommand = testGateCommand(this.ctx.project)
-    if (!this.ctx.project.reviewMerges && !testCommand) return undefined
+    const missingCommand = testGateMissingCommand(this.ctx.project)
+    if (!this.ctx.project.reviewMerges && !testCommand && !missingCommand) return undefined
     return async (changedFiles) => {
       const owner = agentId ? this.host.agent(agentId) : undefined
       const ownerName = owner?.name ?? agentId ?? undefined
-      let checks: NonNullable<MergeReview['checks']> = { tests: 'unknown', review: 'unknown' }
-      if (testCommand) {
-        const gate = await this.runTests(ownerName ?? info.branch, info, testCommand)
-        if (gate.refusal) return gate.refusal
-        checks = { tests: 'passed', testDetail: gate.detail, review: 'unknown' }
+      // Tests are required but no command is set: an untested merge is not what the project asked for, so refuse it
+      // (the copy is kept) before any card is shown.
+      if (missingCommand) {
+        this.log('info', `${ownerName ?? info.branch}: ${missingCommand}`)
+        return { behavior: 'refuse', reason: 'tests', message: `Not merged: ${missingCommand} Branch ${info.branch} is kept as it is at ${info.path}.` }
       }
-      if (!this.ctx.project.reviewMerges) return { behavior: 'merge' }
+      // Without a review the tests run now (no card is waiting on them).
+      if (!this.ctx.project.reviewMerges) {
+        const gate = testCommand ? await this.runTests(ownerName ?? info.branch, info, testCommand, false) : undefined
+        return gate?.refusal ?? { behavior: 'merge' }
+      }
+      // With reviewMerges the gate runs repository code, so it waits for the user's approval: the card shows tests
+      // 'unknown' and the command runs only after "merge" is chosen.
+      const checks: NonNullable<MergeReview['checks']> = { tests: 'unknown', review: 'unknown' }
       if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
       const diff = await diffWorktree(targetRoot, info.branch)
       const into = targetRoot === this.root ? '' : ` into ${info.parentBranch ?? targetRoot}`
@@ -451,6 +459,10 @@ export class WorktreeIntegrator {
         checks
       })
       if (agentId && decision.behavior === 'merge') this.set(agentId, { ...info, status: 'merging', changedFiles })
+      if (decision.behavior === 'merge' && testCommand) {
+        const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true)
+        if (gate.refusal) return gate.refusal
+      }
       return decision
     }
   }
@@ -459,13 +471,16 @@ export class WorktreeIntegrator {
    * The test gate (Project.requireTestsPass + testCommand): run the command in the finished copy's directory before it is
    * merged. A pass returns its detail; a non-zero exit or a timeout returns the refusal integrateWorktree turns into a
    * kept copy (status 'conflict'), after a warn line in the run log. Runs outside every lock (tests can take minutes).
+   * The command is repository code the agents edited, run by the user's choice (see testGate.ts). `afterApproval`: the
+   * user already approved the merge on a card; the message and the log then say the approved merge was refused.
    */
   private async runTests(
     ownerName: string,
     info: WorktreeInfo,
-    command: string
+    command: string,
+    afterApproval: boolean
   ): Promise<{ detail: string; refusal?: GateDecision }> {
-    this.log('info', `${ownerName}: running the project's tests in ${info.path} before merging ${info.branch}.`)
+    this.log('info', `${ownerName}: running the project's tests in ${info.path} before merging ${info.branch}${afterApproval ? ' (the merge was approved)' : ''}.`)
     const result = await runTestGate(command, info.path)
     if (result.outcome === 'passed') {
       this.log('info', `${ownerName}: tests passed before merging ${info.branch}.`)
@@ -473,7 +488,7 @@ export class WorktreeIntegrator {
     }
     const why = result.outcome === 'timeout' ? 'the tests timed out' : result.exitCode === null ? 'the tests could not complete' : `the tests failed (exit code ${result.exitCode})`
     const message =
-      `Not merged: ${why}, and this project requires its tests to pass first. Branch ${info.branch} is kept as it is at ${info.path}. ` +
+      `Not merged: ${why}${afterApproval ? ' after the user approved the merge' : ''}, and this project requires its tests to pass first. Branch ${info.branch} is kept as it is at ${info.path}. ` +
       `Fix what the tests report there, then call ${INTEGRATE_TOOL} again.`
     // The refusal itself is logged at warn by the caller once integrateWorktree has answered.
     this.log('info', `${ownerName}: test output (end):\n${result.detail}`)
