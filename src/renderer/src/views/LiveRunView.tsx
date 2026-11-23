@@ -93,7 +93,7 @@ const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'waiting'])
 /** A finished report keeps its own node this long before folding into its parent's "done" group. */
 const COLLAPSE_KEY = 'orgai.collapseFinished'
-/** The conversation dock starts hidden when the run view is narrower than this (px); the user's own choice wins from then on. */
+/** Below this run view width (px) the dock starts as the rail, composer under the canvas, never hidden; the user's own choice wins from then on. */
 const DOCK_AUTO_HIDE_BELOW = 900
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
@@ -375,26 +375,34 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   // Conversation dock: the run panel and the composer. SidePanel reports whether it is hidden; the stage button below shows
   // it again. Everything inside stays mounted while hidden, so the draft, the model switch and its pending state survive.
-  const [dockReport, setDockReport] = useState<{ collapsed: boolean; noRoom: boolean }>(() => {
+  const [dockReport, setDockReport] = useState<{ collapsed: boolean; noRoom: boolean; auto: boolean }>(() => {
     let closed = false
     try {
       closed = localStorage.getItem('orgai.sidePanel.run') === 'closed'
     } catch {
       /* storage unavailable */
     }
-    return { collapsed: closed, noRoom: false }
+    return { collapsed: closed, noRoom: false, auto: false }
   })
-  const dockState: 'open' | 'hidden' | 'rail' | undefined = !sidePanel ? undefined : dockReport.noRoom ? 'rail' : dockReport.collapsed ? 'hidden' : 'open'
+  // Only the user's own Hide (saved choice) is 'hidden', with the composer hidden too. A window too narrow for the dock
+  // (no saved choice) or with no room at all is 'rail': the old layout, the composer and its settings row stay under the
+  // canvas and the feed is behind the rail's Show button and the toolbar's Conversation button.
+  const dockState: 'open' | 'hidden' | 'rail' | undefined = !sidePanel ? undefined : dockReport.noRoom || dockReport.auto ? 'rail' : dockReport.collapsed ? 'hidden' : 'open'
   const dockHidden = dockState === 'hidden'
+  // The feed is off screen (hidden, or the narrow-window rail that the toolbar button can still open).
+  const dockClosed = dockHidden || (dockState === 'rail' && dockReport.auto && !dockReport.noRoom)
   const [dockShowRequest, setDockShowRequest] = useState(0)
   // Focus follows a show only when the user asked by keyboard (the button was activated with Enter or Space).
   const focusAfterShow = useRef(false)
   const showDock = (byKeyboard: boolean): void => {
-    if (!dockHidden) return
+    if (!dockClosed) return
     focusAfterShow.current = byKeyboard
     setDockShowRequest((n) => n + 1)
   }
-  const onDockState = useCallback((s: { collapsed: boolean; noRoom: boolean }) => setDockReport((was) => (was.collapsed === s.collapsed && was.noRoom === s.noRoom ? was : s)), [])
+  const onDockState = useCallback(
+    (s: { collapsed: boolean; noRoom: boolean; auto: boolean }) => setDockReport((was) => (was.collapsed === s.collapsed && was.noRoom === s.noRoom && was.auto === s.auto ? was : s)),
+    []
+  )
   const focusDockComposer = useCallback((): void => {
     const region = bodyRef.current?.querySelector<HTMLElement>('.live-composer-region')
     const field = region?.querySelector<HTMLElement>('.composer textarea') ?? region?.querySelector<HTMLElement>('button, input, textarea, select') ?? bodyRef.current?.querySelector<HTMLElement>('.side-panel [role=tab][aria-selected=true]')
@@ -1221,15 +1229,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const openDecisionList = openDecisionKeys.join('|')
   const dockSeen = useRef({ replies: replyCount, keys: new Set(openDecisionKeys) })
   useEffect(() => {
-    if (dockHidden) return
+    if (dockClosed) return
     dockSeen.current = { replies: replyCount, keys: new Set(openDecisionKeys) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dockHidden, replyCount, openDecisionList])
-  const dockUnread = dockHidden && (replyCount > dockSeen.current.replies || openDecisionKeys.some((k) => !dockSeen.current.keys.has(k)))
+  }, [dockClosed, replyCount, openDecisionList])
+  const dockUnread = dockClosed && (replyCount > dockSeen.current.replies || openDecisionKeys.some((k) => !dockSeen.current.keys.has(k)))
   // A new reply while hidden is said once per hide period (a new decision is already announced above).
   const saidReply = useRef(false)
   useEffect(() => {
-    if (!dockHidden) {
+    if (!dockClosed) {
       saidReply.current = false
       return
     }
@@ -1237,7 +1245,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       saidReply.current = true
       setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))
     }
-  }, [dockHidden, replyCount])
+  }, [dockClosed, replyCount])
 
   // What the user approved in this view; the setup banner only claims what was actually applied.
   const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
@@ -1326,7 +1334,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   })
                 }}>Load earlier sessions ({earlierToLoad})</Button>
               )}
-              {dockHidden && (
+              {dockClosed && (
                 <button
                   type="button"
                   className="btn sm dock-show"
@@ -1504,7 +1512,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
         </div>
         {sidePanel && (
-        <SidePanel label="run panel" testId="run-dock" autoCollapseBelow={DOCK_AUTO_HIDE_BELOW} persistKey="run" railless showRequest={dockShowRequest} hideFocus={focusDockButton} onStateChange={onDockState} revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
+        <SidePanel label="run panel" testId="run-dock" autoCollapseBelow={DOCK_AUTO_HIDE_BELOW} persistKey="run" railless autoAsRail showRequest={dockShowRequest} hideFocus={focusDockButton} onStateChange={onDockState} revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
           <div className={`live-panel${usesScenePalette(options.presentation) && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && selectedAgent) { if (usesScenePalette(options.presentation)) { event.preventDefault(); returnToOffice(selectedAgent.id) } else if (factoryOn) { event.preventDefault(); returnToFloor(selectedAgent.id) } } }}>
             {usesScenePalette(options.presentation) && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
             {selectedAgent && !finishedGroup && !focusAgentId && <div className="agent-focus-open-row"><Button size="sm" testId="agent-focus-open" onClick={() => openAgentView(selectedAgent.id)}>Open agent view</Button></div>}

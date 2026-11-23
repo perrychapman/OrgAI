@@ -62,8 +62,20 @@ Screenshots of the hold card and the one-agent view were looked at in dark and l
   button shows the dock again: a keyboard activation moves focus to the composer, a mouse click does not. Anything that
   needs the composer or a tab (a decision answer, History's Continue, the plan strip, Find an agent) shows a hidden dock
   first. Everything stays mounted while hidden, so the draft, the model switch element, its pending state and the scroll
-  position survive. The dock starts hidden under 900 px of run view width (was 1100); the saved choice
-  (`orgai.sidePanel.run`) still wins. With no room at all (about 560 px) the old rail and the composer under the canvas return.
+  position survive. Only the user's own Hide hides the dock (saved as `orgai.sidePanel.run` = closed, kept across runs,
+  windows and restarts); hiding also hides the composer and the settings row until the toolbar button brings them back.
+- **Narrow fallback (layout rule as built).** `data-dock` is `open`, `hidden` (explicit Hide only) or `rail`. A run view under
+  900 px with no saved choice (the SidePanel `autoAsRail` mode, reported as `auto`), or with no room at all (about 560 px),
+  is `rail`: the 40 px rail with the panel's Show button, the composer with its settings row and `LiveModelSwitch` under the
+  canvas, and the toolbar "Conversation" button, which opens the dock (and saves "open", an explicit choice). Nothing is
+  saved by the width alone; the panel folds on window resizes only (measured 120 ms after the last resize, because the
+  sidebar flips to its rail from the same resize event and a measure inside it saw the old width) and unfolds by itself
+  when its grid grows past 900 px again. The composer region is the same mounted element in all three layouts (CSS only
+  moves it), so the draft, focus and the model switch survive every transition. Measured on the mock: main window and run
+  window at 1024x640 have a 968 px run view with the sidebar as a rail (dock open, canvas 688x552); with the sidebar
+  expanded the run view is 793 px (rail layout, canvas 753x388 with a hold card, 752x422 without); at 1600x1000 the run
+  view is 1368 px (dock open, canvas 985x912). No horizontal overflow in any of them; the hold card scrolls inside the
+  tray above the composer.
 - **Unread.** An amber dot and "(new)" on the button for a root reply or a decision that arrived while hidden (run events).
 - **Decisions.** The tray and hold card stay on the stage under the canvas, dock shown or not (the board draws the card in
   the dock; the tray is kept so a hidden dock never hides a decision). Compact tray threshold is now 570 px, since the
@@ -76,4 +88,15 @@ Screenshots of the hold card and the one-agent view were looked at in dark and l
 - **Checks.** `e2e/run-hold.mjs` covers the dock (1024x640 and 1600x1000, focus, draft, reduced motion, newest message) and
   `[mock:budget-stop]` (cap set in Settings, Cancel, held Enter, inline refusal, confirmed amount). `e2e/runs.mjs` geometry
   now expects the composer in the dock at every width.
-- **Not done.** No dock shortcut (`src/shared/view/shortcuts.ts` is not ours). Not checked: screen reader speech, 120 agents.
+- **Focus and decision cards.** A card that mounts while focus is in a text field outside it (input, textarea,
+  contenteditable, the composer included, empty or not) no longer takes focus: the old rule only protected a non-empty
+  field, and a Send empties the composer just before a permission card can arrive, so "Allow once" took focus under the
+  Enter key. A card that mounts while a key is still held waits for the key-up and then takes focus only if focus is
+  nowhere. The tray's announcement still says a decision is waiting; Tab, a click or the Needs-you jump reach it.
+  `e2e/runs.mjs` ends with the check (type, Enter, `[mock:fatigue]` card: focus stays in the composer, nothing answered,
+  Shift+Tab reaches the card; it fails on the old rule). The rule lives in `DecisionCard.tsx` (`typingElsewhere`).
+- **More checks.** `e2e/run-start.mjs` section 11 (fresh profile at 1024x640 shows the composer and settings row, the rail
+  layout under 900 px, explicit Hide, the Conversation button, survival of a reload); `e2e/run-hold.mjs` (narrow fallback
+  geometry, keyboard show from the rail, fold on resize, unfold when the sidebar collapses).
+- **Not done.** `e2e/layout.mjs` still expects the run panel collapsed below 1100 px (stale since the dock rework; not ours).
+  No dock shortcut (`src/shared/view/shortcuts.ts` is not ours). Not checked: screen reader speech, 120 agents.

@@ -597,8 +597,9 @@ try {
     check((await activeTestId(v)) === 'run-permission-change', '6 (live row) cancel returns focus to the permission chip', await activeTestId(v))
     await chooseMode(v, 'acceptEdits')
     await v.locator(T('run-permission-confirm')).click()
-    await v.waitForFunction(() => /Permission mode is now Auto-accept edits\./.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
-    check((await text(v, T('run-permission-note'))).startsWith('Permission mode is now Auto-accept edits.'), '6 (merged mock) confirming applies the wider mode', await text(v, T('run-permission-note')))
+    const acceptNote = `Permission mode is now ${MODE_NAME.acceptEdits}.`
+    await v.waitForFunction((want) => (document.querySelector('[data-testid=run-permission-note]')?.textContent ?? '').includes(want), acceptNote, { timeout: 8000 }).catch(() => {})
+    check((await text(v, T('run-permission-note'))).startsWith(acceptNote), '6 (merged mock) confirming applies the wider mode', await text(v, T('run-permission-note')))
     check((await getRun(run.id)).summary.permissionMode === 'acceptEdits', '6 (merged mock) runs.get permissionMode is acceptEdits')
     check((await v.locator(T('run-permission-change')).getAttribute('data-tone')) === 'warning', '6 (merged mock) a permissive live mode shows data-tone=warning')
     await page.evaluate((id) => window.orgai.runs.stop(id), run.id)
@@ -681,6 +682,73 @@ try {
     check(/^Next message:\s*Plan only/.test(await text(ev, T('run-meta-permission'))) && (await ev.locator(T('run-meta-permission')).getAttribute('data-next')) === 'true', '10 an ended run\'s RunMeta reads "Next message: Plan only", like the chip', await text(ev, T('run-meta-permission')))
 
     await page.evaluate((id) => window.orgai.runs.stop(id), ended.id).catch(() => {})
+  })
+
+  // 11. the conversation dock is never hidden by the window size alone: a fresh profile shows the composer and the settings row
+  // at the smallest window, an explicit Hide hides them, the Conversation button restores them, and the choice survives a reload.
+  await section('dock-default', async () => {
+    const KEY = 'orgai.sidePanel.run'
+    const info = (p) =>
+      p.evaluate(() => {
+        const rect = (sel) => {
+          const b = document.querySelector(sel)?.getBoundingClientRect()
+          return b && { w: Math.round(b.width), h: Math.round(b.height), t: Math.round(b.top), b: Math.round(b.bottom) }
+        }
+        const body = document.querySelector('.run-body')
+        const visible = (sel) => { const el = document.querySelector(sel); return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden' }
+        return {
+          dock: body?.getAttribute('data-dock'),
+          bodyW: body?.clientWidth,
+          frame: rect('.canvas-frame'),
+          composer: rect('.live-composer-region'),
+          textarea: visible('.composer textarea'),
+          row: visible('[data-testid=run-settings][data-surface=live]'),
+          button: visible('[data-testid=dock-show]'),
+          overflow: document.documentElement.scrollWidth > innerWidth || (body ? body.scrollWidth > body.clientWidth + 1 : false)
+        }
+      })
+    const expectShown = (i, tag) => {
+      check(i.textarea && i.row, `11 ${tag}: the composer and the settings row are on screen without a click`, JSON.stringify(i))
+      check(!i.overflow, `11 ${tag}: no horizontal overflow`)
+      check(!!i.frame && i.frame.w >= 480 && i.frame.h >= 250 && (!i.composer || i.frame.b <= i.composer.t + 1 || i.dock === 'open'), `11 ${tag}: the canvas keeps a usable area (${i.frame?.w}x${i.frame?.h}, run view ${i.bodyW}, dock ${i.dock})`, JSON.stringify(i))
+    }
+    const run = await startViaApi(`${IDLE_MARK} dock default`)
+    // Fresh profile, smallest window, rail sidebar (run view about 968 px): the dock is open.
+    await page.evaluate((k) => { localStorage.removeItem(k); localStorage.removeItem('orgai.sidebar') }, KEY)
+    let v = await openRunWindow(run, [1024, 640])
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 10_000 })
+    expectShown(await info(v), 'run window 1024x640')
+    await v.screenshot({ path: 'e2e/shots/run-start-dock-default-1024.png' })
+    // The sidebar expanded leaves the run view under 900 px: the rail layout, composer under the canvas.
+    await page.evaluate(() => localStorage.setItem('orgai.sidebar', 'expanded'))
+    v = await openRunWindow(run, [1024, 640])
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 10_000 })
+    const narrow = await info(v)
+    check(narrow.bodyW < 900 && narrow.dock === 'rail', '11 a run view under 900 px with no saved choice is the rail layout', JSON.stringify(narrow))
+    expectShown(narrow, 'run window with the sidebar expanded')
+    check(narrow.button, '11 the toolbar Conversation button is there in the rail layout')
+    await v.screenshot({ path: 'e2e/shots/run-start-dock-rail-1024.png' })
+    check((await page.evaluate((k) => localStorage.getItem(k), KEY)) === null, '11 the window size alone saved no choice')
+    await page.evaluate(() => localStorage.removeItem('orgai.sidebar'))
+    // Explicit Hide (the default wide case): hidden, the Conversation button restores, the choice survives a reload.
+    v = await openRunWindow(run, [1600, 1000])
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 10_000 })
+    expectShown(await info(v), 'run window 1600x1000')
+    await v.getByRole('button', { name: /^Hide run panel/ }).click()
+    await sleep(700)
+    let h = await info(v)
+    check(h.dock === 'hidden' && !h.textarea && !h.row && h.button, '11 an explicit Hide hides the composer and the settings row and shows the Conversation button', JSON.stringify(h))
+    check((await activeTestId(v)) === 'dock-show', '11 Hide moves focus to the Conversation button', await activeTestId(v))
+    await v.reload()
+    await v.waitForSelector('.run-body', { timeout: 20_000 })
+    await sleep(800)
+    h = await info(v)
+    check(h.dock === 'hidden' && !h.textarea && h.button, '11 the hidden choice survives a reload', JSON.stringify(h))
+    await v.locator(T('dock-show')).click()
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 5000 })
+    expectShown(await info(v), 'after the Conversation button')
+    await page.evaluate((k) => localStorage.removeItem(k), KEY)
+    await page.evaluate((id) => window.orgai.runs.stop(id), run.id)
   })
 } catch (error) {
   check(false, 'run-start script completes', error.stack || String(error))

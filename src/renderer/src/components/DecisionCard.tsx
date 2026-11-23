@@ -146,11 +146,30 @@ function useOverflows(ref: { current: HTMLElement | null }, active: boolean): bo
 /** Set by the tray stepper just before it swaps cards: the next card mount keeps focus where it is. */
 export const decisionFocus = { suppress: false }
 
-/** True when the user is in the middle of typing in a text field; a new card must not steal focus then. */
+/** Keys held down right now (by code). A card that took focus under a held Enter would be answered by its key repeat. */
+const keysHeld = new Set<string>()
+const onRelease = new Set<() => void>()
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', (e) => keysHeld.add(e.code), true)
+  window.addEventListener(
+    'keyup',
+    (e) => {
+      keysHeld.delete(e.code)
+      if (keysHeld.size === 0) for (const fn of [...onRelease]) fn()
+    },
+    true
+  )
+  window.addEventListener('blur', () => keysHeld.clear())
+}
+
+const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
+/** True when focus is in something the user types in (input, textarea, contenteditable: the composer included) outside the card. */
 function typingElsewhere(card: HTMLElement | null): boolean {
   const el = document.activeElement
-  if (!(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement)) return false
-  return !card?.contains(el) && el.value.length > 0
+  if (!(el instanceof HTMLElement) || card?.contains(el)) return false
+  if (el instanceof HTMLTextAreaElement) return true
+  if (el instanceof HTMLInputElement) return !NON_TEXT_INPUTS.has(el.type)
+  return el.isContentEditable
 }
 
 /**
@@ -187,18 +206,37 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
     }
     if (noAutoFocus) return
     const card = ref.current
+    // A text field the user is in keeps focus, empty or not: a Send empties the composer just before a card can arrive,
+    // so the card waits (the tray announces it; Tab, a click or the Needs-you jump reach it).
     if (!card || typingElsewhere(card)) return
-    // The Details toggle is only displayed in compact mode (container query), where the body is collapsed.
-    const details = focusDetails ? card.querySelector<HTMLElement>('.decision-details') : null
-    if (details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true') {
-      details.focus()
+    const take = (): void => {
+      // The Details toggle is only displayed in compact mode (container query), where the body is collapsed.
+      const details = focusDetails ? card.querySelector<HTMLElement>('.decision-details') : null
+      if (details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true') {
+        details.focus()
+        return
+      }
+      const target =
+        card.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
+        card.querySelector<HTMLElement>('.decision-body input:not([disabled]), .decision-body textarea:not([disabled]), .decision-body summary, .decision-body button:not([disabled])') ??
+        card.querySelector<HTMLElement>('.decision-footer button:not([disabled])')
+      target?.focus()
+    }
+    if (keysHeld.size === 0) {
+      take()
       return
     }
-    const target =
-      card.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
-      card.querySelector<HTMLElement>('.decision-body input:not([disabled]), .decision-body textarea:not([disabled]), .decision-body summary, .decision-body button:not([disabled])') ??
-      card.querySelector<HTMLElement>('.decision-footer button:not([disabled])')
-    target?.focus()
+    // A key is still down (an Enter that answered the card before this one): its repeat must not land on this card's
+    // default button. Focus follows once every key is up, and only if the user has not gone anywhere else meanwhile.
+    const later = (): void => {
+      onRelease.delete(later)
+      const now = document.activeElement
+      if (card.isConnected && (!now || now === document.body) && !typingElsewhere(card)) take()
+    }
+    onRelease.add(later)
+    return () => {
+      onRelease.delete(later)
+    }
     // Mount only: later renders (a body change) must not pull focus back.
   }, [noAutoFocus, focusDetails])
   return (

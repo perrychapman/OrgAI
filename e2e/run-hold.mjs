@@ -48,7 +48,7 @@ try {
   // ---- Conversation dock: the composer lives in the dock; hiding keeps everything mounted; the toolbar button shows it again.
   const geo = () => page.evaluate(() => {
     const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom) } }
-    return { panel: r('.run-body > .side-panel'), composer: r('.run-body > .live-composer-region'), hold: r('[data-testid=run-hold]'), stage: r('.frame-stage'), dock: document.querySelector('.run-body')?.getAttribute('data-dock') }
+    return { panel: r('.run-body > .side-panel'), composer: r('.run-body > .live-composer-region'), hold: r('[data-testid=run-hold]'), stage: r('.frame-stage'), frame: r('.canvas-frame'), dock: document.querySelector('.run-body')?.getAttribute('data-dock') }
   })
   const scrollEnd = () => page.evaluate(() => {
     const tp = [...document.querySelectorAll('.run-body > .side-panel [role=tabpanel]')].find((e) => e.scrollHeight > e.clientHeight + 4 && e.offsetParent !== null) ?? document.querySelector('.run-body > .side-panel [role=tabpanel]')
@@ -64,6 +64,46 @@ try {
     check((await scrollEnd()) !== null && (await scrollEnd()) <= 2, `the conversation opens at the newest message (${w}x${h})`, String(await scrollEnd()))
     await shot(`dock-open-${w}`)
   }
+  // Narrow fallback (a small window with the sidebar expanded leaves the run view under 900 px, no saved choice): the dock is
+  // never hidden by the width alone. The composer, settings row and model switch stay under the canvas with the rail.
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [1024, 640])
+  await sleep(800)
+  const wide = await page.evaluate(() => document.querySelector('.run-body')?.clientWidth ?? 0)
+  if (await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'rail')) await page.locator('[data-testid=sidebar-toggle], .brand-lockup-expand').first().click()
+  await sleep(400)
+  // Folding follows window resizes only (a sidebar toggle never folds an open dock): resize once, as the window would.
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [1025, 640])
+  await page.waitForFunction(() => document.querySelector('.run-body')?.getAttribute('data-dock') === 'rail', null, { timeout: 5000 }).catch(() => {})
+  await sleep(300)
+  const gn = await geo()
+  const narrowW = await page.evaluate(() => document.querySelector('.run-body')?.clientWidth ?? 0)
+  const stageBox = await page.evaluate(() => { const b = document.querySelector('.canvas-frame')?.getBoundingClientRect(); return b && { w: Math.round(b.width), h: Math.round(b.height) } })
+  console.log(`narrow fallback: run view ${wide} -> ${narrowW} px wide, canvas frame ${stageBox?.w}x${stageBox?.h}, dock ${gn.dock}`)
+  check(narrowW < 900 && gn.dock === 'rail', 'a run view under 900 px with no saved choice shows the rail layout, not a hidden dock', JSON.stringify({ narrowW, dock: gn.dock }))
+  check((await page.evaluate(() => localStorage.getItem('orgai.sidePanel.run'))) === null, 'the width alone saved no choice')
+  check((await page.locator('.composer textarea').isVisible()) && (await page.locator('[data-testid=live-settings-bar]').isVisible()) && (await page.locator('[data-testid=live-model-change]').first().isVisible()), 'the composer, settings row and model switch are on screen without a click')
+  check(!!gn.composer && !!gn.hold && !!gn.frame && gn.hold.t >= gn.frame.t && gn.hold.l >= gn.frame.l - 1 && gn.hold.r <= gn.frame.r + 1 && gn.frame.b <= gn.composer.t + 1, 'the hold card sits inside the canvas frame and the composer does not cover it', JSON.stringify(gn))
+  check(!!stageBox && stageBox.w >= 560 && stageBox.h >= 200, 'the canvas keeps a usable area', JSON.stringify(stageBox))
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('.run-body').scrollWidth <= document.querySelector('.run-body').clientWidth + 1), 'no horizontal overflow in the narrow fallback')
+  check((await page.locator('[data-testid=dock-show]').isVisible()) && (await page.locator('.side-rail button').first().isVisible()), 'the rail and the toolbar Conversation button both reach the feed')
+  await shot('dock-rail-1024')
+  // Keyboard show from the fallback: the dock opens and focus goes to the composer; that is an explicit choice and is saved.
+  await page.locator('[data-testid=dock-show]').focus()
+  await page.keyboard.press('Enter')
+  await sleep(700)
+  check((await geo()).dock === 'open' && (await page.evaluate(() => document.activeElement?.tagName === 'TEXTAREA' && !!document.activeElement.closest('.live-composer-region'))), 'Enter on Conversation opens the dock from the fallback and focuses the composer')
+  // The saved choice is dropped again: the rail comes back at the next window resize and unfolds when the room returns.
+  await page.evaluate(() => localStorage.removeItem('orgai.sidePanel.run'))
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [1026, 640])
+  await page.waitForFunction(() => document.querySelector('.run-body')?.getAttribute('data-dock') === 'rail', null, { timeout: 5000 }).catch(() => {})
+  check((await geo()).dock === 'rail', 'with no saved choice a window resize folds the narrow run view to the rail again')
+  await page.locator('[data-testid=sidebar-toggle], .brand-lockup-expand').first().click()
+  await page.waitForFunction(() => document.querySelector('.run-body')?.getAttribute('data-dock') === 'open', null, { timeout: 5000 }).catch(() => {})
+  check((await geo()).dock === 'open', 'the rail unfolds to the dock when the sidebar collapses and the room returns')
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [1600, 1000])
+  await sleep(600)
+  if (await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'rail')) await page.locator('[data-testid=sidebar-toggle], .brand-lockup-expand').first().click()
+  await sleep(500)
   // Hide: a draft, the model switch element and its focus survive; focus moves to the toolbar button; decisions stay on the stage.
   const draft = page.locator('.composer textarea')
   await draft.fill('A draft that must survive hiding the dock')
@@ -134,12 +174,14 @@ try {
   await page.getByRole('tab', { name: 'Spending limits', exact: true }).click()
   await page.locator('.settings-pane-title').waitFor({ timeout: 10_000 })
   await page.evaluate(() => { const d = document.querySelector('details[data-testid=settings-advanced][data-pane="project-limits"]'); if (d) d.open = true })
-  const cap = page.getByLabel('Estimated-cost cap per run')
+  const cap = page.locator('[data-testid=limit-run-input]')
   await cap.waitFor({ timeout: 10_000 })
   await cap.fill('1')
-  await sleep(900)
-  check((await findProject(page, NAME))?.maxBudgetUsd === 1, 'the per-run cost cap of $1 saved through Settings')
+  await cap.press('Enter')
+  await sleep(800)
   await projectTab(page, 'Live').click()
+  await page.waitForFunction(async (n) => (await window.orgai.projects.list()).find((p) => p.name === n)?.maxBudgetUsd === 1, NAME, { timeout: 8000 }).catch(() => {})
+  check((await findProject(page, NAME))?.maxBudgetUsd === 1, 'the per-run cost cap of $1 saved through Settings')
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 10_000 })
   await start('Work until the limit [mock:budget-stop]')

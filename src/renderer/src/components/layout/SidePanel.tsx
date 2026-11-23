@@ -52,6 +52,7 @@ export function SidePanel({
   showRequest,
   hideFocus,
   railless,
+  autoAsRail,
   onStateChange
 }: {
   label: string
@@ -74,8 +75,13 @@ export function SidePanel({
   hideFocus?: () => void
   /** The panel has no rail while hidden (the parent shows a button elsewhere); a rail still shows when there is no room. */
   railless?: boolean
-  /** Reports what is on screen: `collapsed` (hidden or railed) and `noRoom` (railed only because the width does not fit). */
-  onStateChange?: (state: { collapsed: boolean; noRoom: boolean }) => void
+  /**
+   * With `railless`: a collapse that only the width caused (`autoCollapseBelow`, no saved choice) still shows the rail and is
+   * reported as `auto`. Only the user's own Hide hides the panel; a small window never hides what the parent keeps under it.
+   */
+  autoAsRail?: boolean
+  /** Reports what is on screen: `collapsed` (hidden or railed), `noRoom` (railed only because the width does not fit) and `auto` (collapsed by width alone, no choice saved). */
+  onStateChange?: (state: { collapsed: boolean; noRoom: boolean; auto: boolean }) => void
 }): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const [inner, setInner] = useState(() => {
@@ -83,6 +89,8 @@ export function SidePanel({
     return saved ? saved === 'closed' : defaultCollapsed
   })
   const collapsed = open === undefined ? inner : !open
+  // True while the panel is collapsed by the width rule alone (no saved choice); every explicit toggle clears it.
+  const [autoNarrow, setAutoNarrow] = useState(false)
   const [saved, setSaved] = usePersistedWidth(WIDTH_PREFIX + (persistKey ?? 'default'))
   const [sizes, setSizes] = useState({ panel: 0, parent: 0 })
   // An arrival that needs room widens the panel for this visit only (never written to storage).
@@ -121,17 +129,40 @@ export function SidePanel({
     const apply = (): void => {
       if (readPref(persistKey)) return
       const narrow = parent.clientWidth < autoCollapseBelow
+      setAutoNarrow(narrow)
       setInner((was) => {
         if (was !== narrow) onOpenChange?.(!narrow)
         return narrow
       })
     }
     apply()
-    // Window resizes only: dragging a resize handle (sidebar or panel) must not fold the panel.
-    window.addEventListener('resize', apply)
-    return () => window.removeEventListener('resize', apply)
+    // Window resizes only: dragging a resize handle (sidebar or panel) must not fold the panel. The grid is measured once
+    // the resize has settled: the sidebar flips between full and rail from the same resize event, so a measure taken
+    // inside the event still sees the old sidebar width and would fold a panel that fits.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onResize = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = undefined
+        apply()
+      }, 120)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (timer !== undefined) clearTimeout(timer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoCollapseBelow, persistKey])
+  // A panel that only the width folded comes back as soon as its grid is wide enough again, by any growth (the sidebar
+  // collapsing, a window resize); folding stays with window resizes. A saved choice never reaches this.
+  useLayoutEffect(() => {
+    if (autoCollapseBelow === undefined || !autoNarrow || !inner || sizes.parent < autoCollapseBelow || readPref(persistKey)) return
+    setAutoNarrow(false)
+    setInner(false)
+    onOpenChange?.(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sizes.parent, autoNarrow, inner, autoCollapseBelow])
   // Parent grids can restyle for a wide panel (the Live view moves the composer into the panel column).
   // Hysteresis (wide at 480+, narrow again below 448) so a drag across the threshold does not flicker the layout.
   const [wasWide, setWasWide] = useState(false)
@@ -183,6 +214,7 @@ export function SidePanel({
   }, [revealOn])
   const setCollapsed = (c: boolean): void => {
     glide()
+    setAutoNarrow(false)
     setInner(c)
     onOpenChange?.(!c)
     if (persistKey) {
@@ -219,20 +251,21 @@ export function SidePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCollapsed])
   const noRoom = collapsible && !collapsed && !budget.fits
+  const auto = !!autoAsRail && collapsed && autoNarrow
   useLayoutEffect(() => {
-    onStateChange?.({ collapsed: isCollapsed, noRoom })
+    onStateChange?.({ collapsed: isCollapsed, noRoom, auto })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCollapsed, noRoom])
+  }, [isCollapsed, noRoom, auto])
   const firstShow = useRef(showRequest)
   useEffect(() => {
     if (showRequest === undefined || showRequest === firstShow.current) return
     firstShow.current = showRequest
-    if (isCollapsed && !noRoom) setCollapsed(false)
+    if (isCollapsed && !noRoom && budget.fits) setCollapsed(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showRequest])
   return (
     <aside ref={ref} className="side side-panel" aria-label={label} data-collapsed={isCollapsed ? 'true' : 'false'} data-testid={testId}>
-      {isCollapsed && (!railless || noRoom) && (
+      {isCollapsed && (!railless || noRoom || auto) && (
         <div className="side-rail">
           <IconButton icon={PanelRightOpen} label={`Show ${label}`} size="sm" expanded={false} onClick={() => setCollapsed(false)} />
         </div>
