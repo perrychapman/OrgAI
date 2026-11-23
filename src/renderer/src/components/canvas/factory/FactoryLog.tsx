@@ -17,7 +17,7 @@ export function FactoryLog({ entries }: FactoryLogProps): ReactElement {
   return (
     <details className="factory-log" data-testid="factory-log">
       <summary>
-        <span className="factory-log-title">Floor log</span>
+        <span className="factory-log-title">Floor log</span>{' '}
         <span className="factory-log-count">{entries.length}</span>
         <ChevronUp className="factory-log-chevron" size={14} aria-hidden="true" />
       </summary>

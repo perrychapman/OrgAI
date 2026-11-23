@@ -149,7 +149,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     <div className="office-controls" role="group" aria-label="Office controls">
       <OfficeDirectory agents={listed} rooms={rooms} selectedId={selectedId} onPick={agent => showPerson(agent.id)} onRemove={onRemove} filteredOut={agents.length - listed.length} />
       <OfficeOffscreen stage={stage} items={cueItems} positions={positionsNow} area={area} zoom={zoom} client={client} onShow={showFromChip} />
-      {mode === 'live' && <div className="office-show glass" data-testid="office-show-filter">
+      {mode === 'live' && <div className="office-show glass-strong" data-testid="office-show-filter">
         <SegmentedControl<OfficeShow> label="Show" value={show} onChange={setShow} options={[
           { value: 'all', label: `All ${counts.all}` },
           { value: 'working', label: `Working ${counts.working}` },
@@ -174,7 +174,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
           </div>
         </div>
       </div>
-      <div className="office-zoom glass" role="group" aria-label="Zoom">
+      <div className="office-zoom glass-strong" role="group" aria-label="Zoom">
         <IconButton icon={Minus} label="Zoom out" size="sm" onClick={camera.zoomOut} />
         <span className="office-zoom-readout" data-testid="office-zoom" data-zoom={zoom} role="img" aria-label={zoomName(zoom)}>{zoomLabel(zoom)}</span>
         <IconButton icon={Plus} label="Zoom in" size="sm" onClick={camera.zoomIn} />
