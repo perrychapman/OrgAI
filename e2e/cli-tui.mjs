@@ -33,6 +33,7 @@
 //    agent inspector (facts and its own transcript); `?` opens the which-key overlay with the glyph legend; Esc closes the
 //    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
 //    agent, message marks and the run chips have no mock source here: unit tests only.
+//    Then /team raises a report role's effort (y confirms): the status line says the live run uses the change now.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
 //
 // Not covered here (unit tests only): merge review cards (the mock has no worktrees), the pager, TERM=dumb Enter
@@ -595,6 +596,26 @@ try {
       // Focus is still on the agents pane (typing there is not the composer); Esc goes back to the composer.
       t.key('esc')
       await sleep(400)
+
+      // A role edit saved in /team reaches the live team run at once, and the status line says so (run.liveChange).
+      await type(t, '/team')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('Team of '), 10_000)
+      t.key('down')
+      await sleep(300)
+      await type(t, 'e')
+      await t.waitFor((s) => s.includes('Effort of '), 10_000)
+      t.key('down')
+      await sleep(200)
+      t.key('enter')
+      // Raising a role's effort may spend more: the view asks before it saves.
+      await t.waitFor((s) => s.includes('Press y to save'), 10_000)
+      await type(t, 'y')
+      const liveSaid = await t.waitFor((s) => s.includes('The team: this run uses the change now.'), 15_000).then(() => true, () => false)
+      check(liveSaid, 'i: a role edit saved in /team reaches the live team run, and the status line says it uses the change now', esc(t.screen()))
+      check(!t.screen().includes('keeps the team it started with'), 'i: ... and the view does not say the live run keeps its team', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('Team of '), 10_000)
       const e = await quit(t, { confirm: true })
       check(e?.code === 0, 'i: quitting exits 0', JSON.stringify(e))
     } finally {

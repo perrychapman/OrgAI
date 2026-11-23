@@ -558,8 +558,12 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   `previewTierChange` (now exported; the touched roles are listed before `y`), then connections:update; App rows through
   `orgai settings`' `SETTING_KEYS` / `parseSettingValue`, then settings:set. The project's connection row is read-only.
   Host calls: `TuiSessionApi.config` (`configApi.ts`), reads on the shared client, writes on a one-call 'configure'
-  connection (`callConfigured`); a save updates the session's project. Mid-run: the host lets a project be saved while a
-  run is live and RunManager keeps the live run's roles as they started, so a save during a live run says it applies from
-  the next run. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
+  connection (`callConfigured`); a save updates the session's project. Mid-run (2026-11-22): a role edit saved in /team
+  reaches the team work runs this terminal hosts (ARCHITECTURE.md "Host changes in a live run", TERMINAL), and each
+  run's answer shows as one status notice (`liveChangeText.ts`: "The team: this run uses the change now." or "from the
+  next run" with the reason). A single-assistant run and a run another terminal hosts keep the team they started with:
+  only then /team adds its "keeps the team it started with" note (`takesSavedTeam`). /settings saves change no role, so
+  a live run keeps the settings it started with. Checked by e2e/cli-tui.mjs section i (mock adapter) and unit tests; no
+  live provider. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
   backs out one level. The first time a terminal opens a project it shows one notice naming /team and /settings
   (`<userDataDir>/tui-hints.json`, `hintStore`).

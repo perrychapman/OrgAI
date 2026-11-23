@@ -14,6 +14,7 @@ type HostServices = import('./types').HostServices
 
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }
 const INPROC = { surface: 'inproc' as const }
+const SOCKET = { surface: 'socket' as const }
 
 const server = (id: string, name: string, over: Partial<McpServerSpec> = {}): McpServerSpec => ({ id, name, transport: 'stdio', command: 'x', ...over }) as McpServerSpec
 const skill = (id: string, name: string, over: Partial<SkillSpec> = {}): SkillSpec => ({ id, name, description: 'd', enabled: true, source: 'local', ...over }) as SkillSpec
@@ -90,7 +91,7 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
     templates: { list: () => [] } as never
   }
   const d = new HostDispatcher(services)
-  const call = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC = DESKTOP): Promise<any> => Promise.resolve(d.invoke(channel, [input], ctx))
+  const call = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC | typeof SOCKET = DESKTOP): Promise<any> => Promise.resolve(d.invoke(channel, [input], ctx))
   return { call, runs, calls, store, projects, mcp, skillsSvc, reads, current, services }
 }
 
@@ -351,12 +352,26 @@ describe('other surfaces never call applyProjectChange', () => {
     [IPC.skillsUpdate, () => ({ projectId: P, skillId: 'sk_old', enabled: false })],
     [IPC.skillsRemove, () => ({ projectId: P, skillId: 'sk_old' })],
     [IPC.skillsLinkLibrary, () => ({ projectId: P, libraryId: 'lib_9' })]
-  ] as const)('%s on the inproc surface is synchronous and adds nothing', (channel, input) => {
+  ] as const)('%s on a socket surface is synchronous and adds nothing', (channel, input) => {
     const r = rig()
-    const out = r.call(channel, input(r), INPROC)
+    const out = r.call(channel, input(r), SOCKET)
     return out.then((value) => {
       expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
       expect(value && typeof value === 'object' && 'liveRuns' in value).toBe(false)
     })
+  })
+})
+
+describe('the terminal\'s own orgai process is the user\'s surface too', () => {
+  it('projects:save on the inproc surface passes the change to the live runs, as on the desktop', async () => {
+    const r = rig()
+    await r.call(IPC.projectsSave, { ...r.store[0], brief: 'x' }, INPROC)
+    expect(r.runs.applyProjectChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('mcp:remove on the inproc surface passes the change to the live runs, as on the desktop', async () => {
+    const r = rig()
+    await r.call(IPC.mcpRemove, { projectId: P, serverId: 'mcp_old' }, INPROC)
+    expect(r.runs.applyProjectChange).toHaveBeenCalledTimes(1)
   })
 })

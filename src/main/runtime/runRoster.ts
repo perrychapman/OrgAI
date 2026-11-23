@@ -16,6 +16,20 @@ export function liveRosterApplies(
 }
 
 /**
+ * Whether a role edit the user saved themselves (projects:save on the user's own surface, hostChange.ts) reaches this
+ * run's roles: the same runs and sessions as liveRosterApplies, on a host that passes the user's saves to live runs
+ * (`host.liveHostChanges`). No card is involved, so what the card surface can show (liveRosterCards) does not decide
+ * it: the user typed the edit. Pure.
+ */
+export function liveRosterTakesSave(
+  summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>,
+  session: { liveRoster?: boolean } | undefined,
+  host: { liveRosterCards?: boolean; liveHostChanges?: boolean }
+): boolean {
+  return liveRosterApplies(summary, session, { liveRosterCards: host.liveRosterCards === true || host.liveHostChanges === true })
+}
+
+/**
  * Mid-run org changes (propose_org_change approved in a work run whose session sets RuntimeSession.liveRoster): what
  * RunManager applies to the running run's own roles (ctx.roles). Pure apart from the in-place update of `running`.
  *

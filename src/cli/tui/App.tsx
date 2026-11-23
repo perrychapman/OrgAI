@@ -40,6 +40,7 @@ import { agentLabel } from '../render'
 import { PaneLines, cutSegs, styleFor } from './panes/lines'
 import { runPickLines, runPickRows, type RunPickRow } from './runPick'
 import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, inspectRef, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
+import { takesSavedTeam } from './liveChangeText'
 import { usageText } from './usageText'
 import { NO_PROJECT_STAGE, SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
@@ -1718,7 +1719,10 @@ export function App(props: AppProps) {
   const status = <StatusBar compact={!inline} width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={inline || size.rows < 10 ? hints : footerHints} now={now} />
 
   const configHeight = inline ? Math.max(8, size.rows - 5) : Math.max(3, bodyRows)
-  const liveRun = Object.values(state.runs).some((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
+  const openRuns = Object.values(state.runs).filter((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
+  const liveRun = openRuns.length > 0
+  // /team: a team run this terminal hosts answers a save in the status line (run.liveChange); only the others keep their team.
+  const liveRunKeepsTeam = openRuns.some((r) => !takesSavedTeam(r.summary))
   const overlayNode = overlay ? (
     overlay.kind === 'config' ? (
       state.project && session.config ? (
@@ -1730,7 +1734,7 @@ export function App(props: AppProps) {
             env={env}
             projectId={state.project.id}
             api={session.config}
-            liveRun={liveRun}
+            liveRun={liveRunKeepsTeam}
             {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
             {...(editText ? { editText } : {})}
             onClose={() => setOverlay(undefined)}

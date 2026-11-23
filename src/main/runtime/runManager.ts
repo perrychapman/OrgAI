@@ -115,7 +115,7 @@ const LIVE_CHANGE_LIST_MAX = 50
 const coarseWhat = (change: HostProjectChange): LiveChangeWhat[] =>
   change.kind === 'mcp' ? ['mcpServers'] : change.kind === 'skills' ? ['skills'] : change.kind === 'orgChart' ? ['orgChart'] : ['orgChart', 'grants']
 import { BridgedSessions, bridgeKey } from './bridge'
-import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
+import { applyRosterChange, liveRosterApplies, liveRosterTakesSave, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mcpServersForRole, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
@@ -775,9 +775,10 @@ export interface RunManagerOptions {
    */
   liveRosterCards?: true
   /**
-   * Host changes in a live run (applyProjectChange, hostChange.ts): true only on the desktop app (bootstrap.ts with
-   * `desktop`), whose saves come from the user's own windows. The CLI / TUI / exec host leaves it unset and keeps the
-   * pre-feature behaviour: a save applies from the next run and applyProjectChange returns [] without touching a run.
+   * Host changes in a live run (applyProjectChange, hostChange.ts): true on a host whose saves are the user's own: the
+   * desktop app (its windows) and the orgai command's own host (it serves only the terminal process that started it).
+   * Unset (tests, any other host): a save applies from the next run and applyProjectChange returns [] without touching
+   * a run.
    */
   liveHostChanges?: true
   /** How long applyProjectChange waits for each run's session before answering 'pending'. Tests; default LIVE_RUN_CHANGE_WAIT_MS. */
@@ -2284,6 +2285,8 @@ export class RunManager {
       const grantOwners = new Map<string, Set<symbol>>()
       const GRANT_HELD = Symbol('held')
       let grantClaim: symbol | undefined
+      /** True while hostApply moves a role edit the user saved themselves (source 'user'): setLive then asks liveRosterTakesSave. */
+      let rosterBySave = false
       const pairKey = (e: { roleId: string; field: string; id: string }): string => `${e.roleId}|${e.field}|${e.id}`
       const grantPairs = (roles: readonly Role[]): Set<string> => {
         const out = new Set<string>()
@@ -2373,7 +2376,7 @@ export class RunManager {
           else overlay('roles')
           // Only a card that was diffed against the run's own roles (runBaseline) is applied to them: one created before
           // the session took roster changes live was diffed against the stored project and applies from the next run.
-          if (card && baseline && !bare && liveRosterApplies(summary, active.session, this.options)) {
+          if (card && baseline && !bare && (rosterBySave ? liveRosterTakesSave(summary, active.session, this.options) : liveRosterApplies(summary, active.session, this.options))) {
             // L2: grants the view holds on a waiting role were approved on their own cards; nothing else grants it.
             const runIds = new Set(ctx.roles.map((r) => r.id))
             const pendingGrants = new Map(live.roles.filter((r) => !runIds.has(r.id)).map((r) => [r.id, { ...(r.mcpServers ? { mcpServers: r.mcpServers } : {}), ...(r.skills ? { skills: r.skills } : {}) }]))
@@ -3096,7 +3099,8 @@ export class RunManager {
             }
             if (!roleEditEmpty(edit)) widens = true
             if (takes && (!roleEditEmpty(edit) || kept.length)) {
-              if (liveRosterApplies(summary, session, this.options)) {
+              // The user's own save needs no card surface (liveRosterTakesSave); another run's approved card does.
+              if (source === 'user' ? liveRosterTakesSave(summary, session, this.options) : liveRosterApplies(summary, session, this.options)) {
                 const baseline = runBaselineOf(ctx, active.retiredRoles ?? [])
                 const inRun = new Set(baseline.map((r) => r.id))
                 const nameOf = (id: string): string => after.find((r) => r.id === id)?.name ?? change.before.roles.find((r) => r.id === id)?.name ?? id
@@ -3105,7 +3109,13 @@ export class RunManager {
                 }
                 // Own ids only for roles the run has or the edit adds: a saved-only role (a pull) never enters the run's view.
                 const ids = [...[...edit.changed.keys(), ...edit.removed].filter((id) => inRun.has(id)), ...edit.added.map((r) => r.id)]
-                const roster = roleEditEmpty(edit) ? undefined : setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+                let roster: RunRosterChange | undefined
+                rosterBySave = source === 'user'
+                try {
+                  roster = roleEditEmpty(edit) ? undefined : setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+                } finally {
+                  rosterBySave = false
+                }
                 const deferredIds = new Set<string>()
                 if (roster) {
                   for (const d of roster.deferred) deferredIds.add(d.id)

@@ -5,8 +5,9 @@
  * the same validation, chart rules and "May spend more" sentences) and saves with projects:save, where the host applies
  * the desktop's cleaning. A change that may spend more, and every removal, waits for `y`. Errors show in place.
  *
- * The host lets a project be saved while a run is live; the live run keeps the team it started with, so a save during a
- * run says the change applies from the next run (RunManager: role identity never changes mid-run).
+ * The host lets a project be saved while a run is live. A team work run this terminal hosts takes the save itself and
+ * says so in the status line (run.liveChange, liveChangeText.ts); any other live run keeps the team it started with,
+ * and only then the view adds LIVE_RUN_NOTE (`liveRun`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TOOL_CATALOG, type Project } from '../../shared/types'
@@ -28,14 +29,14 @@ export interface TeamViewProps {
   api: TuiConfigApi
   /** Set when this session is read-only: the view shows, edits are refused with this reason. */
   readOnly?: string
-  /** A run of this project is live: a save says it applies from the next run. */
+  /** A live run of this project does not take a save itself (liveChangeText.ts takesSavedTeam): a save adds LIVE_RUN_NOTE. */
   liveRun?: boolean
   /** Opens $EDITOR on the text (the shell suspends the terminal around it); absent: the view names the command. */
   editText?(initial: string): Promise<string>
   onClose(): void
 }
 
-export const LIVE_RUN_NOTE = 'The live run keeps the team it started with; this applies from the next run.'
+export const LIVE_RUN_NOTE = 'A live run without a team, or in another terminal, keeps the team it started with; this applies from its next run.'
 
 export const LIST_KEYS = ['Up/Down select', 'Enter details', 'm model', 'e effort', 's staffing', 't tools', 'r reparent', 'n rename', 'p prompt', 'a add', 'x remove', 'Esc back']
 export const DETAIL_KEYS = ['Up/Down scroll', 'm model', 'e effort', 's staffing', 't tools', 'r reparent', 'n rename', 'p prompt', 'a add', 'x remove', 'Esc back']

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Role } from '@shared/types'
-import { ROSTER_REASONS, applyRosterChange, joiningRole, liveRosterApplies, rosterChanged, rosterOf } from './runRoster'
+import { ROSTER_REASONS, applyRosterChange, joiningRole, liveRosterApplies, liveRosterTakesSave, rosterChanged, rosterOf } from './runRoster'
 import { orgChart, role } from './testHelpers'
 
 const running = (): Role[] => {
@@ -440,5 +440,25 @@ describe('rosterOf and liveRosterApplies', () => {
     const on = { liveRoster: true }
     expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, on, {})).toBe(false)
     expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, on, { liveRosterCards: false })).toBe(false)
+  })
+})
+
+describe('liveRosterTakesSave', () => {
+  const on = { liveRoster: true }
+  const work = { kind: 'work' as const, projectId: 'p1' }
+
+  it('a host that passes the user\'s saves to live runs takes a saved role edit without the card switch', () => {
+    expect(liveRosterTakesSave(work, on, { liveHostChanges: true })).toBe(true)
+    expect(liveRosterTakesSave(work, on, { liveRosterCards: true })).toBe(true)
+    expect(liveRosterApplies(work, on, { liveHostChanges: true } as { liveRosterCards?: boolean })).toBe(false)
+  })
+
+  it('keeps every other condition of liveRosterApplies', () => {
+    expect(liveRosterTakesSave(work, on, {})).toBe(false)
+    expect(liveRosterTakesSave(work, {}, { liveHostChanges: true })).toBe(false)
+    expect(liveRosterTakesSave(work, undefined, { liveHostChanges: true })).toBe(false)
+    expect(liveRosterTakesSave({ kind: 'work', projectId: 'p1', quick: {} as never }, on, { liveHostChanges: true })).toBe(false)
+    expect(liveRosterTakesSave({ kind: 'work', projectId: 'p1', team: 'single' }, on, { liveHostChanges: true })).toBe(false)
+    expect(liveRosterTakesSave({ kind: 'setup', projectId: 'p1' }, on, { liveHostChanges: true })).toBe(false)
   })
 })

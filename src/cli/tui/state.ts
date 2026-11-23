@@ -42,6 +42,7 @@ import {
   type TuiRun,
   type TuiState
 } from './types'
+import { liveChangeNotice, type LiveChangeNotice } from './liveChangeText'
 
 // ---------- Partial streams ----------
 
@@ -501,6 +502,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   const existing = out.runs[e.runId]
   if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove' || e.type === 'agent.message')) return out
   let compactedNotice: string | undefined
+  let liveChange: LiveChangeNotice | undefined
   let run: TuiRun = existing ?? newRun(stubSummary(out, e.runId, now))
   const summary = run.summary
 
@@ -539,6 +541,10 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       break
     case 'run.moved':
       run = { ...run, summary: { ...summary, projectId: e.projectId } }
+      break
+    case 'run.liveChange':
+      // A change the user saved while this run is live (docs: "Host changes in a live run"): say what this run does with it.
+      liveChange = liveChangeNotice(e.change, Array.isArray(e.what) ? e.what : [])
       break
     case 'run.model':
       // The root's live model (a model switch): the status bar and the inspector read summary.modelSelection.
@@ -651,6 +657,7 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   }
 
   if (compactedNotice) out = addNotice(out, compactedNotice, 'warn', now)
+  if (liveChange) out = addNotice(out, safeLine(liveChange.text), liveChange.tone, now)
   return finish(out, run, existing, summary)
 }
 
