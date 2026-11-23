@@ -32,13 +32,13 @@ describe('navigationFor', () => {
     expect(plan.ok).toBe(true)
     if (!plan.ok) return
     expect(plan.target).toEqual({ kind: 'app', target: 'appsettings-section-appearance' })
-    expect(plan.message).toBe('Assistant opened App settings › General › Appearance for you.')
+    expect(plan.message).toBe('Assistant opened Settings › App › Appearance for you.')
     expect(plan.projectId).toBeUndefined()
   })
   it('names the project instead of "Project" and selects it', () => {
     const plan = navigationFor(ev('project-settings-limits', { projectId: 'p1' }), { projects: PROJECTS })
     expect(plan.ok && plan.projectId).toBe('p1')
-    expect(plan.ok && plan.message).toBe('Assistant opened Notes API › Settings › Limits for you.')
+    expect(plan.ok && plan.message).toBe('Assistant opened Notes API › Settings › Spending limits for you.')
   })
   it('refuses an unknown or missing project and an engagement place on a code project', () => {
     expect(navigationFor(ev('project-team', { projectId: 'nope' }), { projects: PROJECTS }).ok).toBe(false)

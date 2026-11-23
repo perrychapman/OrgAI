@@ -126,7 +126,7 @@ export interface AtlasSurface {
   id: AtlasSurfaceId
   /** The surface's own name as the UI shows it. */
   label: string
-  /** Breadcrumb from the top, ending with `label`, e.g. ['App settings', 'General', 'Appearance']. */
+  /** Breadcrumb from the top, ending with `label`, e.g. ['Settings', 'App', 'Appearance']. */
   path: readonly string[]
   kind: AtlasSurfaceKind
   scope: AtlasScope
@@ -288,7 +288,8 @@ export function appPaneForSection(id: string): AppSettingsPane | undefined {
 
 // ---------- Surfaces ----------
 
-const APP = 'App settings'
+const APP = ['Settings', 'App'] as const
+const PRJ_SETTINGS = ['Project', 'Settings'] as const // the renderer swaps the first element for the project's name
 const PROJ = 'Project'
 
 export const ATLAS_SURFACES: readonly AtlasSurface[] = [
@@ -644,8 +645,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   // ----- Project settings -----
   {
     id: 'project-settings-general',
-    label: 'General',
-    path: [PROJ, 'Settings', 'General'],
+    label: 'Basics',
+    path: [...PRJ_SETTINGS, 'Basics'],
     kind: 'pane',
     scope: 'project',
     summary: 'The project\'s name, client or case, working directory and brief, plus its connection. Engagements add the plan and context notes.',
@@ -660,7 +661,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-connection',
     label: 'Connection',
-    path: [PROJ, 'Settings', 'General', 'Connection'],
+    path: [...PRJ_SETTINGS, 'Basics', 'Connection'],
     kind: 'section',
     scope: 'project',
     summary: 'Choose the default connection for this project\'s roles and see the models its roles use; a role can run on another connection through Runs on in the Team tab.',
@@ -671,7 +672,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-engagement-plan',
     label: 'Engagement plan',
-    path: [PROJ, 'Settings', 'General', 'Engagement plan'],
+    path: [...PRJ_SETTINGS, 'Basics', 'Engagement plan'],
     kind: 'section',
     scope: 'engagement',
     summary: 'Read and edit the engagement plan agents receive in their prompts, or start the setup interview again. Engagements only.',
@@ -681,7 +682,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-context-notes',
     label: 'Context notes',
-    path: [PROJ, 'Settings', 'General', 'Context notes'],
+    path: [...PRJ_SETTINGS, 'Basics', 'Context notes'],
     kind: 'section',
     scope: 'engagement',
     summary: 'See a count of the recorded knowledge, open the Knowledge tab and choose whether known items are added to what agents receive. Engagements only.',
@@ -692,7 +693,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-permissions',
     label: 'Permissions',
-    path: [PROJ, 'Settings', 'Permissions'],
+    path: [...PRJ_SETTINGS, 'Permissions'],
     kind: 'pane',
     scope: 'project',
     summary: 'How much the agents may do without asking: permission mode, worktree isolation, merge review, run messaging and automatic continues.',
@@ -710,7 +711,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-allowed-folders',
     label: 'Allowed folders',
-    path: [PROJ, 'Settings', 'Permissions', 'Allowed folders'],
+    path: [...PRJ_SETTINGS, 'Permissions', 'Allowed folders'],
     kind: 'section',
     scope: 'project',
     summary: 'Extra folders agents may read and edit like the project folder.',
@@ -721,7 +722,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-reference-folders',
     label: 'Reference folders',
-    path: [PROJ, 'Settings', 'Permissions', 'Reference folders'],
+    path: [...PRJ_SETTINGS, 'Permissions', 'Reference folders'],
     kind: 'section',
     scope: 'project',
     summary: 'Folders agents may read but not change, such as client material.',
@@ -731,7 +732,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-rules',
     label: 'Saved permission rules',
-    path: [PROJ, 'Settings', 'Permissions', 'Saved permission rules'],
+    path: [...PRJ_SETTINGS, 'Permissions', 'Saved permission rules'],
     kind: 'section',
     scope: 'project',
     summary: 'Review, add and remove the rules saved when you chose "Always allow for project", including rules OrgAI does not use.',
@@ -741,7 +742,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-folder-trust',
     label: 'Folder config trust',
-    path: [PROJ, 'Settings', 'Permissions', 'Folder config trust'],
+    path: [...PRJ_SETTINGS, 'Permissions', 'Folder config trust'],
     kind: 'section',
     scope: 'project',
     summary: 'Review the agent settings that came with the folder and allow or stop using them. Agents ignore them until you allow them.',
@@ -752,7 +753,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-team-assistant',
     label: 'Team assistant',
-    path: [PROJ, 'Settings', 'Permissions', 'Advanced', 'Team assistant'],
+    path: [...PRJ_SETTINGS, 'Permissions', 'Advanced', 'Team assistant'],
     kind: 'section',
     scope: 'project',
     summary: 'Choose whether the Team assistant is off, runs free checks or also asks the model for suggestions.',
@@ -762,8 +763,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'project-settings-limits',
-    label: 'Limits',
-    path: [PROJ, 'Settings', 'Limits'],
+    label: 'Spending limits',
+    path: [...PRJ_SETTINGS, 'Spending limits'],
     kind: 'pane',
     scope: 'project',
     summary: 'Caps for a run: estimated cost, how many runs to keep, subagent depth and concurrency, and the plan window share.',
@@ -779,7 +780,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-plan-guard',
     label: 'Plan guard',
-    path: [PROJ, 'Settings', 'Limits', 'Advanced', 'Plan guard'],
+    path: [...PRJ_SETTINGS, 'Spending limits', 'Advanced', 'Plan guard'],
     kind: 'section',
     scope: 'project',
     summary: 'Automatic, on or off: move new deep-tier reports to the everyday tier when a subscription plan window is nearly used up.',
@@ -790,10 +791,10 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'project-settings-maintenance',
     label: 'Maintenance',
-    path: [PROJ, 'Settings', 'Maintenance'],
+    path: [...PRJ_SETTINGS, 'Maintenance'],
     kind: 'pane',
     scope: 'project',
-    summary: 'Refresh the architecture document, remove OrgAI files from the folder, forget an engagement, clear recorded knowledge or delete the project.',
+    summary: 'Branches for code projects, Maintenance for engagements: refresh the architecture document, remove OrgAI files from the folder, forget an engagement, clear recorded knowledge or delete the project.',
     reach: [{ via: 'deepLink', target: PROJECT_SETTINGS_PANES.maintenance }],
     testIds: ['knowledge-clear', 'forget-confirm', 'maintenance-notice']
   },
@@ -802,10 +803,10 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general',
     label: 'General',
-    path: [APP, 'General'],
+    path: [...APP, 'General'],
     kind: 'pane',
     scope: 'app',
-    summary: 'Appearance, notifications, canvas style and the starting values for new projects; Advanced holds motion, assistant models and the orgai command.',
+    summary: 'Notifications and the starting values for new projects; On this computer holds the orgai command; Advanced holds the helper models.',
     reach: [
       { via: 'sidebar', label: 'App settings' },
       { via: 'menu', action: 'open-app-settings' },
@@ -816,7 +817,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general-appearance',
     label: 'Appearance',
-    path: [APP, 'General', 'Appearance'],
+    path: [...APP, 'Appearance'],
     kind: 'section',
     scope: 'app',
     summary: 'Choose the theme (Dark, Light or System) and the accent colour.',
@@ -827,7 +828,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general-notifications',
     label: 'Notifications',
-    path: [APP, 'General', 'Notifications'],
+    path: [...APP, 'General', 'Notifications'],
     kind: 'section',
     scope: 'app',
     summary: 'Turn desktop notifications on or off for runs that need attention or finish.',
@@ -838,7 +839,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general-canvas',
     label: 'Canvas',
-    path: [APP, 'General', 'Canvas'],
+    path: [...APP, 'Appearance', 'Canvas'],
     kind: 'section',
     scope: 'app',
     summary: 'Pick how the org chart and live canvases look: background, layout, lines, how agents are drawn, accent tint and minimap, with a live sample.',
@@ -856,7 +857,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general-new-projects',
     label: 'New projects',
-    path: [APP, 'General', 'New projects'],
+    path: [...APP, 'General', 'New projects'],
     kind: 'section',
     scope: 'app',
     summary: 'The permission mode new projects start with. Existing projects keep their own.',
@@ -867,7 +868,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general-motion',
     label: 'Motion',
-    path: [APP, 'General', 'Advanced', 'Motion'],
+    path: [...APP, 'Appearance', 'Motion'],
     kind: 'section',
     scope: 'app',
     summary: 'Follow the system setting or always reduce motion.',
@@ -876,11 +877,11 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-general-assistant-models',
-    label: 'Assistant models',
-    path: [APP, 'General', 'Advanced', 'Assistant models'],
+    label: 'Helper models',
+    path: [...APP, 'General', 'Advanced', 'Helper models'],
     kind: 'section',
     scope: 'app',
-    summary: 'Choose the model tier for the setup interview, the MCP assistant, the Skill assistant and Chat.',
+    summary: 'Choose the model tier for the setup interview, the Tools helper model (MCP assistant), the Skills helper model (Skill assistant) and Chat.',
     reach: [{ via: 'deepLink', target: APP_SETTINGS_SECTIONS.assistantModels }],
     settings: ['setupModel', 'mcpAssistModel', 'skillAssistModel', 'quickRunModel'],
     testIds: ['assistant-models-note', 'skill-assist-model-row', 'quick-run-model-row']
@@ -888,7 +889,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-general-new-projects-advanced',
     label: 'New projects (advanced)',
-    path: [APP, 'General', 'Advanced', 'New projects (advanced)'],
+    path: [...APP, 'General', 'Advanced', 'New projects (advanced)'],
     kind: 'section',
     scope: 'app',
     summary: 'The starting model tier for a new project\'s orchestrator and for its reports.',
@@ -898,8 +899,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-general-terminal',
-    label: 'Terminal',
-    path: [APP, 'General', 'Advanced', 'Terminal'],
+    label: 'On this computer',
+    path: [...APP, 'General', 'On this computer'],
     kind: 'section',
     scope: 'app',
     summary: 'Install or update the orgai command with npm (orgai-cli, tag latest or next to match this app), copy the install command, cancel a running install, or remove the old command an older OrgAI app put on your PATH. The orgai command is a separate app with its own projects and settings.',
@@ -909,8 +910,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-connections',
-    label: 'Connections',
-    path: [APP, 'Connections'],
+    label: 'AI providers',
+    path: [...APP, 'AI providers'],
     kind: 'pane',
     scope: 'app',
     summary: 'Connect, test and disconnect providers, choose the one new projects use, and manage proxy connections. Advanced holds cost sources and model prices.',
@@ -924,7 +925,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-connections-proxies',
     label: 'Proxies',
-    path: [APP, 'Connections', 'Proxies'],
+    path: [...APP, 'AI providers', 'Proxies'],
     kind: 'section',
     scope: 'app',
     summary: 'Add, test, edit and remove proxy connections that serve models over your own gateway.',
@@ -934,7 +935,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-connections-costs',
     label: 'Costs',
-    path: [APP, 'Connections', 'Advanced', 'Costs'],
+    path: [...APP, 'AI providers', 'Advanced', 'Costs'],
     kind: 'section',
     scope: 'app',
     summary: 'Choose whether a community price list fills in prices for models with no built-in price.',
@@ -945,7 +946,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-connections-model-prices',
     label: 'Model prices',
-    path: [APP, 'Connections', 'Advanced', 'Model prices'],
+    path: [...APP, 'AI providers', 'Advanced', 'Model prices'],
     kind: 'section',
     scope: 'app',
     summary: 'Set your own per-model prices, which win over every other source.',
@@ -955,8 +956,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-connectors',
-    label: 'Connectors',
-    path: [APP, 'Connectors'],
+    label: 'Tools and services',
+    path: [...APP, 'Tools and services'],
     kind: 'pane',
     scope: 'app',
     summary: 'A gallery of services to sign in to or add, with search and filters, then your presets and custom servers.',
@@ -969,7 +970,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-connectors-custom',
     label: 'Custom servers',
-    path: [APP, 'Connectors', 'Custom servers'],
+    path: [...APP, 'Tools and services', 'Custom servers'],
     kind: 'section',
     scope: 'app',
     summary: 'Add, edit, test and remove your own MCP servers, or ask the MCP assistant to configure one.',
@@ -978,8 +979,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-skill-library',
-    label: 'Skill library',
-    path: [APP, 'Skill library'],
+    label: 'Skills',
+    path: [...APP, 'Skills'],
     kind: 'pane',
     scope: 'app',
     summary: 'The app-wide skills you can link into projects, with the projects and roles that use each.',
@@ -991,8 +992,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-kit',
-    label: 'Templates and kit',
-    path: [APP, 'Templates and kit'],
+    label: 'Templates',
+    path: [...APP, 'Templates'],
     kind: 'pane',
     scope: 'app',
     summary: 'Manage team templates and export or import a practice kit of skills, servers, presets and templates in one file.',
@@ -1002,7 +1003,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'app-settings-kit-templates',
     label: 'Team templates',
-    path: [APP, 'Templates and kit', 'Team templates'],
+    path: [...APP, 'Templates', 'Team templates'],
     kind: 'section',
     scope: 'app',
     summary: 'The saved team templates you can apply to a project or start a project from.',
@@ -1011,8 +1012,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'app-settings-about',
-    label: 'About',
-    path: [APP, 'About'],
+    label: 'About and updates',
+    path: [...APP, 'About and updates'],
     kind: 'pane',
     scope: 'app',
     summary: 'The version, data folder and links.',
@@ -1247,7 +1248,7 @@ export function atlasSurface(id: AtlasSurfaceId): AtlasSurface {
   return BY_ID.get(id) as AtlasSurface
 }
 
-/** "App settings › General › Appearance" (the path joined with ' › '); the id itself for an id with no surface. */
+/** "Settings › App › Appearance" (the path joined with ' › '); the id itself for an id with no surface. */
 export function atlasPath(id: AtlasSurfaceId): string {
   const s = BY_ID.get(id)
   return s ? s.path.join(' › ') : id
@@ -1592,11 +1593,11 @@ export const MENU_ACTION_DOCS: Readonly<Record<MenuAction, string>> = {
   'show-history': 'View > History: shows the project\'s History tab.',
   'show-team': 'View > Team: shows the project\'s Team tab.',
   'show-project-settings': 'View > Project settings: shows the project\'s Settings tab.',
-  'open-app-settings': 'File > App settings: opens App settings on General.',
-  'open-connections': 'File > Connections: opens App settings on Connections.',
-  'open-connectors': 'File > Connectors: opens App settings on Connectors.',
-  'open-skill-library': 'File > Skill library: opens App settings on the Skill library.',
-  'open-about': 'Help > About OrgAI: opens App settings on About.',
+  'open-app-settings': 'File > App settings: opens Settings on General.',
+  'open-connections': 'File > Connections: opens Settings on AI providers.',
+  'open-connectors': 'File > Connectors: opens Settings on Tools and services.',
+  'open-skill-library': 'File > Skill library: opens Settings on Skills.',
+  'open-about': 'Help > About OrgAI: opens Settings on About and updates.',
   'toggle-sidebar': 'View > Toggle sidebar: collapses or expands the sidebar.',
   'toggle-hide-finished': 'View > Canvas > Hide finished agents: folds finished agents on the live canvas.',
   'canvas-fit': 'View > Canvas > Fit canvas: fits the canvas to the window.',
@@ -1612,5 +1613,5 @@ export const MENU_ACTION_DOCS: Readonly<Record<MenuAction, string>> = {
   'ask-about-orgai': 'Help > Ask OrgAI about itself…: opens Chat ready for a question about the app.',
   'show-usage': 'View > Usage: opens the app-wide Usage page (every project and the assistants).',
   'show-schedules': 'View > Schedules: opens the Schedules page (recurring team and Chat runs).',
-  'check-for-updates': 'Help > Check for Updates… (the OrgAI menu on macOS): checks GitHub for a newer release and shows the result in App settings > About.'
+  'check-for-updates': 'Help > Check for Updates… (the OrgAI menu on macOS): checks GitHub for a newer release and shows the result in Settings > App > About and updates.'
 }

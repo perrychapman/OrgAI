@@ -103,9 +103,9 @@ async function pushedNavigation(tag, project) {
   await pushNavigate({ surfaceId: 'app-settings-general-appearance', runId, agentLabel: 'Assistant' })
   await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 10_000 }).catch(() => {})
   check(await visible('[data-testid=appearance-section]'), `a pushed navigation opens App settings > General > Appearance ${tag}`)
-  check((await text('[data-testid=app-navigate-text]')) === 'Assistant opened App settings › General › Appearance for you.', `the banner names the path ${tag}`, await text('[data-testid=app-navigate-text]'))
+  check((await text('[data-testid=app-navigate-text]')) === 'Assistant opened Settings › App › Appearance for you.', `the banner names the path ${tag}`, await text('[data-testid=app-navigate-text]'))
   const announced = await page
-    .waitForFunction(() => /App settings › General › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 })
+    .waitForFunction(() => /Settings › App › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 })
     .then(
       () => true,
       () => false
@@ -197,9 +197,9 @@ try {
     }
     check(await visible('[data-testid=appearance-section]'), `the app opened App settings > General > Appearance ${tag}`)
     const bannerText = await text('[data-testid=app-navigate-text]')
-    check(/opened App settings › General › Appearance for you\./.test(bannerText), `the banner names the path ${tag}`, bannerText)
+    check(/opened Settings › App › Appearance for you\./.test(bannerText), `the banner names the path ${tag}`, bannerText)
     check(await visible('[data-testid=app-navigate-back]'), `the banner offers Back to chat ${tag}`)
-    const announced = await page.waitForFunction(() => /App settings › General › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 }).then(
+    const announced = await page.waitForFunction(() => /Settings › App › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 }).then(
       () => true,
       () => false
     )
