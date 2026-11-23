@@ -13,23 +13,28 @@ import { LimitsSection } from '../components/settings/LimitsSection'
 import { MaintenanceSection } from '../components/settings/MaintenanceSection'
 import { PermissionsSection } from '../components/settings/PermissionsSection'
 import { SettingsPage } from '../components/settings/SettingsPage'
-import type { SettingsNavItem } from '../components/settings/SettingsNav'
+import type { SettingsNavLink } from '../components/settings/SettingsNav'
+import { APP_MENU_PANES, projectMenuPanes } from '../lib/settingsMenu'
 import {
   PROJECT_SECTION_EVENT,
-  PROJECT_SETTINGS_PANES,
   PROJECT_SETTINGS_SECTIONS,
   normalizeProjectPane,
+  requestAppSettingsSection,
   takeProjectSettingsSection,
   type ProjectSettingsPane
 } from '../lib/settingsTarget'
 
-/** Panes in nav order. Each pane holds the sections whose ids are listed in lib/settingsTarget. */
-const PANES: SettingsNavItem[] = [
-  { id: PROJECT_SETTINGS_PANES.general, label: 'General' },
-  { id: PROJECT_SETTINGS_PANES.permissions, label: 'Permissions' },
-  { id: PROJECT_SETTINGS_PANES.limits, label: 'Limits' },
-  { id: PROJECT_SETTINGS_PANES.maintenance, label: 'Maintenance' }
-]
+/** The App group of the shared settings menu: each entry opens App settings on that pane. */
+function appMenuLinks(): SettingsNavLink[] {
+  return APP_MENU_PANES.map((p) => ({
+    id: `app-${p.id}`,
+    label: p.label,
+    onOpen: () => {
+      requestAppSettingsSection(p.id)
+      useAppStore.getState().setView('appSettings')
+    }
+  }))
+}
 
 /**
  * Deep links to the engagement plan and context notes: scroll inside the settings scroller only, then focus the
@@ -70,10 +75,20 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
   const pane: ProjectSettingsPane = normalizeProjectPane(stored)
   const engagement = projectKindOf(project) === 'engagement'
   useEngagementSectionTarget(pane === 'general' && engagement)
+  const panes = projectMenuPanes(engagement)
 
   return (
     <div className="editor single">
-      <SettingsPage title="Project settings" idBase="project-settings" label="Project settings sections" panes={PANES} active={pane} onSelect={(id) => setPane(project.id, id)}>
+      <SettingsPage
+        idBase="project-settings"
+        label={`Project settings sections, ${project.name}`}
+        panes={panes}
+        active={pane}
+        onSelect={(id) => setPane(project.id, id)}
+        scope={`${engagement ? 'Engagement' : 'Project'}: ${project.name}`}
+        navHeading={`${engagement ? 'Engagement' : 'Project'}: ${project.name}`}
+        other={{ heading: 'App', label: 'App settings', links: appMenuLinks(), position: 'before' }}
+      >
         {pane === 'general' && (
           <>
             <GeneralSection project={project} patch={patch} />

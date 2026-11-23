@@ -258,7 +258,7 @@ try {
   )
 
   // ======== 4. Settings > General (section 9) ========
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   const summary = page.locator('[data-testid=knowledge-summary]')
   await summary.waitFor({ state: 'visible' })
   const wantSummary = summaryLine(graph, notes)
@@ -337,7 +337,7 @@ try {
   check(await until(async () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'maintenance-notice')), 'focus moves to the "Cleared everything" notice (the button is disabled once the graph is empty)')
   await shot('cleared-1600-dark')
   // The summary line follows the clear.
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   check(await until(async () => clean(await summary.innerText()) === summaryLine(after, notesAfter)), 'the summary line refetches after the clear', clean(await summary.innerText()))
   // The RunMeta count still counts what the run did, not what is left.
   await projectTab(page, 'Live').click()
@@ -362,7 +362,7 @@ try {
     check(geo.every((g) => g.h <= g.headH + 40), `${tag}: write rows are as tall as their text, not the list row height`, JSON.stringify(geo.map((g) => [Math.round(g.h), Math.round(g.headH)])))
     await fitsWindow(`${tag} Live`)
     await shot(`transcript-${w}-${theme}`)
-    await openSettingsPane('General')
+    await openSettingsPane('Basics')
     await summary.waitFor({ state: 'visible' })
     check(/Open Knowledge/.test(clean(await page.locator('[data-testid=context-notes-section]').innerText())), `${tag}: Context notes shows "Open Knowledge"`)
     const shiftG = await windowShift(page)
@@ -594,7 +594,7 @@ try {
 
   // Settings (3.6): the switch round-trips through projects:save.
   const savedField = () => page.evaluate(async (id) => { const p = (await window.orgai.projects.list()).find((x) => x.id === id); return p && 'knowledgeAutoContext' in p ? p.knowledgeAutoContext : 'absent' }, c.id)
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   const sw = page.locator('[data-testid=knowledge-auto-context]')
   await sw.waitFor({ state: 'visible' })
   check((await sw.getAttribute('aria-checked')) === 'true' && (await savedField()) === 'absent', 'auto context is on by default and stores nothing')
@@ -692,7 +692,7 @@ try {
   await page.reload()
   await page.waitForSelector('.sidebar')
   await openProject(page, C)
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   check((await page.locator('[data-testid=knowledge-auto-context]').getAttribute('aria-checked')) === 'false', 'off survives a reload')
   await page.locator('[data-testid=knowledge-auto-context]').focus()
   await page.keyboard.press('Space')

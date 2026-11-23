@@ -13,6 +13,17 @@
   flex-direction: column;
   gap: var(--space-1);
 }
+/* A newer version is waiting (About board hero): accent border and a soft accent glow, no motion. */
+.updates-card.is-ready {
+  border-color: var(--accent);
+  box-shadow: var(--elev-2);
+}
+.updates-card.is-ready .updates-line {
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
 .updates-line {
   color: var(--text-primary);
   font-size: var(--text-title-sm);

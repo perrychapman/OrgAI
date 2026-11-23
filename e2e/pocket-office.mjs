@@ -138,6 +138,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   const graph = { pattern: 'blueprint', layout: 'left-right', nodeStyle: 'compact', edges: 'orthogonal', minimap: true, tint: false }
   await setCanvas({ ...graph, presentation: 'graph', scenePalette: 'color' })
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const section = page.locator('[data-testid=canvas-section]')
   const office = section.locator('[data-testid=canvas-presentation] input[value="pocket-office"]')
   await office.check()

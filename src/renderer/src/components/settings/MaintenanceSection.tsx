@@ -193,7 +193,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
   }
 
   return (
-    <SettingsSection id="settings-section-maintenance" title="Maintenance">
+    <SettingsSection id="settings-section-maintenance" title={engagement ? 'Maintenance' : 'Branches'}>
       {engagement && (
         <p className="settings-card-note" data-testid="maintenance-engagement-line">
           {isolating
