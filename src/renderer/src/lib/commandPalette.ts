@@ -238,6 +238,15 @@ export function stepIndex(current: number, delta: 1 | -1, length: number): numbe
   return (current + delta + length) % length
 }
 
+/**
+ * What Enter does in the palette's field: 'choose' for a fresh press, 'swallow' for a key repeat (a held Enter must not
+ * open the page and then act on whatever the palette's close leaves under focus), null while an IME composes.
+ */
+export function enterAction(e: { repeat: boolean; isComposing: boolean }): 'choose' | 'swallow' | null {
+  if (e.isComposing) return null
+  return e.repeat ? 'swallow' : 'choose'
+}
+
 /** "3 results" / "1 result" / "No results", for the polite status line. */
 export function resultsPhrase(n: number): string {
   return n === 0 ? 'No results' : n === 1 ? '1 result' : `${n} results`

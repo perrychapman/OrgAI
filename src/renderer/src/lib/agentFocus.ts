@@ -167,3 +167,13 @@ export function parseUnifiedDiff(patch: string): DiffFile[] {
   }
   return files
 }
+
+/**
+ * What a key press in the agent message box does. Ctrl+Enter (Cmd+Enter) sends once; its key repeats are swallowed (they
+ * must not insert a newline either) and never send: after a failed send the text is kept, so a held chord would
+ * otherwise send it again on every repeat.
+ */
+export function messageKeyAction(e: { key: string; ctrlKey: boolean; metaKey: boolean; repeat: boolean }): 'send' | 'swallow' | null {
+  if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return null
+  return e.repeat ? 'swallow' : 'send'
+}

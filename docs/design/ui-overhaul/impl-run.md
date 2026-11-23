@@ -95,6 +95,28 @@ Screenshots of the hold card and the one-agent view were looked at in dark and l
   nowhere. The tray's announcement still says a decision is waiting; Tab, a click or the Needs-you jump reach it.
   `e2e/runs.mjs` ends with the check (type, Enter, `[mock:fatigue]` card: focus stays in the composer, nothing answered,
   Shift+Tab reaches the card; it fails on the old rule). The rule lives in `DecisionCard.tsx` (`typingElsewhere`).
+- **The rule: no decision is ever answered by a key press that began before the card's action had focus.** Enter clicks a
+  button on keydown and again on every key repeat, so any path that moves focus onto an answering button while a key is
+  still down lets that key answer. Two paths exist and both go through one helper, `whenKeysReleased` (exported from
+  `DecisionCard.tsx`, built on the key tracker in `lib/keysHeld.ts`): a card mounting (its own mount focus) and the
+  Needs-you jump (`focusDecision` in `LiveRunView.tsx`: the sidebar and top bar buttons, Home's Waiting on you row, the
+  engagement pill, the Inbox, Ctrl+. and Alt+D, the application menu). Under a held key focus rests on the tray region
+  (named "Decisions", not a button, so the user sees where they landed); after the last key-up the primary button takes
+  focus only if focus is nowhere or still on the opener or the tray (`focusIsFree`) and the user is not typing in a field
+  outside the card (`typingElsewhere`). The Inbox `KeyGuard` covers keys inside the Inbox and is unchanged. Checks:
+  `lib/keysHeld.test.ts`; `e2e/runs.mjs` (held Enter on the top bar's Needs you button: nothing answered, focus on the
+  tray, the primary has focus only after key-up, a fresh Enter answers exactly that decision) and `e2e/dashboard.mjs` A12
+  (the same from Home's Waiting on you row).
+- **Review fixes (run view).** The header fold (`useMetaFold`) now settles once when its change guard trips, and the "more"
+  menu lists the chips that are hidden by reading the line when it opens (`lib/runMetaFold.ts`), so a hidden chip is never
+  missing from it; a compact permission chip (icon only) keeps the "more" button and the menu's first row says the mode in
+  words. The agent message box sends Ctrl+Enter once (key repeats are swallowed, one send in flight). The command palette
+  ignores Enter key repeats. "Resume now" asks first like "Try again" (focus on Cancel; `holdActionAsks` lists the actions
+  that ask) and the hold card's buttons stay enabled while an action runs (`aria-disabled` and the in-flight ref, `aria-busy`
+  on the row). The note under the header announces every kind once through the frame announcer (RunMeta), and Dismiss moves
+  focus to the composer when it shows, else the stage. Retry agent (`runActions.retryAgent`) is not offered anywhere in the
+  renderer: only the IPC channel, the preload and main exist, so it has no button to guard. `run-hold.css` and `run-header.css`
+  keep a solid mark for the state dots in forced colours.
 - **More checks.** `e2e/run-start.mjs` section 11 (fresh profile at 1024x640 shows the composer and settings row, the rail
   layout under 900 px, explicit Hide, the Conversation button, survival of a reload); `e2e/run-hold.mjs` (narrow fallback
   geometry, keyboard show from the rail, fold on resize, unfold when the sidebar collapses).

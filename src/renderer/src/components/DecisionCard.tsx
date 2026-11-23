@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { initials } from '../lib/layout'
+import { focusIsFree, keys } from '../lib/keysHeld'
 import { resolveRunRole } from '../lib/runRoster'
 import { useFrameCompact } from './layout/CanvasFrame'
 import { selectedProject, useAppStore } from '../store/useAppStore'
@@ -146,25 +147,20 @@ function useOverflows(ref: { current: HTMLElement | null }, active: boolean): bo
 /** Set by the tray stepper just before it swaps cards: the next card mount keeps focus where it is. */
 export const decisionFocus = { suppress: false }
 
-/** Keys held down right now (by code). A card that took focus under a held Enter would be answered by its key repeat. */
-const keysHeld = new Set<string>()
-const onRelease = new Set<() => void>()
-if (typeof window !== 'undefined') {
-  window.addEventListener('keydown', (e) => keysHeld.add(e.code), true)
-  window.addEventListener(
-    'keyup',
-    (e) => {
-      keysHeld.delete(e.code)
-      if (keysHeld.size === 0) for (const fn of [...onRelease]) fn()
-    },
-    true
-  )
-  window.addEventListener('blur', () => keysHeld.clear())
-}
+/**
+ * THE RULE: no decision is ever answered by a key press that began before the card's action had focus. A card that took
+ * focus under a held Enter would be answered by its key repeat. Every path that moves focus onto an answering button (this
+ * card mounting, the Needs-you jump in LiveRunView, the go-to-decision menu action) goes through `whenKeysReleased`: while
+ * a key is down focus rests on something that is not a button, and the button takes it after the last key-up, only if
+ * focus is still free (`focusIsFree`) and the user is not typing elsewhere (`typingElsewhere`).
+ */
+export const keysAreHeld = (): boolean => keys.held()
+export const whenKeysReleased = (fn: () => void): (() => void) => keys.whenReleased(fn)
+export { focusIsFree }
 
 const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
 /** True when focus is in something the user types in (input, textarea, contenteditable: the composer included) outside the card. */
-function typingElsewhere(card: HTMLElement | null): boolean {
+export function typingElsewhere(card: HTMLElement | null): boolean {
   const el = document.activeElement
   if (!(el instanceof HTMLElement) || card?.contains(el)) return false
   if (el instanceof HTMLTextAreaElement) return true
@@ -222,21 +218,15 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
         card.querySelector<HTMLElement>('.decision-footer button:not([disabled])')
       target?.focus()
     }
-    if (keysHeld.size === 0) {
+    if (!keysAreHeld()) {
       take()
       return
     }
     // A key is still down (an Enter that answered the card before this one): its repeat must not land on this card's
     // default button. Focus follows once every key is up, and only if the user has not gone anywhere else meanwhile.
-    const later = (): void => {
-      onRelease.delete(later)
-      const now = document.activeElement
-      if (card.isConnected && (!now || now === document.body) && !typingElsewhere(card)) take()
-    }
-    onRelease.add(later)
-    return () => {
-      onRelease.delete(later)
-    }
+    return whenKeysReleased(() => {
+      if (card.isConnected && focusIsFree(document.activeElement, document.body) && !typingElsewhere(card)) take()
+    })
     // Mount only: later renders (a body change) must not pull focus back.
   }, [noAutoFocus, focusDetails])
   return (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPaletteItems, clampActive, fieldsOnToggle, flatten, PER_GROUP_IDLE, rankItems, resultsPhrase, scoreItem, sectionsFor, stepIndex, wordScore, type PaletteInput } from './commandPalette'
+import { buildPaletteItems, clampActive, enterAction, fieldsOnToggle, flatten, PER_GROUP_IDLE, rankItems, resultsPhrase, scoreItem, sectionsFor, stepIndex, wordScore, type PaletteInput } from './commandPalette'
 
 const input = (over: Partial<PaletteInput> = {}): PaletteInput => ({
   projects: [
@@ -149,5 +149,11 @@ describe('stepIndex and resultsPhrase', () => {
     expect(resultsPhrase(0)).toBe('No results')
     expect(resultsPhrase(1)).toBe('1 result')
     expect(resultsPhrase(5)).toBe('5 results')
+  })
+  it('Enter chooses once: a key repeat is swallowed, composition is left alone', () => {
+    expect(enterAction({ repeat: false, isComposing: false })).toBe('choose')
+    expect(enterAction({ repeat: true, isComposing: false })).toBe('swallow')
+    expect(enterAction({ repeat: false, isComposing: true })).toBeNull()
+    expect(enterAction({ repeat: true, isComposing: true })).toBeNull()
   })
 })

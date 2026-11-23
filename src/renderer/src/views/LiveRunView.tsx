@@ -51,6 +51,7 @@ import { Bell, CircleCheck, CircleHelp, Maximize, MessageSquare, Network, Search
 import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
+import { focusIsFree, keysAreHeld, typingElsewhere, whenKeysReleased } from '../components/DecisionCard'
 import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
 import { oneLine, permissionTitle, proposalKindLabel } from '../lib/decisionTitle'
 import { projectKindOf } from '@shared/defaults'
@@ -885,19 +886,41 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }, [cardsKey, fitView])
 
   // Focus the first decision button (the primary one when there is one); the tray itself is the fallback (tabIndex -1).
+  // The jump is usually started with Enter (sidebar Needs you, Home, Inbox) or a shortcut, so a key is often still down when
+  // it runs. The rule (DecisionCard.tsx): no decision is ever answered by a key press that began before the card's action
+  // had focus. While a key is down focus rests on the tray region (not a button, named, so the user sees where they
+  // landed); the target button takes focus after the last key-up, only when focus is still on the opener or the tray.
+  const cancelLateFocus = useRef<(() => void) | null>(null)
+  useEffect(() => () => cancelLateFocus.current?.(), [])
   const focusDecision = useCallback((): void => {
     const region = bodyRef.current?.querySelector<HTMLElement>('.frame-tray')
     if (!region) return
-    // A folded proposal in a compact frame lands on Details: the user must see what Approve covers first.
-    const details = region.querySelector<HTMLElement>('.decision-card[data-focus-details="true"] .decision-details')
-    const foldedDetails = details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true' ? details : null
-    const target =
-      foldedDetails ??
-      region.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
-      region.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ??
-      region
-    target.focus()
-    target.scrollIntoView?.({ block: 'nearest' })
+    cancelLateFocus.current?.()
+    cancelLateFocus.current = null
+    const take = (): void => {
+      // A folded proposal in a compact frame lands on Details: the user must see what Approve covers first.
+      const details = region.querySelector<HTMLElement>('.decision-card[data-focus-details="true"] .decision-details')
+      const foldedDetails = details && details.offsetParent !== null && details.getAttribute('aria-expanded') !== 'true' ? details : null
+      const target =
+        foldedDetails ??
+        region.querySelector<HTMLElement>('.decision-footer .btn.primary:not([disabled])') ??
+        region.querySelector<HTMLElement>('button:not([disabled]), textarea, input, select') ??
+        region
+      target.focus()
+      target.scrollIntoView?.({ block: 'nearest' })
+    }
+    if (!keysAreHeld()) {
+      take()
+      return
+    }
+    const opener = document.activeElement
+    region.focus({ preventScroll: true })
+    region.scrollIntoView?.({ block: 'nearest' })
+    cancelLateFocus.current = whenKeysReleased(() => {
+      cancelLateFocus.current = null
+      if (!region.isConnected || typingElsewhere(region) || !focusIsFree(document.activeElement, document.body, [opener, region])) return
+      take()
+    })
   }, [])
 
   // A jump from the sidebar's "Needs you" list asks the first decision of this run to take focus.

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { RunHold } from '@shared/types'
-import { holdOf } from './runHold'
+import { holdActionAsks, holdOf } from './runHold'
+
+describe('hold actions that ask first', () => {
+  it('every action that can spend or skip a gate asks, including Resume now', () => {
+    for (const a of ['resume', 'addBudget', 'retry', 'skipReview'] as const) expect(holdActionAsks(a)).toBe(true)
+    expect(holdActionAsks('switchModel')).toBe(false)
+    expect(holdActionAsks('end')).toBe(false)
+  })
+})
 
 const base = { status: 'running' as const }
 const mk = (h: Partial<RunHold> & Pick<RunHold, 'kind'>): RunHold => ({ since: 1_000_000, reason: 'Because.', actions: [], ...h })

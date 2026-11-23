@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, TranscriptEntry } from '@shared/types'
-import { agentInitials, agentSiblings, entriesOfAgent, extractBrief, focusState, parseUnifiedDiff, positionLabel, whereItSits } from './agentFocus'
+import { agentInitials, agentSiblings, entriesOfAgent, extractBrief, focusState, messageKeyAction, parseUnifiedDiff, positionLabel, whereItSits } from './agentFocus'
+
+describe('message box key chord', () => {
+  const key = { key: 'Enter', ctrlKey: true, metaKey: false, repeat: false }
+  it('sends on the first press only; repeats are swallowed, never sent', () => {
+    expect(messageKeyAction(key)).toBe('send')
+    expect(messageKeyAction({ ...key, ctrlKey: false, metaKey: true })).toBe('send')
+    expect(messageKeyAction({ ...key, repeat: true })).toBe('swallow')
+  })
+  it('leaves a plain Enter and other chords to the text box', () => {
+    expect(messageKeyAction({ ...key, ctrlKey: false })).toBeNull()
+    expect(messageKeyAction({ ...key, key: 'a' })).toBeNull()
+  })
+})
 
 const mk = (id: string, parentId: string | null, over: Partial<AgentInstance> = {}): AgentInstance =>
   ({ id, roleId: null, roleSlug: id, name: id, parentId, spawnToolUseId: null, state: 'idle', activity: '', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1, ...over }) as AgentInstance
