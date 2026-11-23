@@ -1,0 +1,445 @@
+/* ---------- New run page (docs/design/ui-overhaul NewRun) and the assistants' start pages: glass cards, setting tiles ----------
+   The glass tokens (--glass, --glass-strong, --glass-line, --glass-blur) come from tokens.css; each use has a fallback
+   to the older surface tokens so the page reads the same before they land. */
+
+.nr-glass {
+  background: var(--glass, var(--surface-2));
+  border: 1px solid var(--glass-line, var(--border-default));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+}
+
+/* The wide page: a task column and, beside it, who will work on it. Narrow windows stack them. */
+.new-run-inner--wide {
+  width: min(100%, calc(var(--space-16) * 16));
+}
+.nr-cols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.nr-main {
+  flex: 999 1 calc(var(--space-16) * 7);
+  max-width: calc(var(--space-16) * 11);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.nr-heading {
+  margin: 0;
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-display);
+  line-height: var(--text-display-lh);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+.nr-lead {
+  margin: calc(var(--space-2) * -1) 0 0;
+  max-width: 62ch;
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  text-wrap: pretty;
+}
+
+/* The task card: the shared composer, as a strong glass card. */
+.new-run-inner .nr-main .composer {
+  background: var(--glass-strong, var(--surface-2));
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+}
+
+/* Settings: one glass tile each, in a grid that wraps. */
+.run-settings-row[data-surface='start'] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-16) * 3.25), 1fr));
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.nr-tile {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-0h);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--dur-base) var(--ease-out);
+}
+.nr-tile:hover,
+.nr-tile:focus-within {
+  border-color: var(--border-strong);
+}
+.nr-tile__label,
+.nr-tile__help {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.nr-tile__label {
+  color: var(--text-tertiary);
+}
+.nr-tile__help {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+/* The control fills the tile: no chip frame of its own, its label read by assistive tech but not shown twice. */
+.nr-tile > .run-setting {
+  width: 100%;
+  max-width: 100%;
+}
+.nr-tile > .run-setting > .popover-wrap {
+  width: 100%;
+}
+.nr-tile .run-chip {
+  width: 100%;
+  min-height: var(--control-sm);
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.nr-tile .run-chip:hover {
+  background: transparent;
+}
+.nr-tile .run-chip__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.nr-tile .run-chip__state {
+  margin-inline-start: auto;
+}
+.nr-tile .run-chip svg:last-child {
+  margin-inline-start: auto;
+}
+.nr-tile:has(.run-chip--warning) {
+  border-color: var(--warning-border);
+}
+.nr-tile:has(.run-chip--danger) {
+  border-color: var(--danger-border);
+}
+.nr-tile .run-chip--warning,
+.nr-tile .run-chip--danger {
+  border-color: transparent;
+  background: transparent;
+}
+.nr-tile .run-settings-note--warn {
+  flex-basis: auto;
+  order: 0;
+}
+
+/* Or pick up from. */
+.nr-pickup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.nr-pickup__title {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.nr-pickup__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.nr-pickup__row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-md);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-body);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+.nr-pickup__row:hover {
+  background: var(--glass, var(--surface-2));
+  border-color: var(--border-strong);
+}
+.nr-pickup__row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.nr-pickup__tag {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-body-lh);
+}
+.nr-pickup__text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nr-pickup__when {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+
+/* Who will work on it. */
+.nr-aside {
+  flex: 1 1 calc(var(--space-16) * 5);
+  max-width: calc(var(--space-16) * 6);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-xl);
+}
+.nr-aside__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.nr-aside__title {
+  margin: 0;
+  flex-grow: 1;
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.nr-aside__count {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.nr-aside__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.nr-who {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.nr-who__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong, var(--surface-2));
+  border: 1px solid var(--glass-line, var(--border-default));
+}
+.nr-who__row--group {
+  margin-inline-start: var(--space-4);
+}
+.nr-who__mark {
+  flex: none;
+  width: var(--space-6);
+  height: var(--space-6);
+  border-radius: var(--radius-md);
+  background: var(--role, var(--accent));
+  color: var(--text-on-accent);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  display: grid;
+  place-items: center;
+}
+.nr-who__mark--small {
+  width: var(--space-2);
+  height: var(--space-6);
+  border-radius: var(--radius-xs);
+}
+.nr-who__text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nr-who__name {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.nr-who__n {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+.nr-who__sub {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  overflow-wrap: anywhere;
+}
+.nr-who__tag {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.nr-estimate {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+.nr-estimate__cell {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--surface-3);
+}
+.nr-estimate dt {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.nr-estimate dd {
+  margin: 0;
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.nr-estimate[data-state='unknown'] dd {
+  color: var(--text-secondary);
+}
+
+/* A short window: tighter gaps so the start button stays in view. */
+@container newrun (max-height: 560px) {
+  .nr-main {
+    gap: var(--space-2);
+  }
+  .nr-heading {
+    font-size: var(--text-title-lg);
+    line-height: var(--text-title-lg-lh);
+  }
+  .nr-aside {
+    padding: var(--space-3);
+    gap: var(--space-2);
+  }
+  /* Assistants' start pages: the heading, lead, examples, options and message box still fit one short window. */
+  .new-run-inner.nr-single-col {
+    gap: var(--space-2);
+    margin-block: calc(var(--space-3) * -1);
+  }
+  .nr-single-col .nr-heading {
+    font-size: var(--text-title-lg);
+    line-height: var(--text-title-lg-lh);
+  }
+  .nr-single-col .assist-card {
+    padding: var(--space-2) var(--space-3);
+    gap: var(--space-2);
+  }
+  .nr-single-col .chat-options {
+    gap: var(--space-1h);
+  }
+  .nr-single-col .assist-example {
+    padding: var(--space-1) var(--space-2);
+    min-height: 0;
+  }
+  .nr-single-col .chat-example {
+    min-height: 0;
+  }
+}
+
+/* ---------- Assistants' start pages (Chat, Tools helper, Skills helper) ---------- */
+
+.new-run-inner.nr-single-col {
+  width: min(100%, calc(var(--space-16) * 11));
+}
+.assist-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.assist-start__intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.assist-start__intro .nr-lead {
+  margin: 0;
+}
+.assist-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-xl);
+  min-width: 0;
+}
+.assist-card--strong {
+  background: var(--glass-strong, var(--surface-2));
+}
+.assist-examples {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-16) * 3), 1fr));
+  gap: var(--space-2);
+}
+.assist-example {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: var(--glass, var(--surface-2));
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  text-align: start;
+  cursor: pointer;
+  transition: border-color var(--dur-base) var(--ease-out);
+}
+.assist-example:hover {
+  border-color: var(--border-strong);
+}
+.assist-example:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The entrance is a rise, and only for people who have not asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .nr-tile,
+  .nr-pickup__row,
+  .assist-example {
+    transition: none;
+  }
+}

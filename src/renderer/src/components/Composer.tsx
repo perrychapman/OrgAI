@@ -153,7 +153,6 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
           onRemove={(i) => setDraft(draftKey, { text, images: images.filter((_, j) => j !== i) })}
         />
         <div className="composer-row">
-          <IconButton icon={Paperclip} label="Attach images" size="sm" onClick={() => fileRef.current?.click()} />
           <input
             ref={fileRef}
             type="file"
@@ -193,14 +192,17 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             placeholder={fieldPlaceholder}
             rows={2}
           />
-          <span ref={sendRef}>
-            <Button variant={primaryVariant} disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
-              {primaryLabel}
-            </Button>
-            <span id={reasonId} className="sr-only">
-              {canSend ? '' : `Type a message to enable ${primaryLabel}`}
+          <div className="composer-actions">
+            <IconButton icon={Paperclip} label="Attach images" size="sm" onClick={() => fileRef.current?.click()} />
+            <span ref={sendRef}>
+              <Button variant={primaryVariant} disabled={!canSend} title={canSend ? undefined : `Type a message to enable ${primaryLabel}`} onClick={() => void submit()}>
+                {primaryLabel}
+              </Button>
+              <span id={reasonId} className="sr-only">
+                {canSend ? '' : `Type a message to enable ${primaryLabel}`}
+              </span>
             </span>
-          </span>
+          </div>
         </div>
       </div>
     </div>

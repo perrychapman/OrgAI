@@ -68,3 +68,83 @@
     transparent 1px 3px
   );
 }
+
+/* ---------- Live chart (UI overhaul): edges, folded groups, station and hex state colours, minimap ---------- */
+
+/* Live reporting lines: cyan, a dash that flows (React Flow's animated class; the inline role stroke gives way here).
+ * The board runs 700 ms per 12 px; the dash here is 10 px. Reduced motion and the run's Pause motion drop the animated
+ * class or the animation (flow.css, global.css): the line stays a dashed cyan end state. */
+.react-flow .react-flow__edge.animated .react-flow__edge-path,
+.react-flow .react-flow__edge.edge-live .react-flow__edge-path {
+  stroke: var(--working) !important;
+}
+.react-flow .react-flow__edge.animated .react-flow__edge-path {
+  animation-duration: 700ms;
+}
+/* Finished lines are neutral (LiveRunView adds the edge-done class). */
+.react-flow .react-flow__edge.edge-done .react-flow__edge-path {
+  stroke: var(--border-strong) !important;
+}
+
+/* A folded group: "N more finished", dashed, transparent, quiet. Keeps its button and label. */
+.react-flow .done-group {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-tertiary);
+  box-shadow: none;
+}
+.react-flow .done-group.earlier {
+  background: transparent;
+}
+.react-flow .done-group:hover,
+.react-flow .done-group.selected {
+  border-color: var(--accent);
+  color: var(--text-secondary);
+}
+.react-flow .done-group[data-style='card'].selected,
+.react-flow .done-group[data-style='compact'].selected {
+  border-style: solid;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft-border);
+}
+.react-flow .done-group[data-style='station'],
+.react-flow .done-group[data-style='hex'] {
+  border: none;
+  background: transparent;
+}
+
+/* Station and hex keep their geometry; their state colours follow the same scheme as the card. */
+.react-flow .agent-node[data-style='station'].state-thinking > .station,
+.react-flow .agent-node[data-style='station'].state-tool > .station,
+.react-flow .agent-node[data-style='station'].state-delegating > .station,
+.react-flow .agent-node[data-style='station'].state-starting > .station {
+  border-color: var(--working);
+}
+.react-flow .agent-node[data-style='station'].state-done > .station {
+  background: var(--success);
+  border-color: var(--success);
+}
+.react-flow .agent-node[data-style='hex'].state-thinking,
+.react-flow .agent-node[data-style='hex'].state-tool,
+.react-flow .agent-node[data-style='hex'].state-delegating,
+.react-flow .agent-node[data-style='hex'].state-starting {
+  --hex-edge: var(--working);
+}
+.react-flow .agent-node[data-style='hex'].state-waiting {
+  --hex-edge: var(--warning);
+}
+.react-flow .agent-node[data-style='hex'].state-error {
+  --hex-edge: var(--danger);
+}
+.react-flow .agent-node[data-style='hex'].state-done {
+  --hex-edge: var(--success);
+}
+
+/* Minimap: a small glass box. Node colours by state come from CanvasMinimap. */
+.react-flow .react-flow__minimap {
+  background: var(--glass, var(--canvas-minimap-bg));
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-1);
+  overflow: hidden;
+}

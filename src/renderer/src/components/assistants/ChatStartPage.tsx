@@ -13,11 +13,11 @@ import { ASK_ORGAI_SEED } from '../../lib/menuActions'
 import { linkedStart, useTodoDraftLinked } from '../../lib/todoStart'
 import TodoDraftNote from '../todos/TodoDraftNote'
 import { Button } from '../ui/Button'
-import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
 import { Switch } from '../ui/Switch'
 import { CHAT_ASKS_LINE, CHAT_CHANGES_SWITCH, chatChangesHint } from '../../lib/chatPermissions'
 import Composer from '../Composer'
+import '../../styles/new-run.css'
 
 const TEAMS: { value: QuickRunTeam; label: string }[] = [
   { value: 'single', label: 'One assistant' },
@@ -127,19 +127,22 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
 
   return (
     <div className="new-run" data-testid="assistant-start-quick">
-      <div className="new-run-inner">
-        <EmptyState title={copy.title} description={copy.description} />
-        <p className="muted chat-asks-line" data-testid="chat-asks-line">
-          {CHAT_ASKS_LINE}
-        </p>
+      <div className="new-run-inner nr-single-col motion-enter-lg">
+        <div className="assist-start__intro">
+          <h2 className="nr-heading">{copy.title}</h2>
+          <p className="nr-lead">{copy.description}</p>
+          <p className="nr-lead chat-asks-line" data-testid="chat-asks-line">
+            {CHAT_ASKS_LINE}
+          </p>
+        </div>
         <div className="chat-examples" data-testid="chat-examples">
           <p className="muted chat-examples-hint" id={examplesHint}>
             {CHAT_EXAMPLES_HINT}
           </p>
-          <ul className="chat-examples-list" aria-describedby={examplesHint}>
+          <ul className="assist-examples" aria-describedby={examplesHint}>
             {CHAT_EXAMPLES.map((ex) => (
               <li key={ex.id}>
-                <button type="button" className="chip chat-example" data-testid="chat-example" data-example={ex.id} onClick={() => fillInstruction(ex.text)}>
+                <button type="button" className="assist-example chat-example" data-testid="chat-example" data-example={ex.id} onClick={() => fillInstruction(ex.text)}>
                   {ex.text}
                 </button>
               </li>
@@ -147,7 +150,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
           </ul>
         </div>
 
-        <div className="chat-options">
+        <div className="chat-options assist-card nr-glass">
           <div className="chat-folder" data-testid="chat-folder">
             <label className="chat-folder-label" htmlFor={folderId}>
               Work in a folder

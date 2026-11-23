@@ -1,0 +1,203 @@
+/* The "what stopped the run" card (docs/design/ui-overhaul/project/RunHold.dc.html). Tokens only. Motion: the dot breathes (waiting)
+   or pulses (retrying) through .motion-breathe / .motion-pulse, which reduced motion and Pause motion already stop. */
+
+section.run-hold {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-2);
+  color: var(--text-primary);
+  font-size: var(--text-small);
+}
+
+.run-hold-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.run-hold-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-0h) var(--space-3);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-weight: 600;
+}
+.run-hold-pill[data-tone='retrying'] {
+  border-color: var(--working);
+  background: var(--working-soft);
+  color: var(--working-text);
+}
+.run-hold-pill[data-tone='failed'] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.run-hold-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.run-hold-safe {
+  color: var(--text-secondary);
+}
+
+.run-hold-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  font-weight: 600;
+  line-height: var(--text-title-lg-lh);
+  text-wrap: balance;
+}
+
+.run-hold-text {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  max-height: 9em;
+  overflow-y: auto;
+}
+
+.run-hold-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2);
+}
+.run-hold-fact {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.run-hold-fact dt {
+  color: var(--text-tertiary);
+}
+.run-hold-fact dd {
+  margin: var(--space-0h) 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.run-hold-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+.run-hold-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-2);
+  align-items: start;
+  padding: var(--space-3);
+  background: var(--glass);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+.run-hold-option[data-checked='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.run-hold-option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.run-hold-option input {
+  margin: var(--space-0h) 0 0;
+  accent-color: var(--accent);
+}
+.run-hold-option-label {
+  font-weight: 600;
+}
+.run-hold-option-detail {
+  grid-column: 2;
+  color: var(--text-secondary);
+}
+
+.run-hold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.run-hold-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.run-hold-field > label {
+  font-weight: 600;
+}
+.run-hold-amount {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: fit-content;
+}
+.run-hold-amount input,
+.run-hold-note {
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-0);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font: inherit;
+}
+.run-hold-amount input {
+  width: 8ch;
+}
+.run-hold-note {
+  width: 100%;
+}
+.run-hold-amount input:focus-visible,
+.run-hold-note:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.run-hold-amount input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+.run-hold-help {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.run-hold-help[data-invalid='true'] {
+  color: var(--danger-text);
+}
+
+.run-hold-error {
+  margin: 0;
+  color: var(--danger-text);
+}
+
+.run-hold-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.run-hold-actions > :last-child:not(:only-child) {
+  margin-inline-start: auto;
+}

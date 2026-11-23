@@ -1,5 +1,5 @@
 /**
- * The run detail tabs (Transcript or Conversation, Plan, Usage, Outputs, Knowledge, Logs): which ones a run gets and
+ * The run detail tabs (Transcript or Conversation, Agents, Plan, Usage, Files (the Outputs tab), Knowledge, Logs): which ones a run gets and
  * which one shows. Pure: no store, no IPC. One rule for both places the tabs appear: the run side panel
  * (TranscriptPanel, only while the stage is the org chart) and the tab strip above the conversation (RunStageTabs, the
  * conversation layout of every run kind).
@@ -13,6 +13,8 @@ export interface RunTabFlags {
   plan: boolean
   outputs: boolean
   knowledge: boolean
+  /** The flat agent list; absent = false. */
+  agents?: boolean
 }
 
 /**
@@ -51,7 +53,12 @@ export function replyArrived(prev: ReplyMark, next: ReplyMark): boolean {
   return next.replies > prev.replies || (next.idle && !prev.idle)
 }
 
-/** Outputs: work runs of stored projects, never setup runs, quick runs or the assistants. */
+/** Agents: a team work run (not single-agent) once it has more than one agent, so the flat list is worth a tab. */
+export function showsAgentsTab(summary: Pick<RunSummary, 'kind' | 'quick' | 'team'> | undefined, agentCount: number): boolean {
+  return !!summary && summary.kind === 'work' && summary.team !== 'single' && summary.quick?.team !== 'single' && agentCount > 1
+}
+
+/** Outputs (the "Files" tab): work runs of stored projects, never setup runs, quick runs or the assistants. */
 export function showsOutputsTab(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'> | undefined): boolean {
   return !!summary && summary.kind === 'work' && !summary.quick && !isVirtualProjectId(summary.projectId)
 }
@@ -61,9 +68,9 @@ export function showsKnowledgeTab(summary: Pick<RunSummary, 'kind' | 'quick' | '
   return showsOutputsTab(summary) && projectKind === 'engagement'
 }
 
-/** The tabs in their fixed order; 'transcript' is always first (the side panel's Transcript, the stage's Conversation). */
+/** The tabs in their fixed order; 'transcript' is always first (the side panel's Transcript, the stage's Conversation), Agents right after it. */
 export function runTabIds(f: RunTabFlags): SideTab[] {
-  return ['transcript', ...(f.plan ? (['plan'] as const) : []), 'usage', ...(f.outputs ? (['outputs'] as const) : []), ...(f.knowledge ? (['knowledge'] as const) : []), 'logs']
+  return ['transcript', ...(f.agents ? (['agents'] as const) : []), ...(f.plan ? (['plan'] as const) : []), 'usage', ...(f.outputs ? (['outputs'] as const) : []), ...(f.knowledge ? (['knowledge'] as const) : []), 'logs']
 }
 
 /** The tab to show: the stored one while the run still has it, else 'transcript' (the stored value is left as it is). */

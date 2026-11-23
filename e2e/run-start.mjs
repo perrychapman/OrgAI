@@ -412,7 +412,7 @@ try {
       await page.keyboard.press('Tab')
       stops.push(await activeTestId(page))
     }
-    check(JSON.stringify(stops) === JSON.stringify(['run-model-change', 'run-effort-change', 'run-permission-change', 'run-goal-change', 'Attach images', 'TEXTAREA']), '9 Tab order after Team|Ask is Model, Effort, Permission, Goal, Attach, textarea', stops.join(' > '))
+    check(JSON.stringify(stops) === JSON.stringify(['Attach images', 'TEXTAREA', 'run-model-change', 'run-effort-change', 'run-permission-change', 'run-goal-change']), '9 Tab order after Team|Ask is Attach, textarea, then the setting tiles Model, Effort, Asking you, Goal', stops.join(' > '))
     for (const [trigger, picker] of [['run-model-change', 'run-model-picker'], ['run-effort-change', 'run-effort-picker'], ['run-permission-change', 'run-permission-picker'], ['run-goal-change', 'run-goal-picker']]) {
       await page.locator(T(trigger)).focus()
       await page.keyboard.press('Enter')

@@ -1,0 +1,451 @@
+/* The Agent board's one-agent view (docs/design/ui-overhaul/project/Agent.dc.html). Tokens only; the right column
+   stacks under the main column when the stage is narrow (flex-wrap, no media query, so it follows the stage and not the
+   window). Motion is the shared .motion-pulse / .motion-breathe classes, which stop under reduced motion and Pause motion. */
+.agent-focus {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+
+.agent-focus-grow {
+  flex: 1 1 auto;
+}
+.agent-focus-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.agent-focus-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1h);
+  min-width: 0;
+  color: var(--text-secondary);
+}
+.agent-focus-trail-item {
+  display: inline-flex;
+  gap: var(--space-1h);
+  min-width: 0;
+}
+.agent-focus-sep {
+  color: var(--text-tertiary);
+}
+.agent-focus-here {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-pos {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+.agent-focus-step {
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-8);
+  height: var(--space-8);
+  padding: 0;
+  color: var(--text-primary);
+  background: var(--glass);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.agent-focus-step:hover:not(:disabled) {
+  background: var(--glass-strong);
+}
+.agent-focus-step:focus-visible,
+.agent-focus-link:focus-visible,
+.agent-focus-textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.agent-focus-step:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.agent-focus-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.agent-focus-main {
+  flex: 999 1 32rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.agent-focus-side {
+  flex: 1 1 18rem;
+  max-width: 24rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.agent-focus-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-xl);
+}
+.agent-focus-head.is-waiting {
+  border-color: var(--warning-border);
+}
+.agent-focus-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--space-10);
+  height: var(--space-10);
+  border-radius: var(--radius-lg);
+  color: var(--text-on-accent);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-id {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.agent-focus-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.agent-focus-name {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-name:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.agent-focus-meta,
+.agent-focus-activity {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.agent-focus-activity {
+  color: var(--text-tertiary);
+}
+
+.agent-focus-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  height: var(--space-6);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.agent-focus-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+.agent-focus-pill.is-working {
+  background: var(--working-soft);
+  color: var(--working);
+}
+.agent-focus-pill.is-waiting {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.agent-focus-pill.is-done {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.agent-focus-pill.is-failed {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.agent-focus-pill.is-waiting .agent-focus-dot {
+  background: var(--warning);
+}
+
+.agent-focus-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.agent-focus-transcript {
+  display: flex;
+  flex-direction: column;
+  min-height: 12rem;
+  max-height: 60vh;
+  min-width: 0;
+}
+.agent-focus-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-xl);
+}
+.agent-focus-cards-head {
+  margin: 0;
+  color: var(--warning-text);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+}
+
+.agent-focus-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-xl);
+}
+.agent-focus-label {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.agent-focus-brief {
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.agent-focus-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  overflow-wrap: anywhere;
+}
+.agent-focus-quiet {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}
+.agent-focus-note,
+.agent-focus-empty {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.agent-focus-facts {
+  display: grid;
+  grid-template-columns: minmax(6rem, max-content) 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+.agent-focus-facts dt {
+  color: var(--text-secondary);
+}
+.agent-focus-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-focus-diffs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.agent-focus-diff {
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+}
+.agent-focus-diff-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.agent-focus-diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-add {
+  color: var(--success-text);
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-del {
+  color: var(--danger-text);
+  font-weight: var(--weight-semibold);
+}
+.agent-focus-diff-lines {
+  margin: 0;
+  padding: var(--space-1h) 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+}
+.agent-focus-diff-lines:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.agent-focus-line {
+  display: block;
+  padding: 0 var(--space-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+.agent-focus-sign {
+  display: inline-block;
+  width: 1.5ch;
+  user-select: none;
+  color: var(--text-tertiary);
+}
+.agent-focus-line.is-hunk {
+  color: var(--text-tertiary);
+  padding-inline-start: calc(var(--space-3) + 1.5ch);
+}
+.agent-focus-more {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  color: var(--accent-text);
+  font: inherit;
+  text-align: start;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.agent-focus-more:hover {
+  background: var(--accent-soft);
+}
+.agent-focus-more:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.agent-focus-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+.agent-focus-over {
+  color: var(--danger-text);
+}
+.agent-focus-line.is-add {
+  background: var(--success-soft);
+  color: var(--text-primary);
+}
+.agent-focus-line.is-del {
+  background: var(--danger-soft);
+  color: var(--text-primary);
+}
+
+.agent-focus-chain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agent-focus-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--space-8);
+  padding: var(--space-1h) var(--space-2);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.agent-focus-link:hover {
+  background: var(--surface-3);
+}
+.agent-focus-link.is-self {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+  font-weight: var(--weight-semibold);
+  cursor: default;
+}
+.agent-focus-link-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-focus-swatch {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-xs);
+}
+
+.agent-focus-compose {
+  padding: var(--space-3);
+}
+.agent-focus-textarea {
+  width: 100%;
+  resize: none;
+  color: var(--text-primary);
+  font: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-0h) var(--space-1);
+}
+.agent-focus-compose-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.agent-focus-error {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--text-small);
+}

@@ -1,0 +1,460 @@
+/*
+ * The run canvas chrome (docs/design/ui-overhaul, Run and Scale boards): the Theme menu, the "Show" filter, the agent
+ * list and the plan strip. Glass and working tokens come from the overhaul's token set; each use falls back to the
+ * existing semantic token, so this file also reads right before those tokens land. Motion: one sheen loop on the plan
+ * strip's current step and the working dots' breathe (at most BREATHE_MAX_NODES rows), both off under reduced motion.
+ */
+
+/* ---------- Shared glass control ---------- */
+
+.canvas-chrome-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: calc(var(--space-8) + var(--space-1));
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: var(--glass, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  white-space: nowrap;
+}
+.canvas-chrome-btn:hover {
+  background: var(--glass-strong, var(--surface-2));
+}
+.canvas-chrome-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---------- Theme menu ---------- */
+
+.canvas-theme-swatch {
+  flex: none;
+  width: calc(var(--space-5) + var(--space-1));
+  height: calc(var(--space-5) + var(--space-1));
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-line, var(--border-default));
+}
+.canvas-theme-swatch-lg {
+  width: calc(var(--space-10));
+  height: calc(var(--space-6) + var(--space-1));
+  border-radius: var(--radius-md);
+}
+.canvas-theme-label {
+  color: var(--text-tertiary);
+}
+.canvas-theme-current {
+  font-weight: var(--weight-semibold);
+}
+.canvas-theme-trigger [data-icon],
+.canvas-theme-trigger svg {
+  color: var(--text-tertiary);
+}
+
+.popover-panel.canvas-theme-panel {
+  width: 17rem;
+  min-width: 0;
+  padding: var(--space-2);
+  background: var(--glass-strong, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
+}
+.canvas-theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.canvas-theme-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: calc(var(--space-8) + var(--space-1));
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+}
+.canvas-theme-item:hover {
+  background: var(--surface-3);
+}
+.canvas-theme-item[aria-checked='true'] {
+  background: var(--accent-soft);
+}
+.canvas-theme-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.canvas-theme-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-theme-name {
+  font-weight: var(--weight-semibold);
+}
+.canvas-theme-desc {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.canvas-theme-check {
+  flex: none;
+  display: inline-flex;
+  color: var(--accent-text);
+}
+.canvas-theme-rule {
+  height: 1px;
+  margin: var(--space-1) 2px;
+  background: var(--glass-line, var(--border-subtle));
+}
+.canvas-theme-more {
+  gap: var(--space-2);
+  min-height: var(--space-8);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+
+/* ---------- Show filter ---------- */
+
+.agent-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: var(--glass, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+}
+.agent-filter-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--space-8);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.agent-filter-item input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.agent-filter-item:hover {
+  color: var(--text-primary);
+}
+.agent-filter-item[data-on] {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.agent-filter-item[data-value='waiting'] {
+  color: var(--warning-text);
+}
+.agent-filter-item:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.agent-filter-count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Agent list ---------- */
+
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+.agent-list-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* The field keeps the room its placeholder needs; the sort drops to the next line when both do not fit. */
+.agent-list-search {
+  flex: 1 1 13rem;
+  min-width: 0;
+}
+.agent-list-tools .select {
+  flex: 0 0 auto;
+  width: auto;
+}
+.agent-list-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.agent-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: calc(var(--space-10) + var(--space-1));
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-bottom: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  /* 121 rows stay cheap: a row that is scrolled out of view skips layout and paint. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto calc(var(--space-10) + var(--space-1));
+}
+.agent-row:hover {
+  background: var(--surface-2);
+}
+.agent-row[aria-current='true'] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.agent-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.agent-row-dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--state-idle);
+}
+.agent-row[data-bucket='working'] .agent-row-dot {
+  background: var(--working, var(--state-working));
+}
+.agent-row[data-bucket='waiting'] .agent-row-dot {
+  background: var(--state-waiting);
+}
+.agent-row[data-bucket='done'] .agent-row-dot {
+  background: var(--state-done);
+}
+.agent-row[data-bucket='failed'] .agent-row-dot {
+  background: var(--state-error);
+}
+.agent-row-dot[data-breathe] {
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--i, 0) * 150ms);
+}
+.agent-row-text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.agent-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+}
+.agent-row-group {
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+.agent-row-doing {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.agent-row[data-bucket='waiting'] .agent-row-doing {
+  color: var(--warning-text);
+}
+.agent-row[data-bucket='done'] {
+  opacity: 0.8;
+}
+.agent-row-cost {
+  flex: none;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.agent-list-empty {
+  margin: var(--space-3) var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.agent-list-count {
+  flex: none;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+/* The Agents tab's panel (side panel and stage strip): the list fills it and scrolls its own rows. */
+.run-agents-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-3);
+}
+
+/* ---------- Plan strip ---------- */
+
+.plan-strip {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: var(--glass, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  color: var(--text-secondary);
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.plan-strip:hover {
+  background: var(--glass-strong, var(--surface-2));
+}
+.plan-strip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.plan-strip-steps {
+  display: grid;
+  gap: var(--space-3);
+}
+.plan-strip-step {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.plan-strip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+.plan-strip-step[data-now] .plan-strip-label {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.plan-strip-step[data-status='blocked'] .plan-strip-label {
+  color: var(--warning-text);
+}
+.plan-strip-compact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.plan-strip-now {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.plan-strip-bar {
+  flex: 1 1 8rem;
+  min-width: 4rem;
+  display: grid;
+  gap: 5px;
+}
+.plan-strip-seg {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--surface-3);
+}
+.plan-strip-seg[data-status='done'] {
+  background: var(--state-done);
+}
+.plan-strip-seg[data-status='skipped'] {
+  background: var(--state-done);
+  opacity: 0.45;
+}
+.plan-strip-seg[data-status='blocked'] {
+  background: var(--state-waiting);
+}
+.plan-strip-seg[data-status='in_progress'] {
+  background: var(--working, var(--state-working));
+}
+/* The sheen is a transformed gradient on a pseudo-element: transform only, never a repaint of the bar. */
+.plan-strip-seg[data-status='in_progress']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--text-primary) 45%, transparent) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: plan-strip-sheen calc(var(--dur-pulse) * 1.4) linear infinite;
+}
+@keyframes plan-strip-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ---------- Reduced motion: no loop survives and no decorative element lingers ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-row-dot[data-breathe] {
+    animation: none;
+  }
+  .plan-strip-seg[data-status='in_progress']::after {
+    animation: none;
+    display: none;
+  }
+}
+:root[data-reduce-motion='on'] .agent-row-dot[data-breathe] {
+  animation: none;
+}
+:root[data-reduce-motion='on'] .plan-strip-seg[data-status='in_progress']::after {
+  animation: none;
+  display: none;
+}
+
+@media (forced-colors: active) {
+  .plan-strip-seg {
+    border: 1px solid CanvasText;
+  }
+  .plan-strip-seg[data-status='done'],
+  .plan-strip-seg[data-status='in_progress'] {
+    background: Highlight;
+  }
+  .agent-row[aria-current='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

@@ -6,14 +6,14 @@ import { cleanIpcError } from '../../lib/ipcError'
 import { useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
-import { EmptyState } from '../ui/EmptyState'
 import { Textarea } from '../ui/Textarea'
 import AssistantModelLine from './AssistantModelLine'
+import '../../styles/new-run.css'
 
 export const INSTRUCTION_MAX_CHARS = 2000
 
 /**
- * The start page shared by the MCP and Skill assistants: copy, one instruction field, optional extra controls, the model
+ * The start page shared by the Tools helper and the Skills helper: copy, one instruction field, optional extra controls, the model
  * line and Start. A seed (an instruction handed over by the caller) fills the field once. Errors show inline.
  */
 export default function InstructionStartPage({
@@ -62,10 +62,13 @@ export default function InstructionStartPage({
 
   return (
     <div className="new-run" data-testid={testId}>
-      <div className="new-run-inner">
-        <EmptyState title={copy.title} description={copy.description} />
+      <div className="new-run-inner nr-single-col motion-enter-lg">
+        <div className="assist-start__intro">
+          <h2 className="nr-heading">{copy.title}</h2>
+          <p className="nr-lead">{copy.description}</p>
+        </div>
         <form
-          className="assistant-form"
+          className="assistant-form assist-card assist-card--strong nr-glass"
           onSubmit={(e) => {
             e.preventDefault()
             void start()

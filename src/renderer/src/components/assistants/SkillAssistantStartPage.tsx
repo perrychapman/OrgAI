@@ -3,7 +3,7 @@ import type { Project } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import InstructionStartPage from './InstructionStartPage'
 
-/** The Skill assistant start page (library scope). Project-scope runs start from a project's Skills section. */
+/** The Skills helper start page (the Skill assistant) (library scope). Project-scope runs start from a project's Skills section. */
 export default function SkillAssistantStartPage({ project: _project }: { project: Project }): ReactElement {
   return (
     <InstructionStartPage

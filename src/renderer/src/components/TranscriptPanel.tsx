@@ -72,6 +72,11 @@ interface Props {
   lead?: ReactNode
   /** Held by the caller when the "Show thinking" control sits outside this component (the assistant stage strip). */
   showThinking?: boolean
+  /**
+   * The root conversation, shown when the chart has no selection: with no `agent`, no `finished` group and this prop,
+   * the panel renders as if `agent` and `feed` were these (header "Conversation").
+   */
+  fallback?: { agent: AgentInstance | undefined; feed: FeedItem[] }
 }
 
 const TOOL_ICONS: Record<ToolKind, LucideIcon> = {
@@ -321,7 +326,13 @@ function SelfHelpRowView({ row, arrive }: { row: SelfHelpRow; arrive?: boolean }
   )
 }
 
-export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead, showThinking: heldThinking }: Props): ReactElement {
+export default function TranscriptPanel({ runId, agent: agentProp, entries: ownEntries, feed: feedProp, logs, finished, variant = 'panel', tagRunId, lead, showThinking: heldThinking, fallback }: Props): ReactElement {
+  const usingFallback = !agentProp && !finished && !!fallback
+  const agent = usingFallback ? fallback.agent : agentProp
+  const feed = usingFallback ? fallback.feed : feedProp
+  // The root's conversation (a merged feed) is titled "Conversation" and gets a small avatar on assistant text.
+  const isConversation = variant === 'conversation' || usingFallback || (!!agent && feed !== undefined)
+  const avatar = isConversation ? { 'data-initial': (agent?.name ?? 'A').trim().charAt(0).toUpperCase() || 'A' } : undefined
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
   const [ownThinking, setShowThinking] = useState(false)
   const showThinking = heldThinking ?? ownThinking
@@ -421,7 +432,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         )
       case 'text':
         return (
-          <div key={e.id} className={`entry text${arriveClass(arrive(e.id))}`}>
+          <div key={e.id} className={`entry text${avatar ? ' has-avatar' : ''}${arriveClass(arrive(e.id))}`} {...avatar}>
             <Markdown text={b.text} />
           </div>
         )
@@ -516,7 +527,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             {visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
             {newestRows}
             {partial && (
-              <div className="entry text streaming">
+              <div className={`entry text streaming${avatar ? ' has-avatar' : ''}`} {...avatar}>
                 <Markdown text={partial} />
               </div>
             )}
@@ -533,7 +544,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     )
   }
 
-  const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
+  const headerTitle = isConversation ? 'Conversation' : agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
   const idPrefix = `side-${runId}`
   return (
     <div className="side-run">
@@ -543,7 +554,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             {runTag(index)}
           </span>
           <h2 title={headerTitle}>{headerTitle}</h2>
-          {agent && (
+          {agent && !isConversation && (
             <span className="side-role" title={`Role: ${agent.roleSlug}`}>
               {agent.roleSlug}
             </span>
@@ -595,13 +606,13 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         </div>
       )}
       {tab === 'transcript' && !(finished && !agent) && (
-        <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
-          {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
-          {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
+        <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className={`transcript${agent && !isConversation ? ' timeline' : ''}`}>
+          {!agent && !usingFallback && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
+          {(agent || usingFallback) && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
           {feed && lead}
           {rows}
           {agent && partial && (
-            <div className="entry text streaming">
+            <div className={`entry text streaming${avatar ? ' has-avatar' : ''}`} {...avatar}>
               <Markdown text={partial} />
             </div>
           )}

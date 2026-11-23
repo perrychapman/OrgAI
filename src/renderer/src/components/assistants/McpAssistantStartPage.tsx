@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { Switch } from '../ui/Switch'
 import InstructionStartPage from './InstructionStartPage'
 
-/** The MCP assistant start page: what agents should be able to do, optionally let it build a server, Start. */
+/** The Tools helper start page (the MCP assistant): what agents should be able to do, optionally let it build a server, Start. */
 export default function McpAssistantStartPage({ project: _project }: { project: Project }): ReactElement {
   const [allowBuild, setAllowBuild] = useState(false)
   const hintId = useId()

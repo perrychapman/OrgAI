@@ -29,17 +29,27 @@ export function speaksAsAssistant(summary: Pick<RunSummary, 'kind' | 'quick' | '
   return isVirtualProjectId(summary.projectId) || isSingleAgentRun(summary)
 }
 
-export const assistantLabel = (id: VirtualProjectId): string => VIRTUAL_PROJECT_LABELS[id]
+/**
+ * What the renderer calls each assistant. The shared contract keeps the older names ("MCP assistant", "Skill
+ * assistant") for the CLI and main; the app shows these plain-language ones (UI overhaul).
+ */
+export const ASSISTANT_NAMES: Record<VirtualProjectId, string> = {
+  quick: VIRTUAL_PROJECT_LABELS.quick,
+  harness: 'Tools helper',
+  skills: 'Skills helper'
+}
+
+export const assistantLabel = (id: VirtualProjectId): string => ASSISTANT_NAMES[id]
 
 /** Where a run lives, in words: the virtual label, else the project's name, else "Project". */
 export function locationLabel(projectId: string, projects: readonly Pick<Project, 'id' | 'name'>[]): string {
-  if (isVirtualProjectId(projectId)) return VIRTUAL_PROJECT_LABELS[projectId]
+  if (isVirtualProjectId(projectId)) return ASSISTANT_NAMES[projectId]
   return projects.find((p) => p.id === projectId)?.name ?? 'Project'
 }
 
 /** A project to render for a virtual id when the main process has none to give: label, no folder, no roles. */
 export function displayProject(id: VirtualProjectId): Project {
-  const base = newProject({ name: VIRTUAL_PROJECT_LABELS[id], path: '', brief: '' })
+  const base = newProject({ name: ASSISTANT_NAMES[id], path: '', brief: '' })
   return { ...base, id, roles: [] }
 }
 
@@ -47,6 +57,8 @@ export function displayProject(id: VirtualProjectId): Project {
 export function runKindLabel(summary: Pick<RunSummary, 'kind' | 'quick'> & Partial<Pick<RunSummary, 'team'>>): string {
   if (summary.quick) return 'Chat'
   if (summary.kind === 'work' && summary.team === 'single') return 'Ask'
+  if (summary.kind === 'mcp-assist') return ASSISTANT_NAMES.harness
+  if (summary.kind === 'skill-assist') return ASSISTANT_NAMES.skills
   return RUN_KIND_LABELS[summary.kind]
 }
 
@@ -101,8 +113,8 @@ export function chatSummaryLine(i: ChatSummaryInput): string {
 /** Start-page titles and descriptions. */
 export const START_PAGE_COPY: Record<VirtualProjectId, { title: string; description: string }> = {
   quick: { title: 'Chat with an assistant', description: 'Ask a question or hand over a task. Nothing becomes a project unless you save it.' },
-  harness: { title: 'Set up MCP servers with the assistant', description: 'Describe what your agents should be able to do. The assistant finds, connects and tests servers for your library.' },
-  skills: { title: 'Improve your skills with the assistant', description: 'Review the skills in your library and write new ones. Skills for one project start from that project’s Skills section.' }
+  harness: { title: 'Set up tools and services', description: 'The Tools helper finds, connects and tests tools and services for your library. Describe what you need.' },
+  skills: { title: 'Write and improve skills', description: 'The Skills helper reviews the skills in your library and writes new ones. Skills for one project start from that project’s Skills section.' }
 }
 
 /** The Chat start page's hint above its example questions (UX self-help rec 1). */
@@ -137,7 +149,7 @@ export const PROMOTE_NAME_LIMIT = PROMOTE_NAME_MAX
 export type RunLayout = 'conversation' | 'canvas'
 
 /**
- * Whether a run is single-agent by design: a Chat with team 'single', an MCP assistant or a Skill assistant run.
+ * Whether a run is single-agent by design: a Chat with team 'single', a Tools helper or a Skills helper run.
  * A Chat on the default team, work runs and setup runs are team runs.
  */
 export function isSingleAgentRun(summary: Pick<RunSummary, 'kind' | 'quick'> & Partial<Pick<RunSummary, 'team'>>): boolean {
