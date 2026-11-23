@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Proposal } from '@shared/types'
-import { PROPOSAL_NEXT_COPY, orgChartEffectCopy, proposalNextFor, proposalNextLead, rosterNextFor, secretsNextFor } from './proposalNext'
+import { PROPOSAL_NEXT_COPY, orgChartEffectCopy, proposalNextAnnouncement, proposalNextFor, proposalNextLead, rosterNextFor, secretsNextFor } from './proposalNext'
 
 const skills = (scopes: ('library' | 'project')[]): Proposal =>
   ({ id: 'p', kind: 'skills', title: 't', payload: { items: scopes.map((scope) => ({ scope, draft: { name: 'x' } })) } }) as unknown as Proposal
@@ -67,6 +67,23 @@ describe('secretsNextFor', () => {
     expect(secretsNextFor(mcp(), { behavior: 'decline' }, 'p1')).toBeNull()
     expect(secretsNextFor(mcp('library'), { behavior: 'approve', waitingForSecrets: ['gh'] }, 'p1')).toBeNull()
     expect(secretsNextFor(skills(['project']), { behavior: 'approve', waitingForSecrets: ['gh'] }, 'p1')).toBeNull()
+  })
+})
+
+describe('proposalNextAnnouncement', () => {
+  it('says nothing without a note, the lead sentence for every other kind', () => {
+    expect(proposalNextAnnouncement(undefined)).toBe('')
+    expect(proposalNextAnnouncement(null)).toBe('')
+    for (const kind of ['skillsLibrary', 'skillsProject', 'connectors', 'mcpProject'] as const) {
+      expect(proposalNextAnnouncement({ kind, projectId: 'a' })).toBe(PROPOSAL_NEXT_COPY[kind].lead)
+    }
+    expect(proposalNextAnnouncement({ kind: 'mcpSecrets', projectId: 'a', names: ['gh'] })).toBe('gh needs a secret before it can start.')
+  })
+  it('adds the roles that wait for an org chart, clamped', () => {
+    const roster = { applied: true, when: 'now' as const, deferred: [{ name: 'Writer', reason: 'x'.repeat(300) }] }
+    const text = proposalNextAnnouncement({ kind: 'orgRoster', projectId: 'a', roster })
+    expect(text.startsWith(proposalNextLead({ kind: 'orgRoster', projectId: 'a', roster }))).toBe(true)
+    expect(text).toContain('Writer: ' + 'x'.repeat(199) + '…')
   })
 })
 

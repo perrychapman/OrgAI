@@ -1342,6 +1342,24 @@ try {
   const bandCompound = clean(await page.locator('[data-testid=dash-now] [data-testid=dash-now-project]', { has: page.locator('h3', { hasText: COMPOUND }) }).innerText().catch(() => ''))
   check(bandCompound !== '' && /Waiting on you/.test(bandCompound) && !/\bcd /.test(bandCompound), 'A11 the band run of the compound command says "Waiting on you" and not the command', bandCompound)
   check(!/\bcd /.test(clean(await tileOf(COMPOUND).innerText())), 'A11 the compound project tile carries no command')
+  // A12 a held Enter on the row's main button (the Needs-you jump) never answers the decision it opens: while the key is
+  // down focus is not on a button of the card; after the key-up the primary button has focus and nothing was answered.
+  await cRow.first().locator('[data-row-main]').focus()
+  await page.keyboard.down('Enter')
+  for (let i = 0; i < 14; i++) {
+    await sleep(50)
+    await page.keyboard.down('Enter')
+  }
+  const heldOnRow = await page.evaluate(() => {
+    const a = document.activeElement
+    return { onButton: !!a?.closest?.('button'), card: document.querySelectorAll('section.frame-tray article.decision-card[data-kind="permission"]').length }
+  })
+  await page.keyboard.up('Enter')
+  await sleep(400)
+  const releasedOnRow = await page.evaluate(() => ({ onPrimary: !!document.activeElement?.matches?.('.decision-footer .btn.primary'), card: document.querySelectorAll('section.frame-tray article.decision-card[data-kind="permission"]').length }))
+  check(!heldOnRow.onButton && heldOnRow.card === 1 && releasedOnRow.onPrimary && releasedOnRow.card === 1, 'A12 a held Enter on the Waiting-on-you row opens the decision without answering it: no button has focus until key-up, then the primary does', JSON.stringify({ heldOnRow, releasedOnRow }))
+  await gotoProjects(page)
+  await cRow.first().waitFor({ timeout: 15_000 })
   await cRow.first().locator('[data-testid=dash-needs-allow]').click()
   await cRow.first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
   check((await cRow.count()) === 0, 'Allow once answers the compound command and removes its row')

@@ -4,6 +4,7 @@
  */
 import type { Proposal, ProposalOutcome } from '@shared/types'
 import { clampLabel } from './clampLabel'
+import { showHidden } from './hiddenChars'
 import { proposalScope } from './mcpProposal'
 
 export type ProposalNextKind = 'skillsLibrary' | 'skillsProject' | 'connectors' | 'mcpProject' | 'mcpSecrets' | 'orgRoster'
@@ -88,6 +89,17 @@ export function proposalNextLead(next: ProposalNext): string {
   const shown = names.slice(0, NAMES_SHOWN).join(', ')
   const more = names.length > NAMES_SHOWN ? ` and ${names.length - NAMES_SHOWN} more` : ''
   return `${shown}${more} ${names.length === 1 ? 'needs' : 'need'} a secret before ${names.length === 1 ? 'it' : 'they'} can start.`
+}
+
+/**
+ * What the frame announcer says (once, politely) when a note appears under the run header: the lead sentence, and for
+ * an org chart the roles that wait too. Empty when there is no note. Plain text only: names are clamped and stripped of
+ * hidden characters.
+ */
+export function proposalNextAnnouncement(next: ProposalNext | undefined | null): string {
+  if (!next) return ''
+  if (next.kind !== 'orgRoster') return proposalNextLead(next)
+  return [proposalNextLead(next), ...(next.roster?.deferred ?? []).map((d) => `${clampLabel(showHidden(d.name), 40)}: ${clampLabel(showHidden(d.reason), 200)}`)].join(' ')
 }
 
 export const PROPOSAL_NEXT_COPY: Record<ProposalNextKind, { lead: string; action: string; testId: string }> = {

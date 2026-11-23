@@ -4,6 +4,18 @@ import { formatUntil } from './layout'
 import { money } from './usage'
 
 /**
+ * The hold actions that ask first (focus on Cancel, a confirmation that names what happens): each one starts a new
+ * provider turn, raises a limit or skips a gate, so it can spend or weaken a check. Switching the model only moves focus,
+ * and ending keeps the work.
+ */
+const HOLD_ACTIONS_THAT_ASK: ReadonlySet<RunHoldAction> = new Set<RunHoldAction>(['resume', 'addBudget', 'retry', 'skipReview'])
+
+/** True when the card must confirm before this action runs. */
+export function holdActionAsks(action: RunHoldAction): boolean {
+  return HOLD_ACTIONS_THAT_ASK.has(action)
+}
+
+/**
  * What stopped a run, as the "what stopped the run" card shows it. Pure; the card owns actions and the clock.
  * The six kinds come from main (`RunSummary.hold`); 'failed' is the fallback for an ended run with an error and no hold.
  */

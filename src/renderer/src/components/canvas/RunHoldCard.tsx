@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { useAnnounceOnce, useFrameAnnounce } from '../layout/CanvasFrame'
-import { holdOf } from '../../lib/runHold'
+import { holdActionAsks, holdOf } from '../../lib/runHold'
 import { money } from '../../lib/usage'
 import '../../styles/run-hold.css'
 
@@ -89,10 +89,10 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
       setBusy(false)
     }
   }
-  /** Asks first, naming what the action does; nothing runs unless the user confirms. A refusal from main shows inline. */
-  const confirmed = async (opts: Parameters<typeof confirm>[0], fn: () => Promise<void>): Promise<void> => {
+  /** Asks first (for the actions holdActionAsks lists), naming what the action does; nothing runs unless the user confirms. A refusal from main shows inline. */
+  const confirmed = async (action: RunHoldAction, opts: Parameters<typeof confirm>[0], fn: () => Promise<void>): Promise<void> => {
     if (actingRef.current) return
-    if (!(await confirm(opts))) return
+    if (holdActionAsks(action) && !(await confirm(opts))) return
     await act(fn)
   }
 
@@ -118,16 +118,23 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   const run = (o: Option): void => {
     switch (o.action) {
       case 'resume':
-        return void act(() => resumeNow(runId))
+        // A new provider turn before the reset can spend, so it asks first like "Try again": focus on Cancel, in-flight guard.
+        return void confirmed(
+          'resume',
+          { title: 'Resume now?', body: 'This starts a new turn now instead of waiting for the limit to reset. It can spend, and the run may stop again if the limit has not reset yet. Anything already done is kept.', confirmLabel: 'Resume now', confirmTestId: 'run-hold-confirm' },
+          () => resumeNow(runId)
+        )
       case 'addBudget':
         if (parsed === null) return
         return void confirmed(
+          'addBudget',
           { title: `Add ${money(parsed)} to this run?`, body: `This raises this run’s spending limit by ${money(parsed)} and lets it continue, so it can spend up to that much more. Your project limits still apply.`, confirmLabel: `Add ${money(parsed)} and continue`, confirmTestId: 'run-hold-confirm' },
           () => addBudget(runId, parsed)
         )
       case 'retry':
         // A new provider turn spends: ask first, like adding budget. Focus starts on Cancel; the in-flight guard drops a repeat.
         return void confirmed(
+          'retry',
           { title: `${o.label}?`, body: kind === 'provider' ? 'This starts a new turn with the same connection and model, and it can spend. Anything already done is kept.' : 'This picks the run up where it stopped by starting a new turn, and it can spend. Anything already done is kept.', confirmLabel: o.label, confirmTestId: 'run-hold-confirm' },
           () => retryRun(runId)
         )
@@ -136,6 +143,7 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
         return onSwitchModel?.()
       case 'skipReview':
         return void confirmed(
+          'skipReview',
           { title: 'Skip the review for this change?', body: 'The change goes ahead without the review step. Merge review still asks before anything is merged.', confirmLabel: 'Skip review for this change', danger: true, confirmTestId: 'run-hold-confirm' },
           () => skipReview(runId, note.trim() || undefined)
         )
@@ -232,7 +240,8 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
         </p>
       )}
 
-      <div className="run-hold-actions">
+      {/* While an action is in flight its button stays enabled (focus is not dropped on a button that goes inert): the in-flight ref drops a second activation, aria-busy says so. */}
+      <div className="run-hold-actions" aria-busy={busy || undefined}>
         {kind === 'plan-blocked' && (
           <>
             {canAnswer && (
@@ -251,17 +260,17 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
           </Button>
         )}
         {chosen && (
-          <Button variant={kind === 'plan-blocked' ? 'secondary' : 'primary'} size="sm" disabled={busy || amountBad} onClick={() => run(chosen)}>
+          <Button variant={kind === 'plan-blocked' ? 'secondary' : 'primary'} size="sm" disabled={amountBad} inert={busy} onClick={() => run(chosen)}>
             {chosen.button}
           </Button>
         )}
         {kind === 'usage-limit' && summary?.autoResume && (
-          <Button size="sm" disabled={busy} onClick={() => void act(() => cancelAutoResume(runId))}>
+          <Button size="sm" inert={busy} onClick={() => void act(() => cancelAutoResume(runId))}>
             Cancel auto-resume
           </Button>
         )}
         {(has('end') || !summary?.hold) && sessionOpen && (
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act(() => stopRun())}>
+          <Button variant="ghost" size="sm" inert={busy} onClick={() => void act(() => stopRun())}>
             End the run and keep the work
           </Button>
         )}

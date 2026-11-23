@@ -16,6 +16,7 @@ import {
   entriesOfAgent,
   extractBrief,
   focusState,
+  messageKeyAction,
   parseUnifiedDiff,
   positionLabel,
   whereItSits
@@ -609,9 +610,12 @@ function MessageBox({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const left = AGENT_MESSAGE_MAX_CHARS - text.length
+  // One send in flight: a failed send keeps the text, so a held Ctrl+Enter must not send it again on every key repeat.
+  const sendingRef = useRef(false)
   const send = async (): Promise<void> => {
     const body = text.trim()
-    if (!body || busy || left < 0) return
+    if (!body || sendingRef.current || busy || left < 0) return
+    sendingRef.current = true
     setBusy(true)
     setError('')
     try {
@@ -621,6 +625,7 @@ function MessageBox({
     } catch (e) {
       setError(cleanIpcError(e, 'The message could not be sent.'))
     } finally {
+      sendingRef.current = false
       setBusy(false)
     }
   }
@@ -638,10 +643,11 @@ function MessageBox({
         placeholder={direct ? 'Message the orchestrator' : `Ask the orchestrator about ${agentName}`}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault()
-            void send()
-          }
+          const action = messageKeyAction(e)
+          if (!action) return
+          e.preventDefault()
+          // A held key sends once: only the press that started it counts, never its repeats.
+          if (action === 'send') void send()
         }}
         data-testid="agent-focus-message"
       />

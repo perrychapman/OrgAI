@@ -8,6 +8,7 @@ import { clientOf } from '../../lib/clientGroups'
 import {
   buildPaletteItems,
   clampActive,
+  enterAction,
   fieldsOnToggle,
   flatten,
   resultsPhrase,
@@ -240,9 +241,11 @@ export default function CommandPalette({
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                   e.preventDefault()
                   setActive((i) => stepIndex(i, e.key === 'ArrowDown' ? 1 : -1, flat.length))
-                } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                } else if (e.key === 'Enter') {
+                  const action = enterAction({ repeat: e.repeat, isComposing: e.nativeEvent.isComposing })
+                  if (!action) return
                   e.preventDefault()
-                  choose(activeItem)
+                  if (action === 'choose') choose(activeItem)
                 }
               }}
             />

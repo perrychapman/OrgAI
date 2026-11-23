@@ -1239,6 +1239,47 @@ try {
   }
   check(reached, 'the waiting card is reachable by Shift+Tab from the composer (the user moves focus, the card never does)')
   await shot('focus-guard')
+
+  // The rule: no decision is answered by a key press that began before the card's action had focus. The Needs-you jump is
+  // usually activated with Enter, and the card's primary button takes focus a moment later (after the awaited focusRun and
+  // a short timeout) while Enter is still down: its key repeat must not click Allow once. Held Enter on the top bar's
+  // "Needs you" button (shown off the run view): nothing is answered, focus rests on the tray (not a button), and only
+  // after key-up does the primary take focus; a fresh Enter then answers exactly that decision.
+  const heldCard = page.locator('.decision-card').first()
+  const heldTitle = ((await heldCard.locator('.decision-title').first().innerText().catch(() => '')) || '').trim()
+  check(heldTitle !== '', 'the permission to be jumped to is waiting before the held Enter', heldTitle)
+  await projectTab(page, 'Team').click()
+  const topNeeds = page.locator('[data-testid=topbar-needs-you]')
+  await topNeeds.waitFor({ timeout: 10_000 })
+  await topNeeds.focus()
+  await page.keyboard.down('Enter')
+  for (let i = 0; i < 14; i++) {
+    await sleep(50)
+    await page.keyboard.down('Enter') // a key repeat
+  }
+  await heldCard.waitFor({ timeout: 10_000 })
+  const heldFocus = await page.evaluate(() => {
+    const a = document.activeElement
+    return { tag: a?.tagName ?? '', onPrimary: !!a?.matches?.('.decision-footer .btn.primary'), inButton: !!a?.closest?.('button'), inTray: !!a?.closest?.('.frame-tray') }
+  })
+  check(!heldFocus.onPrimary && !heldFocus.inButton, 'a held Enter on the Needs-you jump: no button in the decision has focus while the key is down', JSON.stringify(heldFocus))
+  check(heldFocus.inTray, 'a held Enter on the Needs-you jump: focus rests on the decisions tray so the user sees where they landed', JSON.stringify(heldFocus))
+  check((await page.locator('.decision-card').count()) >= 1 && ((await heldCard.locator('.decision-title').first().innerText().catch(() => '')) || '').trim() === heldTitle && heldTitle !== '', 'a held Enter on the Needs-you jump answers nothing: the same decision is still waiting', heldTitle)
+  await page.keyboard.up('Enter')
+  await sleep(400)
+  const afterFocus = await page.evaluate(() => {
+    const a = document.activeElement
+    return { onPrimary: !!a?.matches?.('.decision-footer .btn.primary'), text: (a?.textContent || '').trim().slice(0, 30) }
+  })
+  check(afterFocus.onPrimary, 'after the key is released the primary button of the waiting decision takes focus', JSON.stringify(afterFocus))
+  check(((await heldCard.locator('.decision-title').first().innerText().catch(() => '')) || '').trim() === heldTitle, 'the decision is still waiting after the key-up (focus alone answers nothing)')
+  await page.keyboard.press('Enter')
+  await page.waitForFunction((t) => ![...document.querySelectorAll('.decision-card .decision-title')].some((n) => (n.textContent || '').trim() === t), heldTitle, { timeout: 10_000 }).catch(() => {})
+  const answeredGone = ![...(await page.locator('.decision-card .decision-title').allInnerTexts())].some((t) => t.trim() === heldTitle)
+  check(answeredGone, 'a fresh Enter on the focused primary answers exactly that decision', heldTitle)
+  await sleep(1500)
+  const nextTitle = ((await page.locator('.decision-card .decision-title').first().innerText().catch(() => '')) || '').trim()
+  check(nextTitle !== '' && nextTitle !== heldTitle, 'the next decision of the run is waiting, not answered by the same press', nextTitle)
   await endSession(page)
 } catch (e) {
   check(false, 'runs e2e ran without throwing', e.stack ?? String(e))

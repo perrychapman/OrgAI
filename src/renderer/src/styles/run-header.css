@@ -259,6 +259,15 @@
   outline-offset: -2px;
 }
 
+/* Forced colours drop backgrounds, so the status dot would vanish (and every tone with it): it keeps a solid mark in the
+   text colour; the word beside it always says the state. */
+@media (forced-colors: active) {
+  .run-meta .run-meta-status[data-tone] .run-status-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
 /* ---------- Engagement runs: serif titles and coral accents (the run view root carries data-kind) ---------- */
 .run-view[data-kind='engagement'] .run-meta-steps,
 .run-view[data-kind='engagement'] .run-meta-recorded {

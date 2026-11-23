@@ -2,7 +2,7 @@
    or pulses (retrying) through .motion-breathe / .motion-pulse, which reduced motion and Pause motion already stop. */
 
 section.run-hold {
-  width: min(100%, 760px);
+  width: min(100%, calc(var(--space-16) * 12));
   margin: 0 auto;
   box-sizing: border-box;
   display: flex;
@@ -49,8 +49,8 @@ section.run-hold {
   color: var(--danger-text);
 }
 .run-hold-dot {
-  width: 8px;
-  height: 8px;
+  width: var(--space-2);
+  height: var(--space-2);
   border-radius: var(--radius-full);
   background: currentColor;
 }
@@ -80,7 +80,7 @@ section.run-hold {
 .run-hold-facts {
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-16) * 2), 1fr));
   gap: var(--space-2);
 }
 .run-hold-fact {
@@ -101,7 +101,7 @@ section.run-hold {
 
 .run-hold-options {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-16) * 3.5), 1fr));
   gap: var(--space-2);
 }
 .run-hold-option {
@@ -205,4 +205,16 @@ section.run-hold {
 }
 .run-hold-actions > :last-child:not(:only-child) {
   margin-inline-start: auto;
+}
+
+/* Forced colours drop backgrounds, so the state dot would vanish: it keeps a solid mark in the text colour. The pill's
+   border stays, and the word always says the state. */
+@media (forced-colors: active) {
+  .run-hold-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .run-hold-pill {
+    border-color: CanvasText;
+  }
 }

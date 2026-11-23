@@ -18,7 +18,7 @@ import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
 import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, parseBreakdownPartial, recordedBreakdown, recordedBreakdownText, recordedLabel, recordedTitle } from '../lib/knowledgeRun'
 import { isRunWindow, revealKnowledgeTab } from '../lib/runKnowledge'
-import { proposalNextLead } from '../lib/proposalNext'
+import { proposalNextAnnouncement } from '../lib/proposalNext'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
 import { staffingCounts } from '../lib/planGraph'
@@ -36,6 +36,7 @@ import { quickFolderLabel } from '../lib/assistants'
 import { CHAT_ACCESS_ANNOUNCEMENT, CHAT_ACCESS_LABEL, CHAT_ACCESS_TITLE, chatAccessState } from '../lib/chatPermissions'
 import { useFrameAnnounce } from './layout/CanvasFrame'
 import { isOrgChangeRun, ORG_CHANGE_KIND_LABEL } from '../lib/orgChange'
+import { createFoldGuard, listFolded, type FoldedItem } from '../lib/runMetaFold'
 
 /** Status chip colour by the shared tone (run-header.css reads data-tone). Words always come with the dot. */
 const STATUS_TONE: Record<RunTone, 'working' | 'waiting' | 'idle' | 'done' | 'failed' | 'stopped'> = {
@@ -48,13 +49,25 @@ const STATUS_TONE: Record<RunTone, 'working' | 'waiting' | 'idle' | 'done' | 'fa
   stopped: 'stopped'
 }
 
-interface FoldedItem {
-  /** Index among the line's children; the original element is re-found by it. */
-  idx: number
-  label: string
-  interactive: boolean
-  /** The test id of the chip's button (or of the chip), repeated on its menu item: only one of the two is visible at a time. */
-  testId?: string
+/** What the fold last decided: the folded chips, and the permission mode's words while its chip shows only its icon. */
+interface FoldState {
+  items: FoldedItem[]
+  /** The compact permission chip's title (mode name and what it means); null while the chip shows its words. */
+  mode: string | null
+}
+
+/** The menu item for one folded chip. */
+function describeChip(c: HTMLElement): Omit<FoldedItem, 'idx'> {
+  return {
+    label: chipText(c),
+    interactive: isActionChip(c),
+    testId: (c.tagName === 'BUTTON' ? c : c.querySelector('button'))?.getAttribute('data-testid') ?? c.getAttribute('data-testid') ?? undefined
+  }
+}
+
+/** The folded chips as the line shows them right now (read from the DOM, not from the last committed state). */
+function foldedNow(line: HTMLElement | null): FoldedItem[] {
+  return line ? listFolded(Array.from(line.children) as HTMLElement[], (k) => k.getAttribute('data-folded') === 'true', describeChip) : []
 }
 
 /** A chip with a button in it (link, count that opens a tab): reachable in one step, so it folds after the chips that only state a fact. */
@@ -76,9 +89,9 @@ function chipText(el: Element): string {
  * Runs after every render and when the line resizes.
  * A folded chip stays in the DOM (display none) so its button can still be activated from the menu.
  */
-function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
-  const [folded, setFolded] = useState<FoldedItem[]>([])
-  const burst = useRef({ at: 0, n: 0 })
+function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldState {
+  const [folded, setFolded] = useState<FoldState>({ items: [], mode: null })
+  const guard = useRef(createFoldGuard())
   const lastSig = useRef('')
   const measure = (): void => {
     const el = ref.current
@@ -119,25 +132,21 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
         x.c.setAttribute('data-folded', 'true')
         out.push(x.c)
       }
-      if (out.length === 0) more?.setAttribute('hidden', '')
+      // A chip that shows only its icon keeps the "more" button: its words are in the menu's first row.
+      if (out.length === 0 && !chips.some((c) => c.getAttribute('data-compact') === 'true')) more?.setAttribute('hidden', '')
     }
-    const next = out
-      .sort((a, b) => kids.indexOf(a) - kids.indexOf(b))
-      .map((c) => ({
-        idx: kids.indexOf(c),
-        label: chipText(c),
-        interactive: isActionChip(c),
-        testId: (c.tagName === 'BUTTON' ? c : c.querySelector('button'))?.getAttribute('data-testid') ?? c.getAttribute('data-testid') ?? undefined
-      }))
-      .filter((f) => f.label)
-    const sig = (l: FoldedItem[]): string => l.map((f) => `${f.idx}:${f.label}:${f.testId ?? ''}`).join('|')
-    const nextSig = sig(next)
+    const compactChip = chips.find((c) => c.getAttribute('data-compact') === 'true')
+    const next: FoldState = {
+      items: listFolded(kids, (k) => out.includes(k), describeChip),
+      mode: compactChip ? (compactChip.getAttribute('title') ?? chipText(compactChip)) : null
+    }
+    const nextSig = next.items.map((f) => `${f.idx}:${f.label}:${f.testId ?? ''}`).join('|') + `#${next.mode ?? ''}`
     if (nextSig !== lastSig.current) {
       // Two answers that keep replacing each other (a chip that fits only by a sub-pixel) would loop until React stops
-      // the page. Past a few changes in one burst, keep the last answer.
-      const now = performance.now()
-      if (now - burst.current.at > 200) burst.current = { at: now, n: 0 }
-      if (++burst.current.n <= 6) {
+      // the page. Past a few changes in one burst the guard settles once on the latest answer (so the state matches what
+      // this measure just wrote to the DOM) and ignores the rest; the menu reads the DOM when it opens either way.
+      const decision = guard.current(performance.now())
+      if (decision !== 'skip') {
         lastSig.current = nextSig
         setFolded(next)
       }
@@ -182,11 +191,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     if (prev.runId === summary.id && accessState === 'session' && prev.state !== 'session') announce?.(CHAT_ACCESS_ANNOUNCEMENT)
     lastAccess.current = { runId: summary.id, state: accessState }
   }, [summary.id, accessState, announce])
-  // An org chart the run took live: said once when the note appears.
-  const rosterNote = useAppStore((s) => {
-    const n = s.proposalNextByRun[summary.id]
-    return n?.kind === 'orgRoster' ? [proposalNextLead(n), ...(n.roster?.deferred ?? []).map((d) => `${clampLabel(showHidden(d.name), 40)}: ${clampLabel(showHidden(d.reason), 200)}`)].join(' ') : ''
-  })
+  // The note under the run header (what an approved proposal did, an org chart the run took live): said once, politely, when
+  // it appears. ProposalNextNote sits outside the frame, so this is where its announcement is made. A joined string keeps
+  // the selector's result a stable primitive.
+  const rosterNote = useAppStore((s) => proposalNextAnnouncement(s.proposalNextByRun[summary.id]))
   // Keyed by run like the chip above: a note already spoken for a run stays quiet when its tab is shown again.
   const lastRoster = useRef({ runId: summary.id, note: rosterNote })
   useEffect(() => {
@@ -271,7 +279,8 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const modelCatalog = useAppStore((s) => (summary.modelSelection ? s.models[summary.modelSelection.connection] : undefined))
   const modelLabel = (modelId && modelCatalog?.find((m) => m.id === modelId)?.label) || modelId
   const lineRef = useRef<HTMLDivElement>(null)
-  const folded = useMetaFold(lineRef)
+  const fold = useMetaFold(lineRef)
+  const moreCount = fold.items.length + (fold.mode ? 1 : 0)
   return (
     <div className="run-meta" data-testid="run-meta" ref={lineRef}>
       <span className="run-meta-item run-meta-status" data-prio="0" data-testid="run-meta-status" data-tone={STATUS_TONE[status.tone]} title={status.note && status.note !== statusWord ? `${statusWord}: ${status.note}` : statusWord}>
@@ -457,10 +466,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           trigger={
             <>
               <Icon icon={Ellipsis} size="xs" />
-              <span className="run-meta-more-count">{folded.length}</span>
+              <span className="run-meta-more-count">{moreCount}</span>
             </>
           }
-          triggerLabel={`${folded.length} more detail${folded.length === 1 ? '' : 's'} about this run`}
+          triggerLabel={`${moreCount} more detail${moreCount === 1 ? '' : 's'} about this run`}
           triggerTitle="More about this run"
           triggerClassName="run-meta-more-btn"
           label="More about this run"
@@ -471,7 +480,16 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         >
           {({ close }) => (
             <ul className="run-meta-more-list">
-              {folded.map((f) => (
+              {/* The permission mode shows only its icon in a narrow line: its words are the first row, plain text. */}
+              {fold.mode && (
+                <li>
+                  <span className="run-meta-more-text run-meta-more-mode" data-testid="run-meta-more-permission">
+                    Permission mode. {fold.mode}
+                  </span>
+                </li>
+              )}
+              {/* Read from the line as it is now: whatever is display:none is listed, even if the fold's state lags. */}
+              {(lineRef.current ? foldedNow(lineRef.current) : fold.items).map((f) => (
                 <li key={f.idx}>
                   {f.interactive ? (
                     <button

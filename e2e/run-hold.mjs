@@ -219,6 +219,26 @@ try {
   await page.locator('[data-testid=run-hold][data-kind=budget]').waitFor({ state: 'detached', timeout: 20_000 }).catch(() => {})
   check((await page.locator('[data-testid=run-hold][data-kind=budget]').count()) === 0, 'a confirmed amount continues the run and the hold goes')
   await shot('budget-continued')
+
+  // ---- Usage limit: "Resume now" starts a new provider turn before the reset and can spend, so it asks first like
+  // "Try again": the confirmation names it, focus starts on Cancel, and a held Enter cannot confirm.
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 10_000 })
+  await start('Hit the limit [mock:model-switch-limit]')
+  const limitHold = page.locator('[data-testid=run-hold][data-kind=usage-limit]')
+  await limitHold.waitFor({ timeout: 30_000 })
+  const resumeBtn = limitHold.getByRole('button', { name: /^Resume now$/ })
+  check((await resumeBtn.count()) === 1, 'the usage-limit hold offers Resume now')
+  await resumeBtn.focus()
+  await page.keyboard.down('Enter')
+  await dlg.first().waitFor({ timeout: 5000 })
+  check(/Resume now\?/.test(await dlg.first().innerText()) && /spend/i.test(await dlg.first().innerText()), 'Resume now asks first and says it can spend', (await dlg.first().innerText()).replace(/\s+/g, ' ').slice(0, 160))
+  check(await page.evaluate(() => /^Cancel$/.test(document.activeElement?.textContent?.trim() ?? '')), 'the Resume now confirmation opens with focus on Cancel')
+  await page.keyboard.down('Enter')
+  await page.keyboard.up('Enter')
+  await sleep(500)
+  check((await dlg.count()) === 0 && (await limitHold.count()) === 1, 'a held Enter on Resume now cannot confirm: the hold stays')
+  check((await resumeBtn.isEnabled()) && !(await resumeBtn.getAttribute('disabled')), 'the action button stays enabled (never a disabled button under focus)')
   finish('run-hold')
 } finally {
   await cleanup(app, page, NAME)
