@@ -3,7 +3,7 @@
 // the e2e data dir, because main refuses a clone inside OrgAI's own data folder (that refusal is driven below too).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, finish, findProject, gitSafe, gotoProjects, launch, log, openProjectForm, screenshot, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, finish, findProject, gitSafe, gotoProjects, launch, log, openProjectForm, screenshot, sleep, pickSetup } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 delete process.env.ORGAI_MOCK_GH
@@ -172,8 +172,7 @@ try {
     check((await page.locator('input[placeholder*="Defaults to the folder name"]').count()) === 1, 'the name field appears')
     await layoutOk('inline after clone 1024')
     await choiceInView('inline after clone 1024', '.form-options')
-    await page.locator('[data-testid=architect-setup]').waitFor()
-    await page.locator('label.checkbox', { hasText: 'Set up with the Architect' }).click()
+    await pickSetup(page.locator('[data-testid=dashboard] form.project-form'), true)
     await tid('new-project-submit').click()
     await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
     const p = await findProject(page, 'first')

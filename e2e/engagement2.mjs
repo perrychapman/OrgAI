@@ -5,7 +5,7 @@
 // The full flow runs at 1600x1000 dark; layout checks repeat at the other size / theme combinations.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, deleteProject, findProject, finish, gotoProjects, launch, openAppSettings, openProject, openProjectForm, openTeam, projectTab, sleep, windowShift } from './lib.mjs'
+import { TMP, check, deleteProject, findProject, finish, gotoProjects, launch, openAppSettings, openProject, openProjectForm, openTeam, projectTab, sleep, windowShift, pickSetup } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-eng2-'))
@@ -78,8 +78,7 @@ async function createEngagement({ name, dir, template = false }) {
     await form.locator('[data-testid=new-project-template]').selectOption({ index: 0 })
     await form.getByRole('button', { name: 'Create from template', exact: true }).click()
   } else {
-    const arch = form.locator('[data-testid=architect-setup]')
-    if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+    await pickSetup(form, true)
     await form.getByRole('button', { name: 'Create project', exact: true }).click()
   }
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
