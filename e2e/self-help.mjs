@@ -292,8 +292,9 @@ try {
     check(await waitText('Done: that project now has a $5 cap from its next run.'), `the transcript confirms the cap ${tag}`)
     await openProject(page, NAME)
     await page.locator('[data-testid=tab-settings]').click()
-    await page.getByRole('tab', { name: 'Limits' }).click()
-    const cap = await page.locator('input[type=number][placeholder="No cap"]').first().inputValue().catch(() => '')
+    await page.getByRole('tab', { name: 'Spending limits' }).click()
+    // The per-run limit is on the page at rest (ui-overhaul Limits board); it is found by its test id, not its placeholder.
+    const cap = await page.locator('[data-testid=limit-run-input]').first().inputValue().catch(() => '')
     check(cap === '5', `Project settings > Limits shows the $5 cap ${tag}`, cap)
     // Reset for the next size.
     await page.evaluate(async (id) => {

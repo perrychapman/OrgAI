@@ -237,7 +237,18 @@ try {
 
   // ======== 3. RunMeta (section 8) ========
   await projectTab(page, 'Live').click()
-  const meta = page.locator('[data-testid=run-meta-recorded]')
+  // The run header folds chips that do not fit into its "more" menu; a folded chip is reached there under the same test id.
+  const metaChipIn = async (w, id) => {
+    const chip = w.locator(`[data-testid=${id}]:visible`)
+    if ((await chip.count()) === 0) {
+      const more = w.locator('[data-testid=run-meta-more]')
+      if (await more.isVisible().catch(() => false)) await more.click()
+    }
+    return chip.first()
+  }
+  await page.locator('[data-testid=run-meta]').waitFor({ state: 'visible', timeout: 8000 })
+  await sleep(400)
+  const meta = await metaChipIn(page, 'run-meta-recorded')
   // The button carries an sr-only " (opens Knowledge)" suffix in its accessible name; the visible text is checked.
   const metaText = async () => clean((await meta.innerText().catch(() => '')).replace(/\([^)]*opens Knowledge\)/, ''))
   await meta.waitFor({ state: 'visible', timeout: 8000 })
@@ -632,7 +643,7 @@ try {
   if (win2) {
     await win2.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 })
     await sleep(800)
-    const w2meta = win2.locator('[data-testid=run-meta-recorded]')
+    const w2meta = await metaChipIn(win2, 'run-meta-recorded')
     await w2meta.waitFor({ state: 'visible', timeout: 10_000 })
     await w2meta.click()
     await win2.locator('[data-testid=run-knowledge]').waitFor({ state: 'visible', timeout: 8000 })

@@ -127,6 +127,10 @@ async function runWith(v, prompt, expectCount, expectVersion) {
 }
 async function openOutputsTab() {
   await page.locator('[data-testid=tab-outputs]').click()
+  // Files opens in Grid when no view is saved (ui-overhaul Files board); these checks read the list rows.
+  const main = page.locator('[data-testid=outputs-main]')
+  await main.waitFor({ timeout: 10_000 })
+  if ((await main.getAttribute('data-view')) !== 'list') await page.locator('[data-testid=outputs-view-switch]').getByText('List', { exact: true }).click()
   await rows().first().waitFor({ timeout: 10_000 })
 }
 async function select(title) {
