@@ -222,6 +222,17 @@ try {
   const rows = await page.locator('.run-row').count()
   check(rows === 2, 'History tab lists both runs', String(rows))
   await shot('history')
+  // The History board's scope switch: All runs (default) shows both finished runs; Running now is empty with a way back.
+  const scopeBox = page.locator('[data-testid=history-scope]')
+  const scopeText = (await scopeBox.innerText()).replace(/\s+/g, ' ')
+  check(/All runs\s*·\s*2/.test(scopeText) && /Running now\s*·\s*\d+/.test(scopeText), 'History scope shows a real count on both options', scopeText)
+  if (/Running now\s*·\s*0/.test(scopeText)) {
+    await scopeBox.getByText('Running now', { exact: false }).click()
+    await page.locator('[data-testid=history-scope-empty]').waitFor({ timeout: 5000 })
+    check((await page.locator('.run-row').count()) === 0, 'Running now shows no rows when nothing is running')
+    await page.locator('[data-testid=history-scope-clear]').click()
+    check((await page.locator('.run-row').count()) === 2, 'Show all runs brings both rows back')
+  }
 
   // A1: a pending request_mcp_install must render a card in the tray; denying it clears the card and the run goes on.
   fs.writeFileSync(scriptFile, JSON.stringify({
@@ -768,7 +779,7 @@ try {
 
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
-  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
+  await page.getByRole('tab', { name: /^(Branches|Maintenance)$/ }).click()
   await sleep(600)
   const a2 = await page.evaluate(() => {
     const r = [...document.querySelectorAll('[role=tablist][aria-label="Project sections"] [role=tab]')].find((b) => b.textContent?.trim() === 'Live')?.getBoundingClientRect()

@@ -155,6 +155,8 @@ export function UpdatesSection({ autoCheck, onAutoCheckChange }: { autoCheck: bo
   const notes = state?.availableVersion && state.releaseNotes && !state.installing && state.status !== 'up-to-date' ? state.releaseNotes : ''
   // The release page as a second action when the primary one is something else and a version is known.
   const showReleaseLink = !!state && state.capability === 'auto' && !!state.availableVersion && !state.installing && state.status !== 'up-to-date'
+  // A newer version is waiting (ui-overhaul About board's hero): the card takes the accent border and glow.
+  const ready = !!state?.availableVersion && state.status !== 'up-to-date' && !state.installing
   // It went away while focused (install started, a newer check): continue from the primary action, never <body>.
   useEffect(() => {
     if (showReleaseLink || !releaseFocused.current) return
@@ -166,7 +168,7 @@ export function UpdatesSection({ autoCheck, onAutoCheckChange }: { autoCheck: bo
 
   return (
     <SettingsSection id={UPDATES_SECTION_ID} title="Updates" titleId={TITLE_ID} testId="updates-block" sectionRef={sectionRef}>
-      <SettingsCard>
+      <SettingsCard className={`updates-card${ready ? ' is-ready' : ''}`}>
         <div className="updates-body">
           <dl className="about-list">
             <dt>Installed version</dt>

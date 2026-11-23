@@ -1,0 +1,380 @@
+/* The Inbox (docs/design/ui-overhaul/project/Inbox.dc.html). Tokens only. Motion: the amber dot breathes (.motion-breathe,
+   which reduced motion and Pause motion already stop) and the selected item rises in (.motion-view on the detail). */
+
+.inbox-view {
+  container: inbox / inline-size;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.inbox-page {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ----- header ----- */
+.inbox-header {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-height: 52px;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.inbox-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+}
+.inbox-summary {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+.inbox-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.inbox-header-gap {
+  flex: 1 1 0;
+}
+/* The project filter is a native select; .select is full width elsewhere. */
+.inbox-header .select {
+  width: auto;
+  min-width: 160px;
+  max-width: 240px;
+}
+
+/* ----- body: list and detail ----- */
+.inbox-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  overflow: auto;
+}
+.inbox-list-wrap {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.inbox-detail-pane {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+@container inbox (min-width: 760px) {
+  .inbox-body {
+    display: grid;
+    grid-template-columns: minmax(280px, 400px) minmax(0, 1fr);
+    align-items: start;
+    overflow: hidden;
+  }
+  .inbox-list-wrap,
+  .inbox-detail-pane {
+    max-height: 100%;
+    min-height: 0;
+    overflow: auto;
+  }
+  .inbox-body {
+    align-items: stretch;
+  }
+}
+
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.inbox-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  padding: var(--space-2);
+  border-radius: var(--radius-xl);
+}
+.inbox-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.inbox-section-title {
+  margin: 0;
+  padding: var(--space-1) var(--space-2) var(--space-1h);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.inbox-section-title.waiting {
+  color: var(--warning-text);
+}
+.inbox-section-empty {
+  margin: 0;
+  padding: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.inbox-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+
+/* ----- a row: one button ----- */
+.inbox-row {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.inbox-row:hover {
+  background: var(--glass-strong);
+}
+.inbox-row[aria-current='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.inbox-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: var(--radius-full);
+}
+.inbox-dot.waiting {
+  background: var(--warning);
+}
+.inbox-dot.done {
+  background: var(--success);
+}
+.inbox-dot.failed {
+  background: var(--danger);
+}
+.inbox-row-text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.inbox-row-title {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+.inbox-row-sub {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-row-meta {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-0h);
+}
+.inbox-row-when {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.inbox-row-kind {
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--field-bg);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.inbox-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0 var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.inbox-keys kbd {
+  font-family: inherit;
+}
+
+/* ----- the selected item ----- */
+.inbox-detail-motion {
+  min-width: 0;
+}
+.inbox-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.inbox-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.inbox-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.inbox-detail-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inbox-detail-project {
+  color: var(--text-tertiary);
+}
+.inbox-detail-project::before {
+  content: 'in ';
+}
+
+.inbox-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border-radius: var(--radius-xl);
+  min-width: 0;
+}
+.inbox-panel-waiting {
+  border-color: var(--warning-border);
+}
+.inbox-panel-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.inbox-panel-when {
+  color: var(--text-tertiary);
+}
+.inbox-panel-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.inbox-panel-note {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+}
+.inbox-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.inbox-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+}
+.inbox-facts li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-line);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.inbox-fact-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.inbox-fact-dot[data-tone='danger'] {
+  background: var(--danger);
+}
+.inbox-upnext {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.inbox-upnext-label {
+  flex: none;
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+}
+.inbox-upnext-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-empty {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  overflow: auto;
+}

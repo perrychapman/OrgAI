@@ -41,45 +41,65 @@
   --office-green-surface: #e1f2df;
   --office-green-ink: #183a2a;
   --office-green-border: #42755a;
-  --surface-1: #12161f;
-  --surface-2: #181c27;
-  --surface-3: #20263a;
-  --field-bg: #0b0d12;
-  --overlay-scrim: rgb(4 5 8 / 0.6);
+  /* UI overhaul palette (docs/design/ui-overhaul/project/tokens.css). Surfaces stay opaque for code that needs a solid
+     fill; glass panels use --glass / --glass-strong over --bg-art. Measured (impl-foundation.md "Contrast"). */
+  --surface-1: #131722;
+  --surface-2: #1a1e2c;
+  --surface-3: #232839;
+  --field-bg: #1f2330;
+  --overlay-scrim: rgb(4 5 10 / 0.62);
 
-  --border-subtle: #1d2332;
-  --border-default: #283045;
-  --border-strong: #39435b;
-  --border-input: #5d6882;
+  --border-subtle: rgb(255 255 255 / 0.09);
+  --border-default: rgb(255 255 255 / 0.13);
+  --border-strong: rgb(255 255 255 / 0.19);
+  --border-input: #8089a6;
 
-  --text-primary: #e8ebf3;
-  --text-secondary: #a3adc2;
-  --text-tertiary: #8791a8;
-  --text-disabled: #5b6479;
+  --text-primary: #eef0f7;
+  --text-secondary: #bcc3d3;
+  --text-tertiary: #a3acc0;
+  --text-disabled: #646d82;
   --text-on-accent: #ffffff;
   --text-on-success: #0b0d12;
   --text-on-danger: #0b0d12;
 
-  --accent: #6e4df5;
-  --accent-hover: #6444e8;
-  --accent-active: #5a3bd9;
-  --accent-text: #a592ff;
-  --accent-soft: color-mix(in oklab, var(--accent) 16%, transparent);
-  --accent-soft-border: color-mix(in oklab, var(--accent) 36%, transparent);
+  --accent: #6a59f0;
+  --accent-hover: #7767ff;
+  --accent-active: #5444d8;
+  --accent-text: #b6acff;
+  --accent-soft: color-mix(in oklab, var(--accent) 20%, transparent);
+  --accent-soft-border: color-mix(in oklab, var(--accent) 40%, transparent);
   --focus-ring: var(--accent-text);
 
-  --success: #22c58b;
-  --success-text: #34d399;
+  --success: #34c08a;
+  --success-text: #52d6a0;
   --success-soft: color-mix(in oklab, var(--success) 14%, transparent);
-  --warning: #f5a524;
-  --warning-text: #f5b73d;
+  --warning: #f5a623;
+  --warning-text: #f5b260;
   --warning-soft: color-mix(in oklab, var(--warning) 14%, transparent);
   --danger: #ff6b6b;
-  --danger-text: #ff7b7b;
+  --danger-text: #ff9a92;
   --danger-soft: color-mix(in oklab, var(--danger) 14%, transparent);
-  --info: #2bb0ff;
-  --info-text: #4cb8ff;
+  --info: #4cc9f0;
+  --info-text: #6fd3f3;
   --info-soft: color-mix(in oklab, var(--info) 14%, transparent);
+
+  /* Overhaul additions. Glass is a translucent panel over the ambient ground (--bg-art), blurred by --glass-blur. */
+  --bg-art: radial-gradient(900px 620px at 10% -12%, rgb(124 108 255 / 0.3), transparent 62%),
+    radial-gradient(820px 620px at 104% 108%, rgb(76 201 240 / 0.2), transparent 60%),
+    radial-gradient(600px 420px at 70% 20%, rgb(124 108 255 / 0.08), transparent 70%), #0b0d12;
+  --glass: rgb(255 255 255 / 0.055);
+  --glass-strong: rgb(22 25 38 / 0.72);
+  --glass-line: rgb(255 255 255 / 0.11);
+  --sheen: rgb(255 255 255 / 0.35);
+  --glass-blur: blur(22px) saturate(1.6);
+  --working: #4cc9f0;
+  --working-soft: rgb(76 201 240 / 0.16);
+  --working-text: #6fd3f3;
+  --glow-working: 0 0 0 1px rgb(76 201 240 / 0.45), 0 0 26px -6px rgb(76 201 240 / 0.55);
+  --eng: #ff9aa8;
+  --eng-soft: rgb(240 120 140 / 0.16);
+  --eng-line: rgb(240 120 140 / 0.38);
+  --dot: rgb(255 255 255 / 0.1);
 
   --code-bg: var(--surface-0);
   --diff-add-bg: color-mix(in oklab, var(--success) 14%, transparent);
@@ -126,9 +146,9 @@
   --dim-opacity: 0.55;
 
   --elev-0: none;
-  --elev-1: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px rgb(0 0 0 / 0.4);
-  --elev-2: 0 8px 24px rgb(0 0 0 / 0.5), 0 0 0 1px var(--border-default);
-  --elev-3: 0 24px 64px rgb(0 0 0 / 0.6), 0 0 0 1px var(--border-strong);
+  --elev-1: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 1px 2px rgb(0 0 0 / 0.4);
+  --elev-2: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 18px 40px -12px rgb(0 0 0 / 0.55), 0 0 0 1px var(--border-default);
+  --elev-3: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 24px 64px rgb(0 0 0 / 0.6), 0 0 0 1px var(--border-strong);
 
   /* Knowledge graph (docs/design/knowledge-graph-2.md): plain values the canvas reads. */
   --neural-field: #070a12;
@@ -201,42 +221,58 @@
   --surface-1: #fafbfd;
   --surface-2: #ffffff;
   --surface-3: #e9ecf4;
-  --field-bg: #ffffff;
-  --overlay-scrim: rgb(16 20 32 / 0.35);
+  --field-bg: #f3f4f8;
+  --overlay-scrim: rgb(16 20 40 / 0.35);
 
-  --border-subtle: #e6e9f1;
-  --border-default: #d5dae6;
-  --border-strong: #bcc4d6;
-  --border-input: #858ea3;
+  --border-subtle: rgb(24 28 56 / 0.1);
+  --border-default: rgb(24 28 56 / 0.15);
+  --border-strong: rgb(24 28 56 / 0.22);
+  --border-input: #7d869b;
 
   --text-primary: #12151f;
-  --text-secondary: #4a5368;
-  --text-tertiary: #636d82;
+  --text-secondary: #444c60;
+  --text-tertiary: #596277;
   --text-disabled: #9aa3b5;
   --text-on-accent: #ffffff;
   --text-on-success: #0b0d12;
   --text-on-danger: #ffffff;
 
-  --accent: #5b3df0;
-  --accent-hover: #4f31de;
-  --accent-active: #4527c8;
-  --accent-text: #4f33d6;
-  --accent-soft: color-mix(in oklab, var(--accent) 10%, transparent);
-  --accent-soft-border: color-mix(in oklab, var(--accent) 28%, transparent);
+  --accent: #5b4be0;
+  --accent-hover: #4f3fd4;
+  --accent-active: #4535c0;
+  --accent-text: #4a3bd0;
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+  --accent-soft-border: color-mix(in oklab, var(--accent) 30%, transparent);
   --focus-ring: var(--accent-text);
 
   --success: #12a06f;
-  --success-text: #096a48;
+  --success-text: #0c6b47;
   --success-soft: color-mix(in oklab, var(--success) 10%, transparent);
   --warning: #e08a00;
-  --warning-text: #7d4a00;
-  --warning-soft: color-mix(in oklab, var(--warning) 10%, transparent);
+  --warning-text: #944705;
+  --warning-soft: color-mix(in oklab, var(--warning) 12%, transparent);
   --danger: #d9363e;
-  --danger-text: #b3242f;
+  --danger-text: #b3261e;
   --danger-soft: color-mix(in oklab, var(--danger) 10%, transparent);
-  --info: #1a86d9;
-  --info-text: #0a5fa2;
+  --info: #0a84ad;
+  --info-text: #086a8c;
   --info-soft: color-mix(in oklab, var(--info) 10%, transparent);
+
+  --bg-art: radial-gradient(900px 620px at 10% -12%, rgb(124 108 255 / 0.22), transparent 62%),
+    radial-gradient(820px 620px at 104% 108%, rgb(76 201 240 / 0.22), transparent 60%), #f4f5f9;
+  --glass: rgb(255 255 255 / 0.62);
+  --glass-strong: rgb(255 255 255 / 0.82);
+  --glass-line: rgb(24 28 56 / 0.12);
+  --sheen: rgb(255 255 255 / 0.55);
+  --glass-blur: blur(18px) saturate(1.4);
+  --working: #0a84ad;
+  --working-soft: rgb(10 132 173 / 0.12);
+  --working-text: #086a8c;
+  --glow-working: 0 0 0 1px rgb(10 132 173 / 0.5), 0 0 22px -8px rgb(10 132 173 / 0.6);
+  --eng: #b83a55;
+  --eng-soft: rgb(224 90 115 / 0.11);
+  --eng-line: rgb(200 70 100 / 0.32);
+  --dot: rgb(24 28 56 / 0.13);
 
   --code-bg: #f1f3f8;
   --diff-add-bg: color-mix(in oklab, var(--success) 12%, transparent);
@@ -280,7 +316,7 @@
 
   --elev-0: none;
   --elev-1: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.04);
-  --elev-2: 0 8px 24px rgb(16 24 40 / 0.12), 0 0 0 1px var(--border-default);
+  --elev-2: 0 1px 0 rgb(255 255 255 / 0.8) inset, 0 10px 30px -14px rgb(40 45 90 / 0.28), 0 0 0 1px var(--border-default);
   --elev-3: 0 24px 64px rgb(16 24 40 / 0.2), 0 0 0 1px var(--border-default);
 
   --neural-field: #f3f5fb;
@@ -350,42 +386,58 @@
     --surface-1: #fafbfd;
     --surface-2: #ffffff;
     --surface-3: #e9ecf4;
-    --field-bg: #ffffff;
-    --overlay-scrim: rgb(16 20 32 / 0.35);
+    --field-bg: #f3f4f8;
+    --overlay-scrim: rgb(16 20 40 / 0.35);
 
-    --border-subtle: #e6e9f1;
-    --border-default: #d5dae6;
-    --border-strong: #bcc4d6;
-    --border-input: #858ea3;
+    --border-subtle: rgb(24 28 56 / 0.1);
+    --border-default: rgb(24 28 56 / 0.15);
+    --border-strong: rgb(24 28 56 / 0.22);
+    --border-input: #7d869b;
 
     --text-primary: #12151f;
-    --text-secondary: #4a5368;
-    --text-tertiary: #636d82;
+    --text-secondary: #444c60;
+    --text-tertiary: #596277;
     --text-disabled: #9aa3b5;
     --text-on-accent: #ffffff;
     --text-on-success: #0b0d12;
     --text-on-danger: #ffffff;
 
-    --accent: #5b3df0;
-    --accent-hover: #4f31de;
-    --accent-active: #4527c8;
-    --accent-text: #4f33d6;
-    --accent-soft: color-mix(in oklab, var(--accent) 10%, transparent);
-    --accent-soft-border: color-mix(in oklab, var(--accent) 28%, transparent);
+    --accent: #5b4be0;
+    --accent-hover: #4f3fd4;
+    --accent-active: #4535c0;
+    --accent-text: #4a3bd0;
+    --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+    --accent-soft-border: color-mix(in oklab, var(--accent) 30%, transparent);
     --focus-ring: var(--accent-text);
 
     --success: #12a06f;
-    --success-text: #096a48;
+    --success-text: #0c6b47;
     --success-soft: color-mix(in oklab, var(--success) 10%, transparent);
     --warning: #e08a00;
-    --warning-text: #7d4a00;
-    --warning-soft: color-mix(in oklab, var(--warning) 10%, transparent);
+    --warning-text: #944705;
+    --warning-soft: color-mix(in oklab, var(--warning) 12%, transparent);
     --danger: #d9363e;
-    --danger-text: #b3242f;
+    --danger-text: #b3261e;
     --danger-soft: color-mix(in oklab, var(--danger) 10%, transparent);
-    --info: #1a86d9;
-    --info-text: #0a5fa2;
+    --info: #0a84ad;
+    --info-text: #086a8c;
     --info-soft: color-mix(in oklab, var(--info) 10%, transparent);
+
+    --bg-art: radial-gradient(900px 620px at 10% -12%, rgb(124 108 255 / 0.22), transparent 62%),
+      radial-gradient(820px 620px at 104% 108%, rgb(76 201 240 / 0.22), transparent 60%), #f4f5f9;
+    --glass: rgb(255 255 255 / 0.62);
+    --glass-strong: rgb(255 255 255 / 0.82);
+    --glass-line: rgb(24 28 56 / 0.12);
+    --sheen: rgb(255 255 255 / 0.55);
+    --glass-blur: blur(18px) saturate(1.4);
+    --working: #0a84ad;
+    --working-soft: rgb(10 132 173 / 0.12);
+    --working-text: #086a8c;
+    --glow-working: 0 0 0 1px rgb(10 132 173 / 0.5), 0 0 22px -8px rgb(10 132 173 / 0.6);
+    --eng: #b83a55;
+    --eng-soft: rgb(224 90 115 / 0.11);
+    --eng-line: rgb(200 70 100 / 0.32);
+    --dot: rgb(24 28 56 / 0.13);
 
     --code-bg: #f1f3f8;
     --diff-add-bg: color-mix(in oklab, var(--success) 12%, transparent);
@@ -427,7 +479,7 @@
 
     --elev-0: none;
     --elev-1: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.04);
-    --elev-2: 0 8px 24px rgb(16 24 40 / 0.12), 0 0 0 1px var(--border-default);
+    --elev-2: 0 1px 0 rgb(255 255 255 / 0.8) inset, 0 10px 30px -14px rgb(40 45 90 / 0.28), 0 0 0 1px var(--border-default);
     --elev-3: 0 24px 64px rgb(16 24 40 / 0.2), 0 0 0 1px var(--border-default);
 
     --neural-field: #f3f5fb;
@@ -507,6 +559,10 @@
   /* Typography (spec 4.4). System stacks for now; bundled fonts arrive in a later brief. */
   --font-sans: 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'JetBrains Mono', monospace;
+  /* UI overhaul: headings (Space Grotesk, bundled under assets/fonts when present, else the fallback) and engagement
+     headings (serif). */
+  --font-display: 'Space Grotesk', 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --text-caption: 12px;
   --text-caption-lh: 16px;
   --text-small: 12px;
@@ -580,7 +636,7 @@
 
   /* Derived from the themed tokens above (resolved on :root, so they follow the active theme and accent). */
   --ring: 0 0 0 3px color-mix(in oklab, var(--focus-ring) 35%, transparent);
-  --state-working: var(--info);
+  --state-working: var(--working);
   --state-waiting: var(--warning);
   --state-done: var(--success);
   --state-error: var(--danger);
@@ -653,28 +709,13 @@
 
 /* ---------- 5. Element-scoped composites (need the element's own --role) ---------- */
 
-.agent-node,
-.role-node {
-  --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 50%, transparent), 0 0 24px color-mix(in oklab, var(--role) 22%, transparent);
-}
+/* Owner decision 1: working is cyan. Nodes no longer override --glow-working with the role colour;
+ * role identity stays on the node's other role cues (--role border, icon, label). */
 
 /* Dashboard Right now band: reporting lines in the parent's role colour (--line-role set inline). */
 .dash-agent-row,
 .dash-run-head {
   --dash-line: color-mix(in oklab, var(--line-role, var(--edge)) 70%, var(--border-default));
-}
-
-/* Glow is invisible on light surfaces; the working border stays. */
-:root[data-theme='light'] .agent-node,
-:root[data-theme='light'] .role-node {
-  --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 70%, transparent);
-}
-
-@media (prefers-color-scheme: light) {
-  :root[data-theme='system'] .agent-node,
-  :root[data-theme='system'] .role-node {
-    --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 70%, transparent);
-  }
 }
 
 /* ---------- 6. LEGACY ALIAS BLOCK ----------
@@ -686,6 +727,7 @@
   --bg: var(--surface-0);
   --bg-elev: var(--surface-2);
   --bg-elev-2: var(--surface-3);
+  /* WARNING: the design boards use --panel for --surface-2; this alias is --surface-1 because existing TSX depends on it. Do not "fix" it here. */
   --panel: var(--surface-1);
   --border: var(--border-default);
   /* --border-strong and --danger keep their names and are defined above. */

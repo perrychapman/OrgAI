@@ -516,6 +516,7 @@ try {
 
   // ---------- Settings: choose Factory Floor ----------
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const section = page.locator('[data-testid=canvas-section]')
   await section.waitFor({ timeout: 10_000 })
   const radio = section.locator('[data-testid=canvas-presentation-factory-floor]')
@@ -1552,6 +1553,7 @@ try {
   // presentation choice's thumbnail and (with Factory Floor chosen) the preview render it. The checks FAIL until that change lands.
   await setCanvas({ presentation: 'factory-floor' })
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   await page.locator('[data-testid=canvas-section]').waitFor({ timeout: 10_000 })
   const readSamples = () =>
     page.evaluate(() =>

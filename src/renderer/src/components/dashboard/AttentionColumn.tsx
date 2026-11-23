@@ -5,6 +5,7 @@ import { projectKindOf } from '@shared/defaults'
 import { Button } from '../ui/Button'
 import { useArrivalSettle, useAttentionList, useRowExits, type RowMotion } from './AttentionSection'
 import { sectionHeadingId, useDashboard } from './DashboardContext'
+import { HomeEmpty } from './HomeEmpty'
 import type { DashCaps } from './dashCaps'
 import { NeedsRow, needsItemKey, useNewDecisionAnnouncer, type NeedsItem } from './NeedsInline'
 import { useDecisionTotal, useWaitingRuns } from './useDashboardData'
@@ -36,6 +37,7 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
   const teamItems = useTeamAttentionItems()
   const decisionTotal = useDecisionTotal()
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
+  const setView = useAppStore((s) => s.setView)
   // Every project's history is in: the first data load is over, and the baseline of seen decisions is taken then.
   const ready = useAppStore((s) => s.projects.length > 0 && s.projects.every((p) => p.id in s.historyByProject))
   // The order of the rows last shown. The rule (kind, run start, key) places only keys that are new, so an event on
@@ -106,7 +108,7 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
     return () => cancelAnimationFrame(frame)
   }, [none, onAnnounce])
 
-  if (none) return null
+  if (none) return <HomeEmpty kind="needs" />
 
   const runIds = new Set(items.flatMap((it) => (it.kind === 'team' ? [] : [it.run.summary.id])))
   return (
@@ -119,11 +121,14 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
     >
       <div className="dash-section-head">
         <h2 id={headingId} ref={headingRef} tabIndex={-1} data-section-heading="">
-          Needs you
+          Waiting on you
         </h2>
         <span className="dash-count" data-testid="dash-needs-count" data-ping={cue.ping ? '' : undefined} onAnimationEnd={cue.onPingEnd}>
           {needsCountText(decisionTotal, runIds.size)}
         </span>
+        <Button variant="ghost" size="sm" className="dash-section-action" testId="dash-open-inbox" onClick={() => setView('inbox')}>
+          Open inbox
+        </Button>
       </div>
       <ul className="dash-rows dash-needs-list" ref={model.listRef} onFocus={model.onFocus} onBlur={model.onBlur}>
         {rows.map((r) => {

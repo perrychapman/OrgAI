@@ -71,7 +71,8 @@ export default function DecisionTray({
       {items.length > 1 && (
         <div className="decision-stepper" role="group" aria-label="Pending decisions">
           <span className="decision-stepper-title">
-            Decisions <span className="decision-count">{items.length}</span>
+            <span className="decision-waiting-dot motion-breathe" aria-hidden="true" />
+            <span className="decision-count">{items.length}</span> waiting on you
           </span>
           <ul
             className="decision-list"

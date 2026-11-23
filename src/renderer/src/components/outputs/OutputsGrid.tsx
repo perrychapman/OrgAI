@@ -153,7 +153,7 @@ export function OutputsGrid({
         ref={listRef}
         className="outputs-grid"
         role="listbox"
-        aria-label="Outputs"
+        aria-label="Files"
         aria-multiselectable={selectMode || undefined}
         data-select={selectMode ? 'true' : undefined}
         data-testid="outputs-grid"

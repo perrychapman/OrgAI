@@ -12,6 +12,23 @@
   border: 0;
 }
 
+/* Glass panels (UI overhaul): translucent over the ambient ground (--bg-art). .glass for cards and panels,
+   .glass-strong for floating chrome (popovers, menus, docks) that must stay readable over busy content. */
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-2);
+}
+.glass-strong {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-2);
+}
+
 .spin {
   display: inline-flex;
   animation: spin 0.9s linear infinite;
@@ -30,12 +47,17 @@
   height: var(--space-5);
   padding: 0 var(--space-2);
   border-radius: var(--radius-full);
-  background: var(--surface-3);
+  background: var(--field-bg);
   color: var(--text-secondary);
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
-  font-weight: var(--weight-regular);
+  font-weight: var(--weight-semibold);
   white-space: nowrap;
+}
+/* Working (cyan): a live state, always shown with its word. */
+.badge.tone-working {
+  background: var(--working-soft);
+  color: var(--working-text);
 }
 /* One shape (20 px, no border, soft fill), three tones: neutral, accent, status. The status tones are
    success / attention (warning) / info / danger; "attention" and "warning" are the same tone. */
@@ -70,9 +92,9 @@
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-default);
-  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-line);
+  background: var(--glass-strong);
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
@@ -140,14 +162,17 @@
   place-items: center;
   flex: none;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background var(--dur-instant), color var(--dur-instant), transform var(--dur-fast) var(--ease-out);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 .icon-btn:active:not(:disabled):not([aria-disabled='true']) {
-  transform: scale(0.98);
+  transform: scale(0.97);
   transition-duration: var(--dur-instant);
 }
 .icon-btn.size-md {
@@ -159,7 +184,7 @@
   height: var(--control-sm);
 }
 .icon-btn:hover:not(:disabled) {
-  background: var(--surface-3);
+  background: color-mix(in oklab, var(--text-primary) 8%, transparent);
   color: var(--text-primary);
 }
 .icon-btn:disabled {
@@ -226,9 +251,11 @@
 /* Dialog */
 .dialog {
   padding: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--surface-2);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--text-primary);
   box-shadow: var(--elev-3);
   width: calc(100vw - var(--space-8));
@@ -313,6 +340,7 @@
 }
 .dialog-head h2 {
   margin: 0;
+  font-family: var(--font-display);
   font-size: var(--text-title);
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
@@ -338,8 +366,8 @@
   justify-content: flex-end;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border-default);
-  background: var(--surface-1);
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in oklab, var(--surface-1) 55%, transparent);
 }
 
 /* Fields */
@@ -555,7 +583,7 @@
   display: grid;
   place-items: center;
   border: 1px solid var(--border-input);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   background: var(--field-bg);
   color: transparent;
   transition: background var(--dur-instant), border-color var(--dur-instant);
@@ -622,6 +650,102 @@ ul.maint-list {
 .rule-code {
   overflow-wrap: anywhere;
 }
+/* Key hint inside a button or menu item (Components board): "Enter", "Esc". Decorative next to the visible label;
+   the shortcut itself is announced by the control (aria-keyshortcuts) where it exists. */
+.kbd-hint {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-regular);
+}
+.btn.primary .kbd-hint {
+  border-color: color-mix(in oklab, var(--text-on-accent) 40%, transparent);
+}
+
+/* Filter chip (components/ui/Chip). Named ui-chip: .chip is the older static label in controls.css. */
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  min-height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--glass);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.ui-chip:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.ui-chip:active:not(:disabled) {
+  transform: scale(0.97);
+}
+/* Selected: an accent edge (3:1 against the ground, WCAG 1.4.11) plus the fill and brighter text, not colour of fill alone. */
+.ui-chip.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent-text);
+  color: var(--text-primary);
+}
+@media (forced-colors: active) {
+  .ui-chip.is-selected {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border-color: HighlightText;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+}
+.ui-chip:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+.ui-chip-count {
+  min-width: 18px;
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--field-bg);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-small-lh);
+  text-align: center;
+}
+.ui-chip.tone-accent .ui-chip-count {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.ui-chip.tone-working .ui-chip-count {
+  background: var(--working-soft);
+  color: var(--working-text);
+}
+.ui-chip.tone-warning .ui-chip-count {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.ui-chip.tone-success .ui-chip-count {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.ui-chip.tone-danger .ui-chip-count {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+
 .chip-btn {
   cursor: pointer;
 }
@@ -691,9 +815,11 @@ ul.maint-list {
   max-width: min(24rem, calc(100vw - 16px));
   max-height: min(28rem, calc(100vh - 16px));
   overflow: auto;
-  border: 0;
+  border: 1px solid var(--glass-line);
   border-radius: var(--radius-lg);
-  background: var(--surface-2);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--text-primary);
   box-shadow: var(--elev-2);
   font-size: var(--text-body);
@@ -743,11 +869,13 @@ ul.maint-list {
   max-width: min(22rem, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow: auto;
-  padding: var(--space-1);
-  /* Transparent normally (the shadow draws the edge); forced-colors mode drops shadows and paints this border. */
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
+  padding: var(--space-1h);
+  /* The glass line draws the edge; forced-colors mode paints this border in the system colour. */
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--text-primary);
   box-shadow: var(--elev-2);
   font-size: var(--text-body);
@@ -783,7 +911,7 @@ ul.maint-list {
   min-height: var(--control-md);
   padding: 0 var(--space-3) 0 var(--space-2);
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-primary);
   font: inherit;
@@ -793,7 +921,7 @@ ul.maint-list {
 }
 .ctx-menu-item:hover,
 .ctx-menu-item:focus {
-  background: var(--surface-3);
+  background: var(--accent-soft);
   outline: none;
 }
 .ctx-menu-item:focus-visible {
@@ -821,8 +949,8 @@ ul.maint-list {
 }
 .ctx-menu-sep {
   height: 1px;
-  margin: var(--space-1) var(--space-1);
-  background: var(--border-default);
+  margin: var(--space-1) var(--space-0h);
+  background: var(--border-subtle);
 }
 
 /* ---------- Tabs (underline, 2 px gradient indicator) ---------- */
@@ -935,6 +1063,9 @@ ul.maint-list {
   line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
 }
+.empty-state-title {
+  font-family: var(--font-display);
+}
 .empty-state.compact {
   padding: var(--space-6) var(--space-3);
 }
@@ -970,7 +1101,7 @@ ul.maint-list {
   flex: none;
   width: 32px;
   height: 32px;
-  border-radius: 22%;
+  border-radius: var(--radius-md);
 }
 :root[data-theme='light'] .brand-lockup-mark {
   box-shadow: 0 0 0 1px var(--border-subtle);
@@ -980,16 +1111,25 @@ ul.maint-list {
     box-shadow: 0 0 0 1px var(--border-subtle);
   }
 }
+/* The wordmark keeps its width; the tags (MOCK, Dev) are what gives way: they wrap onto two lines, then clip. */
 .brand-lockup-word {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   color: var(--text-primary);
   font-size: var(--text-title);
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
   letter-spacing: -0.01em;
   white-space: nowrap;
+}
+.brand-lockup-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0h) var(--space-1);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 .brand-lockup-trail {
   display: inline-flex;
@@ -1050,9 +1190,10 @@ button.brand-lockup-expand:hover {
   width: 14px;
   height: 14px;
   border-radius: var(--radius-full);
-  background: var(--info);
-  color: var(--surface-1);
-  font-size: 9px;
+  /* An accent / on-accent pair: readable in both themes (the old info fill took surface text, faint on cyan in light). */
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: calc(var(--text-caption) * 0.75);
   line-height: 1;
   font-weight: var(--weight-semibold);
   box-shadow: 0 0 0 2px var(--surface-1);

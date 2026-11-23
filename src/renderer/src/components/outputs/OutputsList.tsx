@@ -8,7 +8,7 @@ import { canOpenOutput } from '../../lib/outputs'
 import { cleanIpcError } from '../../lib/ipcError'
 import { ContextMenu, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
 import { OUTPUT_OPEN_HINT } from './OutputActions'
-import { OUTPUTS_PAGE, currentProvenance, dayGroups, isNewVersion, rowMetaLine, titleTypeAhead } from '../../lib/outputsList'
+import { OUTPUTS_PAGE, currentProvenance, isNewVersion, outputGroups, rowMetaLine, titleTypeAhead, type OutputsSort } from '../../lib/outputsList'
 import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -102,8 +102,11 @@ export function OutputsList({
   onToggle,
   onSelect,
   onOpen,
-  onNotice
+  onNotice,
+  sort = 'newest'
 }: {
+  /** The view's sort order: picks the headings (days, kinds or one A to Z group). */
+  sort?: OutputsSort
   /** Answers of the row menu (Open in default app, Copy path). */
   onNotice?: (text: string) => void
   ref?: Ref<OutputsListHandle>
@@ -132,7 +135,7 @@ export function OutputsList({
   const selectedAt = selectedId ? rows.findIndex((r) => r.id === selectedId) : -1
   const shownCount = Math.min(rows.length, Math.max(limit, selectedAt >= 0 ? selectedAt + 1 : 0))
   const shown = useMemo(() => rows.slice(0, shownCount), [rows, shownCount])
-  const groups = useMemo(() => dayGroups(shown, now), [shown, now])
+  const groups = useMemo(() => outputGroups(shown, sort, now), [shown, sort, now])
 
   // ---- roving focus (one Tab stop) ----
   const current = useRef<string | null>(null)
@@ -234,7 +237,7 @@ export function OutputsList({
   const more = Math.min(OUTPUTS_PAGE, rows.length - shownCount)
   return (
     <div className="outputs-list-wrap">
-      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus} onContextMenu={rowMenu.onContextMenu}>
+      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Files" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus} onContextMenu={rowMenu.onContextMenu}>
         {groups.map((g) => (
           <li key={g.key} role="presentation" className="outputs-group" data-testid="outputs-group">
             {/* Hidden from the tree (a listbox owns options and groups only); aria-labelledby still reads it as the group's name. */}

@@ -57,7 +57,7 @@
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-default);
   border-left-width: 3px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   background: var(--surface-2);
 }
 .output-old-version p {
@@ -113,24 +113,26 @@
   padding: 0;
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
 }
+/* A version is a small tile; the current one carries the violet edge and wash (the board's Versions strip). */
 .output-version-row {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: var(--glass, transparent);
   min-width: 0;
 }
 .output-version-row:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
 }
 .output-version-row[data-current='true'] {
-  background: var(--surface-2);
-  padding-inline: var(--space-2);
-  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 .output-version-head {
   display: flex;
@@ -245,7 +247,7 @@
   bottom: 0;
   width: min(320px, 90%);
   z-index: 2;
-  box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.25));
+  box-shadow: var(--elev-2);
 }
 
 /* Delete and rename */

@@ -1,60 +1,69 @@
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
-import { AppWindow, ChevronDown, ChevronRight, ExternalLink, Files, FolderPlus, History as HistoryIcon, Play } from 'lucide-react'
-import { ContextMenu, MenuButton, useContextMenu, type ContextMenuControl, type MenuEntry } from './ui/ContextMenu'
+import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AppWindow, ExternalLink, Files, FolderPlus, History as HistoryIcon, Play, Search } from 'lucide-react'
+import { ContextMenu, useContextMenu, type MenuEntry } from './ui/ContextMenu'
 import { openRunWindow } from '../lib/menuActions'
 import type { RunSummary } from '@shared/types'
 import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
 import { runCostInput, sumCosts } from '../lib/cost'
-import { canContinueIn, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
-import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
-import { displayRunName, isOrgChangeRun, runKindWord } from '../lib/orgChange'
-import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
+import { canContinueIn, chainGroups, isOpenStatus, type ChainGroup } from '../lib/runChains'
+import { runTag } from '../lib/runLabels'
+import { displayRunName } from '../lib/orgChange'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
-import { IconButton } from './ui/IconButton'
-import { Badge, type BadgeTone } from './ui/Badge'
+import { Chip, type ChipTone } from './ui/Chip'
+import { Input } from './ui/Input'
+import { Select } from './ui/Select'
 import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
-import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
-import { revealOutputsTab } from './outputs/revealOutputsTab'
+import { outputsOfRuns } from '../lib/outputs'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
-import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
-
-/** Untrusted prompt text in a tooltip is capped. */
-const TIP_CHARS = 300
-const memberRowId = (runId: string): string => `history-member-${runId}`
+import { canPromote, offersRetro, offersSaveAsProject, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
+import {
+  BUCKET_LABEL,
+  BUCKET_ORDER,
+  PERIOD_OPTIONS,
+  bucketCounts,
+  bucketOf,
+  groupByDay,
+  inPeriod,
+  matchesQuery,
+  runsLabel,
+  takeDays,
+  type HistoryBucket,
+  type HistoryPeriod
+} from '../lib/runHistory'
+import { HistoryRow } from './history/HistoryRow'
+import { HistoryDetail } from './history/HistoryDetail'
+import { groupStatus } from './history/groupStatus'
+import { openChainOutputs } from './history/openChainOutputs'
+import '../styles/history.css'
 
 type Filter = 'all' | 'work' | 'ask' | 'setup'
 type HistoryView = 'runs' | 'trends'
+type BucketFilter = 'all' | HistoryBucket
 
-/** History is the one place status is content: the shared status words in the Badge status tones. */
-const STATUS_BADGE: Record<RunTone, BadgeTone> = {
-  'is-running': 'info',
-  warn: 'attention',
-  idle: 'neutral',
-  paused: 'neutral',
-  ok: 'success',
-  danger: 'danger',
-  stopped: 'neutral'
-}
+/** Conversations listed before "Show N older runs" (a day is never cut). */
+const PAGE = 25
 
-/** Open the conversation (the Live view), then its Outputs side tab with the list showing. */
-function openChainOutputs(newestId: string, onOpen: (id: string) => Promise<void>): void {
-  void onOpen(newestId)
-    .then(() => {
-      useAppStore.getState().openRunOutput(newestId, null)
-      revealOutputsTab()
-    })
-    .catch(() => undefined)
+const BUCKET_TONE: Record<HistoryBucket, ChipTone> = { running: 'working', open: 'warning', finished: 'success', failed: 'danger', stopped: 'neutral' }
+
+/** The running dots that pulse at once (motion-design: at most a dozen loops on a screen). */
+const PULSE_MAX = 12
+
+interface Entry {
+  group: ChainGroup<RunSummary>
+  bucket: HistoryBucket
+  word: string
+  outputTitles: string[]
 }
 
 /**
- * The History tab: one row per conversation (a session chain) as a table (prompt first, status, cost, age, kind) with
- * its actions. Rows are real table rows; every action is a real button. Opening a row switches to Live and shows the
- * chain's tab. A chain of several sessions can be expanded to list them.
+ * The History board: a search field, status chips with counts, a period and kind choice, the project's conversations
+ * grouped by day (one native table per day, a real row each), and the selected conversation's detail beside them.
+ * Opening a row switches to Live and shows the chain's tab. A chain of several sessions can be expanded to list them.
  */
 export default function RunHistory(): ReactElement {
   const summaries = useProjectSummaries()
@@ -64,31 +73,79 @@ export default function RunHistory(): ReactElement {
   const current = useAppStore(activeRun)
   const indexes = useRunIndexes()
   const [filter, setFilter] = useState<Filter>('all')
+  const [bucket, setBucket] = useState<BucketFilter>('all')
+  const [period, setPeriod] = useState<HistoryPeriod>('all')
+  const [query, setQuery] = useState('')
+  // The scope is remembered only while this view stays mounted (not across sessions); "All runs" is the default.
+  const [scope, setScope] = useState<'all' | 'running'>('all')
+  const [limit, setLimit] = useState(PAGE)
   const [view, setView] = useState<HistoryView>('runs')
   const project = useAppStore(selectedProject)
   const isChat = project?.id === QUICK_PROJECT_ID
   const [saving, setSaving] = useState<RunSummary | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [focusKey, setFocusKey] = useState<string | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
 
-  // The outputs index feeds the "N outputs" chips; fetch it once when History opens and it is not loaded yet.
+  // The outputs index feeds the "N outputs" chips and the detail panel; fetch it once when History opens and it is not loaded yet.
   const outputsLoaded = useAppStore((s) => (project ? s.outputsByProject[project.id] !== undefined : true))
   const loadOutputs = useAppStore((s) => s.loadOutputs)
+  const outputsIndex = useAppStore((s) => (project ? s.outputsByProject[project.id] : undefined))
   useEffect(() => {
     if (project && !outputsLoaded) void loadOutputs(project.id)
   }, [project, outputsLoaded, loadOutputs])
 
   const groups = useMemo(() => chainGroups(summaries), [summaries])
-  // The kind filter applies to a chain by its first member.
-  const shown = groups.filter(
-    (g) =>
-      filter === 'all' ||
-      (filter === 'ask' ? g.first.team === 'single' : filter === 'work' ? g.first.kind === 'work' && g.first.team !== 'single' : g.first.kind === 'setup')
-  )
+  // The shared status word of every conversation, as one string so a store change that moves no status re-renders nothing here.
+  const wordsKey = useAppStore((s) => groups.map((g) => groupStatus(s.runs[g.newest.id], g.newest, project).word).join('|'))
   const viewedKey = current ? groups.find((g) => g.members.some((m) => m.id === current.summary.id))?.key : undefined
+  const now = useMemo(() => Date.now(), [groups, period])
+
+  const entries = useMemo<Entry[]>(() => {
+    const words = wordsKey.split('|')
+    return groups.map((g, i) => {
+      const word = words[i] as ReturnType<typeof groupStatus>['word']
+      const ids = new Set(g.members.map((m) => m.id))
+      const outs = g.first.kind === 'work' && !g.first.quick ? outputsOfRuns(outputsIndex, ids) : []
+      return { group: g, bucket: bucketOf(word), word, outputTitles: outs.flatMap((o) => [o.title, o.fileName, o.relPath]) }
+    })
+  }, [groups, wordsKey, outputsIndex])
+
+  // "Running now": conversations whose newest session is working or waiting on the user (the shared status words).
+  const runningNow = useMemo(() => entries.filter((e) => e.word === 'Running' || e.word === 'Needs you').length, [entries])
+  // Scope, kind, period and search narrow the list; the chips count what is left, then the chip narrows it once more.
+  const narrowed = useMemo(
+    () =>
+      entries.filter(({ group: g, word, outputTitles }) => {
+        if (scope === 'running' && word !== 'Running' && word !== 'Needs you') return false
+        const kindOk = filter === 'all' || (filter === 'ask' ? g.first.team === 'single' : filter === 'work' ? g.first.kind === 'work' && g.first.team !== 'single' : g.first.kind === 'setup')
+        if (!kindOk || !inPeriod(g.newest.startedAt, period, now)) return false
+        return matchesQuery([displayRunName(g.first), g.first.prompt, g.newest.prompt, runTag(indexes.get(g.first.id)), word, g.newest.error, ...outputTitles], query)
+      }),
+    [entries, scope, filter, period, query, indexes, now]
+  )
+  const counts = useMemo(() => bucketCounts(narrowed.map((e) => e.bucket)), [narrowed])
+  const shown = useMemo(() => (bucket === 'all' ? narrowed : narrowed.filter((e) => e.bucket === bucket)), [narrowed, bucket])
+  const { days, hidden } = useMemo(() => {
+    const all = groupByDay(shown, (e) => e.group.newest.startedAt, now)
+    const t = takeDays(all, limit)
+    return { days: t.shown, hidden: t.hidden }
+  }, [shown, limit, now])
+  const visible = useMemo(() => days.flatMap((d) => d.items), [days])
+  const selected = visible.find((e) => e.group.key === selectedKey) ?? visible[0]
+  const runningKeys = useMemo(() => new Set(visible.filter((e) => e.bucket === 'running').slice(0, PULSE_MAX).map((e) => e.group.key)), [visible])
+
+  // After "Show older runs" the button is gone: focus lands on the first row it revealed.
+  useEffect(() => {
+    if (!focusKey) return
+    listRef.current?.querySelector<HTMLElement>(`tr[data-chain="${CSS.escape(focusKey)}"] button.hb-main`)?.focus()
+    setFocusKey(null)
+  }, [focusKey, visible])
 
   const menu = useContextMenu<string>()
   // If the row unmounts under the menu (Save as project, Retrospective), focus lands on the first Open button.
-  const fallbackFocus = (): HTMLElement | null => document.querySelector<HTMLElement>('.history-table button.run-open') ?? document.querySelector<HTMLElement>('.history-table')
+  const fallbackFocus = (): HTMLElement | null => document.querySelector<HTMLElement>('.hb-table button.run-open') ?? document.querySelector<HTMLElement>('.hb-table')
   const tagOf = (key: string): string => {
     const g = groups.find((x) => x.key === key)
     return g ? runTag(indexes.get(g.first.id)) : 'run'
@@ -131,11 +188,51 @@ export default function RunHistory(): ReactElement {
     return entries
   }
 
+  // Up and Down move between the rows' title buttons; the table keeps one Tab stop per control, as before.
+  const onListKeyDown = (e: ReactKeyboardEvent<HTMLElement>): void => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    if (!(e.target instanceof HTMLElement) || !e.target.classList.contains('hb-main')) return
+    const mains = [...(listRef.current?.querySelectorAll<HTMLElement>('button.hb-main') ?? [])]
+    const next = mains[mains.indexOf(e.target) + (e.key === 'ArrowDown' ? 1 : -1)]
+    if (next) {
+      e.preventDefault()
+      next.focus()
+    }
+  }
+
+  const noRuns = summaries.length === 0
+  const narrowing = filter !== 'all' || bucket !== 'all' || period !== 'all' || query.trim() !== ''
+  const filtering = narrowing || scope !== 'all'
+  const clearFilters = (): void => {
+    setScope('all')
+    setFilter('all')
+    setBucket('all')
+    setPeriod('all')
+    setQuery('')
+  }
+  const showKind = !(project && isVirtualProjectId(project.id))
+  // Select the (stable) live record, never the derived status object: a selector that returns a new object every time never settles.
+  const selectedLive = useAppStore((s) => (selected ? s.runs[selected.group.newest.id] : undefined))
+  const selectedStatus = useMemo(() => (selected ? groupStatus(selectedLive, selected.group.newest, project) : undefined), [selected, selectedLive, project])
+
   return (
-    <div className="history">
-      <div className="history-bar">
+    <div className="history hb" data-testid="history">
+      <div className="hb-head">
         <h2>History</h2>
-        <div className="history-bar-controls">
+        <div className="hb-head-controls">
+          {view === 'runs' && !noRuns && (
+            <div data-testid="history-scope">
+              <SegmentedControl<'all' | 'running'>
+                label="Which runs"
+                value={scope}
+                options={[
+                  { value: 'running', label: `Running now · ${runningNow}`, title: 'Runs that are working or waiting on you' },
+                  { value: 'all', label: `All runs · ${entries.length}` }
+                ]}
+                onChange={setScope}
+              />
+            </div>
+          )}
           <SegmentedControl<HistoryView>
             label="History view"
             value={view}
@@ -145,80 +242,164 @@ export default function RunHistory(): ReactElement {
             ]}
             onChange={setView}
           />
-          {view === 'runs' && !(project && isVirtualProjectId(project.id)) && (
-            <SegmentedControl<Filter>
-              label="Show runs of kind"
-              value={filter}
-              options={[
-                { value: 'all', label: 'All' },
-                { value: 'work', label: RUN_KIND_LABELS.work },
-                { value: 'ask', label: 'Ask' },
-                { value: 'setup', label: RUN_KIND_LABELS.setup }
-              ]}
-              onChange={setFilter}
-            />
-          )}
         </div>
       </div>
       {view === 'trends' ? (
-        project ? (
-          <UsageTrends projectId={project.id} />
-        ) : null
-      ) : summaries.length === 0 ? (
-        <div className="history-empty">
+        <div className="hb-trends glass">{project ? <UsageTrends projectId={project.id} /> : null}</div>
+      ) : noRuns ? (
+        <div className="history-empty hb-empty">
           <Icon icon={HistoryIcon} size="lg" />
           <p>No runs yet. Give the team a goal on the Live tab; every run you start is kept here.</p>
         </div>
-      ) : shown.length === 0 ? (
-        <div className="history-empty">
-          <p>No {filter === 'work' ? RUN_KIND_LABELS.work.toLowerCase() : filter} runs in this project.</p>
-        </div>
       ) : (
-        <div className="history-scroll">
-          <table className="history-table" aria-label="Runs of this project">
-            <thead>
-              <tr>
-                <th scope="col" className="col-prompt">
-                  Prompt
-                </th>
-                <th scope="col">Status</th>
-                <th scope="col" className="col-cost">
-                  Cost
-                </th>
-                <th scope="col" className="col-started">
-                  Age
-                </th>
-                <th scope="col" className="col-kind">
-                  Kind
-                </th>
-                {isChat && (
-                  <th scope="col" className="col-folder">
-                    Folder
-                  </th>
-                )}
-                <th scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((g) => (
-                <HistoryChain
-                  key={g.key}
-                  group={g}
-                  indexes={indexes}
-                  viewed={viewedKey === g.key}
-                  isExpanded={!!expanded[g.key]}
-                  onToggle={() => setExpanded((e) => ({ ...e, [g.key]: !e[g.key] }))}
-                  onOpen={(id) => openRun(id)}
-                  onContinue={() => void continueFromHistory(g.newest.id)}
-                  chat={isChat}
-                  menu={menu}
-                  fallbackFocus={fallbackFocus}
-                />
-              ))}
-            </tbody>
-          </table>
+        <div className="hb-body">
+          <div className="hb-grid">
+            <section className="hb-list" aria-label="Runs of this project" ref={listRef} onKeyDown={onListKeyDown}>
+              <div className="hb-toolbar">
+                <div className="hb-search">
+                  <span className="hb-search-icon" aria-hidden="true">
+                    <Icon icon={Search} size="sm" />
+                  </span>
+                  <Input type="search" aria-label="Search runs and what they changed" placeholder="Search runs and what they changed" value={query} onChange={setQuery} data-testid="history-search" />
+                </div>
+                <div className="hb-chips" role="group" aria-label="Show runs by status">
+                  <Chip selected={bucket === 'all'} count={narrowed.length} onClick={() => setBucket('all')} data-testid="history-chip-all">
+                    All
+                  </Chip>
+                  {BUCKET_ORDER.filter((b) => counts[b] > 0 || bucket === b).map((b) => (
+                    <Chip key={b} selected={bucket === b} count={counts[b]} tone={BUCKET_TONE[b]} onClick={() => setBucket(bucket === b ? 'all' : b)} data-testid={`history-chip-${b}`}>
+                      {BUCKET_LABEL[b]}
+                    </Chip>
+                  ))}
+                </div>
+                <div className="hb-selects">
+                  {showKind && (
+                    <Select
+                      label="Show runs of kind"
+                      value={filter}
+                      options={[
+                        { value: 'all', label: 'All kinds' },
+                        { value: 'work', label: RUN_KIND_LABELS.work },
+                        { value: 'ask', label: 'Ask' },
+                        { value: 'setup', label: RUN_KIND_LABELS.setup }
+                      ]}
+                      onChange={(v) => setFilter(v as Filter)}
+                    />
+                  )}
+                  <Select label="Period" value={period} options={PERIOD_OPTIONS.map((o) => ({ value: o.value, label: o.label }))} onChange={(v) => setPeriod(v as HistoryPeriod)} />
+                </div>
+              </div>
+              <p className="sr-only" role="status" data-testid="history-count">
+                {narrowed.length === 0 ? 'No runs match.' : `${runsLabel(shown.length)} shown.`}
+              </p>
+              {shown.length === 0 && scope === 'running' && !narrowing ? (
+                <div className="history-empty hb-empty" data-testid="history-scope-empty">
+                  <p>Nothing is running now.</p>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setScope('all')
+                      // The button leaves with the empty state: keep the keyboard in the scope control.
+                      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=history-scope] input:checked')?.focus())
+                    }}
+                    testId="history-scope-clear"
+                  >
+                    Show all runs
+                  </Button>
+                </div>
+              ) : shown.length === 0 ? (
+                <div className="history-empty hb-empty">
+                  <p>{filtering ? `No ${filter === 'all' ? '' : `${filter === 'work' ? RUN_KIND_LABELS.work.toLowerCase() : filter} `}runs match these choices.` : 'No runs in this project.'}</p>
+                  {filtering && (
+                    <Button size="sm" onClick={clearFilters} testId="history-clear">
+                      Show all runs
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {days.map((d) => {
+                    const members = d.items.flatMap((e) => e.group.members)
+                    return (
+                      <div className="hb-day glass" key={d.key} data-testid="history-day">
+                        <table className="hb-table" data-chat={isChat || undefined}>
+                          <caption>
+                            <div className="hb-day-head">
+                              <span className="hb-day-label">{d.label}</span>
+                              <span className="hb-day-total tabular">
+                                {runsLabel(d.items.length)} {'·'} <Cost value={sumCosts(members.map(runCostInput))} />
+                              </span>
+                            </div>
+                          </caption>
+                          <colgroup>
+                            <col className="hb-col-main" />
+                            {isChat && <col className="hb-col-folder" />}
+                            <col className="hb-col-agents" />
+                            <col className="hb-col-time" />
+                            <col className="hb-col-cost" />
+                            <col className="hb-col-act" />
+                          </colgroup>
+                          <thead className="sr-only">
+                            <tr>
+                              <th scope="col">Run</th>
+                              {isChat && <th scope="col">Folder</th>}
+                              <th scope="col">Agents</th>
+                              <th scope="col">Time</th>
+                              <th scope="col">Cost</th>
+                              <th scope="col">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {d.items.map((e) => (
+                              <HistoryRow
+                                key={e.group.key}
+                                group={e.group}
+                                indexes={indexes}
+                                viewed={viewedKey === e.group.key}
+                                selected={selected?.group.key === e.group.key}
+                                pulse={runningKeys.has(e.group.key)}
+                                isExpanded={!!expanded[e.group.key]}
+                                onToggle={() => setExpanded((x) => ({ ...x, [e.group.key]: !x[e.group.key] }))}
+                                onSelect={() => setSelectedKey(e.group.key)}
+                                onOpen={(id) => openRun(id)}
+                                chat={isChat}
+                                menu={menu}
+                                fallbackFocus={fallbackFocus}
+                              />
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  })}
+                  {hidden > 0 && (
+                    <button
+                      type="button"
+                      className="hb-older"
+                      data-testid="history-older"
+                      onClick={() => {
+                        setFocusKey(shown[visible.length]?.group.key ?? null)
+                        setLimit(0)
+                      }}
+                    >
+                      Show {hidden} older {hidden === 1 ? 'run' : 'runs'}
+                    </button>
+                  )}
+                </>
+              )}
+            </section>
+            {selected && selectedStatus && (
+              <HistoryDetail
+                group={selected.group}
+                indexes={indexes}
+                status={selectedStatus}
+                outputs={selected.group.first.kind === 'work' && !selected.group.first.quick ? outputsOfRuns(outputsIndex, selected.group.members.map((m) => m.id)) : []}
+                onOpen={(id) => void openRun(id)}
+                onContinue={(id) => void continueFromHistory(id)}
+                onOpenOutputs={(id) => openChainOutputs(id, openRun)}
+              />
+            )}
+          </div>
         </div>
       )}
       <ContextMenu control={menu} label={(key) => `Actions for ${tagOf(key)}`} items={menuItems} testId="history-menu" />
@@ -226,165 +407,3 @@ export default function RunHistory(): ReactElement {
     </div>
   )
 }
-
-function HistoryChain({
-  group,
-  indexes,
-  viewed,
-  isExpanded,
-  onToggle,
-  onOpen,
-  onContinue,
-  chat,
-  menu,
-  fallbackFocus
-}: {
-  group: ChainGroup<RunSummary>
-  indexes: Map<string, number>
-  viewed: boolean
-  isExpanded: boolean
-  onToggle: () => void
-  onOpen: (id: string) => Promise<void>
-  onContinue: () => void
-  chat: boolean
-  menu: ContextMenuControl<string>
-  fallbackFocus: () => HTMLElement | null
-}): ReactElement {
-  const { first, newest, members } = group
-  const liveNewest = useAppStore((s) => s.runs[newest.id])
-  const proj = useAppStore(selectedProject)
-  const status = statusOfRun(liveNewest ?? { summary: newest }, proj, !!liveNewest && needsYou(liveNewest))
-  const words = statusText(status)
-  const sessions = members.length
-  const last = lastActivityAt(newest)
-  const open = isOpenStatus(newest.status)
-  const tag = runTag(indexes.get(first.id))
-  const cost = useMemo(() => sumCosts(members.map(runCostInput)), [members])
-  const orgChange = isOrgChangeRun(first)
-  // What the conversation produced (docs/design/outputs.md section 12): every member run, from the loaded index.
-  const outputCount = useAppStore((s) => (first.kind === 'work' && !first.quick ? outputsOfRuns(s.outputsByProject[first.projectId], members.map((m) => m.id)).length : 0))
-  const openOutputs = (): void => openChainOutputs(newest.id, onOpen)
-  // The Menu key / Shift+F10 on the row's Open button opens the row menu anchored to that button.
-  const onRowKeyDown = (e: ReactKeyboardEvent<HTMLElement>): void => {
-    const btn = e.target instanceof Element ? e.target.closest<HTMLElement>('button.run-open') : null
-    if (btn) menu.onKeyDown(e, group.key, { anchor: btn, invoker: btn, fallbackFocus })
-  }
-  return (
-    <>
-      <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions} onContextMenu={(e) => menu.onContextMenu(e, group.key, { fallbackFocus, invoker: e.currentTarget.querySelector<HTMLElement>('[data-testid=history-more]') ?? e.currentTarget.querySelector<HTMLElement>('button.run-open') ?? undefined })} onKeyDown={onRowKeyDown}>
-        <td className="col-prompt">
-          <div className="run-head">
-            {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={isExpanded ? members.map((m) => memberRowId(m.id)).join(' ') : undefined} onClick={onToggle} testId="history-sessions-toggle" />}
-            <div className="run-head-text">
-              {first.title || orgChange ? (
-                <>
-                  <div className="run-name" title={displayRunName(first)}>
-                    <span className="run-index">{tag}</span> {displayRunName(first)}
-                  </div>
-                  <div className="prompt muted" title={shortPrompt(first.prompt, TIP_CHARS)}>
-                    {promptLine(first.prompt)}
-                  </div>
-                </>
-              ) : (
-                <div className="prompt" title={shortPrompt(first.prompt, TIP_CHARS)}>
-                  <span className="run-index">{tag}</span> {promptLine(first.prompt)}
-                </div>
-              )}
-            </div>
-            {sessions > 1 && (
-              <Badge tone="neutral" title={`${sessions} sessions in this conversation`}>
-                {sessions} sessions
-              </Badge>
-            )}
-            {outputCount > 0 && (
-              <Button size="sm" variant="ghost" icon={Files} className="history-outputs" testId="history-outputs" ariaLabel={`Open ${outputCount} ${outputCount === 1 ? 'output' : 'outputs'} of ${tag}`} title="Open this conversation on its Outputs tab" onClick={openOutputs}>
-                {outputsCountLabel(outputCount)}
-              </Button>
-            )}
-          </div>
-        </td>
-        <td>
-          <Badge tone={STATUS_BADGE[status.tone]} title={newest.pauseReason ?? status.note}>
-            <span className="status-dot" aria-hidden="true" />
-            {words}
-          </Badge>
-        </td>
-        <td className="col-cost">
-          <Cost value={cost} />
-        </td>
-        <td className="col-started" title={new Date(last).toLocaleString()}>
-          {relativeTime(last)}
-        </td>
-        <td className="col-kind">
-          <span data-testid="run-kind" data-kind={first.quick ? 'chat' : first.team === 'single' ? 'ask' : first.kind === 'work' ? 'work' : orgChange ? 'org-change' : first.kind}>
-            <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindWord(first)}</Badge>
-          </span>
-        </td>
-        {chat && (
-          <td className="col-folder" data-testid="history-folder" title={first.quick?.scratch ? 'A private scratch folder' : first.quick?.folder}>
-            {quickFolderLabel(first.quick)}
-          </td>
-        )}
-        <td>
-          <div className="run-row-actions">
-            <Button size="sm" className="run-open" onClick={() => void onOpen(newest.id)} title={open ? 'Open this live run' : 'Open this run'}>
-              Open
-            </Button>
-            {viewed && (
-              <Badge tone="accent" title="This conversation is open on the Live tab">
-                Open in Live
-              </Badge>
-            )}
-            {canContinueIn(members, newest.id) && (
-              <Button size="sm" variant="secondary" className="run-continue" title="Open this run and continue its session with its memory" onClick={onContinue}>
-                Continue
-              </Button>
-            )}
-            <MenuButton control={menu} target={group.key} label={`More actions for ${tag}`} testId="history-more" fallbackFocus={fallbackFocus} />
-          </div>
-        </td>
-      </tr>
-      {isExpanded &&
-        members.map((m, i) => (
-          <MemberRow key={m.id} member={m} number={i + 1} chat={chat} onOpen={() => void onOpen(m.id)} />
-        ))}
-    </>
-  )
-}
-
-/** One session of an expanded chain: when it started, its prompt, cost and Open (which scrolls the feed to it). */
-function MemberRow({ member, number, chat, onOpen }: { member: RunSummary; number: number; chat: boolean; onOpen: () => void }): ReactElement {
-  const live = useAppStore((s) => s.runs[member.id])
-  const proj = useAppStore(selectedProject)
-  const status = statusOfRun(live ?? { summary: member }, proj, false)
-  const started = new Date(member.startedAt)
-  return (
-    <tr className="run-member-row motion-enter" style={{ '--i': Math.min(number - 1, 5) } as CSSProperties} id={memberRowId(member.id)} data-run={member.id}>
-      <td className="col-prompt">
-        <div className="run-member">
-          <span className="run-member-no">Session {number}</span>
-          <span className="run-member-prompt" title={shortPrompt(member.prompt, TIP_CHARS)}>
-            {promptLine(member.prompt)}
-          </span>
-        </div>
-      </td>
-      <td>{statusText(status)}</td>
-      <td className="col-cost">
-        <Cost value={runCostInput(member)} />
-      </td>
-      <td className="col-started" title={started.toLocaleString()}>
-        {started.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-      </td>
-      <td className="col-kind" />
-      {chat && <td className="col-folder" />}
-      <td>
-        <div className="run-row-actions">
-          <Button size="sm" className="run-member-open" ariaLabel={`Open session ${number}`} onClick={onOpen}>
-            Open
-          </Button>
-        </div>
-      </td>
-    </tr>
-  )
-}
-

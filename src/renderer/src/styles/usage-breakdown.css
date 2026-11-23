@@ -3,57 +3,64 @@
  * The card is one surface (.usage-panel from usage.css); its panels are embedded and add no surface of their own.
  */
 
+/* The segmented switch (Usage board): a sunk track, the selected segment a filled pill that glides under the labels. The
+   tabs keep their tablist semantics (roving focus, arrow keys); the pill is one element moved by transform. */
 .usage-where-tabs {
   position: relative;
   display: flex;
-  gap: var(--space-1);
-  border-bottom: 1px solid var(--border-default);
+  align-self: flex-start;
+  max-width: 100%;
+  gap: var(--space-0h);
+  padding: 3px;
+  border-radius: var(--radius-lg);
+  background: var(--field-bg);
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
 .usage-where-tab {
+  position: relative;
+  z-index: 1;
   flex: none;
-  padding: var(--space-1h) var(--space-3);
-  margin-bottom: -1px;
+  padding: var(--space-1) var(--space-3);
   border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
+  font-weight: var(--weight-medium);
   cursor: pointer;
 }
 .usage-where-tab:hover {
-  background: var(--surface-2);
   color: var(--text-primary);
 }
+/* The selected segment fills with the brand colour itself until the gliding pill has measured (data-ready). */
 .usage-where-tab[aria-selected='true'] {
-  border-bottom-color: var(--accent);
-  color: var(--text-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
   font-weight: var(--weight-semibold);
 }
 .usage-where-tab:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
-/* Sliding 2 px underline (plan M1, motion.md 3.3): one element moved by transform from measured offsets. Once it has
-   measured (data-ready) the tab's own border steps aside; a resize snaps (data-snap) and first paint never glides. */
+/* The gliding pill (plan M1, motion.md 3.3): one element moved by transform from measured offsets. Once it has
+   measured (data-ready) the tab's own fill steps aside; a resize snaps (data-snap) and first paint never glides. */
 .usage-where-indicator {
   position: absolute;
   left: 0;
-  bottom: 0;
-  width: 1px;
-  height: 2px;
+  top: 3px;
+  bottom: 3px;
+  width: calc(var(--tab-w, 0) * 1px);
+  border-radius: var(--radius-md);
   background: var(--accent);
-  transform-origin: 0 0;
-  transform: translateX(var(--tab-x, 0px)) scaleX(var(--tab-w, 0));
+  transform: translateX(var(--tab-x, 0px));
   pointer-events: none;
 }
 .usage-where-tabs[data-ready] .usage-where-tab[aria-selected='true'] {
-  border-bottom-color: transparent;
+  background: transparent;
 }
 .usage-where-tabs[data-ready]:not([data-snap]) .usage-where-indicator {
   transition: transform var(--dur-slow) var(--ease-in-out);
@@ -120,6 +127,11 @@
   align-self: center;
   width: 100%;
 }
+/* Ranked bars (the board's "Where it went"): a sunk track under a rounded fill; a not-priced stub stays a dashed outline. */
+.uc-rank-bar {
+  border-radius: var(--radius-full);
+  background: var(--field-bg);
+}
 .usage-where-card .uc-rank-detail {
   grid-column: auto;
   max-width: 10rem;
@@ -158,7 +170,7 @@
   display: flex;
   gap: 1px;
   height: 14px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   overflow: hidden;
   background: var(--chart-hatch);
 }

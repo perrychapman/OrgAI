@@ -124,12 +124,13 @@ try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
 
-  // ---------- App settings > General > Canvas ----------
+  // ---------- App settings > Appearance > Canvas ----------
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await resizeTo(w, h)
     for (const theme of ['dark', 'light']) {
       await setAppearance({ theme }, { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false })
       await openAppSettings(page)
+      await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
       const section = page.locator('[data-testid=canvas-section]')
       await section.waitFor({ timeout: 10_000 })
       const order = await page.evaluate(() => {
@@ -137,7 +138,7 @@ try {
         const adv = document.querySelector('[data-testid=settings-advanced]')
         return !!s && (!adv || !!(s.compareDocumentPosition(adv) & Node.DOCUMENT_POSITION_FOLLOWING))
       })
-      check(order, `General shows the Canvas section before Advanced settings at ${w}x${h} ${theme}`)
+      check(order, `Appearance shows the Canvas section before any Advanced settings at ${w}x${h} ${theme}`)
       check((await section.locator('[data-testid=canvas-preview] .react-flow').count()) === 1, `the preview draws a canvas at ${w}x${h} ${theme}`)
       check(
         (await section.locator('[data-preset=default][aria-checked=true]').count()) === 1 && (await section.locator('[data-preset=custom]').count()) === 0,
@@ -169,6 +170,7 @@ try {
   await resizeTo(1024, 640)
   await setAppearance({ theme: 'dark' }, { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false })
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const section = page.locator('[data-testid=canvas-section]')
   await section.waitFor({ timeout: 10_000 })
   await section.locator('[data-preset=default]').focus()

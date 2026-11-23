@@ -255,3 +255,25 @@
     height: calc(var(--space-16) * 2);
   }
 }
+
+/* ---------- UI overhaul: the panel sits in a glass group on the History board (styles/history.css .hb-trends) ---------- */
+.hb-trends .trends-totals > div {
+  background: var(--field-bg);
+  border-color: var(--glass-line);
+  border-radius: var(--radius-lg);
+}
+.hb-trends .trends-totals dd {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+.hb-trends .trends-chart {
+  background: var(--field-bg);
+  border-color: var(--glass-line);
+  border-radius: var(--radius-lg);
+}
+.hb-trends .trends-section-head h3 {
+  font-family: var(--font-display);
+}
+.hb-trends .trends-table th {
+  background: transparent;
+}

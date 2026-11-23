@@ -85,8 +85,8 @@
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: var(--text-mono);
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+  border-radius: var(--radius-md);
 }
 
 /* Schedules proposal: one block per change, field / value pairs in a definition list. Agent text wraps, never scrolls sideways. */

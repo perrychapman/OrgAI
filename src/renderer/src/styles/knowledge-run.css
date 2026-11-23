@@ -70,8 +70,12 @@
 .run-knowledge-row .knowledge-kind-mark {
   margin-top: var(--space-1h);
 }
+.run-knowledge-row {
+  border-radius: var(--radius-md);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
 .run-knowledge-row:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--text-primary) 7%, transparent);
 }
 .run-knowledge-row:focus-visible {
   outline: 2px solid var(--focus-ring);

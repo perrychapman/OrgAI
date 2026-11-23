@@ -121,7 +121,7 @@ try {
 
   // App settings > Skill library.
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Skill library', exact: true }).click()
+  await page.getByRole('tab', { name: 'Skills', exact: true }).click()
   await page.locator('[data-testid=skill-library]').waitFor({ timeout: 10_000 })
   await page.locator('[data-testid=skill-library-new]').click()
   const lf = page.locator('[data-testid=skill-library-form]')

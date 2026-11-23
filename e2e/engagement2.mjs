@@ -187,7 +187,7 @@ try {
 
   // Remove the template in App settings.
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Templates and kit', exact: true }).click()
+  await page.getByRole('tab', { name: 'Templates', exact: true }).click()
   await page.locator('[data-testid=template-row]').first().waitFor({ state: 'visible' })
   await page.locator('[data-testid=template-remove]').first().click()
   await page.getByRole('button', { name: 'Remove template', exact: true }).click()
@@ -223,7 +223,7 @@ try {
 
   // ======== 3. Plan ========
   await openProject(page, A)
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   const planSection = page.locator('[data-testid=engagement-plan-section]')
   await planSection.waitFor({ state: 'visible' })
   await page.locator('[data-testid=engagement-plan-write]').click()
@@ -258,6 +258,15 @@ try {
 
   const sPlan = await windowShift(page)
   check(sPlan.ok, 'General pane did not shift the window', JSON.stringify(sPlan))
+
+  // Home shows the plan as the engagement's description and its edit link lands on the plan (UI overhaul; e2e/home-checks.mjs).
+  await page.locator('[data-testid=tab-home]').click()
+  await page.locator('[data-testid=engagement-home]').waitFor({ state: 'visible' })
+  check(clean(await page.locator('[data-testid=eng-purpose]').innerText()).includes('Changed elsewhere.'), 'Home: the description is the stored engagement plan')
+  await page.locator('[data-testid=eng-edit-description]').click()
+  await page.locator('[data-testid=engagement-plan-section]').waitFor({ state: 'visible' })
+  check(/^Settings/.test(clean(await page.locator('[role=tablist][aria-label="Project sections"] [role=tab][aria-selected=true]').first().innerText())), 'Home: "Edit the description" opens the plan in Settings')
+  await shot('home-plan-link')
 
   // ======== 4. Notes (from the Knowledge tab; docs/design/knowledge.md section 4) ========
   const openKnowledge = async () => {
@@ -390,7 +399,7 @@ try {
       await setSize(w, h)
       await setTheme(theme)
       await openProject(page, A)
-      await openSettingsPane('General')
+      await openSettingsPane('Basics')
       await page.locator('[data-testid=engagement-plan-section]').scrollIntoViewIfNeeded()
       check((await inView('[data-testid=engagement-plan-view]')) === true, `${tag}: the plan view sits inside the window`)
       const sh = await windowShift(page)

@@ -107,6 +107,17 @@ export function OutputsFilters({
           }}
         />
       </div>
+      <div className="outputs-run-filter">
+        <label htmlFor={`${uid}-run`} className="outputs-legend">
+          Run
+        </label>
+        <span data-testid="outputs-run-filter">
+          <Select id={`${uid}-run`} value={filter.runId} options={[{ value: '', label: 'All runs' }, ...runs]} onChange={(runId) => onChange({ runId })} />
+        </span>
+      </div>
+      <p className="outputs-count" data-testid="outputs-count">
+        {countText}
+      </p>
       <div className="outputs-chips-set">
         <span id={`${uid}-kind`} className="outputs-legend">
           Kind
@@ -145,17 +156,6 @@ export function OutputsFilters({
           ))}
         </div>
       </div>
-      <div className="outputs-run-filter">
-        <label htmlFor={`${uid}-run`} className="outputs-legend">
-          Run
-        </label>
-        <span data-testid="outputs-run-filter">
-          <Select id={`${uid}-run`} value={filter.runId} options={[{ value: '', label: 'All runs' }, ...runs]} onChange={(runId) => onChange({ runId })} />
-        </span>
-      </div>
-      <p className="outputs-count" data-testid="outputs-count">
-        {countText}
-      </p>
     </form>
   )
 }

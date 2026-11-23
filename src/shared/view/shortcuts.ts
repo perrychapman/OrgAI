@@ -16,6 +16,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { group: 'General', label: 'New chat', combos: [['Mod', 'Shift', 'N']] },
   { group: 'General', label: 'App settings', combos: [['Mod', ',']] },
   { group: 'General', label: 'Collapse or expand the sidebar', combos: [['Mod', 'B']] },
+  { group: 'General', label: 'Search or jump to', combos: [['Mod', 'K']] },
   { group: 'General', label: 'Live, History, Team, Project settings', combos: [['Mod', '1'], ['Mod', '2'], ['Mod', '3'], ['Mod', '4']] },
   { group: 'Runs', label: 'New run', combos: [['Mod', 'T']] },
   { group: 'Runs', label: 'Close tab', combos: [['Mod', 'W']] },

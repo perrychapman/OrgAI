@@ -6,6 +6,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { TMP, check, createProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, sleep, windowShift } from './lib.mjs'
+import { engagementHomeChecks } from './home-checks.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-eng-'))
@@ -157,7 +158,7 @@ try {
   await setTheme('dark')
   await openProject(page, AUDIT)
   check(clean(await page.locator('[data-testid=project-client]').first().innerText()) === 'Acme Corp', 'topbar shows the client after the name')
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   const kindLine = page.locator('[data-testid=project-kind-line]')
   check(clean(await kindLine.innerText()) === 'Kind: Engagement' && (await kindLine.getAttribute('data-kind')) === 'engagement', 'General: "Kind: Engagement"')
   const clientInput = page.locator('[data-testid=project-client-input]')
@@ -169,7 +170,7 @@ try {
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
   await openProject(page, AUDIT)
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   check((await page.locator('[data-testid=project-client-input]').inputValue()) === 'Acme Corporation', 'the edited client survives a reload')
   await page.locator('[data-testid=project-client-input]').fill('Acme Corp')
   await page.locator('[data-testid=project-client-input]').press('Tab')
@@ -229,7 +230,7 @@ try {
   // ---- A code project keeps its old surfaces ----
   await openProject(page, CODE)
   check((await page.locator('[data-testid=project-client]').count()) === 0, 'code: no topbar client')
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   check(clean(await page.locator('[data-testid=project-kind-line]').innerText()) === 'Kind: Code project', 'General: "Kind: Code project"')
   check((await page.locator('[data-testid=project-client-input]').count()) === 0, 'code: no client field')
   await openSettingsPane('Maintenance')
@@ -271,7 +272,7 @@ try {
 
   // One client plus a code project still shows headers (the engagements are told apart from code).
   await openProject(page, BIRCH)
-  await openSettingsPane('General')
+  await openSettingsPane('Basics')
   const taxClient = await page.locator('[data-testid=project-client-input]').inputValue()
   await page.locator('[data-testid=project-client-input]').fill('Acme Corp')
   await page.locator('[data-testid=project-client-input]').press('Tab')
@@ -421,6 +422,13 @@ try {
       check(shiftN.ok, `${tag}: no window shift in Permissions`, JSON.stringify(shiftN))
     }
   }
+
+  // ---- Home tab of an engagement (UI overhaul; the shared block is e2e/home-checks.mjs). Last, because it starts a run. ----
+  await setSize(1600, 1000)
+  await setTheme('dark')
+  await page.locator(`.sidebar [data-testid=nav-project][data-name="${AUDIT}"]`).first().click()
+  await sleep(500)
+  await engagementHomeChecks({ app, page, shot, name: AUDIT, client: 'Acme Corp', refFolderName: path.basename(refFolder) })
 } catch (e) {
   check(false, 'script ran to the end', e.stack ?? e.message)
   await shot('failure').catch(() => {})

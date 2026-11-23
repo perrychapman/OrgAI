@@ -5,7 +5,6 @@ import type { PermissionMode, Project, TeamReviewAuto } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, isolateWritersOn, projectKindOf, runMessagingOn, teamReviewOf } from '@shared/defaults'
 import PermissionRulesPanel from '../PermissionRulesPanel'
-import { Select } from '../ui/Select'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Switch } from '../ui/Switch'
 import { PERMISSION_MODE_SHORT, SETTINGS_COPY, ISOLATE_WRITERS_STATE, RUN_MESSAGING_ENGAGEMENT_DESCRIPTION, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
@@ -19,6 +18,7 @@ import {
   takeProjectSettingsSection,
   type ProjectSettingsSection
 } from '../../lib/settingsTarget'
+import { PermissionModeCards } from './PermissionModeCards'
 import { FolderTrustSection } from './FolderTrustSection'
 import { useFolderTrustReview } from './useFolderTrustReview'
 import { AllowedDirectoriesSection } from './AllowedDirectoriesSection'
@@ -63,7 +63,7 @@ function useSectionTarget(openSummary: () => void): void {
       requestAnimationFrame(() => {
         const section = document.getElementById(target)
         const h3 = section?.querySelector<HTMLElement>('h3')
-        // The Permissions section title repeats the pane title and is hidden (display: none), so the pane heading takes the focus.
+        // A section whose title is hidden (it repeats the pane title) hands focus to the pane heading; a visible one takes it.
         const heading = h3?.checkVisibility() ? h3 : section?.closest('[role=tabpanel]')?.querySelector<HTMLElement>('.settings-pane-title')
         scrollWithin(section, 'start')
         if (heading) {
@@ -165,33 +165,26 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
 
   return (
     <>
-      <SettingsSection id={PROJECT_SETTINGS_SECTIONS.permissions} title="Permissions">
-        <SettingsCard>
-          <SettingRow
-            id={row('mode-row')}
-            title={copy.permissionMode.label}
-            description={
+      <SettingsSection
+        id={PROJECT_SETTINGS_SECTIONS.permissions}
+        title="How much the team asks you"
+        description={`Applies to new runs in ${project.name}. You can change it for a single run from the message box.`}
+      >
+        <SettingsCard className="perm-mode-card">
+          <div className="perm-mode-head" id={row('mode-row')}>
+            <PermissionModeCards mode={project.permissionMode} label={copy.permissionMode.label} projectName={project.name} onChange={(permissionMode) => patch({ permissionMode })} />
+            <p className="perm-mode-now">
+              <span className="sr-only">Now: </span>
               <span className="perm-mode-tradeoff" data-testid="permission-mode-tradeoff">
                 {PERMISSION_MODE_TRADEOFF[project.permissionMode] ?? current?.label}
               </span>
-            }
-            width="select"
-            hint={
-              appDefault ? (
-                <span data-testid="permission-mode-default">App default for new projects: {PERMISSION_MODE_SHORT[appDefault] ?? appDefault}</span>
-              ) : undefined
-            }
-            control={
-              <Select
-                id={row('mode')}
-                label={copy.permissionMode.label}
-                describedBy={settingDescId(row('mode-row'))}
-                value={project.permissionMode}
-                options={PERMISSION_MODE_OPTIONS.map((o) => ({ value: o.value, label: PERMISSION_MODE_SHORT[o.value] ?? o.label }))}
-                onChange={(v) => patch({ permissionMode: v as PermissionMode })}
-              />
-            }
-          />
+              {appDefault && (
+                <span className="perm-mode-default" data-testid="permission-mode-default">
+                  App default for new projects: {PERMISSION_MODE_SHORT[appDefault] ?? appDefault}
+                </span>
+              )}
+            </p>
+          </div>
           <p className="perm-mode-note" data-testid="permission-mode-note">
             {rulesApplyInMode(project.permissionMode)
               ? 'Saved rules and allowed folders apply in every mode except Plan only and Bypass.'

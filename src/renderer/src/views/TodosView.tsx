@@ -9,6 +9,7 @@ import { TODO_EMPTY_TEXT, TODO_UNAVAILABLE_TEXT, todoListView, todoScopeFor, typ
 import { useAppStore, useRunIndexes } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
 import { useTodosStore } from '../store/todosStore'
+import { Badge } from '../components/ui/Badge'
 import { Banner } from '../components/ui/Banner'
 import { Button } from '../components/ui/Button'
 import { Icon } from '../components/ui/Icon'
@@ -325,6 +326,12 @@ export default function TodosView({ project }: { project: Project }): ReactEleme
           <header className="todos-head">
             <h2 className="todos-title">To-dos</h2>
             <p className="todos-scope muted">{scope.kind === 'chat' ? 'For Chat' : 'For this project'}</p>
+            {items && total > 0 && (
+              <p className="todos-counts" data-testid="todos-counts">
+                <Badge tone={view.openCount > 0 ? 'accent' : 'neutral'}>{view.openCount} open</Badge>
+                <Badge tone={view.doneCount > 0 ? 'success' : 'neutral'}>{view.doneCount} done</Badge>
+              </p>
+            )}
           </header>
 
           {unavailable && (

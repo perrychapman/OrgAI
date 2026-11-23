@@ -8,8 +8,14 @@
   padding: 0;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-top: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
+  /* The band is one glass card (UI overhaul): tiles are hairline-separated inside it and the sliding bar clips to its corners. */
+  position: relative;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-1);
 }
 .usage-kpi-item {
   position: relative;
@@ -17,11 +23,22 @@
   flex-direction: column;
   gap: var(--space-0h);
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border-left: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-4);
+  border-left: 1px solid var(--glass-line);
 }
 .usage-kpi-item:first-child {
   border-left: 0;
+}
+/* The tiles' hover wash and focus ring follow the band's rounded corners (set per layout below). */
+.usage-kpi-item:first-child {
+  --kpi-r: var(--radius-xl) 0 0 var(--radius-xl);
+}
+.usage-kpi-item:last-child {
+  --kpi-r: 0 var(--radius-xl) var(--radius-xl) 0;
+}
+.usage-kpi-switch::before,
+.usage-kpi-static::before {
+  border-radius: var(--kpi-r, 0);
 }
 .usage-kpi-main {
   display: flex;
@@ -134,9 +151,11 @@
 }
 .usage-kpi-value {
   color: var(--text-primary);
+  font-family: var(--font-display);
   font-size: var(--text-title-lg);
   line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
@@ -261,6 +280,15 @@
   background: var(--text-primary);
   border: 2px solid var(--surface-0, transparent);
 }
+/* The strip along the band's top edge that clips the bar to the rounded corners; it never takes the pointer. */
+.usage-kpi-rail {
+  position: absolute;
+  inset: 1px 1px auto;
+  height: var(--radius-xl);
+  overflow: hidden;
+  border-radius: calc(var(--radius-xl) - 1px) calc(var(--radius-xl) - 1px) 0 0;
+  pointer-events: none;
+}
 /* The sliding bar over the pressed tile (the same pattern as the tab underline, motion.md 3.3). */
 .usage-kpi-indicator {
   position: absolute;
@@ -308,8 +336,20 @@
   .usage-kpi-item:nth-child(2n + 1) {
     border-left: 0;
   }
+  .usage-kpi-item:nth-child(1) {
+    --kpi-r: var(--radius-xl) 0 0 0;
+  }
+  .usage-kpi-item:nth-child(2) {
+    --kpi-r: 0 var(--radius-xl) 0 0;
+  }
+  .usage-kpi-item:nth-child(3) {
+    --kpi-r: 0 0 0 var(--radius-xl);
+  }
+  .usage-kpi-item:nth-child(4) {
+    --kpi-r: 0 0 var(--radius-xl) 0;
+  }
   .usage-kpi-item:nth-child(n + 3) {
-    border-top: 1px solid var(--border-subtle);
+    border-top: 1px solid var(--glass-line);
   }
   .usage-kpi-vs {
     display: inline;

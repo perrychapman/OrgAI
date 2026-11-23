@@ -1,29 +1,42 @@
 /* ---------- Controls ---------- */
 
+/* UI overhaul (Components board): secondary is a glass button with a strong line, primary the violet fill, ghost
+   transparent, danger a soft red fill. 32 px tall (26 px small); a press scales to 0.97. */
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 7px 13px;
+  min-height: var(--control-md);
+  padding: 5px 13px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);
-  background: var(--surface-2);
+  background: var(--glass);
   color: var(--text-primary);
+  font-weight: var(--weight-regular);
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--dur-instant), border-color var(--dur-instant), transform var(--dur-fast) var(--ease-out);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 .btn:hover {
-  background: var(--surface-3);
+  background: color-mix(in oklab, var(--text-primary) 8%, var(--glass));
+  border-color: color-mix(in oklab, var(--text-primary) 30%, transparent);
 }
 .btn:active:not(:disabled):not([aria-disabled='true']) {
-  transform: scale(0.98);
+  transform: scale(0.97);
   transition-duration: var(--dur-instant);
 }
 .btn.primary {
   background: var(--accent);
-  border-color: var(--accent);
+  border-color: transparent;
   color: var(--text-on-accent);
+  font-weight: var(--weight-semibold);
+  box-shadow: 0 1px 0 color-mix(in oklab, var(--text-on-accent) 18%, transparent) inset;
 }
 .btn.primary:hover {
   background: var(--accent-hover);
@@ -32,8 +45,13 @@
   background: var(--accent-active);
 }
 .btn.danger {
+  background: var(--danger-soft);
   color: var(--danger-text);
-  border-color: var(--danger-border);
+  border-color: transparent;
+  font-weight: var(--weight-semibold);
+}
+.btn.danger:hover {
+  background: color-mix(in oklab, var(--danger) 22%, transparent);
 }
 .btn.ghost {
   background: transparent;
@@ -41,11 +59,12 @@
   color: var(--text-secondary);
 }
 .btn.ghost:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--text-primary) 7%, transparent);
   color: var(--text-primary);
 }
 .btn.sm {
-  padding: 4px 9px;
+  min-height: 26px;
+  padding: 3px 10px;
   font-size: var(--text-small);
 }
 /* Disabled is neutral for every variant (never a dimmed violet or red): flat surface fill, quiet text. It sits
@@ -91,15 +110,28 @@
   background: var(--field-bg);
   border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
-  padding: 7px 10px;
+  padding: 7px 11px;
   color: var(--text-primary);
   width: 100%;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
 }
 .input:focus,
 .select:focus,
 .textarea:focus {
-  border-color: var(--accent-text);
-  box-shadow: var(--ring);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.input[aria-invalid='true'],
+.select[aria-invalid='true'],
+.textarea[aria-invalid='true'] {
+  border-color: var(--danger-text);
 }
 .textarea {
   resize: vertical;
@@ -186,11 +218,20 @@
   border-color: var(--danger-border);
 }
 
+/* A card is a glass panel over the ambient ground (UI overhaul). */
 .card {
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-1);
   padding: 16px;
+}
+
+/* A clickable card tile has only its boundary as a cue: use the 3:1 input border, not the soft glass line. */
+.card:is(button, a[href], [role='button'], [role='link']):not(:disabled) {
+  border-color: var(--border-input);
 }
 
 .card.danger {

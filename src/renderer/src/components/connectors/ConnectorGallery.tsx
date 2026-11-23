@@ -128,8 +128,8 @@ export function ConnectorGallery(): ReactElement {
   return (
     <SettingsSection
       id="appsettings-section-connectors"
-      title="Connectors"
-      description="Connect the services your agents work with. Sign-in stays on this computer."
+      title="Services"
+      description="Connect the services your teams work with. Each one says what it lets them do. Sign-in stays on this computer."
       testId="connectors-section"
     >
       <div className="connectors-body">

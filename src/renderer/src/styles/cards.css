@@ -331,9 +331,11 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--surface-3);
+  background: color-mix(in oklab, var(--surface-2) 94%, transparent);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   border: 1px solid var(--warning-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   padding: 12px 14px;
   box-shadow: var(--elev-2);
   font-size: var(--text-small);
@@ -377,8 +379,8 @@
   font-size: var(--text-small);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  background: var(--field-bg);
+  border: 1px solid var(--border-subtle);
   word-break: break-all;
 }
 .rules-reason {
@@ -399,26 +401,34 @@
   min-height: 0;
   max-height: 100%;
   overflow: hidden;
-  background: var(--surface-3);
+  position: relative;
+  /* UI overhaul "waiting on you": every decision is amber (Components board). A near-opaque panel so the scroll cue
+     below can match it; the amber line and the 3 px stripe carry the state with the kind word. */
+  --decision-bg: var(--surface-2);
+  background: color-mix(in oklab, var(--decision-bg) 94%, transparent);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   border: 1px solid var(--warning-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   box-shadow: var(--elev-2);
   font-size: var(--text-small);
 }
-.decision-card.kind-question,
-.decision-card.kind-merge {
-  border-color: var(--info-border);
-}
-.decision-card.kind-proposal {
-  border-color: var(--accent-border);
+.decision-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--warning);
+  pointer-events: none;
+  z-index: 1;
 }
 .decision-head {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-1h);
   min-width: 0;
-  padding: var(--space-3) var(--space-3) var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-2);
 }
 /* One 12 px meta line: kind chip, agent, run label, extras. */
 .decision-meta {
@@ -429,10 +439,11 @@
   min-width: 0;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
 }
 .decision-meta > .badge {
   flex: none;
+  height: 22px;
 }
 .decision-who {
   flex: none;
@@ -477,7 +488,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--text-body);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
@@ -497,7 +509,7 @@
   cursor: pointer;
 }
 .decision-details:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--text-primary) 8%, transparent);
   color: var(--text-primary);
 }
 .decision-details:focus-visible {
@@ -519,12 +531,12 @@
   min-height: 0;
   max-height: min(40cqh, 320px);
   overflow: auto;
-  padding: 0 var(--space-3) var(--space-2);
+  padding: 0 var(--space-4) var(--space-2);
   /* Scroll cue without script: a soft edge shows on the side that has more. The local layers cover the shadows
-     once the scroll reaches that end. */
+     once the scroll reaches that end (the card's own --decision-bg, so the cover matches the panel). */
   background:
-    linear-gradient(var(--surface-3) 30%, transparent) 0 0 / 100% 24px no-repeat local,
-    linear-gradient(transparent, var(--surface-3) 70%) 0 100% / 100% 24px no-repeat local,
+    linear-gradient(var(--decision-bg) 30%, transparent) 0 0 / 100% 24px no-repeat local,
+    linear-gradient(transparent, var(--decision-bg) 70%) 0 100% / 100% 24px no-repeat local,
     radial-gradient(farthest-side at 50% 0, color-mix(in srgb, var(--text-primary) 22%, transparent), transparent) 0 0 / 100% 10px no-repeat scroll,
     radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--text-primary) 22%, transparent), transparent) 0 100% / 100% 10px no-repeat scroll;
 }
@@ -549,18 +561,18 @@
 }
 .decision-error {
   flex: none;
-  padding: 0 var(--space-3) var(--space-2);
+  padding: 0 var(--space-4) var(--space-2);
 }
-/* Opaque action row: its own surface so a long body scrolls above it and never runs under the buttons. */
+/* Action row: below the body (the body is its own scroller, so nothing runs under the buttons). One primary, then the
+   secondary actions, then the quiet deny pushed right. */
 .decision-footer {
   flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-2);
-  border-top: 1px solid var(--border-subtle);
+  gap: var(--space-1h);
+  padding: var(--space-1) var(--space-4) var(--space-3);
+  background: var(--decision-bg);
 }
 .decision-secondary {
   display: flex;
@@ -569,6 +581,14 @@
 }
 .decision-deny {
   margin-left: auto;
+}
+/* The deny is quiet (board: a ghost button) so the one primary action leads; red text keeps its meaning. */
+.decision-deny .btn.danger:not(:disabled):not([aria-disabled='true']) {
+  background: transparent;
+  border: 1px solid var(--danger-border);
+}
+.decision-deny .btn.danger:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--danger-soft);
 }
 .question-text {
   margin: 0;
@@ -688,9 +708,9 @@
 }
 .decision-tool-input {
   margin: 0;
-  padding: var(--space-2);
-  background: var(--code-bg);
-  border: 1px solid var(--border-default);
+  padding: var(--space-1h) var(--space-2);
+  background: var(--field-bg);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: var(--text-mono);
@@ -699,13 +719,29 @@
   max-height: 160px;
   overflow: auto;
 }
+/* Several waiting (Components board "Decision tray"): an amber row with a breathing dot, the count in words, the list
+   of chips and Previous / n of N / Next. */
 .decision-stepper {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  padding: var(--space-1h) var(--space-3);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  background: var(--warning-soft);
   font-size: var(--text-small);
   color: var(--text-secondary);
+}
+.decision-waiting-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--warning);
+  vertical-align: middle;
 }
 
 .mcp-prop-scope {
@@ -730,7 +766,8 @@
 .decision-stepper-title {
   margin-right: auto;
   font-weight: var(--weight-semibold);
-  color: var(--text-primary);
+  color: var(--warning-text);
+  white-space: nowrap;
 }
 .decision-stepper .icon-btn {
   min-width: 32px;
@@ -792,8 +829,8 @@
   overflow: auto;
   margin-top: var(--space-2);
   padding: var(--space-2);
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+  border-radius: var(--radius-md);
 }
 
 /* Save as project dialog. */

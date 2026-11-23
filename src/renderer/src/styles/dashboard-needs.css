@@ -5,8 +5,14 @@
 
 /* Needs you: warning tint. */
 .dash-needs-row {
-  background: var(--warning-soft);
+  /* An amber-edged glass card (Main board): the glass fill, the amber line and a short amber stripe on the left. */
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   border-color: var(--warning-border);
+  box-shadow:
+    inset 3px 0 0 var(--warning),
+    var(--elev-2);
   container: needs-row / inline-size;
 }
 .dash-needs-row:hover {
@@ -192,8 +198,17 @@
   gap: var(--space-2);
 }
 .dash-row.dash-needs-row {
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   min-height: 52px;
+}
+/* The count beside "Waiting on you" is an amber pill (the board's badge); the words stay in it. */
+.dash-needs .dash-count {
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--warning-soft);
+}
+.dash-needs .dash-section-head .dash-section-action {
+  margin-left: auto;
 }
 .dash-needs-row.motion-ring::after {
   border-color: var(--warning);

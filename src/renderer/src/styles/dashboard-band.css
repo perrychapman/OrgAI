@@ -71,9 +71,19 @@
   container: runcard / inline-size;
   min-width: 0;
   padding-bottom: var(--space-1);
-  border-radius: var(--radius-md);
-  background: color-mix(in oklab, var(--dash-hue, var(--text-tertiary)) 8%, var(--surface-2));
-  box-shadow: inset 3px 0 0 var(--dash-hue, var(--text-tertiary));
+  /* A glass card (Main board); the project's identity is its badge, the working state is the pulsing dot. */
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-2);
+}
+.dash-run[data-needs] {
+  border-color: var(--warning-border);
+}
+.dash-run-head {
+  border-radius: var(--radius-xl);
 }
 
 /* ---- Marks (3.1) ---- */
@@ -225,20 +235,53 @@
 /* The glance row under the header: the agents as marks, then the plan bar. Shapes first, text second. */
 .dash-run-glance {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  padding-left: calc(28px + var(--space-3));
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
 }
+/* The agent strip (Main board): one dot per agent, filled by state (working cyan, waiting amber, finished green, failed red,
+   queued neutral), in a sunk rounded box. The role colour belongs to the agent rows below. */
 .dash-marks {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--surface-0) 55%, transparent);
 }
 .dash-marks .dash-mark {
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
+  border: 0;
+  box-shadow: none;
+  background: var(--border-strong);
+}
+.dash-marks .dash-mark[data-state='working'] {
+  background: var(--working);
+}
+.dash-marks .dash-mark[data-state='waiting'] {
+  background: var(--warning);
+}
+.dash-marks .dash-mark[data-state='done'] {
+  background: var(--success);
+}
+.dash-marks .dash-mark[data-state='failed'] {
+  background: var(--danger);
+}
+.dash-marks .dash-mark svg {
+  width: 8px;
+  height: 8px;
+}
+.dash-marks .dash-mark[data-state='working'][data-breathe]::after {
+  inset: -3px;
+  border-color: var(--working);
+}
+/* The one amber line of a run that needs a decision. */
+.dash-run-cap[data-warn='true'] .dash-run-cap-text {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
 }
 .dash-marks-more {
   font-size: var(--text-caption);
@@ -249,14 +292,20 @@
    transform on a pseudo-element, so a step that completes grows to full over --dur-slow without moving anything. */
 .dash-plan {
   display: flex;
+  flex-direction: column;
   flex: 1 1 100%;
-  align-items: center;
-  gap: var(--space-3);
+  align-items: stretch;
+  gap: var(--space-2);
   min-width: 0;
 }
+/* The step line reads first ("Step 2 of 4 · ..."), the segmented bar under it spans the card. */
+.dash-plan-text {
+  order: -1;
+}
 .dash-plan-bar {
-  display: flex;
-  flex: 0 1 240px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: var(--space-1);
   min-width: 96px;
 }

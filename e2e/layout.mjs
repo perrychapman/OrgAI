@@ -22,6 +22,38 @@ const { app, page, shot } = await launch({ shotPrefix: 'layout' })
 try {
   log('auth pill:', await page.locator('[data-testid=auth-pill]').innerText())
 
+  // ---- First launch setup steps (ui-overhaul Welcome); only on a data dir with no projects yet ----
+  if (await page.locator('[data-testid=dash-start-choice]').isVisible().catch(() => false)) {
+    await page.evaluate(() => localStorage.removeItem('orgai.welcome.done'))
+    await page.reload()
+    const setup = page.locator('[data-testid=welcome-setup]')
+    await setup.waitFor({ timeout: 15_000 })
+    check((await setup.getAttribute('data-stage')) === '1', 'W1 first launch opens on step 1 of the setup')
+    check((await page.locator('.welcome-steps [aria-current=step]').count()) === 1, 'W1 exactly one step is current')
+    const n1 = await page.locator('[data-testid=welcome-next], [data-testid=welcome-sign-in]').count()
+    check(n1 === 1, 'W1 step 1 offers one primary action (Continue, or Sign in when the pick is not connected)')
+    // Step 1 -> 2: continue (without signing in when nothing is connected; no IPC is spent on a mock).
+    const anyway = page.locator('[data-testid=welcome-continue-anyway]')
+    if (await anyway.isVisible().catch(() => false)) await anyway.click()
+    else await page.locator('[data-testid=welcome-next]').click()
+    await page.locator('[data-testid=welcome-setup][data-stage="2"]').waitFor({ timeout: 5000 })
+    check(await page.evaluate(() => document.activeElement?.classList.contains('welcome-title') ?? false), 'W2 Continue moves focus to the new step heading')
+    // Arrow keys move inside the radiogroup.
+    await page.locator('[data-testid=welcome-option][data-value=code] input').focus()
+    await page.keyboard.press('ArrowDown')
+    check(await page.locator('[data-testid=welcome-option][data-value=engagement] input').isChecked(), 'W2 ArrowDown picks the next kind of work')
+    await page.locator('[data-testid=welcome-next]').click()
+    await page.locator('[data-testid=welcome-setup][data-stage="3"]').waitFor({ timeout: 5000 })
+    check((await page.locator('[data-testid=welcome-option]').count()) === 3, 'W3 step 3 offers three ways to ask')
+    await page.locator('[data-testid=welcome-back]').click()
+    check((await page.locator('[data-testid=welcome-setup]').getAttribute('data-stage')) === '2', 'W3 Back returns to step 2')
+    await page.locator('[data-testid=welcome-skip]').click()
+    await page.locator('[data-testid=dash-start-choice]').waitFor({ timeout: 5000 })
+    check(await page.locator('[data-testid=project-kind-option][data-kind=engagement] input').isChecked(), 'W4 Skip setup lands on the start choice with the picked kind preselected')
+    check(await page.evaluate(() => localStorage.getItem('orgai.welcome.done') === '1'), 'W4 skipping is remembered')
+    await shot('welcome-start')
+  }
+
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'existing-repo project created')
   check(project?.setup === undefined, 'skip AI setup leaves no setup record')
@@ -342,7 +374,7 @@ try {
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
-  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Dashboard.
+  // Keyboard order: skip to content, skip to sidebar, the sidebar toggle, then Search or jump to.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1600, 1000))
   await sleep(300)
   await page.reload()
@@ -354,11 +386,101 @@ try {
     if (i > 0) await page.keyboard.press('Tab')
     stops.push(await page.evaluate(() => (document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent || '').trim()))
   }
-  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Dashboard/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Dashboard', JSON.stringify(stops))
+  check(stops[0] === 'Skip to content' && stops[1] === 'Skip to sidebar' && /sidebar/i.test(stops[2]) && /Search or jump to/.test(stops[3]), 'first Tab stops are the two skip links, the sidebar toggle and Search or jump to', JSON.stringify(stops))
+  await page.keyboard.press('Tab')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'nav-home'), 'the next Tab stop is Home')
+  await page.keyboard.press('Tab')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'nav-inbox'), 'then Inbox')
+
+  const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
+
+  // The top nav group: Home, Inbox, Chat; Inbox navigates and Home returns. The sidebar rows keep their testids.
+  await page.locator('[data-testid=nav-inbox]').click()
+  await sleep(400)
+  check((await page.locator('[data-testid=nav-inbox]').getAttribute('aria-current')) === 'page' && (await page.title()) === 'Inbox · OrgAI', 'the Inbox row opens the Inbox and is the current page', await page.title())
+  check((await page.locator('[data-testid=nav-home]').getAttribute('aria-current')) === null && (await page.locator('[data-testid=nav-project][data-name="' + NAME + '"][aria-current=page]').count()) === 0, 'on Inbox neither Home nor a project row is current')
+  check((await page.locator('[data-testid=needs-you-row]').count()) === 0, 'no Needs-you bell while nothing waits')
+  await page.locator('[data-testid=nav-home]').click()
+  await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
+  check((await page.locator('[data-testid=nav-home]').innerText()).trim() === 'Home', 'the Home row reads "Home"')
+  check((await page.locator('[data-testid=nav-assistant][data-id=quick]').innerText()).includes('Chat') && (await page.locator('.sidebar-assistants [data-testid=nav-assistant]').count()) === 2, 'Chat leads the nav group and two helpers sit in their own group')
+  check((await page.getByRole('button', { name: 'New project or engagement', exact: true }).count()) === 1, 'the Projects heading has its New project or engagement button')
+  await page.getByRole('button', { name: 'New project or engagement', exact: true }).click()
+  await page.locator('[data-testid=new-project-dialog], [data-testid=new-project-form]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await page.locator('[data-testid=new-project-dialog], form.card').count()) >= 1, 'the + button opens the new-project form')
+  await page.keyboard.press('Escape')
+  await sleep(400)
+
+  // Command palette: Ctrl/Cmd+K and the sidebar button open one dialog with a combobox over a listbox.
+  const paletteBox = () => page.locator('[data-testid=command-palette]')
+  const input = page.locator('[data-testid=command-palette-input]')
+  const activeOption = () => page.evaluate(() => {
+    const i = document.querySelector('[data-testid=command-palette-input]')
+    const id = i?.getAttribute('aria-activedescendant')
+    const o = id ? document.getElementById(id) : null
+    return { id, selected: o?.getAttribute('aria-selected'), text: o?.textContent ?? '' }
+  })
+  await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
+  await page.keyboard.press(`${mod}+k`)
+  await input.waitFor({ state: 'visible', timeout: 5000 })
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'command-palette-input'), 'Ctrl/Cmd+K opens the palette with focus in the search field')
+  check((await input.getAttribute('role')) === 'combobox' && (await input.getAttribute('aria-controls')) !== null && (await page.locator('[role=listbox] [role=option]').count()) >= 5, 'the field is a combobox over a listbox with options')
+  const first = await activeOption()
+  check(first.selected === 'true' && !!first.text, 'the first option is the active descendant', JSON.stringify(first))
+  await page.keyboard.press('ArrowDown')
+  const second = await activeOption()
+  check(second.id !== first.id && second.selected === 'true', 'ArrowDown moves the active option', JSON.stringify([first, second]))
+  await page.keyboard.press('ArrowUp')
+  await page.keyboard.press('ArrowUp')
+  check((await activeOption()).id !== first.id, 'ArrowUp from the first option wraps to the last')
+  const texts = await page.locator('[role=option]').allInnerTexts()
+  check(['Home', 'Inbox', 'Chat', 'Usage', 'Schedules', 'App settings', 'New project or engagement', 'New chat'].every((t) => texts.some((x) => x.includes(t))), 'the palette lists the app destinations and both create actions', texts.join(' | ').replace(/\s+/g, ' ').slice(0, 300))
+  check(texts.some((x) => x.includes(NAME)), 'the palette lists the project', texts.length + ' options')
+  await shot('palette-open')
+  await page.keyboard.type('usag')
+  await sleep(150)
+  check((await activeOption()).text.includes('Usage'), 'typing ranks the match first', JSON.stringify(await activeOption()))
+  await page.keyboard.press('Enter')
+  await sleep(500)
+  check(!(await paletteBox().evaluate((el) => el.open)) && (await page.locator('[data-testid=nav-usage]').getAttribute('aria-current')) === 'page', 'Enter on Usage closes the palette and opens Usage')
+  // A project by name, then the empty state, then Esc and focus return to the button that opened it.
+  await page.keyboard.press(`${mod}+k`)
+  await input.waitFor({ state: 'visible', timeout: 5000 })
+  await page.keyboard.type('e2e layout')
+  await sleep(150)
+  check((await activeOption()).text.includes(NAME), 'typing a project name puts it first', JSON.stringify(await activeOption()))
+  await page.keyboard.press('Enter')
+  await sleep(800)
+  check((await page.locator('[data-testid=nav-project][data-name="' + NAME + '"]').getAttribute('aria-current')) === 'page', 'Enter on a project opens it')
+  await page.locator('[data-testid=sidebar-search]').click()
+  await input.waitFor({ state: 'visible', timeout: 5000 })
+  await page.keyboard.type('zzzzqqqq')
+  await sleep(150)
+  check(/No results for "zzzzqqqq"/.test(await page.locator('[data-testid=command-palette-empty]').innerText().catch(() => '')), 'a query with no match shows No results for "x"')
+  check((await page.locator('[role=option]').count()) === 0 && (await input.getAttribute('aria-activedescendant')) === null, 'no option and no active descendant while empty')
+  await page.keyboard.press('Escape')
+  await sleep(400)
+  check(!(await paletteBox().evaluate((el) => el.open)), 'Esc closes the palette')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'sidebar-search'), 'focus returns to the Search or jump to button')
+  // Both themes: the dialog sits inside the window.
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+    await sleep(200)
+    await page.keyboard.press(`${mod}+k`)
+    await input.waitFor({ state: 'visible', timeout: 5000 })
+    await sleep(300)
+    const pb = await paletteBox().boundingBox()
+    const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+    check(!!pb && pb.x >= 0 && pb.y >= 0 && pb.x + pb.width <= vp.w && pb.y + pb.height <= vp.h, `the palette sits inside the window in ${theme}`, JSON.stringify([pb, vp]))
+    await shot(`palette-${theme}`)
+    await page.keyboard.press(`${mod}+k`)
+    await sleep(300)
+    check(!(await paletteBox().evaluate((el) => el.open)), `Ctrl/Cmd+K again closes the palette in ${theme}`)
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
 
   // Ctrl/Cmd+B toggles the sidebar between the 232 px column and the 56 px rail, and the choice survives a reload.
   const sideW = () => page.evaluate(() => Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0))
-  const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
   await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
   const wide = await sideW()
   await page.keyboard.press(`${mod}+b`)
@@ -431,10 +553,11 @@ try {
 
   // Settings > Appearance: the theme switch flips data-theme on <html>, persists across a reload and reaches a second window.
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const appearance = page.locator('[data-testid=appearance-section]')
   await appearance.waitFor({ timeout: 10_000 })
-  const themeGroup = appearance.getByRole('radiogroup', { name: 'Theme' })
-  await themeGroup.locator('label.seg-item', { hasText: 'Light' }).click()
+  const themeGroup = appearance.getByRole('radiogroup', { name: 'Colour mode' })
+  await themeGroup.getByRole('radio', { name: 'Light', exact: true }).check()
   await sleep(800)
   check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'Settings > Appearance Light flips data-theme to light')
   await shot('settings-appearance-light')
@@ -460,8 +583,9 @@ try {
     }
   }
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   await appearance.waitFor({ timeout: 10_000 })
-  await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
+  await themeGroup.getByRole('radio', { name: /^Dark\b/ }).check()
   await sleep(800)
   check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'Settings > Appearance Dark flips data-theme back to dark')
 

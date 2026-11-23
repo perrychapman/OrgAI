@@ -9,7 +9,9 @@ import { EMPTY_FILTER, countLine, groupItems, idAfterRemoval, isFilterActive, it
 import type { RecordedBatch } from '../lib/knowledgeList'
 import { EMPTY_BATCH, NOTICE_MS, addRecorded, emptyKind, eventItemIds, flushRecorded, hiddenNewIds, isOwnEvent, itemsCapText, notesCapText, restoreReady, retireNoticeText } from '../lib/knowledgeList'
 import { inferredStatus, possiblePartialNote, visibleLinkCount } from '../lib/knowledgePossible'
-import { KNOWLEDGE_INFERRED_KEY, KNOWLEDGE_RETIRED_KEY, KNOWLEDGE_VIEW_KEY } from '../lib/knowledgePrefs'
+import { KNOWLEDGE_INFERRED_KEY, KNOWLEDGE_LIMIT_KEY, KNOWLEDGE_RETIRED_KEY, KNOWLEDGE_VIEW_KEY } from '../lib/knowledgePrefs'
+import { CONNECTED_LIMIT, limitNote, mostConnected, restrictGraph } from '../lib/knowledgeLimit'
+import { recordingNow, recordingText } from '../lib/knowledgeRecording'
 import { cleanIpcError } from '../lib/ipcError'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -32,6 +34,7 @@ type ViewMode = 'list' | 'graph'
 const VIEW_KEY = KNOWLEDGE_VIEW_KEY
 const RETIRED_KEY = KNOWLEDGE_RETIRED_KEY
 const INFERRED_KEY = KNOWLEDGE_INFERRED_KEY
+const LIMIT_KEY = KNOWLEDGE_LIMIT_KEY
 
 function readPref(key: string): string | null {
   try {
@@ -133,7 +136,6 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
   const summaries = useProjectSummaries()
   const runs = useMemo<RunFacts>(() => ({ indexes, names: runNamesOf(summaries) }), [indexes, summaries])
   const hasWorkRun = summaries.some((s) => s.kind === 'work')
-
   // ---- data ----
   const [graph, setGraph] = useState<KnowledgeGraphData | null>(null)
   const [notes, setNotes] = useState<EngagementNote[] | null>(null)
@@ -212,6 +214,8 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
     [projectId]
   )
   const items = useMemo(() => itemsOf(graph ?? emptyKnowledgeGraph(), notes ?? []), [graph, notes])
+  /** Real data only: runs of this project working now and the live items they recorded (nothing is shown with no working run). */
+  const recording = useMemo(() => recordingText(recordingNow(items, summaries)), [items, summaries])
 
   // ---- view switch ----
   const [view, setView] = useState<ViewMode>(() => (readPref(VIEW_KEY + projectId) === 'graph' ? 'graph' : 'list'))
@@ -286,6 +290,32 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
   const [reveal, setReveal] = useState<string | null>(null)
   const listRef = useRef<KnowledgeListHandle>(null)
   const selected = selectedId ? (items.find((i) => i.id === selectedId) ?? null) : null
+
+  // ---- the graph's "most connected" limit (a view option: the list, search, filters and the pane keep everything) ----
+  const [showAllConnected, setShowAllConnected] = useState(() => readPref(LIMIT_KEY + projectId) === 'all')
+  /** Items outside the limit that the user opened stay drawn for this visit, so a node never vanishes under the selection. */
+  const [opened, setOpened] = useState<readonly string[]>([])
+  useEffect(() => {
+    setOpened([])
+  }, [projectId])
+  useEffect(() => {
+    if (selectedId) setOpened((o) => (o.includes(selectedId) ? o : [...o, selectedId]))
+  }, [selectedId])
+  const connected = useMemo(
+    () => mostConnected(graph ?? emptyKnowledgeGraph(), { showRetired: filter.showRetired, all: showAllConnected, filtering: isFilterActive(filter), keep: opened }),
+    // The filter's parts, not its identity: the limit follows what is searched, kinds and origins.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [graph, filter.showRetired, filter.query, filter.kinds, filter.origins, showAllConnected, opened]
+  )
+  const drawnGraph = useMemo(() => restrictGraph(graph ?? emptyKnowledgeGraph(), connected.ids), [graph, connected.ids])
+  const knownIds = useMemo(() => new Set((graph?.nodes ?? []).map((n) => n.id)), [graph])
+  const connectedNote = limitNote(connected)
+  const toggleConnected = (): void => {
+    const all = !showAllConnected
+    setShowAllConnected(all)
+    writePref(LIMIT_KEY + projectId, all ? 'all' : 'limited')
+    announce(all ? `Showing all ${connected.total} items.` : `Showing the ${CONNECTED_LIMIT} most connected of ${connected.total}.`)
+  }
   /** The detail heading, else the pane body, else (the panel is a rail) the rail's Show button: never body. */
   const focusHeading = useCallback((): void => {
     focusLater(() => {
@@ -617,6 +647,12 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
             onChange={changeView}
           />
         </span>
+        {recording && (
+          <span className="knowledge-live" data-testid="knowledge-live">
+            <span className="knowledge-live-dot" data-breathe aria-hidden="true" />
+            <span className="knowledge-live-text">{recording}</span>
+          </span>
+        )}
         <span className="spacer" />
         {addButtons}
       </div>
@@ -697,7 +733,15 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
             enter={swapped}
             ref={neuralRef}
             projectId={projectId}
-            graph={graph ?? emptyKnowledgeGraph()}
+            graph={drawnGraph}
+            knownIds={knownIds}
+            limit={
+              connectedNote
+                ? isFilterActive(filter)
+                  ? { text: `${connectedNote} while you search or filter` }
+                  : { text: connectedNote, action: { label: connected.limited ? 'Show all' : `Show the ${CONNECTED_LIMIT} most connected`, onClick: toggleConnected } }
+                : undefined
+            }
             inferred={inferred}
             filter={filter}
             showInferred={showInferred}
