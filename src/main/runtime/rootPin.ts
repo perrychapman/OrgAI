@@ -268,18 +268,90 @@ export async function rootDrift(root: string, was: RootPin): Promise<string | un
   return v.kind === 'hard' || v.kind === 'folder' ? pinDriftMessage(v.labels, root) : undefined
 }
 
+
 /**
- * The plain reason shown when the user is asked again after the project folder changed while the tests ran: what moved, and the
- * new commits when HEAD did (at most five subjects).
+ * Control, invisible and bidirectional-override code points (C0, DEL, C1, soft hyphen, Arabic letter mark, Mongolian vowel
+ * separator, zero-width and direction marks, line and paragraph separators and embeddings, word joiner and invisible operators,
+ * isolates, BOM, interlinear annotation): repository text is shown without them. Written as code points, not as a pattern.
+ */
+const HIDDEN_RANGES: readonly (readonly [number, number])[] = [
+  [0x00, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e],
+  [0x2060, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb]
+]
+
+function stripHidden(text: string): string {
+  let out = ''
+  for (const ch of text) {
+    const c = ch.codePointAt(0) ?? 0
+    // A line break is kept so the text can be cut into lines; every other hidden code point goes.
+    if (c === 0x0a || !HIDDEN_RANGES.some(([a, b]) => c >= a && c <= b)) out += ch
+  }
+  return out
+}
+
+const NOTE_COMMITS = 5
+/** Lines and bytes of each stat block of the re-ask note (what comes from the repository is bounded). */
+const NOTE_STAT_LINES = 12
+const NOTE_STAT_BYTES = 1600
+const NOTE_LINE_CHARS = 120
+const NOTE_STAT_OPTIONS = ['diff', '--stat=100,60', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames']
+
+/** Repository text as plain text: hidden characters removed, each line clamped, at most `maxLines` lines and `maxBytes` bytes. */
+export function plainRepositoryText(text: string, maxLines: number, maxBytes: number): string {
+  const lines = stripHidden(text)
+    .split('\n')
+    .map((l) => (l.length > NOTE_LINE_CHARS ? `${l.slice(0, NOTE_LINE_CHARS)}...` : l).trimEnd())
+    .filter((l) => l.length > 0)
+  const kept: string[] = []
+  let bytes = 0
+  for (const l of lines.slice(0, maxLines)) {
+    bytes += Buffer.byteLength(l, 'utf8') + 1
+    if (bytes > maxBytes) break
+    kept.push(l)
+  }
+  if (kept.length < lines.length) kept.push(`... ${lines.length - kept.length} more line${lines.length - kept.length === 1 ? '' : 's'} not shown`)
+  return kept.join('\n')
+}
+
+/**
+ * The plain reason shown when the user is asked again after the project folder changed while the tests ran, in the review
+ * card's existing `stat` text field (nothing in the card's own fields changes). It says plainly that the project folder itself
+ * changed and that approving merges the report on top of that change, and carries a bounded summary of the root's own change,
+ * labelled as text from the repository: commit subjects (at most five), `git diff --stat` between the two HEADs, and the stat of
+ * the staged and the unstaged changes (the unstaged one only when the repository has no filter driver of its own, as the pin).
+ * Every git call goes through the guarded runner and runs no external diff or textconv program. Repository text (subjects, file
+ * names) is stripped of control and bidirectional characters and clamped; this function never throws.
  */
 export async function folderChangeNote(root: string, was: RootPin, now: RootPin): Promise<string> {
   const parts: string[] = []
-  if (was.head !== now.head && was.head !== 'none' && now.head !== 'none') {
-    const log = await gitGuarded(root, ['log', '--format=%h %s', '--no-show-signature', '-n', '5', `${was.head}..${now.head}`])
-    if (log.ok && log.out) parts.push(`new commits:\n${log.out.split(/\r?\n/).map((l) => `  ${l.slice(0, 120)}`).join('\n')}`)
-    else parts.push('HEAD moved')
+  const blocks: string[] = []
+  const moved = was.head !== now.head && was.head !== 'none' && now.head !== 'none'
+  if (moved) {
+    const log = await gitGuarded(root, ['log', '--format=%h %s', '--no-show-signature', '-n', String(NOTE_COMMITS), `${was.head}..${now.head}`])
+    const subjects = log.ok && log.out ? plainRepositoryText(log.out, NOTE_COMMITS + 1, NOTE_STAT_BYTES) : ''
+    if (subjects) {
+      parts.push('new commits')
+      blocks.push(`Commits (up to ${NOTE_COMMITS}):\n${subjects.split('\n').map((l) => `  ${l}`).join('\n')}`)
+    } else parts.push('HEAD moved')
+    const stat = await gitGuarded(root, [...NOTE_STAT_OPTIONS, `${was.head}..${now.head}`, '--'], { maxBuffer: 4 * 1024 * 1024 })
+    if (stat.ok && stat.out) blocks.push(`Changed by those commits (git diff --stat):\n${plainRepositoryText(stat.out, NOTE_STAT_LINES, NOTE_STAT_BYTES)}`)
   } else if (was.head !== now.head) parts.push('HEAD moved')
   if (was.branch !== now.branch) parts.push('the checked-out branch changed')
-  if (was.changes !== now.changes) parts.push('tracked files or staged changes differ')
-  return `The project folder changed while the tests ran (${parts.length ? parts.join('; ') : 'something moved'}). The tests ran in the copy, and the merge would land in the folder as it is now. Merge it there?`
+  if (was.changes !== now.changes) {
+    parts.push('tracked files or staged changes differ')
+    const bin = gitExecutable()
+    if (now.head !== 'none') {
+      const staged = await gitGuarded(root, [...NOTE_STAT_OPTIONS, '--cached', 'HEAD', '--'], { maxBuffer: 4 * 1024 * 1024 })
+      if (staged.ok && staged.out) blocks.push(`Staged now (git diff --cached --stat):\n${plainRepositoryText(staged.out, NOTE_STAT_LINES, NOTE_STAT_BYTES)}`)
+    }
+    if (bin && !(await hasRepoFilterDriver(bin, root))) {
+      const unstaged = await gitGuarded(root, [...NOTE_STAT_OPTIONS, '--'], { maxBuffer: 4 * 1024 * 1024 })
+      if (unstaged.ok && unstaged.out) blocks.push(`Edited, not staged (git diff --stat):\n${plainRepositoryText(unstaged.out, NOTE_STAT_LINES, NOTE_STAT_BYTES)}`)
+    } else blocks.push('Edits that are not staged are not listed: this repository defines its own filter program, which OrgAI does not run.')
+  }
+  const head =
+    `The project folder changed while the tests ran (${parts.length ? parts.join('; ') : 'something moved'}). ` +
+    `The project folder itself changed while the tests ran, not only the copy they ran in: if you approve, OrgAI merges the report on top of that change, in the folder as it is now. Merge it there?`
+  if (!blocks.length) return head
+  return `${head}\n\nThe lines below are text from the repository (commit subjects, file names), not from OrgAI:\n${blocks.join('\n')}`
 }

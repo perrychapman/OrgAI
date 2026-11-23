@@ -980,32 +980,40 @@ function samePathText(a: string, b: string): boolean {
  * identity is carried only when both name and email exist (the OrgAI fallback identity applies when git then complains).
  */
 export async function mergeCarriedConfigArgs(root: string): Promise<string[]> {
-  const res = await gitGuarded(root, ['config', '-z', '--get-regexp', '^(core\\.(autocrlf|eol|safecrlf|filemode|symlinks)|user\\.(name|email)|safe\\.directory)$'], { maxBuffer: 1024 * 1024 })
+  const res = await gitGuarded(root, ['config', '--show-scope', '-z', '--get-regexp', '^(core\\.(autocrlf|eol|safecrlf|filemode|symlinks)|user\\.(name|email)|safe\\.directory)$'], { maxBuffer: 1024 * 1024 })
   if (!res.ok) return []
-  const single = new Map<string, string>()
+  const effective = new Map<string, { scope: string; value: string }>()
   let trustsRoot = false
-  // `git config -z` prints "key\nvalue\0" (a key with no value: "key\0"); later scopes and later lines win.
-  for (const entry of res.out.split('\0')) {
-    if (!entry) continue
-    const nl = entry.indexOf('\n')
-    const key = (nl < 0 ? entry : entry.slice(0, nl)).toLowerCase()
-    const value = nl < 0 ? '' : entry.slice(nl + 1)
+  // `git config --show-scope -z` prints "scope\0key\nvalue\0" (a key with no value: "scope\0key\0"), lower scopes first, so the
+  // last line of a key is the value git uses. A key is carried only when its winning value comes from the system or the global
+  // scope, the two the merge ignores: when the repository's own config sets it, the merge reads that itself (and rootPin.ts
+  // pins that file), so the command-line copy must not override it.
+  const tokens = res.out.split('\0')
+  for (let t = 0; t + 1 < tokens.length; t += 2) {
+    const scope = tokens[t] ?? ''
+    const rest = tokens[t + 1] ?? ''
+    const nl = rest.indexOf('\n')
+    const key = (nl < 0 ? rest : rest.slice(0, nl)).toLowerCase()
+    const value = nl < 0 ? '' : rest.slice(nl + 1)
     if (key === 'safe.directory') {
-      if (value === '*' || samePathText(value, root)) trustsRoot = true
+      // Only protected scopes count for git; the repository's own entries are ignored by it as well.
+      if ((scope === 'system' || scope === 'global') && (value === '*' || samePathText(value, root))) trustsRoot = true
       continue
     }
     const check = CARRIED_VALUES[key]
     if (!check) continue
     // A boolean written with no value at all (`[core] filemode`) means true.
     const clean = check(nl < 0 && key !== 'user.name' && key !== 'user.email' ? 'true' : value)
-    if (clean === null) single.delete(key)
-    else single.set(key, clean)
+    if (clean === null) effective.delete(key)
+    else effective.set(key, { scope, value: clean })
   }
+  const fromUser = (e: { scope: string } | undefined): boolean => e?.scope === 'system' || e?.scope === 'global'
   const args: string[] = []
-  for (const [k, v] of single) if (k !== 'user.name' && k !== 'user.email') args.push('-c', `${k}=${v}`)
-  const name = single.get('user.name')
-  const email = single.get('user.email')
-  if (name && email) args.push('-c', `user.name=${name}`, '-c', `user.email=${email}`)
+  for (const [k, e] of effective) if (k !== 'user.name' && k !== 'user.email' && fromUser(e)) args.push('-c', `${k}=${e.value}`)
+  // The identity is one unit: both effective values when either came from the user's config (git reads the pair together).
+  const name = effective.get('user.name')
+  const email = effective.get('user.email')
+  if (name && email && (fromUser(name) || fromUser(email))) args.push('-c', `user.name=${name.value}`, '-c', `user.email=${email.value}`)
   if (trustsRoot) args.push('-c', `safe.directory=${root}`)
   return args
 }
