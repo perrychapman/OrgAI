@@ -680,6 +680,10 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (chosen.length && ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app and the terminal UI only: ${chosen.join(', ')}.`)
     // They can raise spend (model, effort) or widen what the run may do (permission mode): in-process, 'configure' only.
     if (chosen.length && ctx.surface === 'inproc' && !ctx.grantedScopes?.includes('configure')) throw new HostRpcFailure('scope_denied', `Choosing ${chosen.join(', ')} for a run needs the configure scope.`)
+    // UI overhaul start choices (roles left out, a per-run spending limit) are the desktop window's alone: the socket, the
+    // terminal UI and every other client are refused, never ignored (a limit that silently did not apply would look kept).
+    const overhaul = [...(input.excludeRoleIds !== undefined ? ['excludeRoleIds'] : []), ...(input.maxBudgetUsd !== undefined ? ['maxBudgetUsd'] : [])]
+    if (overhaul.length && ctx.surface !== 'desktop') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app only: ${overhaul.join(', ')}.`)
     // Team evolution after the run changes the team: the user's own surfaces only (an agent or another process must never
     // evolve it), and in-process only with 'configure', like org:evolveApply (the pass may apply, roll back or spend a model call).
     if (input.evolve !== undefined && input.evolve !== false) {
@@ -693,7 +697,9 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       images: input.images,
       ...(input.team === 'single' ? { team: 'single' as const } : {}),
       ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {}),
-      ...(chosen.length ? { userChoice: choice } : {}),
+      ...(chosen.length || overhaul.length
+        ? { userChoice: { ...choice, ...(input.excludeRoleIds !== undefined ? { excludeRoleIds: input.excludeRoleIds } : {}), ...(input.maxBudgetUsd !== undefined ? { maxBudgetUsd: input.maxBudgetUsd } : {}) } }
+        : {}),
       ...(input.evolve !== undefined && input.evolve !== false ? { evolve: input.evolve, ...(input.evolveWindowRuns !== undefined ? { evolveWindowRuns: input.evolveWindowRuns } : {}) } : {})
     })
   })
