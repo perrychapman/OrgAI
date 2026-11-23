@@ -779,7 +779,7 @@ try {
 
   // A2: the Maintenance sub-nav item must not scroll the page away from the tabs.
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
-  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
+  await page.getByRole('tab', { name: /^(Branches|Maintenance)$/ }).click()
   await sleep(600)
   const a2 = await page.evaluate(() => {
     const r = [...document.querySelectorAll('[role=tablist][aria-label="Project sections"] [role=tab]')].find((b) => b.textContent?.trim() === 'Live')?.getBoundingClientRect()
