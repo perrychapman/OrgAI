@@ -1,14 +1,15 @@
 /**
- * Finding the Codex CLI and checking its version (Wave 7, docs/design/cli-standalone.md 6.2, decision D7). Codex is not
- * a dependency of the npm package, so it may come from the user's own install.
+ * Finding the Codex CLI and checking its version (Wave 7, docs/design/cli-standalone.md 6.2, decision D7). The desktop
+ * app and the npm package both bring Codex; a build without it falls back to the user's own install on PATH.
  *
  * Resolution (`lookupCodexBinary`, synchronous, file system only, nothing spawned):
  *   1. ORGAI_CODEX_PATH: an absolute path to an existing regular file; when set it decides (a bad value is refused,
  *      never passed over). On POSIX a '#!' script there that is not an npm shim of a findable package (a user's own
  *      wrapper) is used as is.
  *   2. The per-platform package (@openai/codex-<platform>-<arch>) beside a packaged app's archive or resolved through
- *      createRequire from our bundle (the app, the archive, a dev checkout); a hit inside app.asar is rewritten to
- *      app.asar.unpacked.
+ *      createRequire from our bundle (the app, the npm package, the archive, a dev checkout), hoisted or nested inside
+ *      @openai/codex's own node_modules; a hit inside app.asar is rewritten to app.asar.unpacked. The npm package
+ *      depends on @openai/codex since 2026-11-23, so this step finds the version it was tested with.
  *   3. `codex` on PATH, walking the absolute PATH directories with stat (never the cwd, no where.exe). Windows tries
  *      codex.exe, codex.cmd, codex.ps1 per directory (npm's extensionless sh script is skipped); POSIX `codex`.
  * A hit is classified by content, not name: a native executable (Mach-O, ELF, PE) is used as is, with an adjacent
@@ -301,9 +302,19 @@ export function lookupCodexBinary(opts: CodexLookupOptions = {}): CodexLookup {
       const hit = r.fromPlatformRoot(r.p.join(res, 'app.asar.unpacked', 'node_modules', ...r.target.pkg.split('/')), 'package')
       if (hit) return { binary: hit }
     }
-    const pkgJson = (opts.resolveModule ?? nodeModuleResolver)(`${r.target.pkg}/package.json`, bundleDir)
+    const resolve = opts.resolveModule ?? nodeModuleResolver
+    const pkgJson = resolve(`${r.target.pkg}/package.json`, bundleDir)
     if (pkgJson) {
       const hit = r.fromPlatformRoot(unpackedAsarPath(r.p.dirname(pkgJson)).path, 'package')
+      if (hit) return { binary: hit }
+    }
+    // npm may leave the per-platform package inside @openai/codex's own node_modules instead of hoisting it beside it
+    // (it does for a plain `npm i -g @openai/codex`): look there too, so the Codex this package brings is always the
+    // one used, never one that merely happens to be on PATH.
+    const main = resolve('@openai/codex/package.json', bundleDir)
+    if (main) {
+      const nested = r.p.join(unpackedAsarPath(r.p.dirname(main)).path, 'node_modules', ...r.target.pkg.split('/'))
+      const hit = r.fromPlatformRoot(nested, 'package')
       if (hit) return { binary: hit }
     }
   }

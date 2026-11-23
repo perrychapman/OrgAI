@@ -8,10 +8,12 @@ import path from 'node:path'
 export const NPM_PACKAGE_NAME = 'orgai-cli'
 
 /**
- * The CLI bundle's bare imports (src/cli/packaging.ts CLI_RUNTIME_PACKAGES) minus Codex, which is bring-your-own
- * (6.2, D7). Kept in step with packaging.ts by src/cli/npmPackage.test.ts.
+ * The CLI bundle's bare imports (src/cli/packaging.ts CLI_RUNTIME_PACKAGES), Codex included since 2026-11-23: the
+ * package brings the Codex version it was tested with, as it brings the Claude runtime, so an OpenAI connection does
+ * not depend on whichever `codex` is on the user's PATH (which is refused outside the tested release line). It costs
+ * about 360 MB of install size for this platform's binary. Kept in step with packaging.ts by src/cli/npmPackage.test.ts.
  */
-export const NPM_RUNTIME_PACKAGES = ['@anthropic-ai/claude-agent-sdk', 'zod']
+export const NPM_RUNTIME_PACKAGES = ['@anthropic-ai/claude-agent-sdk', '@openai/codex', 'zod']
 
 /** The SDK whose declared peers become direct dependencies (npm would otherwise pick their versions at install). */
 export const AGENT_SDK = '@anthropic-ai/claude-agent-sdk'
@@ -329,10 +331,11 @@ orgai doctor        # checks the install, the data folder, the agent runtimes an
 Node ${nodeEngines}. Older Node versions run, but cannot add the operating system's root certificates (a corporate
 or HTTPS-inspecting network then fails); \`orgai doctor\` warns when that is the case.
 
-${pinning} The Claude runtime is an optional, per-platform
-package of \`@anthropic-ai/claude-agent-sdk\`: do not install with \`--omit=optional\`. Installing with
-\`--ignore-scripts\` is supported when no package in the tree has an install script (the release check verifies it).
-Codex is not bundled: install \`@openai/codex\` yourself (or set \`ORGAI_CODEX_PATH\`) to use an OpenAI connection.
+${pinning} The Claude runtime and Codex are optional, per-platform
+packages of \`@anthropic-ai/claude-agent-sdk\` and \`@openai/codex\`: do not install with \`--omit=optional\`.
+Installing with \`--ignore-scripts\` is supported when no package in the tree has an install script (the release check
+verifies it). The package brings the Codex version it was tested with and uses that one, whatever \`codex\` is on your
+PATH; \`ORGAI_CODEX_PATH\` names another binary to use instead.
 
 ## Hosts
 
