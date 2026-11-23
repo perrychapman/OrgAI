@@ -1109,7 +1109,31 @@ function evolveStartArg(v: unknown): boolean | EvolveStrategy | undefined {
   throw badInput("evolve must be true, false, 'deterministic' or 'hybrid'.")
 }
 
-/** runs:start: { projectId, prompt, scaffold?, images?, team?, overrides?, modelSelection?, effort?, permissionMode?, evolve?, evolveWindowRuns? }, rebuilt; team only 'single'. */
+/** The most role ids one run may leave out (StartRunInput.excludeRoleIds). */
+const EXCLUDE_ROLE_IDS_ARG_MAX = 200
+
+/**
+ * StartRunInput.excludeRoleIds, rebuilt: undefined and null are absent, otherwise a list of at most 200 text ids (no control
+ * characters, at most 200 characters each). Shape only; RunManager checks them against the project's roles.
+ */
+function excludeRoleIdsArg(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return undefined
+  if (!Array.isArray(v) || v.length > EXCLUDE_ROLE_IDS_ARG_MAX) throw badInput('excludeRoleIds must be a list of role ids.')
+  return v.map((id) => {
+    // eslint-disable-next-line no-control-regex
+    if (typeof id !== 'string' || !id || id.length > 200 || /[\x00-\x1f\x7f]/.test(id)) throw badInput('excludeRoleIds must be a list of role ids.')
+    return id
+  })
+}
+
+/** StartRunInput.maxBudgetUsd, rebuilt: undefined and null are absent, otherwise a finite number above 0. */
+function maxBudgetArg(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) throw badInput('maxBudgetUsd must be a number above 0.')
+  return v
+}
+
+/** runs:start: { projectId, prompt, scaffold?, images?, team?, overrides?, modelSelection?, effort?, permissionMode?, evolve?, evolveWindowRuns?, excludeRoleIds?, maxBudgetUsd? }, rebuilt; team only 'single'. The last two are the desktop's alone (the dispatcher refuses them from any other surface). */
 export function startRunArgs(input: unknown): StartRunInput & { evolveWindowRuns?: number } {
   if (!isPlain(input)) throw badInput('Unknown run input.')
   if (!isValidId(input.projectId)) throw badInput('Project not found')
@@ -1126,6 +1150,8 @@ export function startRunArgs(input: unknown): StartRunInput & { evolveWindowRuns
   }
   if (input.effort !== undefined && input.effort !== null && !isEffort(input.effort)) throw badInput('effort is not a known reasoning effort.')
   if (input.permissionMode !== undefined && input.permissionMode !== null && !isPermissionMode(input.permissionMode)) throw badInput('permissionMode is not a known permission mode.')
+  const excludeRoleIds = excludeRoleIdsArg(input.excludeRoleIds)
+  const maxBudgetUsd = maxBudgetArg(input.maxBudgetUsd)
   return {
     projectId: input.projectId,
     prompt: text,
@@ -1137,7 +1163,9 @@ export function startRunArgs(input: unknown): StartRunInput & { evolveWindowRuns
     ...(evolve !== undefined ? { evolve } : {}),
     ...(evolve !== undefined && evolve !== false && evolveWindowRuns !== undefined ? { evolveWindowRuns } : {}),
     ...(isEffort(input.effort) ? { effort: input.effort } : {}),
-    ...(isPermissionMode(input.permissionMode) ? { permissionMode: input.permissionMode } : {})
+    ...(isPermissionMode(input.permissionMode) ? { permissionMode: input.permissionMode } : {}),
+    ...(excludeRoleIds ? { excludeRoleIds } : {}),
+    ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {})
   }
 }
 
