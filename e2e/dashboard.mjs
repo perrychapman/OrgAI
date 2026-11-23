@@ -1768,7 +1768,7 @@ async function setName(name) {
     check((await card.count()) === 1, 'IB the selected permission is the real decision card', String(await card.count()))
     check((await card.locator('.decision-footer .btn.primary').count()) === 1, 'IB the card has its own primary button')
     const rowsNamed = await rows().evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''))
-    check(rowsNamed.every((t) => /^(Permission|Question|Rule|Proposal|Review|New tool|Plan|Team files|Finished|Failed): /.test(t) && /run started/.test(t)), 'IB each row is named with its kind, ask, who, project and age', JSON.stringify(rowsNamed.slice(0, 2)))
+    check(rowsNamed.every((t) => /^(Permission|Question|Rule|Proposal|Review|New tool|Plan|Team files|Finished|Failed): /.test(t) && /(run started|waiting) /.test(t)), 'IB each row is named with its kind, ask, who, project and age', JSON.stringify(rowsNamed.slice(0, 2)))
     await ip.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
     await launched.shot('waiting-dark-1440')
 

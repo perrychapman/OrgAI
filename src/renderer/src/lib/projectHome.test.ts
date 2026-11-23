@@ -9,6 +9,7 @@ import {
   homeTodos,
   isRunningNow,
   median,
+  monthSpendFrom,
   mergeDraftText,
   safeSquareColor,
   monthSpend,
@@ -268,5 +269,23 @@ describe('first run date', () => {
   it('is the oldest start, or nothing', () => {
     expect(firstRunDate([])).toBe('')
     expect(firstRunDate([{ startedAt: new Date(2026, 10, 3).getTime() }, { startedAt: new Date(2026, 10, 9).getTime() }])).toBe('3 Nov 2026')
+  })
+})
+
+describe('monthSpendFrom (runInsights.projectSpend)', () => {
+  const period = (spentUsd: number, runs: number, unknownRuns: number) => ({ spentUsd, runs, unknownRuns, from: 0, until: 1 })
+  it('is null without runs or an answer', () => {
+    expect(monthSpendFrom(null)).toBeNull()
+    expect(monthSpendFrom({ month: period(0, 0, 0), monthProjectionUsd: null })).toBeNull()
+  })
+  it('keeps unknown as unknown, never $0, and marks a lower bound', () => {
+    expect(monthSpendFrom({ month: period(0, 2, 2), monthProjectionUsd: null })!.text).toBe('unknown')
+    expect(monthSpendFrom({ month: period(12, 3, 1), monthProjectionUsd: null })!.text).toMatch(/\+$/)
+    expect(monthSpendFrom({ month: period(0, 2, 0), monthProjectionUsd: null })!.text).toMatch(/^\$0/)
+  })
+  it('adds the cap and the projection when known', () => {
+    const s = monthSpendFrom({ month: period(10, 2, 0), maxMonthlyUsd: 200, monthProjectionUsd: 90 })!
+    expect(s.limitText).toBe('of $200.00 a month')
+    expect(s.projectionText).toContain('$90')
   })
 })
