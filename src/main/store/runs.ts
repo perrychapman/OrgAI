@@ -121,7 +121,9 @@ export function cleanRunHold(v: unknown): RunHold | undefined {
     out.provider = {
       ...(p.connection !== undefined ? { connection: p.connection as string } : {}),
       ...(p.error !== undefined ? { error: p.error as string } : {}),
-      ...(p.lastOkAt !== undefined ? { lastOkAt: p.lastOkAt as number } : {})
+      ...(p.lastOkAt !== undefined ? { lastOkAt: p.lastOkAt as number } : {}),
+      // tries: a positive integer only; anything else is dropped (the rest of the hold stays).
+      ...(typeof p.tries === 'number' && Number.isInteger(p.tries) && p.tries > 0 ? { tries: p.tries } : {})
     }
   }
   if (v.failed !== undefined) {
@@ -188,6 +190,8 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
     if (overrides) r.overrides = overrides
     else delete r.overrides
   }
+  // A provider retry in progress died with the process (main-owned, live runs only): never on a loaded run.
+  delete r.providerRetry
   // UI overhaul fields (untrusted file): a malformed hold is dropped whole; ids and the per-run cap are checked.
   if (r.hold !== undefined) {
     const hold = cleanRunHold(r.hold)

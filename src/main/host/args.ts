@@ -704,10 +704,14 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
   // A field whose kind differs from the stored one's (a non-array modelPrices, a string flag, null) is dropped, so a
   // malformed save never wipes a stored value. undefined still clears an optional field; a field with nothing stored
   // goes through to SettingsStore normalization.
+  // `number | null` fields (spendWarnPercent: a percentage, or null for off) accept either kind whatever is stored,
+  // otherwise turning the warning on or off would be dropped as a kind change. SettingsStore normalizes the value.
   const kindOf = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v)
+  const NUMBER_OR_NULL_FIELDS: ReadonlySet<string> = new Set(['spendWarnPercent'])
   const storedFields = stored as unknown as Record<string, unknown>
   for (const [key, value] of Object.entries(rest)) {
     const was = Object.hasOwn(storedFields, key) ? storedFields[key] : undefined
+    if (NUMBER_OR_NULL_FIELDS.has(key) && (value === null || typeof value === 'number')) continue
     if (value !== undefined && was !== undefined && kindOf(value) !== kindOf(was)) delete (rest as Record<string, unknown>)[key]
   }
   const out: AppSettings = { ...stored, ...rest }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runTestGate, TEST_GATE_DETAIL_CHARS, testGateCommand, testGateEnv } from './testGate'
+import { runTestGate, TEST_GATE_DETAIL_CHARS, testGateCommand, testGateEnv, testGateMissingCommand } from './testGate'
 
 // Real shell, real processes: the commands below are plain `node -e` lines that behave the same under cmd.exe and /bin/sh.
 let dir: string
@@ -32,7 +32,44 @@ describe('testGateCommand', () => {
   })
 })
 
+describe('testGateMissingCommand', () => {
+  const SENTENCE = 'Tests are required before merging, but no test command is set. Add one in Settings > Branches.'
+  it('names the missing command only when tests are required for a code project', () => {
+    expect(testGateMissingCommand({ requireTestsPass: true })).toBe(SENTENCE)
+    expect(testGateMissingCommand({ requireTestsPass: true, testCommand: '' })).toBe(SENTENCE)
+    expect(testGateMissingCommand({ requireTestsPass: true, testCommand: '   ' })).toBe(SENTENCE)
+    expect(testGateMissingCommand({ requireTestsPass: true, testCommand: 'npm test' })).toBeNull()
+    expect(testGateMissingCommand({})).toBeNull()
+    expect(testGateMissingCommand({ requireTestsPass: false })).toBeNull()
+    expect(testGateMissingCommand({ requireTestsPass: true, kind: 'engagement' })).toBeNull()
+  })
+})
+
 describe('testGateEnv', () => {
+  it('also drops names holding a token, secret or password, and AWS / Azure / GitHub credentials (review M3)', () => {
+    const env = testGateEnv({
+      PATH: '/bin',
+      HOME: '/home/u',
+      USERPROFILE: 'C:\\Users\\u',
+      TMPDIR: '/tmp',
+      NODE_ENV: 'test',
+      NPM_TOKEN: 'n',
+      NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org',
+      GH_TOKEN: 'g',
+      GH_HOST: 'h',
+      GITHUB_ACTIONS: 'true',
+      GITHUB_PAT: 'p',
+      AWS_ACCESS_KEY_ID: 'a',
+      AWS_REGION: 'r',
+      AZURE_CLIENT_ID: 'z',
+      DB_PASSWORD: 'pw',
+      MY_SECRET: 's',
+      session_token: 't',
+      SLACK_BOT_TOKEN: 'b'
+    })
+    expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', USERPROFILE: 'C:\\Users\\u', TMPDIR: '/tmp', NODE_ENV: 'test', NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org' })
+  })
+
   it('drops provider secrets, routing variables and OrgAI control variables, keeps the rest', () => {
     const env = testGateEnv({
       PATH: '/bin',

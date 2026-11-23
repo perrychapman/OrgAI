@@ -1,5 +1,6 @@
-import type { Project } from '@shared/types'
-import { cleanProjectLimits } from '../store/projects'
+import type { AppSettings, Project, Role } from '@shared/types'
+import { cleanProjectLimits, cleanRoleLimits } from '../store/projects'
+import { normalizeSpendWarnPercent } from '../store/settings'
 
 /**
  * UI overhaul: spend and command settings only the desktop window may widen.
@@ -16,7 +17,14 @@ import { cleanProjectLimits } from '../store/projects'
  * - `branchNamePattern`, `askBeforeStrongerModel`: never changed (a pattern decides which branches a later delete may
  *   treat as OrgAI's; the question gates staffing escalation). A missing flag equals false.
  *
- * Other new fields (`maxAgentsPerRun`, `Role.maxConcurrent`) only narrow what a run may do, so they are not guarded.
+ * - `maxAgentsPerRun`, `Role.maxConcurrent`: a cap may be set where there was none, kept, or lowered; never raised or
+ *   removed (a role is matched by id; a role new in the save starts uncapped, as any new role does).
+ * - `Role.knowledgeWrite`: may be set to false or kept; a stored false is never removed or turned true.
+ * - `keepFailedBranchesDays`: may be raised, cleared or kept; never set where there was none or lowered (the boot sweep
+ *   would delete finished copies sooner).
+ * - `mainBranch`: never changed (it decides where merges land).
+ *
+ * Every change that only narrows what a run may do or delete stays allowed from other surfaces; every widening is refused.
  * Team files never carry any of these (teamFiles/parse.ts ignores unknown team.json keys), and the settings proposal
  * lists (PROJECT_SETTINGS_PROPOSABLE_FIELDS) do not name them. Pure.
  */
@@ -24,6 +32,24 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
   const was = cleanProjectLimits(stored)
   const now = cleanProjectLimits(incoming)
   const refused: string[] = []
+  if (was.maxAgentsPerRun !== undefined && (now.maxAgentsPerRun === undefined || now.maxAgentsPerRun > was.maxAgentsPerRun)) refused.push('maxAgentsPerRun')
+  if (now.mainBranch !== was.mainBranch) refused.push('mainBranch')
+  if (now.keepFailedBranchesDays !== undefined && (was.keepFailedBranchesDays === undefined || now.keepFailedBranchesDays < was.keepFailedBranchesDays)) {
+    refused.push('keepFailedBranchesDays')
+  }
+  const nowRoles = new Map<string, Role>()
+  for (const r of Array.isArray(incoming.roles) ? incoming.roles : []) if (r && typeof r.id === 'string') nowRoles.set(r.id, cleanRoleLimits(r))
+  let concurrentWidened = false
+  let knowledgeWidened = false
+  for (const old of Array.isArray(stored.roles) ? stored.roles : []) {
+    const before = cleanRoleLimits(old)
+    const after = nowRoles.get(before.id)
+    if (!after) continue // the role is gone: nothing of it runs
+    if (before.maxConcurrent !== undefined && (after.maxConcurrent === undefined || after.maxConcurrent > before.maxConcurrent)) concurrentWidened = true
+    if (before.knowledgeWrite === false && after.knowledgeWrite !== false) knowledgeWidened = true
+  }
+  if (concurrentWidened) refused.push('Role.maxConcurrent')
+  if (knowledgeWidened) refused.push('Role.knowledgeWrite')
   for (const key of ['maxDailyUsd', 'maxMonthlyUsd'] as const) {
     const before = was[key]
     const after = now[key]
@@ -40,7 +66,29 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
   return refused
 }
 
+/**
+ * App settings only the desktop window may change: openAtLogin (registers the app with the OS), closeBehavior and
+ * keepAwakeDuringRuns (change how the host stays alive) and spendWarnPercent (the spend warning). settings:set from a
+ * socket client or the in-process CLI is the whole settings object, so this compares the merged result with the stored
+ * settings (normalized the way SettingsStore does, so a junk value counts as "off") and names every field it would
+ * change, in either direction. The other overhaul fields (playSound, the notify flags, dateFormat) are display
+ * preferences and stay allowed. Pure.
+ */
+export function desktopOnlySettingChanges(stored: AppSettings, incoming: AppSettings): string[] {
+  const refused: string[] = []
+  if ((incoming.openAtLogin === true) !== (stored.openAtLogin === true)) refused.push('openAtLogin')
+  if ((incoming.closeBehavior === 'keepRunning') !== (stored.closeBehavior === 'keepRunning')) refused.push('closeBehavior')
+  if ((incoming.keepAwakeDuringRuns === true) !== (stored.keepAwakeDuringRuns === true)) refused.push('keepAwakeDuringRuns')
+  if (normalizeSpendWarnPercent(incoming.spendWarnPercent) !== normalizeSpendWarnPercent(stored.spendWarnPercent)) refused.push('spendWarnPercent')
+  return refused
+}
+
+/** The plain refusal sentence for the names desktopOnlySettingChanges returned. */
+export function desktopOnlySettingMessage(fields: readonly string[]): string {
+  return `These app settings can be changed in the OrgAI window only: ${fields.join(', ')}.`
+}
+
 /** The plain refusal sentence for the names desktopOnlyProjectChanges returned. */
 export function desktopOnlyProjectMessage(fields: readonly string[]): string {
-  return `These project settings can be changed in the OrgAI window only: ${fields.join(', ')}. Spend caps can be lowered from here, not raised or removed.`
+  return `These project settings can be changed in the OrgAI window only: ${fields.join(', ')}. Limits can be lowered from here, not raised or removed.`
 }

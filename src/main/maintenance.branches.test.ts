@@ -213,6 +213,18 @@ describe('integrating a leftover copy from maintenance', () => {
     expect(existsSync(copy.path)).toBe(false)
   })
 
+  it('refuses with a plain sentence when tests are required but no command is set, and keeps the copy', async () => {
+    for (const over of [{ requireTestsPass: true }, { requireTestsPass: true, testCommand: '   ' }]) {
+      const copy = addCopy(`gate-none-${Object.keys(over).length}`, 0)
+      const res = await service(over).integrateWorktree('p1', copy.branch)
+      expect(res.ok).toBe(false)
+      expect(res.message).toContain('Tests are required before merging, but no test command is set. Add one in Settings > Branches.')
+      expect(existsSync(copy.path)).toBe(true)
+      expect(branches()).toContain(copy.branch)
+      expect(git(root, 'log -1 --format=%s')).toBe('initial')
+    }
+  })
+
   it('merges without running anything when the gate is off', async () => {
     const copy = addCopy('gate-off', 0)
     const res = await service({ requireTestsPass: false, testCommand: 'node -e "process.exit(2)"' }).integrateWorktree('p1', copy.branch)
