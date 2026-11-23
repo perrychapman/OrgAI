@@ -39,11 +39,12 @@ const sdkPkg = JSON.parse(readFileSync(join(ROOT, 'node_modules', '@anthropic-ai
 const repoPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version: string }
 
 describe('the published dependency list', () => {
-  it('is CLI_RUNTIME_PACKAGES minus @openai/codex plus the SDK peers', () => {
-    expect(NPM_RUNTIME_PACKAGES).toEqual(CLI_RUNTIME_PACKAGES.filter((p) => p !== '@openai/codex'))
+  it('is CLI_RUNTIME_PACKAGES (Codex included: the package brings the version it was tested with) plus the SDK peers', () => {
+    expect(NPM_RUNTIME_PACKAGES).toEqual([...CLI_RUNTIME_PACKAGES])
+    expect(NPM_RUNTIME_PACKAGES).toContain('@openai/codex')
     const peers = Object.keys(sdkPkg.peerDependencies ?? {})
     expect(peers.length).toBeGreaterThan(0)
-    const expected = [...new Set([...CLI_RUNTIME_PACKAGES.filter((p) => p !== '@openai/codex'), ...peers])].sort()
+    const expected = [...new Set([...CLI_RUNTIME_PACKAGES, ...peers])].sort()
     expect(cliDependencyNames(sdkPkg)).toEqual(expected)
   })
 
@@ -66,9 +67,11 @@ describe('the published dependency list', () => {
     const locs = Object.keys(sw.packages)
     expect(sw.packages['']).toMatchObject({ name: 'orgai-cli', dependencies: deps })
     for (const name of Object.keys(deps)) expect(locs).toContain(`node_modules/${name}`)
-    for (const repoOnly of ['electron', 'react', 'vitest', '@openai/codex', 'electron-builder']) expect(locs).not.toContain(`node_modules/${repoOnly}`)
+    for (const repoOnly of ['electron', 'react', 'vitest', 'electron-builder']) expect(locs).not.toContain(`node_modules/${repoOnly}`)
     for (const plat of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64']) {
       expect(sw.packages[`node_modules/@anthropic-ai/claude-agent-sdk-${plat}`]).toMatchObject({ optional: true })
+      // Codex's per-platform binaries are optional the same way.
+      expect(sw.packages[`node_modules/@openai/codex-${plat}`]).toMatchObject({ optional: true })
     }
     for (const [loc, e] of Object.entries(sw.packages)) {
       if (loc === '') continue
