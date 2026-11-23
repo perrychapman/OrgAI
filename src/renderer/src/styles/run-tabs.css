@@ -11,8 +11,14 @@
   height: var(--run-strip-h);
   min-width: 0;
   padding: 0 var(--space-3);
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-default);
+  /* Glass strip (UI overhaul Run board): the ambient ground shows through. */
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--glass-line);
+  /* The blur makes the strip a stacking context; keep its "+n" menu above the panel below as before. */
+  position: relative;
+  z-index: var(--z-popover);
 }
 /* Browser-style tabs. In normal flow; tabs never scroll, the overflow goes to the "+n" menu. */
 .run-tabs {
@@ -70,8 +76,8 @@
   animation: run-tab-leave var(--dur-fast) var(--ease-in) forwards;
 }
 .run-tab-ghost.selected {
-  background: var(--surface-2);
-  border-color: var(--border-default);
+  background: var(--glass-strong);
+  border-color: var(--glass-line);
   color: var(--text-primary);
 }
 .run-tab-wrap {
@@ -87,13 +93,18 @@
   color: var(--text-secondary);
 }
 .run-tab-wrap:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--text-primary) 7%, transparent);
   color: var(--text-primary);
 }
 .run-tab-wrap.selected {
-  background: var(--surface-2);
-  border-color: var(--border-default);
+  background: var(--glass-strong);
+  border-color: var(--glass-line);
   color: var(--text-primary);
+}
+/* The viewed run's name is the run title: display font. */
+.run-tab-wrap.selected .run-tab-title {
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
 }
 .run-tab {
   flex: 1;
@@ -170,9 +181,13 @@
   border-radius: var(--radius-full);
   background: var(--text-tertiary);
 }
+/* Working is cyan (owner decision 1); the tab's word is in its accessible name, the dot is never the only cue. */
 .run-dot.is-running {
-  background: var(--success);
+  background: var(--working);
   animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+}
+.run-dot.ok {
+  background: var(--success);
 }
 .run-dot.idle {
   background: var(--info);
@@ -193,8 +208,16 @@
     animation: none;
   }
 }
-:root[data-reduce-motion='on'] .run-dot.is-running {
+:root[data-reduce-motion='on'] .run-dot.is-running,
+[data-motion-paused] .run-dot.is-running {
   animation: none;
+}
+/* Engagement runs: serif title and a coral accent bar (the run view root carries data-kind, the strip sits above it). */
+.run-workspace:has(.run-view[data-kind='engagement']) .run-tab-bar {
+  background: var(--eng);
+}
+.run-workspace:has(.run-view[data-kind='engagement']) .run-tab-wrap.selected .run-tab-title {
+  font-family: var(--font-serif);
 }
 
 .run-tab-new,
@@ -292,8 +315,18 @@
   gap: var(--space-2);
   min-width: 0;
 }
+/* A hairline sets the destructive action apart; it is the quiet one (ghost, danger text), the primary action is filled. */
 .run-actions .run-act-end {
-  margin-left: var(--space-2);
+  margin-left: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--glass-line);
+}
+.run-actions .btn.run-act-quiet-danger {
+  color: var(--danger-text);
+}
+.run-actions .btn.run-act-quiet-danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 /* Narrow strip: Interrupt and the retrospective keep their icon and accessible name, the words go. End session keeps its words. */
 @container strip (max-width: 760px) {

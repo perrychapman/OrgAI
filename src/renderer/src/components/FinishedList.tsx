@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react'
+import { Check, CircleAlert } from 'lucide-react'
 import type { AgentInstance } from '@shared/types'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
@@ -58,7 +59,9 @@ export default function FinishedList({ group }: { group: FinishedGroup }): React
               <span className="finished-title">
                 <strong>{label}</strong>
                 {label !== a.name && <span className="finished-role">{a.name}</span>}
-                <Badge tone={a.state === 'error' ? 'danger' : 'neutral'}>{a.state === 'error' ? 'failed' : 'done'}</Badge>
+                <Badge tone={a.state === 'error' ? 'danger' : 'success'} icon={a.state === 'error' ? CircleAlert : Check}>
+                  {a.state === 'error' ? 'failed' : 'done'}
+                </Badge>
                 {a.worktree && <Badge>{WT_LABEL[a.worktree.status] ?? a.worktree.status}</Badge>}
               </span>
               {connectionTag(a.connection, runConnection) && (
