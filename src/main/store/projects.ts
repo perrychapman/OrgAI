@@ -11,6 +11,8 @@ import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
 import { cleanBranchNamePattern } from '../runtime/branchNames'
 import { cleanFolderConfigTrust, initialFolderConfigTrust } from '../runtime/folderConfigTrust'
 import { homedir } from 'node:os'
+import { storeSyncFor, type StoreSync } from './shared/storeSync'
+import { mergeProject } from './projectMerge'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
 export type TierContextFor = (connection: ConnectionId) => TierContext | undefined
@@ -597,6 +599,9 @@ export function parseProjectsFile(parsed: unknown): { projects: Project[]; versi
 export const RENAME_CARRY_MS = 120_000
 
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
+/** Versions of one project a shared store remembers for merging a later save (ProjectStore.rebased). */
+const VERSIONS_KEPT = 8
+
 export class ProjectStore {
   private saveHook?: ProjectSaveHook
   private file: string
@@ -614,31 +619,134 @@ export class ProjectStore {
    */
   private renameCarry = new Map<string, Map<string, { ids: Set<string>; at: number }>>()
   private renamedAway = new Map<string, Set<string>>()
+  /** How this store stays correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private sync: StoreSync
+  /**
+   * Shared data folder only: the versions of each project this process has had in memory, by `updatedAt` (the newest
+   * VERSIONS_KEPT). A save whose copy was made from one of them is merged onto what the file holds now (projectMerge.ts).
+   */
+  private versions = new Map<string, Map<string, Project>>()
+  /**
+   * Versions (`<id>\n<updatedAt>`) this process has seen with two different contents: a migration rewrites a project
+   * without a new stamp (migrateAll). Nobody can tell which of the two a caller's copy was made from, so baseOf
+   * answers null for them.
+   */
+  private restamped = new Set<string>()
 
   /**
    * `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels).
    * `opts.home` overrides os.homedir() for the allowed-directory rules (tests).
+   * `opts.sync` overrides the data folder's own sync (tests that put two sessions in one process).
    */
-  constructor(dataDir: string, opts: { tierContext?: TierContextFor; home?: string } = {}) {
+  constructor(dataDir: string, opts: { tierContext?: TierContextFor; home?: string; sync?: StoreSync } = {}) {
     this.tierContext = opts.tierContext
     this.dataDir = dataDir
     this.home = opts.home ?? homedir()
     this.file = join(dataDir, 'projects.json')
-    this.load()
+    this.sync = opts.sync ?? storeSyncFor(dataDir)
+    this.sync.load(this.file, () => this.load(true))
     this.migrateAll()
   }
 
-  private load(): void {
+  /**
+   * Read projects.json. A first read that fails starts empty, as before. A later re-read that fails (several orgai
+   * sessions on one data folder) keeps what is in memory: the file is only ever replaced whole, so that is damage from
+   * outside, and saving an empty list over it would lose every project.
+   */
+  private load(first: boolean): void {
     try {
       if (existsSync(this.file)) {
         const parsed = parseProjectsFile(JSON.parse(readFileSync(this.file, 'utf8')))
         this.projects = parsed.projects
         this.fileVersion = parsed.version
+        for (const p of this.projects) this.remember(p)
+        // Versions of projects that are gone (removed here or by another session) are of no use to any save.
+        if (this.versions.size > this.projects.length) {
+          const stored = new Set(this.projects.map((p) => p.id))
+          for (const id of [...this.versions.keys()]) if (!stored.has(id)) this.versions.delete(id)
+        }
       }
     } catch (e) {
+      if (!first) {
+        console.error('Failed to read projects.json again, keeping the projects in memory:', e)
+        return
+      }
       console.error('Failed to read projects.json, starting empty:', e)
       this.projects = []
     }
+  }
+
+  /**
+   * The `updatedAt` of a save. It is also how a save tells which version its copy was made from, so two saves of one
+   * project never share one: a save in the same millisecond as the stored version gets the next millisecond.
+   */
+  private nextUpdatedAt(projectId: string): string {
+    const now = new Date().toISOString()
+    if (!this.sync.shared) return now
+    const stored = this.projects.find((p) => p.id === projectId)?.updatedAt
+    if (typeof stored !== 'string' || now > stored) return now
+    const t = Date.parse(stored)
+    return Number.isFinite(t) ? new Date(t + 1).toISOString() : now
+  }
+
+  /** Keep a version this process has in memory, so a later save made from it can be merged. */
+  private remember(p: Project): void {
+    if (!this.sync?.shared || typeof p?.id !== 'string' || typeof p.updatedAt !== 'string') return
+    let known = this.versions.get(p.id)
+    if (!known) this.versions.set(p.id, (known = new Map()))
+    const had = known.get(p.updatedAt)
+    if (had && JSON.stringify(had) !== JSON.stringify(p)) this.restamped.add(`${p.id}\n${p.updatedAt}`)
+    known.delete(p.updatedAt)
+    // A copy of its own: whatever a caller later does to the object it was handed, the version stays what was stored.
+    known.set(p.updatedAt, structuredClone(p))
+    while (known.size > VERSIONS_KEPT) {
+      const oldest = known.keys().next().value as string
+      known.delete(oldest)
+      this.restamped.delete(`${p.id}\n${oldest}`)
+    }
+  }
+
+  /**
+   * The project a save should store. Another orgai session may have saved this project since the caller's copy was
+   * made (its `updatedAt` is then older than the stored one): the caller's changes are put onto the stored version
+   * instead of replacing it. A copy whose origin this process no longer remembers is stored as it is, as before.
+   * Call inside `change` (the stored list is then the newest).
+   */
+  private rebased(project: Project): Project {
+    if (!this.sync.shared) return project
+    const stored = this.projects.find((p) => p.id === project.id)
+    if (!stored || typeof project.updatedAt !== 'string' || project.updatedAt === stored.updatedAt) return project
+    const base = this.versions.get(project.id)?.get(project.updatedAt)
+    return base ? mergeProject(base, project, stored) : project
+  }
+
+  /**
+   * The version a caller's copy was made from (same id and `updatedAt`), as this process had it: a copy, or null when
+   * this process no longer remembers it or has seen that stamp with two different contents (a migration rewrites
+   * a project without a new stamp). For reading what a save itself changed (dispatcher.ts projects:save on the
+   * terminal's own host): another orgai session may have saved the project since, so the stored project is not what
+   * the caller edited. With one process per data folder: the stored project, when the copy was made from it.
+   */
+  baseOf(project: Pick<Project, 'id' | 'updatedAt'>): Project | null {
+    if (typeof project?.id !== 'string' || typeof project.updatedAt !== 'string') return null
+    if (this.sync.shared) {
+      // Seen with two contents under one stamp: which one the caller's copy came from is unknown.
+      if (this.restamped.has(`${project.id}\n${project.updatedAt}`)) return null
+      const base = this.versions.get(project.id)?.get(project.updatedAt)
+      return base ? structuredClone(base) : null
+    }
+    const stored = this.projects.find((p) => p.id === project.id)
+    return stored && stored.updatedAt === project.updatedAt ? structuredClone(stored) : null
+  }
+
+  /** Before a read: pick up what another session saved. Nothing to do with one process per data folder. */
+  private fresh(): void {
+    this.sync.refresh(this.file, () => this.load(false))
+  }
+
+  /** A change to the list: under the write lock, on the newest content (shared), or directly (one process). */
+  private change<T>(fn: () => T): T {
+    return this.sync.write(this.file, () => this.load(false), fn)
   }
 
   private persist(): void {
@@ -653,22 +761,26 @@ export class ProjectStore {
    * and Role.tier (see migrateProject). Persists only when something changed. Returns how many projects changed.
    */
   migrateAll(): number {
-    let changed = 0
-    const legacyLimits = this.fileVersion < 2
-    this.projects = this.projects.map((p) => {
-      const limits = legacyLimits ? dropLegacyLimitDefaults(p) : { project: p, changed: false }
-      const m = migrateProject(limits.project)
-      const clean = sanitizeRoleModels(m.project, this.tierContext)
-      const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
-      if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
-      return dirs.project
+    return this.change(() => {
+      let changed = 0
+      const legacyLimits = this.fileVersion < 2
+      this.projects = this.projects.map((p) => {
+        const limits = legacyLimits ? dropLegacyLimitDefaults(p) : { project: p, changed: false }
+        const m = migrateProject(limits.project)
+        const clean = sanitizeRoleModels(m.project, this.tierContext)
+        const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
+        if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
+        return dirs.project
+      })
+      // What the migration made of each project is the version a later save may have been made from.
+      if (changed) for (const p of this.projects) this.remember(p)
+      // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
+      if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
+        if (this.projects.length || changed) this.persist()
+        this.fileVersion = PROJECTS_FILE_VERSION
+      }
+      return changed
     })
-    // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
-    if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
-      if (this.projects.length || changed) this.persist()
-      this.fileVersion = PROJECTS_FILE_VERSION
-    }
-    return changed
   }
 
   /** Installed once by index.ts after the team files service exists. */
@@ -677,10 +789,12 @@ export class ProjectStore {
   }
 
   list(): Project[] {
+    this.fresh()
     return [...this.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
   get(id: string): Project | null {
+    this.fresh()
     return this.projects.find((p) => p.id === id) ?? null
   }
 
@@ -728,8 +842,12 @@ export class ProjectStore {
     // gated: runs ignore that config until the user accepts it. A missing folder or an engagement stays ungated.
     const trust = initialFolderConfigTrust(project)
     if (trust) project = { ...project, folderConfigTrust: trust }
-    this.projects.push(project)
-    this.persist()
+    const created = project
+    this.change(() => {
+      this.projects.push(created)
+      this.persist()
+    })
+    this.remember(created)
     if (fromFiles) {
       try {
         opts.teamFiles?.adopted(project)
@@ -746,6 +864,11 @@ export class ProjectStore {
    */
   save(project: Project): Project {
     if (isVirtualProjectId(project?.id)) throw new Error('An assistant project (Chat, Skill assistant, harness) cannot be stored.')
+    // One change, on the newest stored version: the hook's team files and the stored project move together.
+    return this.change(() => this.saveNow(this.rebased(project)))
+  }
+
+  private saveNow(project: Project): Project {
     let cleaned = withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project
     // Team files: the hook may rebase the project (a change pulled into the folder is kept) and writes the team files.
     if (this.saveHook) {
@@ -792,11 +915,14 @@ export class ProjectStore {
       for (const r of cleaned.roles ?? []) if (r) away.delete(r.slug)
       if (!away.size) this.renamedAway.delete(cleaned.id)
     }
-    const updated = { ...cleaned, updatedAt: new Date().toISOString() }
-    const idx = this.projects.findIndex((p) => p.id === cleaned.id)
-    if (idx === -1) this.projects.push(updated)
-    else this.projects[idx] = updated
-    this.persist()
+    const updated = { ...cleaned, updatedAt: this.nextUpdatedAt(cleaned.id) }
+    this.change(() => {
+      const idx = this.projects.findIndex((p) => p.id === cleaned.id)
+      if (idx === -1) this.projects.push(updated)
+      else this.projects[idx] = updated
+      this.persist()
+    })
+    this.remember(updated)
     return updated
   }
 
@@ -808,6 +934,11 @@ export class ProjectStore {
   saveFromRenderer(project: Project): Project {
     if (!isSafeId(project?.id)) throw new Error('Invalid project id')
     if (isVirtualProjectId(project.id)) throw new Error(project.id === HARNESS_PROJECT_ID ? 'The harness project cannot be saved' : 'An assistant project (Chat, Skill assistant) cannot be saved')
+    // One change, on the newest stored version (see save): what is reconciled below is what gets stored.
+    return this.change(() => this.saveFromRendererNow(this.rebased(project)))
+  }
+
+  private saveFromRendererNow(project: Project): Project {
     const stored = this.get(project.id)
     if (!stored) throw new Error('Project not found')
     const next: Project = reconcileNearLimitProject(stored, { ...project })
@@ -864,15 +995,23 @@ export class ProjectStore {
     return this.save(next)
   }
 
-  /** Read-modify-write one stored project. Throws when it does not exist. */
+  /**
+   * Read-modify-write one stored project. Throws when it does not exist. On a shared data folder the read and the
+   * save happen under one hold of the write lock, so `fn` always works on what is stored now.
+   */
   update(id: string, fn: (p: Project) => Project): Project {
-    const stored = this.get(id)
-    if (!stored) throw new Error('Project not found')
-    return this.save(fn(structuredClone(stored)))
+    return this.change(() => {
+      const stored = this.projects.find((p) => p.id === id) ?? null
+      if (!stored) throw new Error('Project not found')
+      return this.save(fn(structuredClone(stored)))
+    })
   }
 
   remove(id: string): void {
-    this.projects = this.projects.filter((p) => p.id !== id)
-    this.persist()
+    this.change(() => {
+      this.projects = this.projects.filter((p) => p.id !== id)
+      this.persist()
+    })
+    this.versions.delete(id)
   }
 }

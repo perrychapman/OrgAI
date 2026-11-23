@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { pagerCommand, parsePagerEnv, showInPager } from './pager'
+import { LESS_ARGS, pagerCommand, parsePagerEnv, showInPager } from './pager'
 import { sanitizeDiffForPager } from './sanitizeTty'
 
 const onPath =
@@ -24,19 +24,27 @@ describe('pagerCommand', () => {
   })
 
   it('falls back to less -R, then more, then null, always by the absolute path found', () => {
-    expect(pagerCommand({ PAGER: 'less; id' }, onPath('less', 'more'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
-    expect(pagerCommand({}, onPath('less', 'more'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({ PAGER: 'less; id' }, onPath('less', 'more'))).toEqual({ file: '/usr/bin/less', args: [...LESS_ARGS] })
+    expect(pagerCommand({}, onPath('less', 'more'))).toEqual({ file: '/usr/bin/less', args: [...LESS_ARGS] })
     expect(pagerCommand({}, onPath('more'))).toEqual({ file: '/usr/bin/more', args: [] })
     expect(pagerCommand({}, onPath())).toBeNull()
   })
 
   it('resolves a bare PAGER word on PATH; a name not found or a relative path is not used', () => {
     expect(pagerCommand({ PAGER: 'most -s' }, onPath('most'))).toEqual({ file: '/usr/bin/most', args: ['-s'] })
-    expect(pagerCommand({ PAGER: 'most -s' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({ PAGER: 'most -s' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: [...LESS_ARGS] })
     expect(pagerCommand({ PAGER: 'most -s' }, onPath())).toBeNull()
-    expect(pagerCommand({ PAGER: './most' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
-    expect(pagerCommand({ PAGER: 'bin\\most' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-R'] })
+    expect(pagerCommand({ PAGER: './most' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: [...LESS_ARGS] })
+    expect(pagerCommand({ PAGER: 'bin\\most' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: [...LESS_ARGS] })
     expect(pagerCommand({ PAGER: '/opt/most -s' }, onPath())).toEqual({ file: '/opt/most', args: ['-s'] })
+  })
+
+  it('the default less says how to leave: Esc does nothing there', () => {
+    expect(LESS_ARGS).toEqual(['-R', '-Psq closes, arrows and space scroll, / searches'])
+    // less reads these characters in a prompt string.
+    expect(LESS_ARGS[1].slice(3)).not.toMatch(/[?:.%\\]/)
+    // A pager the user chose keeps its own arguments.
+    expect(pagerCommand({ PAGER: 'less -F' }, onPath('less'))).toEqual({ file: '/usr/bin/less', args: ['-F'] })
   })
 })
 
@@ -90,6 +98,7 @@ describe('showInPager', () => {
     expect(order).toEqual(['suspend', 'resume'])
     expect(f.calls).toHaveLength(1)
     expect(f.calls[0].file).toBe('/usr/bin/less')
+    // The user's own $PAGER arguments, unchanged.
     expect(f.calls[0].args).toEqual(['-R'])
     expect(f.calls[0].options).toMatchObject({ stdio: ['pipe', 'inherit', 'inherit'], shell: false })
     const written = f.child()!.stdin.written

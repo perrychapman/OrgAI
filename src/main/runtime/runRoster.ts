@@ -2,10 +2,10 @@ import { isVirtualProjectId, type Role, type RunRosterChange, type RunRosterRole
 
 /**
  * Whether an approved org chart reaches this run's roles: only on a host whose approval surface renders the org chart
- * diff against runBaseline with every field that can move (`host.liveRosterCards`, RunManagerOptions; the desktop app
- * sets it, the CLI / TUI / exec host does not: fail closed, a host is off until it opts in), and only for a team work
- * run of a stored project (never setup-like, assistant, quick / Chat or single-agent runs) whose session declares
- * RuntimeSession.liveRoster. Pure.
+ * diff against runBaseline with every field that can move (`host.liveRosterCards`, RunManagerOptions: the desktop app
+ * and, since its tray shows that diff, the orgai command's own host; fail closed, any other host is off until it opts
+ * in), and only for a team work run of a stored project (never setup-like, assistant, quick / Chat or single-agent
+ * runs) whose session declares RuntimeSession.liveRoster. Pure.
  */
 export function liveRosterApplies(
   summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>,
@@ -13,6 +13,20 @@ export function liveRosterApplies(
   host: { liveRosterCards?: boolean }
 ): boolean {
   return host.liveRosterCards === true && summary.kind === 'work' && !summary.quick && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && session?.liveRoster === true
+}
+
+/**
+ * Whether a role edit the user saved themselves (projects:save on the user's own surface, hostChange.ts) reaches this
+ * run's roles: the same runs and sessions as liveRosterApplies, on the desktop app (liveRosterCards) or on the orgai
+ * command's own host (`host.liveUserSaves`). No card is involved there, so what the card surface can show does not
+ * decide it: the user typed the edit. Pure.
+ */
+export function liveRosterTakesSave(
+  summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>,
+  session: { liveRoster?: boolean } | undefined,
+  host: { liveRosterCards?: boolean; liveUserSaves?: boolean }
+): boolean {
+  return liveRosterApplies(summary, session, { liveRosterCards: host.liveRosterCards === true || host.liveUserSaves === true })
 }
 
 /**

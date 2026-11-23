@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { SyncedFile, storeSyncFor, type StoreSync } from '../store/shared/storeSync'
 import type {
   ConnectorCategory,
   ConnectorDef,
@@ -318,35 +319,44 @@ export function buildPresetEntry(def: UserConnectorDef, variant: UserConnectorVa
 export class ConnectorPresetStore {
   private file: string
   private presets: UserConnectorDef[] = []
+  /** Keeps the file correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private synced: SyncedFile
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, opts: { sync?: StoreSync } = {}) {
     this.file = join(dataDir, 'connector-presets.json')
-    this.load()
+    this.synced = new SyncedFile(this.file, opts.sync ?? storeSyncFor(dataDir), (first) => this.load(first))
   }
 
-  private load(): void {
+  /** Read the file into a fresh list. A re-read (`first` false) that cannot read the file keeps the list in memory. */
+  private load(first: boolean): void {
     try {
       if (!existsSync(this.file)) return
       const st = lstatSync(this.file)
       if (!st.isFile() || st.isSymbolicLink() || st.size > PRESET_FILE_MAX_BYTES) {
-        console.warn('connector-presets.json is not a regular file of a readable size; starting empty.')
+        console.warn(`connector-presets.json is not a regular file of a readable size; ${first ? 'starting empty' : 'keeping the presets in memory'}.`)
         return
       }
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { presets?: unknown }
       if (!Array.isArray(parsed.presets)) return
       const seen = new Set<string>()
+      const presets: UserConnectorDef[] = []
       for (const raw of parsed.presets) {
         try {
           const def = validateUserPreset(raw, { allowOrigin: true })
           if (seen.has(def.id)) throw new Error('duplicate')
           seen.add(def.id)
-          this.presets.push(def)
+          presets.push(def)
         } catch {
           console.warn('Dropped an invalid custom connector from connector-presets.json.')
         }
-        if (this.presets.length >= USER_CONNECTOR_PRESETS_MAX) break
+        if (presets.length >= USER_CONNECTOR_PRESETS_MAX) break
       }
+      this.presets = presets
     } catch (e) {
+      if (!first) {
+        console.error('Failed to read connector-presets.json again, keeping the presets in memory:', (e as Error).message)
+        return
+      }
       console.error('Failed to read connector-presets.json, starting empty:', (e as Error).message)
       this.presets = []
     }
@@ -361,10 +371,12 @@ export class ConnectorPresetStore {
 
   /** Every preset in store order (copies). */
   list(): UserConnectorDef[] {
+    this.synced.fresh()
     return this.presets.map((p) => structuredClone(p))
   }
 
   get(id: string): UserConnectorDef | undefined {
+    this.synced.fresh()
     const p = this.presets.find((x) => x.id === id)
     return p ? structuredClone(p) : undefined
   }
@@ -372,19 +384,23 @@ export class ConnectorPresetStore {
   /** Add or replace (by id) a validated preset; returns the saved copy. */
   save(def: UserConnectorDef): UserConnectorDef {
     const clean = validateUserPreset(def, { allowOrigin: true })
-    const idx = this.presets.findIndex((p) => p.id === clean.id)
-    if (idx === -1) this.presets.push(clean)
-    else this.presets[idx] = clean
-    this.persist()
+    this.synced.change(() => {
+      const idx = this.presets.findIndex((p) => p.id === clean.id)
+      if (idx === -1) this.presets.push(clean)
+      else this.presets[idx] = clean
+      this.persist()
+    })
     return structuredClone(clean)
   }
 
   /** Delete one preset; false when it did not exist. */
   remove(id: string): boolean {
-    const before = this.presets.length
-    this.presets = this.presets.filter((p) => p.id !== id)
-    if (this.presets.length === before) return false
-    this.persist()
-    return true
+    return this.synced.change(() => {
+      const before = this.presets.length
+      this.presets = this.presets.filter((p) => p.id !== id)
+      if (this.presets.length === before) return false
+      this.persist()
+      return true
+    })
   }
 }

@@ -1,7 +1,7 @@
 /**
- * `orgai status [--all-projects]` (cli-spec 6.1; cli-standalone-default.md 4.3): the data folder, whether another orgai
- * owns it, the current project and the newest run per project in scope, read from the files (never a host). Exit 0;
- * exit 2 only for a bad --project.
+ * `orgai status [--all-projects]` (cli-spec 6.1; cli-standalone-default.md 4.3): the data folder, the orgai sessions
+ * running on it (each with its folder, what it runs and the projects it has open), the current project and the newest run
+ * per project in scope, read from the files (never a host). Exit 0; exit 2 only for a bad --project.
  */
 import { projectConnection } from '../../shared/defaults'
 import type { Project, RunSummary } from '../../shared/types'
@@ -48,10 +48,14 @@ export const runStatus: CommandFn = async (ctx: CliContext, args: string[]): Pro
       dataDir: ctx.paths.dataDir,
       mock: ctx.env.ORGAI_MOCK === '1'
     }
+    const sessions = src.snapshot.sessions
+    const projectName = new Map(projects.map((p) => [p.id, p.name]))
     const value: Json = {
       hostState: src.hostState,
       liveInboxAvailable: false,
       host: hostJson,
+      // Every orgai running on this data folder, oldest first (`host` above is the one daemon.json advertises).
+      sessions: sessions.map((s) => ({ pid: s.pid, hostInstanceId: s.hostInstanceId, command: s.command, cwd: s.cwd, appVersion: s.appVersion, startedAt: s.startedAt, projects: s.projects })),
       project: project
         ? { id: project.id, name: project.name, kind: project.kind ?? 'code', path: project.path, connection: projectConnection(project), via: resolution.via }
         : null,
@@ -64,9 +68,21 @@ export const runStatus: CommandFn = async (ctx: CliContext, args: string[]): Pro
       const now = Date.now()
       const lines: string[] = []
       {
-        const word = src.hostState === 'stopped' ? 'no' : 'yes'
-        const facts = daemon && src.hostState !== 'stopped' ? ` (${[daemon.ownerCwd ? safeLine(daemon.ownerCwd) : '', daemon.appVersion ? `orgai ${safeLine(daemon.appVersion)}` : '', `pid ${daemon.pid}`, `up ${shortDuration(now - daemon.startedAt)}`].filter(Boolean).join(' · ')})` : ''
-        lines.push(`${st.bold('Another orgai running:')} ${word}${facts}${ctx.env.ORGAI_MOCK === '1' ? ' · mock' : ''}`)
+        const mock = ctx.env.ORGAI_MOCK === '1' ? ' · mock' : ''
+        if (sessions.length > 0) {
+          // One line per running orgai: what it runs, where, its pid and age, and the projects it has open.
+          lines.push(`${st.bold('orgai sessions running:')} ${sessions.length}${mock}`)
+          for (const s of sessions) {
+            const held = s.projects.map((id) => projectName.get(id) ?? id).map((n) => safeLine(n))
+            const facts = [s.cwd ? safeLine(s.cwd) : '', `pid ${s.pid}`, `up ${shortDuration(now - s.startedAt)}`, held.length ? `in ${held.join(', ')}` : ''].filter(Boolean)
+            lines.push(`  ${safeLine(s.command || 'orgai')}  ${st.dim(facts.join(' · '))}`)
+          }
+        } else {
+          // None, or an orgai from before sessions, which owns the folder alone (daemon.json is all there is to say).
+          const word = src.hostState === 'stopped' ? 'no' : 'yes'
+          const facts = daemon && src.hostState !== 'stopped' ? ` (${[daemon.ownerCwd ? safeLine(daemon.ownerCwd) : '', daemon.appVersion ? `orgai ${safeLine(daemon.appVersion)}` : '', `pid ${daemon.pid}`, `up ${shortDuration(now - daemon.startedAt)}`].filter(Boolean).join(' · ')})` : ''
+          lines.push(`${st.bold('Another orgai running:')} ${word}${facts}${mock}`)
+        }
         lines.push(`  ${st.dim('Data folder:')} ${safeLine(ctx.paths.dataDir)}`)
       }
       if (project) {

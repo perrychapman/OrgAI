@@ -217,13 +217,14 @@ describe('agent inspector (F4)', () => {
     expect(m.frame()).toContain('Esc to type')
   })
 
-  it('w opens the worktree diff in the pager path (overlay without a pager)', async () => {
+  it('w hands the worktree diff to the pager (here there is none: the app\'s own view, with the $PAGER hint)', async () => {
     const m = mount({ cols: 120, rows: 40 })
     await m.send(...'/agent mock-lead-report-2'.split('').map((c) => key(c)), named('enter'))
     await m.send(key('w'))
     await tick()
     expect(m.session.worktreeDiff).toHaveBeenCalledWith('worktree-agent-r2')
     expect(m.frame()).toContain('Changes on worktree-agent-r2')
+    expect(m.frame()).toContain('Set $PAGER')
   })
 
   it('u opens the usage text', async () => {
@@ -234,6 +235,7 @@ describe('agent inspector (F4)', () => {
     const f = m.frame()
     expect(f).toContain('Usage for R1')
     expect(f).toContain('By agent')
+    expect(f).not.toContain('Set $PAGER')
   })
 
   it('at 90x30 (stacked) it takes the whole body; Esc brings the tree back', async () => {

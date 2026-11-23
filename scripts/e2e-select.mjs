@@ -72,7 +72,7 @@ export const RULES = [
   { match: ['src/main/runtime/runManager.ts', 'src/main/runtime/mock.ts', 'src/main/runtime/harnessTools.ts', 'src/main/runtime/types.ts', 'src/main/ipc.ts', 'src/main/index.ts', 'src/main/store/**', 'src/main/host/**'], kind: 'full', scripts: [], why: 'hot main-process file every flow passes through' },
 
   // ---- e2e helpers that belong to one script ----
-  { match: ['e2e/ptyDriver.mjs', 'e2e/pty-helper.py'], scripts: ['cli-tui'], why: 'pseudo-terminal driver of cli-tui' },
+  { match: ['e2e/ptyDriver.mjs', 'e2e/pty-helper.py'], scripts: ['cli-tui', 'cli-parallel'], why: 'pseudo-terminal driver of cli-tui and cli-parallel' },
   { match: ['e2e/dialog-stub.cjs'], scripts: ['separation'], why: 'dialog stub of separation' },
   { match: ['e2e/office.mjs', 'e2e/pocket-office.mjs'], scripts: ['canvas'], why: 'Pocket Office checks canvas.mjs imports' },
   { match: ['e2e/outputs-compare.part.mjs', 'e2e/outputs-edit.part.mjs'], scripts: ['outputs-versions'], why: 'part called by outputs-versions' },
@@ -163,7 +163,9 @@ export const RULES = [
   { match: ['src/main/setup/**'], scripts: ['import', 'org-change', 'team', 'engagement2', 'dashboard'], why: 'setup, org merge, templates' },
 
   // ---- CLI, by command ----
-  { match: ['src/cli/tui/**', 'src/cli/commands/tui.ts', 'src/cli/commands/interactive.ts'], scripts: ['cli-tui'], why: 'terminal UI' },
+  { match: ['src/cli/tui/**', 'src/cli/commands/tui.ts', 'src/cli/commands/interactive.ts'], scripts: ['cli-tui', 'cli-parallel'], why: 'terminal UI (cli-parallel opens two at once)' },
+  // Sessions (docs/design/cli-sessions.md): how an orgai starts its host, joins other sessions and reads beside them.
+  { match: ['src/cli/inprocHost.ts', 'src/cli/context.ts', 'src/cli/compileCache.ts', 'src/cli/ownedMessage.ts', 'src/cli/runRef.ts', 'src/cli/client/**', 'e2e/cli-parallel.mjs'], scripts: ['cli-parallel', 'cli-readonly', 'cli-exec', 'cli-tui'], why: 'the in-process host, sessions and the hostless reader' },
   { match: ['src/cli/commands/projects.ts', 'src/cli/commands/init.ts', 'src/cli/entries/projects.ts', 'src/cli/entries/init.ts'], scripts: ['cli-projects'], why: 'orgai projects / init' },
   { match: ['src/cli/commands/{org,team,permissions,worktrees}.ts', 'src/cli/entries/{org,team,permissions,worktrees}.ts'], scripts: ['cli-org', 'cli-org-evolve'], why: 'orgai org / team / permissions / worktrees (org retro --unattended and org evolve route through org.ts)' },
   { match: ['src/cli/commands/orgEvolve.ts', 'src/main/evolve/**', 'e2e/cli-org-evolve.mjs'], scripts: ['cli-org-evolve'], why: 'orgai org evolve, loop and retro --unattended; the team-evolution engine' },
@@ -371,6 +373,16 @@ async function main() {
 
 /** One script's wall-clock budget. The slowest macOS script took about 4.5 minutes; the whole job has 50. E2E_SCRIPT_TIMEOUT_MS overrides. */
 export const SCRIPT_TIMEOUT_MS = 10 * 60 * 1000
+/**
+ * Scripts that need more than the default. factory-floor runs a SwiftShader WebGL2 scene with a 40-agent stress and a
+ * 121-agent case on windows-latest (the 2026-11-23 push run 45208950226 spent 600 s there and was killed in its leak phase,
+ * after every check had passed); macOS skips the WebGL2 phases. The rest keep the default.
+ */
+export const SCRIPT_TIMEOUTS_MS = { 'factory-floor': 15 * 60 * 1000 }
+/** The wall-clock budget of one script: E2E_SCRIPT_TIMEOUT_MS wins, then the per-script entry, then the default. */
+export function scriptTimeoutMs(name, env = process.env) {
+  return Number(env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUTS_MS[name] || SCRIPT_TIMEOUT_MS
+}
 /** After SIGTERM a timed-out script gets this long to close its Electron app (playwright closes it on SIGTERM) before the kill. */
 const TERM_GRACE_MS = 10_000
 
@@ -417,7 +429,7 @@ function killTree(child, signal) {
 }
 
 /** Runs e2e/<name>.mjs with inherited output and a wall-clock limit (E2E_SCRIPT_TIMEOUT_MS or SCRIPT_TIMEOUT_MS). */
-export function runScript(name, timeoutMs = Number(process.env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUT_MS) {
+export function runScript(name, timeoutMs = scriptTimeoutMs(name)) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [join('e2e', `${name}.mjs`)], { cwd: ROOT, stdio: 'inherit' })
     let timedOut = false

@@ -142,6 +142,12 @@ export interface HostServices {
    * prepareWrite (registry storesSecret). Absent = secrets:* answer that this host has no secret store.
    */
   secrets?: SecretStoreApi
+  /**
+   * Several orgai sessions on one data folder (host/sessionGuard.ts): called before every mutating RPC with the decoded
+   * arguments; throws when a project or run the request names is open in another session. Absent on a host that has
+   * its data folder to itself (the desktop app, tests).
+   */
+  sessionGuard?: (channel: string, args: readonly unknown[]) => void | (() => void)
 }
 
 /** How a call reached the dispatcher. */

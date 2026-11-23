@@ -79,8 +79,10 @@ export const doctorProbes = {
    */
   connectionChecks: async (ctx: CliContext, otherOrgaiRuns: boolean): Promise<DoctorCheck[]> => {
     let busy = otherOrgaiRuns
-    if (!busy) busy = await ctx.readStore().then((snap) => snap.hostState !== 'stopped', () => false)
-    if (busy) return [{ id: 'connections', status: 'ok', detail: 'Connections and models were not checked: another orgai owns this folder (run `orgai connections list` there)' }]
+    // Other orgai sessions do not stand in the way (this command starts its own host beside them); only an older
+    // orgai that owns the folder alone does.
+    if (!busy) busy = await ctx.readStore().then((snap) => snap.soleOwner, () => false)
+    if (busy) return [{ id: 'connections', status: 'ok', detail: 'Connections and models were not checked: another orgai owns this folder alone (an older version; run `orgai connections list` there, or quit it)' }]
     try {
       return await withHost(ctx, ['read'], (client) => connectionChecks({ ctx, client }))
     } catch (e) {
@@ -209,6 +211,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
   // daemon.json
   let daemon: DaemonInfo | undefined
   let daemonAlive = false
+  let daemonShares = false
   try {
     // Capped like the host's own reader (ownership.ts): a huge or odd file is reported, never read whole.
     const daemonPath = join(runDir, 'daemon.json')
@@ -220,7 +223,14 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     if (!parsed || typeof parsed !== 'object' || typeof parsed.pid !== 'number' || typeof parsed.hostInstanceId !== 'string') throw new Error('unexpected shape')
     daemon = parsed
     daemonAlive = doctorProbes.pidAlive(parsed.pid)
-    add('daemon-json', daemonAlive ? 'ok' : 'warn', daemonAlive ? `Another orgai is running (pid ${parsed.pid}${parsed.ownerCwd ? `, started in ${safeLine(parsed.ownerCwd)}` : ''}, ${parsed.state}); commands that need a host are refused until it quits` : `daemon.json names pid ${parsed.pid}, which is not running (a stale file; the next orgai replaces it)`)
+    // An orgai that shares its folder (sessions) lets every other terminal work beside it; one from before sessions
+    // owns the folder alone.
+    daemonShares = daemonAlive && (parsed as { sessions?: unknown }).sessions === true
+    const who = `pid ${parsed.pid}${parsed.ownerCwd ? `, started in ${safeLine(parsed.ownerCwd)}` : ''}, ${parsed.state}`
+    const running = daemonShares
+      ? `orgai is running (${who}) and shares this folder: other terminals can work beside it, also in the same project (\`orgai status\` lists them)`
+      : `Another orgai is running (${who}); commands that need a host are refused until it quits`
+    add('daemon-json', daemonAlive ? 'ok' : 'warn', daemonAlive ? running : `daemon.json names pid ${parsed.pid}, which is not running (a stale file; the next orgai replaces it)`)
   } catch (e) {
     const missing = (e as NodeJS.ErrnoException).code === 'ENOENT'
     add('daemon-json', missing ? 'ok' : 'fail', missing ? 'No other orgai is running on this folder' : `daemon.json could not be read: ${(e as Error).message}`)
@@ -250,7 +260,8 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     }
   }
 
-  checks.push(...(await doctorProbes.connectionChecks(ctx, daemonAlive)))
+  // Beside sessions the connection checks run in this command's own host; only a sole owner makes them skip.
+  checks.push(...(await doctorProbes.connectionChecks(ctx, daemonAlive && !daemonShares)))
 
   const failed = checks.some((c) => c.status === 'fail')
   const warned = checks.filter((c) => c.status === 'warn').length

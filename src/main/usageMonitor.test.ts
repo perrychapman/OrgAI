@@ -158,6 +158,22 @@ describe('UsageMonitor', () => {
       }
     })
 
+    it('stop() before the first probe cancels it: nothing is probed after the host has stopped', async () => {
+      vi.useFakeTimers()
+      try {
+        const { m, proxies, codex, probeUsage } = live(() => 0)
+        m.start()
+        // Stopped 1 s in, before the boot refresh at 1.5 s (a terminal UI opened and quit at once).
+        await vi.advanceTimersByTimeAsync(1000)
+        m.stop()
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(600_000)
+        expect([probeUsage.mock.calls.length, codex.mock.calls.length, proxies.mock.calls.length]).toEqual([0, 0, 0])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('does not overlap a slow probe', async () => {
       vi.useFakeTimers()
       try {

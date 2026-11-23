@@ -44,6 +44,7 @@ import { draftProblem } from '../skills/skillMd'
 import { holdSpendRaises, spendRaisesOf } from './spend'
 import { buildDigest, synthesize } from './synthesizer'
 import { diagnose, isMeasuredRun } from './telemetry'
+import { withNamedLock } from '../store/shared/namedLock'
 
 export interface EvolveAfterRunInput {
   projectId: string
@@ -210,7 +211,10 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
   /** One operation at a time per project: applies, rollbacks and post-run passes never interleave. */
   const serial = <T>(projectId: string, fn: () => Promise<T>): Promise<T> => {
     const prev = chains.get(projectId) ?? Promise.resolve()
-    const run = prev.then(fn, fn)
+    // Nor with the same work in another orgai session on this data folder (store/shared/namedLock.ts).
+    const alone = (): Promise<T> =>
+      withNamedLock(deps.dataDir, `evolve:${projectId}`, fn, { busy: "This project's team is being changed by another orgai session; try again when it is done." })
+    const run = prev.then(alone, alone)
     const tail = run.then(
       () => undefined,
       () => undefined

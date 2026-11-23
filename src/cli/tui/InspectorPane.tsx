@@ -3,7 +3,7 @@
  * whole body (stacked, inline). A header (handle, role, state), the facts the agent has (model, wall time, tokens in /
  * out, cost, turns, tool calls; a missing one is left out), what it is doing now, its worktree, its message counts, then
  * that agent's own transcript, scrollable. Keys: d its decision card, w its worktree diff in the pager, t thinking rows,
- * u the usage tables in the pager, Up / Down / PgUp / PgDn / Home / End scroll; Esc (handled by the App) closes it. Every
+ * u the usage tables, Up / Down / PgUp / PgDn / Home / End scroll; Esc (handled by the App) closes it. Every
  * string arrives sanitized from selectors.ts `agentDetail` / `transcriptRows`; nothing here reads the host.
  */
 import { Box } from 'ink'

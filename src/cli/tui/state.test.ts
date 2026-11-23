@@ -213,6 +213,23 @@ describe('applyEvent', () => {
     ])
   })
 
+  it('run.roster notes what an approved org chart changed in a live run', () => {
+    let s = liveState()
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r1', roster: [], change: { added: ['r-qa'], changed: [], removed: [], deferred: [] } }, 11))
+    expect(s.notices.map((n) => [n.text, n.tone])).toEqual([['The team of this run changed: 1 role added.', 'ok']])
+    // A run the user is not following is named by its tag; a deferred role says why it waits.
+    s = applyEvent(s, ev({ type: 'run.status', runId: 'r2', status: 'running' }, 12))
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r2', roster: [], change: { added: [], changed: ['r-lead'], removed: [], deferred: [{ id: 'r-9', name: 'QA', reason: 'The run was still starting' }] } }, 13))
+    expect(s.notices.map((n) => [n.text, n.tone])).toEqual([
+      ['The team of this run changed: 1 role added.', 'ok'],
+      ['The team of R2 changed: 1 changed. 1 waits for the next run: QA: The run was still starting.', 'warn']
+    ])
+    // Nothing moved, and a malformed event, add nothing.
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r1', roster: [], change: { added: [], changed: [], removed: [], deferred: [] } }, 14))
+    s = applyEvent(s, ev({ type: 'run.roster', runId: 'r1', roster: [], change: undefined } as unknown as RunEvent, 15))
+    expect(s.notices).toHaveLength(2)
+  })
+
   it('caps the transcript at TUI_TRANSCRIPT_MAX keeping the newest and counts the dropped into omitted', () => {
     let s = liveState()
     for (let i = 0; i < TUI_TRANSCRIPT_MAX + 3; i++) s = applyEvent(s, ev({ type: 'transcript', runId: 'r1', entry: entry(`x${i}`) }, 100 + i))
@@ -340,40 +357,40 @@ describe('agent.partial streams', () => {
   it('an OSC 52 sequence split across two cumulative partials never shows the escape or its payload', () => {
     const t = createPartialTracker()
     let s = partial(liveState(), 'Hello \x1b]52;c;QU', t)
-    expect(s.runs.r1.partials.root).toBe('Hello ')
+    expect(s.partials?.r1?.root).toBe('Hello ')
     s = partial(s, 'Hello \x1b]52;c;QUFBQQ==\x07world', t)
-    expect(s.runs.r1.partials.root).toBe('Hello world')
-    expect(s.runs.r1.partials.root).not.toMatch(/QU|52|\x1b/)
+    expect(s.partials?.r1?.root).toBe('Hello world')
+    expect(s.partials?.r1?.root).not.toMatch(/QU|52|\x1b/)
   })
 
   it('a CSI split at the ESC byte is removed', () => {
     const t = createPartialTracker()
     let s = partial(liveState(), 'abc\x1b', t)
-    expect(s.runs.r1.partials.root).toBe('abc')
+    expect(s.partials?.r1?.root).toBe('abc')
     s = partial(s, 'abc\x1b[2Jdef', t)
-    expect(s.runs.r1.partials.root).toBe('abcdef')
+    expect(s.partials?.r1?.root).toBe('abcdef')
   })
 
   it('without a tracker the whole text is sanitized fresh (still safe)', () => {
     let s = applyEvent(liveState(), { atSeq: 0, event: { type: 'agent.partial', runId: 'r1', agentId: 'root', text: 'a\x1b]52;c;QU' } })
-    expect(s.runs.r1.partials.root).toBe('a')
+    expect(s.partials?.r1?.root).toBe('a')
     s = applyEvent(s, { atSeq: 0, event: { type: 'agent.partial', runId: 'r1', agentId: 'root', text: 'a\x1b]52;c;QUFB\x07b' } })
-    expect(s.runs.r1.partials.root).toBe('ab')
+    expect(s.partials?.r1?.root).toBe('ab')
   })
 
   it('a shorter text restarts the stream, "" clears, a transcript entry clears', () => {
     const t = createPartialTracker()
     let s = partial(liveState(), 'first block \x1b]8;;http://x', t)
-    expect(s.runs.r1.partials.root).toBe('first block ')
+    expect(s.partials?.r1?.root).toBe('first block ')
     // A new block: the unterminated OSC of the old one must not swallow it.
     s = partial(s, 'second', t)
-    expect(s.runs.r1.partials.root).toBe('second')
+    expect(s.partials?.r1?.root).toBe('second')
     s = partial(s, '', t)
-    expect(s.runs.r1.partials.root).toBeUndefined()
+    expect(s.partials?.r1?.root).toBeUndefined()
     expect(t.size).toBe(0)
     s = partial(s, 'again', t)
     s = applyEvent(s, ev({ type: 'transcript', runId: 'r1', entry: entry('e5', 'root', 'again') }, 11), { partials: t })
-    expect(s.runs.r1.partials.root).toBeUndefined()
+    expect(s.partials?.r1?.root).toBeUndefined()
     expect(t.size).toBe(0)
   })
 
@@ -381,17 +398,17 @@ describe('agent.partial streams', () => {
     const t = createPartialTracker()
     let s = partial(liveState(), 'one \x1b]52;c;', t, 'a1')
     s = partial(s, 'two', t, 'a2')
-    expect(s.runs.r1.partials.a2).toBe('two')
+    expect(s.partials?.r1?.a2).toBe('two')
     s = partial(s, 'two more', t, 'a2')
-    expect(s.runs.r1.partials.a2).toBe('two more')
-    expect(s.runs.r1.partials.a1).toBe('one ')
+    expect(s.partials?.r1?.a2).toBe('two more')
+    expect(s.partials?.r1?.a1).toBe('one ')
   })
 
   it('a terminal run.status clears the run partials', () => {
     const t = createPartialTracker()
     let s = partial(liveState(), 'typing', t)
     s = applyEvent(s, ev({ type: 'run.status', runId: 'r1', status: 'finished' }, 11), { partials: t })
-    expect(s.runs.r1.partials).toEqual({})
+    expect(s.partials?.r1).toBeUndefined()
     expect(t.size).toBe(0)
   })
 })

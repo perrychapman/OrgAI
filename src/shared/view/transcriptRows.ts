@@ -38,10 +38,19 @@ export const isContinuationNotice = (e: TranscriptEntry): boolean =>
 
 /** A copy of an earlier member's entry whose ids (entry, tool_use id, tool_result toolUseId) carry the run id, so pairs stay matched and nothing collides. */
 function prefixed(runId: string, entry: TranscriptEntry): TranscriptEntry {
+  // One copy per (entry, run): callers cache derived rows by entry identity, so a fresh copy on every call would make
+  // every earlier member's rows rebuild on every frame.
+  let byRun = prefixedCopies.get(entry)
+  const known = byRun?.get(runId)
+  if (known) return known
   const b = entry.block
   const block = b.kind === 'tool_use' ? { ...b, id: `${runId}:${b.id}` } : b.kind === 'tool_result' ? { ...b, toolUseId: `${runId}:${b.toolUseId}` } : b
-  return { ...entry, id: `${runId}:${entry.id}`, block }
+  const copy = { ...entry, id: `${runId}:${entry.id}`, block }
+  if (!byRun) prefixedCopies.set(entry, (byRun = new Map()))
+  byRun.set(runId, copy)
+  return copy
 }
+const prefixedCopies = new WeakMap<TranscriptEntry, Map<string, TranscriptEntry>>()
 
 /**
  * Every member's entries oldest first, with one divider before each continuation (members after the first). The

@@ -174,6 +174,8 @@ export function hostError(e: unknown): CliError {
       return new CliError(message, EXIT.failure)
     case 'host_draining':
     case 'host_starting':
+    // The project or run is open in another orgai session: busy, like a host that is starting or draining.
+    case 'session_busy':
       return new CliError(message, EXIT.hostBusy)
     case 'auth_failed':
       return new CliError(message, EXIT.auth)

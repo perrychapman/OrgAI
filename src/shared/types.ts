@@ -3479,6 +3479,12 @@ export interface SwitchRunModelResult {
 }
 
 export interface RunSummary {
+  /**
+   * Set by an orgai host that shares its data folder with other orgai sessions (never stored): this run is live in
+   * another session, the process named here. It can be read from this session, about as fresh as its last save, and
+   * not changed; it is steered in the terminal that hosts it.
+   */
+  liveElsewhere?: { pid: number; cwd: string; command: string }
   /** Main-owned: the schedule that started this run, and its name then (section "Schedules"). Continuations do not carry them. */
   scheduleId?: string; scheduleName?: string
   /** Required-delegation outcome (delegation-enforcement spec 4.3). Set by RunManager once a ledger exists. */
@@ -7116,6 +7122,12 @@ export interface DaemonInfo {
   appVersion?: string
   /** The owning process's cwd at boot (written by the orgai CLI; absent for older records and the desktop). */
   ownerCwd?: string
+  /**
+   * An orgai that shares its data folder with other orgai sessions (src/main/host/sessions.ts): a starting orgai that
+   * finds this record live joins the folder instead of being refused. An orgai from before sessions never writes it
+   * and never reads it, so it still sees one running host and refuses, which keeps it off a folder it would damage.
+   */
+  sessions?: true
   /** Set when the record said hostKind 'node' (a background host of an older version, read as 'inproc'). Never written. */
   legacyKind?: 'node'
 }
@@ -7206,6 +7218,8 @@ export type HostRpcErrorCode =
   | 'too_many_connections'
   /** More than RPC_MAX_INFLIGHT_PER_SOCKET requests in flight on one socket. */
   | 'too_many_requests'
+  /** The project or run the request names is open in another orgai session on this data folder (src/main/host/sessions.ts). */
+  | 'session_busy'
 
 /** The `data` of a JSON-RPC error answered by the host. */
 export interface HostRpcError {

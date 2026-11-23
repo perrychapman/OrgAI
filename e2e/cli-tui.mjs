@@ -33,6 +33,12 @@
 //    agent inspector (facts and its own transcript); `?` opens the which-key overlay with the glyph legend; Esc closes the
 //    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
 //    agent, message marks and the run chips have no mock source here: unit tests only.
+//    Then /team raises a report role's effort (y confirms): the status line says the live run uses the change now.
+//    Then /mcp turns a server off with Space (the live run says it uses the change now) and sets another server's
+//    secret with s (the typed value never reaches the terminal), and /skills opens on a project without skills.
+// j. A team change an agent proposes mid-run (`[mock:org-change]`): the card says what changes compared with this run's
+//    team and its top shows the added role, v shows the whole diff (values from -> to) and counts as read, y then asks before it
+//    changes the live run, and after the second y the new role works in it.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
 //
 // Not covered here (unit tests only): merge review cards (the mock has no worktrees), the pager, TERM=dumb Enter
@@ -44,6 +50,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 import { probePty, spawnTui } from './ptyDriver.mjs'
+// The throwaway vault key file the other CLI scripts use (cliLib.mjs makes it): /mcp's `s` key saves a secret.
+import { ENV as CLI_ENV } from './cliLib.mjs'
 import { writeFileSync as markWrite } from 'node:fs'
 import { join as markJoin } from 'node:path'
 // The CLI marks its own data folder (spec 3.1); this script seeds files before the first command, so it marks it itself.
@@ -145,6 +153,9 @@ const SCRIPTS = { simple: scriptFile('simple', SIMPLE), escapes: scriptFile('esc
 
 const baseEnv = (script) => {
   const env = { ...process.env, ORGAI_CLI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1', TERM: 'xterm-256color', ORGAI_MOCK_SCRIPT: script, LANG: 'en_US.UTF-8' }
+  // A mock host never touches the OS key store: its vault key comes from a throwaway key file.
+  env.ORGAI_CLI_VAULT_KEY_FILE = CLI_ENV.ORGAI_CLI_VAULT_KEY_FILE
+  env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
   // No script: the mock's default script, which understands the [mock:deep-tree] marker in the prompt.
   if (!script) delete env.ORGAI_MOCK_SCRIPT
   delete env.ELECTRON_RUN_AS_NODE
@@ -260,9 +271,10 @@ try {
       t.key('enter')
       await t.waitFor(/Warnings and errors: \d+ of \d+/, 10_000)
       check(true, 'a: /logs opens the run\'s warnings and errors with a count')
-      // The overlay is the system pager: q leaves it (escape does not).
-      await type(t, 'q')
-      await sleep(500)
+      // Text opens in the app's own view (only a diff goes to the system pager): Esc leaves it, and so does q.
+      t.key('escape')
+      const logsClosed = await t.waitFor((s) => !/Warnings and errors: \d+ of \d+/.test(s), 10_000).then(() => true, () => false)
+      check(logsClosed, 'a: Esc closes the /logs view (no system pager to get stuck in)', esc(t.screen()))
 
       // /team and /settings (cli-parity 3.7): views over the run view (the status bar stays); Esc returns to it.
       await type(t, '/team')
@@ -397,8 +409,8 @@ try {
   }
 
   // ---------- f, g: cards in the TUI that owns the folder ----------
-  // The TUI is the only process that can answer its cards (spec 4.4). Every other `orgai` is refused at once, and the
-  // read-only commands answer from the files beside it.
+  // The TUI is the only process that can answer its cards (spec 4.4). Another `orgai` works beside it (sessions,
+  // docs/design/cli-sessions.md) but may not touch the project it holds; the read-only commands answer from the files.
   {
     const t = tui(['--', 'E2E cards run'], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.cards })
     open.push(t)
@@ -406,15 +418,21 @@ try {
       await t.waitFor('E2E-CARDS-START', 40_000)
       await t.waitFor(CARD_ON_SCREEN, 30_000)
 
-      // h2. A second orgai: refused at once with exit 6; the read-only commands work beside it.
+      // h2. A second orgai beside the TUI: a command that needs a host starts its own, also one in the TUI's project;
+      // removing that project needs it alone and is refused at once with exit 6; the read-only commands show the
+      // TUI's run as live.
       const began = Date.now()
       const second = await cli(['connections', 'list'], { cwd: repo })
-      check(second.code === 6 && /orgai is already running in another terminal \(.*, pid \d+\)\. Use that one, or quit it first\./.test(second.err), 'a second orgai is refused with exit 6 naming the first', show(second))
-      check(Date.now() - began < 15_000, 'the refusal came at once', `${Date.now() - began} ms`)
+      check(second.code === 0, 'a second orgai runs beside the TUI', show(second))
+      const same = await cli(['projects', 'show', '--output-format', 'json'], { cwd: repo })
+      check(same.code === 0, 'a second orgai works in the project the TUI has open', show(same))
+      const held = await cli(['projects', 'remove', '--yes'], { cwd: repo })
+      check(held.code === 6 && /is open in another orgai session \(.*, pid \d+\)\. Quit it there first\./.test(held.err), 'removing the project the TUI has open is refused with exit 6 naming the TUI', show(held))
+      check(Date.now() - began < 15_000, 'the answers came at once', `${Date.now() - began} ms`)
       const beside = await cli(['runs', 'list'], { cwd: repo })
-      check(beside.code === 0 && beside.err.includes('this is a saved snapshot'), 'runs list beside the TUI is a saved snapshot', show(beside))
+      check(beside.code === 0 && !beside.err.includes('saved snapshot') && /(Needs you|Running|Idle)/.test(beside.out), 'runs list beside the TUI shows its run as live, with no snapshot note', show(beside))
       const statusBeside = await cli(['status', '--output-format', 'json'], { cwd: repo })
-      check(statusBeside.code === 0, 'status beside the TUI answers from the saved files', show(statusBeside))
+      check(statusBeside.code === 0 && json(statusBeside.out)?.sessions?.[0]?.command === 'tui', 'status beside the TUI lists it as a session', show(statusBeside))
 
       // An idle empty prompt focuses the arriving inline approval; Esc returns to drafting.
       await t.waitFor('Enter confirm', 5000)
@@ -530,6 +548,12 @@ try {
 
   // ---------- i: the org tree, inspector and keys overlay ----------
   {
+    // A server for the /mcp check below, added before the TUI starts (a save from another orgai reaches no live run).
+    const added = await cli(['mcp', 'add', 'e2e-docs', '--command', 'node', '--arg', 'server.js'], { cwd: repo })
+    check(added.code === 0, 'i: mcp add gives the project a server for the /mcp view', show(added))
+    // ... and one that needs a secret, for the `s` key (the name sorts after e2e-docs, so the first row stays the same).
+    const vault = await cli(['mcp', 'add', 'e2e-vault', '--command', 'node', '--arg', 'vault.js', '--secret-var', 'E2E_TOKEN'], { cwd: repo })
+    check(vault.code === 0, 'i: mcp add gives the project a server that needs a secret', show(vault))
     const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
     open.push(t)
     try {
@@ -589,8 +613,101 @@ try {
       // Focus is still on the agents pane (typing there is not the composer); Esc goes back to the composer.
       t.key('esc')
       await sleep(400)
+
+      // A role edit saved in /team reaches the live team run at once, and the status line says so (run.liveChange).
+      await type(t, '/team')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('Team of '), 10_000)
+      t.key('down')
+      await sleep(300)
+      await type(t, 'e')
+      await t.waitFor((s) => s.includes('Effort of '), 10_000)
+      t.key('down')
+      await sleep(200)
+      t.key('enter')
+      // Raising a role's effort may spend more: the view asks before it saves.
+      await t.waitFor((s) => s.includes('Press y to save'), 10_000)
+      await type(t, 'y')
+      const liveSaid = await t.waitFor((s) => s.includes('The team: this run uses the change now.'), 15_000).then(() => true, () => false)
+      check(liveSaid, 'i: a role edit saved in /team reaches the live team run, and the status line says it uses the change now', esc(t.screen()))
+      check(!t.screen().includes('keeps the team it started with'), 'i: ... and the view does not say the live run keeps its team', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('Team of '), 10_000)
+
+      // /mcp: turning a server off reaches the live team run at once (run.liveChange); Esc leaves the view.
+      await type(t, '/mcp')
+      t.key('enter')
+      await t.waitFor((s) => s.includes('MCP servers of ') && s.includes('e2e-docs'), 10_000)
+      check(/e2e-docs\s+on · every role · stdio/.test(t.screen()), "i: /mcp lists the project's server with its state, roles and transport", esc(t.screen()))
+      await type(t, ' ')
+      const mcpSaid = await t.waitFor((s) => s.includes('Turned e2e-docs off.') && s.includes('MCP servers: this run uses the change now.'), 15_000).then(() => true, () => false)
+      check(mcpSaid, 'i: Space in /mcp turns the server off, and the live team run says it uses the change now', esc(t.screen()))
+      // s: a secret is typed into a hidden field; the value never reaches the terminal.
+      check(/e2e-vault[^\n]*needs a secret/.test(t.screen()), 'i: /mcp marks the server whose secret is missing', esc(t.screen()))
+      t.key('down')
+      await sleep(300)
+      const beforeSecret = t.raw().length
+      await type(t, 's')
+      await t.waitFor((s) => s.includes('Value of E2E_TOKEN for e2e-vault'), 10_000)
+      await type(t, 'e2e-tok-4711')
+      await sleep(300)
+      t.key('enter')
+      const secretSaved = await t.waitFor((s) => s.includes('Saved E2E_TOKEN for e2e-vault.'), 15_000).then(() => true, () => false)
+      check(secretSaved, 'i: s in /mcp saves the secret the user typed', esc(t.screen()))
+      check(!t.raw().slice(beforeSecret).includes('e2e-tok-4711'), 'i: ... and the typed value never appears in what the terminal received')
+      check(!/e2e-vault[^\n]*needs a secret/.test(t.screen()), 'i: ... and the server no longer needs a secret', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('MCP servers of '), 10_000)
+      // /skills on a project without skills says how to add the first one.
+      await type(t, '/skills')
+      t.key('enter')
+      const skillsShown = await t.waitFor((s) => s.includes('This project has no skills.'), 10_000).then(() => true, () => false)
+      check(skillsShown, 'i: /skills opens and says how to add the first skill', esc(t.screen()))
+      t.key('escape')
+      await t.waitFor((s) => !s.includes('Skills of '), 10_000)
       const e = await quit(t, { confirm: true })
       check(e?.code === 0, 'i: quitting exits 0', JSON.stringify(e))
+    } finally {
+      await t.close()
+    }
+  }
+
+  // ---------- j: a team change an agent proposes mid-run ----------
+  {
+    const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 44, script: '', cwd: repo })
+    open.push(t)
+    try {
+      await t.waitFor(UI.statusReady, 30_000)
+      // The mock's default script: [mock:org-change] makes the root propose "Add a Roster Tester" (one new role).
+      await type(t, '[mock:org-change] E2E add a tester')
+      t.key('enter')
+      await t.waitFor('Add a Roster Tester', 40_000)
+      const summary = await t.waitFor((s) => s.includes("1 added, 1 changed (compared with this run's team)"), 10_000).then(() => true, () => false)
+      check(summary, "j: the org chart card says what changes, compared with this run's team", esc(t.screen()))
+      check(t.screen().includes('Takes effect now.'), 'j: ... and that it takes effect in this run', esc(t.screen()))
+      // The card body is the whole text now, so at 120x44 (tray capped at 12 rows, about 6 body rows) only its top is on
+      // screen before a key: title, effect, summary, then the added role's own line (row 4). The changed role
+      // (`~ Orchestrator`, its from -> to values) is below the fold of the mock card; the check after `v` reads it.
+      check(t.screen().includes('+ Roster Tester (reports to '), 'j: the card shows the added role with who it reports to (the changed role is below the fold until v)', esc(t.screen()))
+      // v: the whole diff, in the app's own text view. (A card ignores keys for a moment after it arrives.)
+      await sleep(1200)
+      t.key('f2')
+      await sleep(400)
+      t.write('v')
+      const full = await t.waitFor((s) => s.includes('+ Roster Tester (reports to ') && s.includes('~ ') && /spawns: .* -> .*Roster Tester/.test(s), 10_000).then(() => true, () => false)
+      check(full, 'j: v shows the added role and the changed field of the role that may now start it', esc(t.screen()))
+      t.key('escape')
+      await sleep(600)
+      // y asks first: this card changes the team of a live run.
+      t.write('y')
+      const asked = await t.waitFor((s) => s.includes("Change this run's team now (1 added, 1 changed)?"), 10_000).then(() => true, () => false)
+      check(asked, 'j: y on a card that changes a live run asks before it approves', esc(t.screen()))
+      check(!t.screen().includes('roster-tester-1'), 'j: ... and nothing has changed yet', esc(t.screen()))
+      t.write('y')
+      const used = await t.waitFor((s) => s.includes('roster-tester-1') && s.includes('Org change approved'), 40_000).then(() => true, () => false)
+      check(used, 'j: after the second y the new role joins this run and takes work in it', esc(t.screen()))
+      const e = await quit(t, { confirm: true })
+      check(e?.code === 0, 'j: quitting exits 0', JSON.stringify(e))
     } finally {
       await t.close()
     }

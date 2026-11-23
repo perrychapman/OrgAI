@@ -122,7 +122,7 @@ const LIVE_CHANGE_LIST_MAX = 50
 const coarseWhat = (change: HostProjectChange): LiveChangeWhat[] =>
   change.kind === 'mcp' ? ['mcpServers'] : change.kind === 'skills' ? ['skills'] : change.kind === 'orgChart' ? ['orgChart'] : ['orgChart', 'grants']
 import { BridgedSessions, bridgeKey } from './bridge'
-import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
+import { applyRosterChange, liveRosterApplies, liveRosterTakesSave, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mcpServersForRole, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
@@ -161,7 +161,7 @@ import { clampText } from '../capabilities/sanitize'
 import { datum, type ConfigChange, type ConfigChangeResult } from './harnessTools'
 import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
-import { RunStore } from '../store/runs'
+import { RunStore, hasWorktreeAtWork, isWorkingRunStatus } from '../store/runs'
 import { isValidId } from '../windowScope'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -842,18 +842,28 @@ export interface RunManagerOptions {
   /**
    * Mid-run org changes (runRoster.ts liveRosterApplies): true only on a host whose approval surface renders the org
    * chart diff against OrgChartProposalPayload.runBaseline with every field that can move. The desktop app sets it
-   * (bootstrap.ts with `desktop`, whose only decision path for an org chart card is the renderer's ProposalCard). The
-   * CLI / TUI / exec host leaves it unset (its approval surface shows no diff), and so does any future host until it
-   * opts in: absent = an approved org chart applies from the next run, exactly as before the feature (no runBaseline,
-   * ctx.roles untouched, card effect 'next-run').
+   * (bootstrap.ts with `desktop`, whose only decision path for an org chart card is the renderer's ProposalCard), and
+   * since 2026-11-23 the orgai command's own host (hostKind 'inproc'): its only approving path is the TUI tray, which
+   * shows the same shared diff (src/shared/view/orgDiff.ts through src/cli/tui/orgChartCard.ts) and asks a second key
+   * press before a card changes a live run; exec never approves a proposal. Any future host stays off until it opts
+   * in: absent = an approved org chart applies from the next run (no runBaseline, ctx.roles untouched, card effect
+   * 'next-run').
    */
   liveRosterCards?: true
   /**
    * Host changes in a live run (applyProjectChange, hostChange.ts): true only on the desktop app (bootstrap.ts with
-   * `desktop`), whose saves come from the user's own windows. The CLI / TUI / exec host leaves it unset and keeps the
-   * pre-feature behaviour: a save applies from the next run and applyProjectChange returns [] without touching a run.
+   * `desktop`), whose saves come from the user's own windows: project saves, mcp:* / skills:* saves and the approved
+   * cards of other sessions. Unset: applyProjectChange returns [] without touching a run, except for `liveUserSaves`.
    */
   liveHostChanges?: true
+  /**
+   * The orgai command's own host (bootstrap.ts, hostKind 'inproc': it serves only the terminal process that started
+   * it): a save the user typed there (projects:save, mcp:*, skills:*; source 'user') reaches the team work runs that
+   * process hosts. A project save is read against the version the user edited (dispatcher.ts, ProjectStore.baseOf);
+   * an MCP or skill save reads the project before and saves as one step under the data folder's write lock
+   * (dispatcher.ts oneStep). Card fan-out stays with liveHostChanges: its before is read outside that lock.
+   */
+  liveUserSaves?: true
   /** How long applyProjectChange waits for each run's session before answering 'pending'. Tests; default LIVE_RUN_CHANGE_WAIT_MS. */
   liveHostChangeWaitMs?: number
   /**
@@ -2213,6 +2223,7 @@ export class RunManager {
           if (e.autoResume === false) this.clearResume(summary.id)
           else this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
         }
+        this.saveWorktreesAtWork(active, true)
         this.store.upsert(summary)
         // Who ended it rides on the terminal status (and on 'stopping' after End session), never from an adapter.
         e = withEndFacts(e, summary)
@@ -2447,6 +2458,8 @@ export class RunManager {
       const grantOwners = new Map<string, Set<symbol>>()
       const GRANT_HELD = Symbol('held')
       let grantClaim: symbol | undefined
+      /** True while hostApply moves a role edit the user saved themselves (source 'user'): setLive then asks liveRosterTakesSave. */
+      let rosterBySave = false
       const pairKey = (e: { roleId: string; field: string; id: string }): string => `${e.roleId}|${e.field}|${e.id}`
       const grantPairs = (roles: readonly Role[]): Set<string> => {
         const out = new Set<string>()
@@ -2536,7 +2549,7 @@ export class RunManager {
           else overlay('roles')
           // Only a card that was diffed against the run's own roles (runBaseline) is applied to them: one created before
           // the session took roster changes live was diffed against the stored project and applies from the next run.
-          if (card && baseline && !bare && liveRosterApplies(summary, active.session, this.options)) {
+          if (card && baseline && !bare && (rosterBySave ? liveRosterTakesSave(summary, active.session, this.options) : liveRosterApplies(summary, active.session, this.options))) {
             // L2: grants the view holds on a waiting role were approved on their own cards; nothing else grants it.
             const runIds = new Set(ctx.roles.map((r) => r.id))
             const pendingGrants = new Map(live.roles.filter((r) => !runIds.has(r.id)).map((r) => [r.id, { ...(r.mcpServers ? { mcpServers: r.mcpServers } : {}), ...(r.skills ? { skills: r.skills } : {}) }]))
@@ -3033,6 +3046,7 @@ export class RunManager {
         maxAutoContinues: runProject.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         onRootTurnEnded: (e: RootTurnEnd) => this.rootTurnEnded(active, e),
         noteActivity: () => this.bumpActivity(active),
+        otherRunsLive: () => this.otherRunsLive(summary.id, summary.projectId),
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
@@ -3261,7 +3275,8 @@ export class RunManager {
             }
             if (!roleEditEmpty(edit)) widens = true
             if (takes && (!roleEditEmpty(edit) || kept.length)) {
-              if (liveRosterApplies(summary, session, this.options)) {
+              // The user's own save needs no card surface (liveRosterTakesSave); another run's approved card does.
+              if (source === 'user' ? liveRosterTakesSave(summary, session, this.options) : liveRosterApplies(summary, session, this.options)) {
                 const baseline = runBaselineOf(ctx, active.retiredRoles ?? [])
                 const inRun = new Set(baseline.map((r) => r.id))
                 const nameOf = (id: string): string => after.find((r) => r.id === id)?.name ?? change.before.roles.find((r) => r.id === id)?.name ?? id
@@ -3270,7 +3285,13 @@ export class RunManager {
                 }
                 // Own ids only for roles the run has or the edit adds: a saved-only role (a pull) never enters the run's view.
                 const ids = [...[...edit.changed.keys(), ...edit.removed].filter((id) => inRun.has(id)), ...edit.added.map((r) => r.id)]
-                const roster = roleEditEmpty(edit) ? undefined : setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+                let roster: RunRosterChange | undefined
+                rosterBySave = source === 'user'
+                try {
+                  roster = roleEditEmpty(edit) ? undefined : setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+                } finally {
+                  rosterBySave = false
+                }
                 const deferredIds = new Set<string>()
                 if (roster) {
                   for (const d of roster.deferred) deferredIds.add(d.id)
@@ -4691,6 +4712,26 @@ export class RunManager {
         return
     }
     if (!active.flushTimer) active.flushTimer = setTimeout(() => this.flush(active), FLUSH_INTERVAL_MS)
+    if (e.type === 'agent.upsert') this.saveWorktreesAtWork(active, false)
+  }
+
+  /** Runs whose saved record already says a report branch is at work (saveWorktreesAtWork). */
+  private atWorkSaved = new WeakSet<ActiveRun>()
+
+  /**
+   * Several orgai sessions on one data folder: another session learns from this run's SAVED record that an idle run
+   * still has a report branch at work (RunStore.workingElsewhereIn). The record is otherwise saved up to 1.5 s late,
+   * so it is saved at once in the two moments that matter: when the run stops counting as working by its status
+   * (`statusChanged`, called before the index gets that status), and when a branch comes to be at work while the run
+   * is already idle. A no-op with one process per data folder.
+   */
+  private saveWorktreesAtWork(active: ActiveRun, statusChanged: boolean): void {
+    if (!this.store.shared) return
+    const atWork = hasWorktreeAtWork(active.record.agents)
+    const was = this.atWorkSaved.has(active)
+    if (atWork) this.atWorkSaved.add(active)
+    else this.atWorkSaved.delete(active)
+    if (atWork && !isWorkingRunStatus(active.summary.status) && (statusChanged || !was)) this.flush(active)
   }
 
   private flush(active: ActiveRun): void {
@@ -4738,6 +4779,29 @@ export class RunManager {
   /** The post-run evolve pass of a run, resolved when it settles; undefined when the run had none (not started with evolve, stopped, still live, or the pass failed). */
   async awaitEvolvePass(runId: string): Promise<EvolvePostRunResult | undefined> {
     return this.evolvePasses.get(runId)
+  }
+
+  /**
+   * RuntimeContext.otherRunsLive: another work run of the same stored project with report branches at work right now,
+   * in this process or hosted by another orgai session (RunStore.workingElsewhereIn). That is a run that is starting,
+   * running or stopping, and also an idle one whose reports still work in the background or whose branch waits at a
+   * merge card (hasWorktreeAtWork). A few words for the log, or null. A run that only waits for its user does not
+   * count: the branches it left are leftovers like any other, as they always were for a second run in the project.
+   */
+  private otherRunsLive(runId: string, projectId: string): string | null {
+    if (isVirtualProjectId(projectId)) return null
+    for (const r of this.runs.values()) {
+      const s = r.summary
+      if (s.id === runId || s.projectId !== projectId || isSetupLikeRun(s.kind)) continue
+      if (!isWorkingRunStatus(s.status) && !hasWorktreeAtWork(r.record.agents)) continue
+      return 'another run of this project is working'
+    }
+    try {
+      if (this.store.workingElsewhereIn(projectId).length > 0) return 'a run of this project is working in another orgai session'
+    } catch {
+      // The index could not be read: this run keeps to its own branches either way.
+    }
+    return null
   }
 
   /** Runs whose session is still open. */
@@ -5446,11 +5510,14 @@ export class RunManager {
   /**
    * A change the user saved in the desktop app (projects:save, mcp:*, skills:*) or approved on another session's card,
    * already saved as `saved`, reaching every live work run of the project (hostChange.ts, ARCHITECTURE.md "Host changes
-   * in a live run"). Only what `change` names moves. Desktop host only (RunManagerOptions.liveHostChanges): elsewhere
+   * in a live run"). Only what `change` names moves. The desktop host (liveHostChanges), or a project save typed on the terminal's own host (liveUserSaves): elsewhere
    * returns [] and touches nothing. Never throws; each run's answer is waited for at most LIVE_RUN_CHANGE_WAIT_MS.
    */
   async applyProjectChange(projectId: string, saved: Project, change: HostProjectChange, opts: { exceptRunId?: string; source?: 'user' | 'card' } = {}): Promise<LiveRunChange[]> {
-    if (!this.options.liveHostChanges || typeof projectId !== 'string' || isVirtualProjectId(projectId) || saved?.id !== projectId) return []
+    // The terminal's own host (liveUserSaves) passes on only what the user typed there: a project, MCP or skill save. Never a card.
+    const typed = (opts.source ?? 'user') === 'user' && (change?.kind === 'projectSave' || change?.kind === 'mcp' || change?.kind === 'skills')
+    const allowed = this.options.liveHostChanges === true || (this.options.liveUserSaves === true && typed)
+    if (!allowed || typeof projectId !== 'string' || isVirtualProjectId(projectId) || saved?.id !== projectId) return []
     const out: Promise<LiveRunChange | undefined>[] = []
     for (const a of this.runs.values()) {
       const s = a.summary
@@ -6687,6 +6754,9 @@ export class RunManager {
 
     // One live run per provider session: two runs resuming one session would interleave in it.
     const chain = this.chainOf(from)
+    // Several orgai sessions on one data folder: a run of this conversation that another session hosts (live or paused
+    // there) is that session's to continue. A no-op when this process has the data folder to itself.
+    for (const r of chain) if (!this.runs.has(r.id)) this.store.assertHostedHere(r.id)
     const chainIds = new Set(chain.map((r) => r.id))
     const chainSessions = new Set(chain.flatMap((r) => (r.sessionId ? [r.sessionId] : [])))
     for (const a of this.runs.values()) {

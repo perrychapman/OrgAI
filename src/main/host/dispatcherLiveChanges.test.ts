@@ -6,6 +6,20 @@ import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 vi.mock('electron', () => {
   throw new Error('electron must not be imported by the host dispatcher')
 })
+/** What happened in order, across the lock, the stores and the live call (the "one locked step" test). */
+const order = vi.hoisted(() => [] as string[])
+vi.mock('../store/shared/storeSync', async (original) => ({
+  ...(await original<typeof import('../store/shared/storeSync')>()),
+  // The real one is plain fn() without a shared data folder; here it also records when the lock is held.
+  lockedForProcess: <T,>(fn: () => T): T => {
+    order.push('lock')
+    try {
+      return fn()
+    } finally {
+      order.push('unlock')
+    }
+  }
+}))
 vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }, logPath: () => '/logs/main.log', logsDir: () => '/logs' }))
 
 const { HostDispatcher } = await import('./dispatcher')
@@ -14,6 +28,7 @@ type HostServices = import('./types').HostServices
 
 const DESKTOP = { surface: 'desktop' as const, senderId: 1 }
 const INPROC = { surface: 'inproc' as const }
+const SOCKET = { surface: 'socket' as const }
 
 const server = (id: string, name: string, over: Partial<McpServerSpec> = {}): McpServerSpec => ({ id, name, transport: 'stdio', command: 'x', ...over }) as McpServerSpec
 const skill = (id: string, name: string, over: Partial<SkillSpec> = {}): SkillSpec => ({ id, name, description: 'd', enabled: true, source: 'local', ...over }) as SkillSpec
@@ -34,6 +49,9 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
   const calls: Call[] = []
   const reads: Array<{ id: string; at: string }> = []
   let step = 'start'
+  /** What ProjectStore.baseOf answers: the version the request was made from, or null when it is not remembered. */
+  let baseAnswer: Project | null = null
+  const setBase = (p: Project | null): void => void (baseAnswer = p)
   const current = (): Project => store[0]
   const set = (patch: Partial<Project>): Project => {
     store[0] = { ...store[0], ...patch }
@@ -42,15 +60,18 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
   const runs = {
     applyProjectChange: vi.fn(async (projectId: string, saved: Project, change: unknown, opts: unknown) => {
       calls.push({ projectId, saved, change, opts, storedAtCall: store[0] })
+      order.push('live')
       return answer()
     })
   }
   const projects = {
     get: (id: string) => {
       reads.push({ id, at: step })
+      order.push('read')
       return store.find((p) => p.id === id) ?? null
     },
     list: () => store,
+    baseOf: vi.fn((_p: Project): Project | null => baseAnswer),
     // The save ingests team files inside the service: the stored project gains a grant the request never named.
     saveFromRenderer: vi.fn((p: Project) => {
       step = 'saved'
@@ -62,13 +83,18 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
     remove: vi.fn((i: { serverId: string }) => ({ project: set({ mcpServers: store[0].mcpServers!.filter((s) => s.id !== i.serverId) }), servers: [] })),
     linkLibrary: vi.fn((i: { libraryId: string }) => ({ project: set({ mcpServers: [...store[0].mcpServers!, server('mcp_new', 'linked-srv', { libraryId: i.libraryId })] }), servers: [] })),
     setProjectOverrides: vi.fn(() => ({ project: store[0], servers: [] })),
+    // mcp:list as the service answers it: the stored servers.
+    list: vi.fn(() => (store[0].mcpServers ?? []).map((spec) => ({ spec, envSet: [], headersSet: [], missingSecrets: [], auth: { state: 'notRequired' } }))),
     libraryEntries: vi.fn((): unknown[] => [])
   }
   const skillsSvc = {
     list: vi.fn(() => []),
     create: vi.fn((i: { draft: { name: string } }) => ({ project: set({ skills: [...store[0].skills!, skill('sk_new', i.draft.name)] }), skills: [] })),
     update: vi.fn((i: { skillId: string }) => ({ project: set({ skills: store[0].skills!.map((s) => (s.id === i.skillId ? { ...s, name: 'renamed' } : s)) }), skills: [] })),
-    remove: vi.fn((i: { skillId: string }) => ({ project: set({ skills: store[0].skills!.filter((s) => s.id !== i.skillId) }), skills: [] })),
+    remove: vi.fn((i: { skillId: string }) => {
+      order.push('save')
+      return { project: set({ skills: store[0].skills!.filter((s) => s.id !== i.skillId) }), skills: [] }
+    }),
     linkLibrary: vi.fn((i: { libraryId: string }) => ({ project: set({ skills: [...store[0].skills!, skill('sk_lib', 'lib-skill', { libraryId: i.libraryId })] }), skills: [] }))
   }
   const settings = { get: () => DEFAULT_APP_SETTINGS, dataDir: '/tmp/orgai-live-changes', set: vi.fn() }
@@ -90,8 +116,10 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
     templates: { list: () => [] } as never
   }
   const d = new HostDispatcher(services)
-  const call = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC = DESKTOP): Promise<any> => Promise.resolve(d.invoke(channel, [input], ctx))
-  return { call, runs, calls, store, projects, mcp, skillsSvc, reads, current, services }
+  const call = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC | typeof SOCKET = DESKTOP): Promise<any> => Promise.resolve(d.invoke(channel, [input], ctx))
+  /** The handler's own return value (a promise only when the handler is asynchronous). */
+  const raw = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC | typeof SOCKET): unknown => d.invoke(channel, [input], ctx)
+  return { call, raw, setBase, runs, calls, store, projects, mcp, skillsSvc, reads, current, services }
 }
 
 const P = 'proj_a'
@@ -340,23 +368,129 @@ describe('desktop saves reach live runs (applyProjectChange)', () => {
   })
 })
 
+const CHANNELS = [
+  [IPC.projectsSave, (r: ReturnType<typeof rig>) => ({ ...r.store[0], brief: 'x' })],
+  [IPC.mcpUpsert, () => ({ projectId: P, spec: server('mcp_a', 'alpha') })],
+  [IPC.mcpRemove, () => ({ projectId: P, serverId: 'mcp_old' })],
+  [IPC.mcpLinkLibrary, () => ({ projectId: P, libraryId: 'lib_1' })],
+  [MCP_SCOPE_IPC.mcpSetProjectOverrides, () => ({ projectId: P, serverId: 'mcp_old', env: { A: 'b' } })],
+  [IPC.skillsCreate, () => ({ projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' } })],
+  [IPC.skillsUpdate, () => ({ projectId: P, skillId: 'sk_old', enabled: false })],
+  [IPC.skillsRemove, () => ({ projectId: P, skillId: 'sk_old' })],
+  [IPC.skillsLinkLibrary, () => ({ projectId: P, libraryId: 'lib_9' })]
+] as const
+const ITEM_CHANNELS = CHANNELS.filter(([channel]) => channel !== IPC.projectsSave)
+const isPromise = (v: unknown): boolean => typeof (v as { then?: unknown } | null)?.then === 'function'
+
 describe('other surfaces never call applyProjectChange', () => {
-  it.each([
-    [IPC.projectsSave, (r: ReturnType<typeof rig>) => ({ ...r.store[0], brief: 'x' })],
-    [IPC.mcpUpsert, () => ({ projectId: P, spec: server('mcp_a', 'alpha') })],
-    [IPC.mcpRemove, () => ({ projectId: P, serverId: 'mcp_old' })],
-    [IPC.mcpLinkLibrary, () => ({ projectId: P, libraryId: 'lib_1' })],
-    [MCP_SCOPE_IPC.mcpSetProjectOverrides, () => ({ projectId: P, serverId: 'mcp_old', env: { A: 'b' } })],
-    [IPC.skillsCreate, () => ({ projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' } })],
-    [IPC.skillsUpdate, () => ({ projectId: P, skillId: 'sk_old', enabled: false })],
-    [IPC.skillsRemove, () => ({ projectId: P, skillId: 'sk_old' })],
-    [IPC.skillsLinkLibrary, () => ({ projectId: P, libraryId: 'lib_9' })]
-  ] as const)('%s on the inproc surface is synchronous and adds nothing', (channel, input) => {
+  it.each(CHANNELS)('%s on a socket surface answers synchronously and adds nothing', (channel, input) => {
     const r = rig()
-    const out = r.call(channel, input(r), INPROC)
-    return out.then((value) => {
-      expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
-      expect(value && typeof value === 'object' && 'liveRuns' in value).toBe(false)
+    const value = r.raw(channel, input(r), SOCKET)
+    // The handler's own value: wrapping it in Promise.resolve would hide a handler that became asynchronous.
+    expect(isPromise(value)).toBe(false)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
+    expect(!!value && typeof value === 'object' && 'liveRuns' in value).toBe(false)
+  })
+
+})
+
+describe("the terminal's own orgai process: an MCP or skill save the user typed", () => {
+  it.each(ITEM_CHANNELS.filter(([channel]) => channel !== IPC.mcpUpsert))('%s passes its change to the live runs, as on the desktop', async (channel, input) => {
+    const r = rig()
+    const out = await r.call(channel, input(r), INPROC)
+    expect(r.calls).toHaveLength(1)
+    expect(r.calls[0].opts).toEqual({ source: 'user' })
+    expect(['mcp', 'skills']).toContain((r.calls[0].change as { kind: string }).kind)
+    expect(out.liveRuns).toEqual(CANNED)
+  })
+
+  it('reads the project before the save, and the read is a copy the save cannot change', async () => {
+    const r = rig()
+    await r.call(IPC.skillsRemove, { projectId: P, skillId: 'sk_old' }, INPROC)
+    const change = r.calls[0].change as { before: Project }
+    expect(change.before.skills?.map((s) => s.id)).toEqual(['sk_old'])
+    expect(r.current().skills).toEqual([])
+    expect(r.reads.some((x) => x.at === 'start')).toBe(true)
+  })
+
+  it('reads the project and saves as one step under the write lock; the live part runs after it is released', async () => {
+    const r = rig()
+    order.length = 0
+    await r.call(IPC.skillsRemove, { projectId: P, skillId: 'sk_old' }, INPROC)
+    // Another orgai process cannot save between the read and the save: both are inside the one hold.
+    expect(order).toEqual(['lock', 'read', 'save', 'unlock', 'live'])
+  })
+
+  it('an inproc mcp:upsert with no spec reaches the service validation, not a TypeError of the dispatcher', async () => {
+    const r = rig()
+    vi.mocked(r.services.mcp.upsert).mockImplementationOnce(() => {
+      throw new Error('spec is required')
     })
+    await expect((async () => r.call(IPC.mcpUpsert, { projectId: P }, INPROC))()).rejects.toThrow('spec is required')
+    expect(r.calls).toHaveLength(0)
+  })
+
+  it('mcp:upsert that differs from the listed server in `enabled` alone passes that one field', async () => {
+    const r = rig()
+    await r.call(IPC.mcpUpsert, { projectId: P, spec: { ...server('mcp_old', 'old-srv'), enabled: false } }, INPROC)
+    expect(r.calls).toHaveLength(1)
+    expect(r.calls[0].change).toMatchObject({ kind: 'mcp', ids: ['mcp_old'], fields: ['enabled'] })
+  })
+
+  it('mcp:upsert that differs in `roles` alone passes that one field, compared with the list read under the lock', async () => {
+    const r = rig()
+    order.length = 0
+    await r.call(IPC.mcpUpsert, { projectId: P, spec: { ...server('mcp_old', 'old-srv'), roles: ['engineer'] } }, INPROC)
+    expect(r.calls[0].change).toMatchObject({ kind: 'mcp', ids: ['mcp_old'], fields: ['roles'] })
+    // mcp:list is asked inside the hold, before the save changes what it would answer.
+    expect(r.mcp.list).toHaveBeenCalledTimes(1)
+    expect(order[0]).toBe('lock')
+    expect(order.indexOf('unlock')).toBeLessThan(order.indexOf('live'))
+    expect(r.mcp.list.mock.invocationCallOrder[0]).toBeLessThan(r.mcp.upsert.mock.invocationCallOrder[0])
+  })
+
+  it('mcp:upsert that also carries another differing field (a stale copy) reaches no live run', () => {
+    const r = rig()
+    const value = r.raw(IPC.mcpUpsert, { projectId: P, spec: { ...server('mcp_old', 'old-srv'), enabled: false, command: 'stale' } }, INPROC)
+    expect(isPromise(value)).toBe(false)
+    expect(r.mcp.upsert).toHaveBeenCalledTimes(1)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
+  })
+
+  it('mcp:upsert of a server the project does not list reaches no live run', () => {
+    const r = rig()
+    const value = r.raw(IPC.mcpUpsert, { projectId: P, spec: server('mcp_a', 'alpha') }, INPROC)
+    expect(isPromise(value)).toBe(false)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
+  })
+})
+
+describe("the terminal's own orgai process: a project save the user typed", () => {
+  it('passes the change with the version the request was made from, never the stored project', async () => {
+    const r = rig()
+    const base = { ...structuredClone(r.store[0]), brief: 'the version the user edited' }
+    r.setBase(base)
+    const request = { ...r.store[0], brief: 'x' }
+    await r.call(IPC.projectsSave, request, INPROC)
+    expect(r.projects.baseOf).toHaveBeenCalledTimes(1)
+    expect(r.calls).toHaveLength(1)
+    const change = r.calls[0].change as { kind: string; before: Project; request: Project }
+    expect(change.kind).toBe('projectSave')
+    expect(change.before).toBe(base)
+    expect(change.request).toEqual(request)
+    expect(r.calls[0].opts).toEqual({ source: 'user' })
+    // The stored project is never read for the comparison on this surface: `before` is the base above, not the stored
+    // copy. The one read before the save is the window-only guard (host/projectSaveGuard.ts), which must compare the
+    // request with what is stored now so a terminal save cannot raise or remove a spending cap.
+    expect(r.reads.filter((x) => x.at === 'start')).toEqual([{ id: r.store[0].id, at: 'start' }])
+    expect(change.before).not.toBe(r.store[0])
+  })
+
+  it('a copy whose version this process no longer remembers reaches no live run', () => {
+    const r = rig()
+    r.setBase(null)
+    const value = r.raw(IPC.projectsSave, { ...r.store[0], brief: 'x' }, INPROC)
+    expect(isPromise(value)).toBe(false)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
   })
 })

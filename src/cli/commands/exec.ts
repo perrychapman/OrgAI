@@ -319,6 +319,8 @@ export function hostFailure(e: unknown): CliError {
   if (e instanceof CliError) return e
   const data = (e as Partial<HostCallError>)?.data
   const message = e instanceof Error ? e.message : String(e)
+  // The project or run is open in another orgai session: busy (6), as for a host that is starting or draining.
+  if (data?.code === 'session_busy') return new CliError(message, EXIT.hostBusy)
   return new CliError(message, data?.code === 'bad_request' ? EXIT.usage : EXIT.failure)
 }
 
@@ -510,11 +512,12 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
   const prompt = await readPrompt(ctx, positionals[0], promptFile, 'Give a prompt: orgai exec "<prompt>", --prompt-file <path>, or - to read it from stdin.', true)
   const images = await loadImages(strs(v, 'image'), ctx.cwd)
 
-  // cwd checks before any host is started: an agent worktree, and (while no host runs) an unregistered folder.
+  // cwd checks before any host is started: an agent worktree, and (unless an older orgai owns the folder alone, which
+  // refuses the start itself) an unregistered folder.
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
   if (!quick) {
     const snap = await ctx.readStore().catch(() => undefined)
-    if (snap && snap.hostState === 'stopped') {
+    if (snap && !snap.soleOwner) {
       const res = ctx.resolveProject(snap.projects)
       if (res.error) throw usage(res.error)
       refuseManagedWorktree(res.managedWorktree)

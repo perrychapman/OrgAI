@@ -66,6 +66,7 @@ import type {
   Proposal,
   ProviderModel,
   QuickRunPromoteResult,
+  Role,
   RpcHelloResult,
   RunOverrides,
   RunPlan,
@@ -83,10 +84,11 @@ import type {
   WorktreeDiff,
   WorktreeStatus
 } from '../../shared/types'
-import type { HostClient, InprocHostHandle } from '../types'
+import type { HostClient, InprocHostHandle, SessionPeer } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
 import type { ApprovalsApi } from './approvals'
 import type { TuiConfigApi } from './configApi'
+import type { TuiToolsApi } from './toolsApi'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
@@ -422,6 +424,8 @@ export type TrayCard = {
   runTag: string
   runKind: RunSummary['kind']
   projectKind?: ProjectKind
+  /** The open project's saved roles, when this card's run belongs to it: what an org chart card without a run baseline is compared with. */
+  savedRoles?: readonly Role[]
   /** Arrival order (TuiState.cardSeq at arrival). */
   arrivedSeq: number
   /** The agent the card is about (every card kind carries one) and its sanitized label. */
@@ -467,8 +471,6 @@ export interface TuiRun {
   plan?: RunPlan
   /** Latest staffing record (staffing.updated, or the run record). Shown on agent rows, the inspector and the status bar. */
   staffing?: RunStaffing
-  /** Sanitized display text per agent id (agent.partial, cumulative). */
-  partials: Record<string, string>
   cards: PendingCards
   /** Oldest transcript entries left out (snapshot cap or TUI_TRANSCRIPT_MAX). */
   omitted?: number
@@ -494,8 +496,18 @@ export interface TuiState {
   hostKind?: HostKind
   connection: ConnectionState
   project?: Project
+  /**
+   * How many other orgai sessions have this project open right now (docs/design/cli-sessions.md): the status bar says
+   * so, and runs started there show here read-only. Kept current by the session; absent or 0 = this terminal only.
+   */
+  othersHere?: number
   folder: string
   runs: Record<string, TuiRun>
+  /**
+   * Streaming text per run id, then agent id (agent.partial, cumulative, sanitized). Kept beside `runs`, not in a run,
+   * so a streamed delta leaves `runs` (and every selector memo keyed on it) untouched. Absent means none.
+   */
+  partials?: Record<string, Record<string, string>>
   /** Project runs oldest first, for R# tags. */
   runOrder: string[]
   /** Followed chain, oldest first. */
@@ -537,6 +549,8 @@ export interface OpenTuiSessionOptions {
   runId?: string
   folder: string
   readOnlyReason?: string
+  /** How many other orgai sessions have this project open right now (TuiState.othersHere). */
+  othersHere?: number
 }
 
 /** Per-run choices (/model, /effort, /mode, /goal) held by the session for the next run it starts; dropped once a run used them. */
@@ -550,8 +564,14 @@ export interface StagedRunOptions {
 export interface TuiSessionApi {
   /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
   approvals?: ApprovalsApi
+  /** /sessions: the other orgai sessions running on this data folder right now (each with its folder and projects). */
+  otherSessions?(): SessionPeer[]
+  /** Project id to name for every stored project (projects:list), for texts that name another session's projects. */
+  projectNames?(): Promise<Map<string, string>>
   /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
   config?: TuiConfigApi
+  /** The host calls of /mcp and /skills: the channels `orgai mcp` and `orgai skills` use. */
+  tools?: TuiToolsApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
   readonly hostKind: HostKind
@@ -780,7 +800,7 @@ export interface SlashContext {
   /** /agent <name>: open that agent's inspector. */
   openAgent?(arg: string): void
   /** /team and /settings: open that view over the run view (cli-parity 3.7). */
-  openConfig?(view: 'team' | 'settings'): void
+  openConfig?(view: 'team' | 'settings' | 'mcp' | 'skills'): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
   /** /mode: change the followed run's permission mode, or stage it for the next run when none is followed. */
@@ -794,7 +814,11 @@ export interface SlashContext {
   pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>
-  openText(title: string, text: string): Promise<void>
+  /**
+   * Shows text in the app's own view (q or Esc closes, the keys scroll). `pager: true` is for a diff: it goes to the
+   * system pager when there is one (colour, search), else to the same view.
+   */
+  openText(title: string, text: string, opts?: { pager?: boolean }): Promise<void>
   quit(): void
 }
 

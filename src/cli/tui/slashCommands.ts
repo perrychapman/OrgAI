@@ -22,6 +22,7 @@ import { projectConnection } from '../../shared/defaults'
 import { connectionName, modelChoices, pickModel as pickModelFromCatalog } from '../modelSwitch'
 import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
+import type { SessionPeer } from '../types'
 
 /** One line of untrusted text, sanitized, whitespace folded, at most `max` characters. */
 export function cleanLine(s: string | undefined, max = 200): string {
@@ -231,6 +232,34 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
  * /approvals (cli-parity 3.4 as built, read-only): what waits for approval, in full (the gate's summary, "May spend
  * more", what an undo would bring back, a folder's own config), ending with where approving is done and why.
  */
+/**
+ * /sessions: several orgai processes can run on one data folder, and in one project. This lists the others and the
+ * projects each has open, so it is clear where a run that shows here read-only is being steered.
+ */
+export function sessionsText(others: readonly SessionPeer[], here?: string, now: number = Date.now(), projectNames: ReadonlyMap<string, string> = new Map()): string {
+  const lines = [here ? `This terminal is in ${cleanLine(here, 80)}.` : 'This terminal has no project open.', '']
+  if (!others.length) {
+    lines.push('No other orgai session is running.')
+  } else {
+    lines.push(`${others.length} other orgai ${others.length === 1 ? 'session' : 'sessions'}:`)
+    for (const s of others) {
+      const up = Math.max(0, Math.round((now - s.startedAt) / 60_000))
+      // The projects by name where this terminal knows them (it lists every project), else how many.
+      const named = s.projects.map((id) => projectNames.get(id)).filter((n): n is string => !!n)
+      const holds = !s.projects.length ? 'no project open' : named.length === s.projects.length ? `in ${named.map((n) => cleanLine(n, 60)).join(', ')}` : `in ${s.projects.length} ${s.projects.length === 1 ? 'project' : 'projects'}`
+      lines.push('', `  ${cleanLine(s.command || 'orgai', 24)} · pid ${s.pid} · ${up < 1 ? 'just started' : `up ${up} min`} · ${holds}`)
+      // The folder on its own line: it is the long part, and the one to look for among the terminals.
+      lines.push(`    ${cleanLine(s.cwd, 400)}`)
+    }
+  }
+  lines.push(
+    '',
+    ...wrapWords('Sessions can work in the same project. Each steers the runs it started; a run started in another session shows here read-only, as last saved, and can be continued here once it has ended there.', HELP_WIDTH),
+    ...wrapWords('From outside the terminal UI, orgai status lists every session.', HELP_WIDTH)
+  )
+  return lines.join('\n')
+}
+
 async function runApprovals(ctx: SlashContext): Promise<void> {
   const api = ctx.session.approvals
   if (!api) {
@@ -253,11 +282,37 @@ function retroReason(s: TuiState): string | undefined {
   return 'Only ended team runs of a project have a retrospective, not chats or assistant runs.'
 }
 
+/** Where a command's description starts in /help, and how wide a help line may be (it fits an 80 column terminal). */
+const HELP_COLUMN = 24
+const HELP_WIDTH = 78
+
+/** `text` broken at spaces into lines of at most `width` characters (a longer word keeps its own line). */
+export function wrapWords(text: string, width: number): string[] {
+  const lines: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line && line.length + 1 + word.length > width) {
+      lines.push(line)
+      line = word
+    } else line = line ? `${line} ${word}` : word
+  }
+  if (line) lines.push(line)
+  return lines.length ? lines : ['']
+}
+
+/**
+ * One block per command for /help: the command and its arguments, then the description in its own column, wrapped at
+ * words with a hanging indent. A command whose arguments fill the column (the run flags of /new and /ask) gets a line
+ * of its own, so the description never runs into it and nothing is cut in the middle of a word by the terminal.
+ */
 function commandLines(): string[] {
-  return SLASH_COMMANDS.map((c) => {
-    const head = `/${c.name}${c.args ? ` ${c.args}` : ''}`
+  const pad = ' '.repeat(HELP_COLUMN)
+  return SLASH_COMMANDS.flatMap((c) => {
+    const head = `  /${c.name}${c.args ? ` ${c.args}` : ''}`
     const alias = c.aliases?.length ? ` (also ${c.aliases.map((a) => `/${a}`).join(', ')})` : ''
-    return `  ${head.padEnd(22)}${c.summary}${alias}`
+    const body = wrapWords(`${c.summary}${alias}`, HELP_WIDTH - HELP_COLUMN)
+    if (head.length >= HELP_COLUMN - 1) return [head, ...body.map((l) => pad + l)]
+    return [head.padEnd(HELP_COLUMN) + body[0], ...body.slice(1).map((l) => pad + l)]
   })
 }
 
@@ -274,7 +329,8 @@ export function runsTable(runs: readonly RunSummary[], projectId?: string): stri
     .sort((a, b) => (idx.get(a.id) ?? 0) - (idx.get(b.id) ?? 0))
     .map((r) => {
       const tag = runTag(idx.get(r.id))
-      const status = cleanLine(statusWordOfSummary(r), 40)
+      // A run another orgai session hosts: its status as last saved, and where it is live.
+      const status = cleanLine(r.liveElsewhere ? `${statusWordOfSummary(r)}, pid ${r.liveElsewhere.pid}` : statusWordOfSummary(r), 40)
       return `${tag.padEnd(6)} ${status.padEnd(24)} ${cleanLine(runName(r), 80)}`
     })
   return [`${'RUN'.padEnd(6)} ${'STATUS'.padEnd(24)} TITLE`, ...rows].join('\n')
@@ -414,6 +470,17 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
+    name: 'sessions',
+    summary: 'The other orgai sessions running now: their folder, what they run and the projects they have open',
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        const others = ctx.session.otherSessions?.() ?? []
+        // Names for the projects the others hold; without them (a failed list) the count is shown.
+        const names = others.some((s) => s.projects.length) ? await (ctx.session.projectNames?.() ?? Promise.resolve(new Map<string, string>())).catch(() => new Map<string, string>()) : new Map<string, string>()
+        await ctx.openText('Sessions', sessionsText(others, ctx.state().project?.name, Date.now(), names))
+      })
+  },
+  {
     name: 'approvals',
     aliases: ['team-files', 'trust'],
     summary: 'Read the team-file changes and folder config that wait for approval (read-only: approving is not available in the terminal yet)',
@@ -440,6 +507,29 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       guarded(ctx, () => {
         if (ctx.openConfig) ctx.openConfig('settings')
         else ctx.notify('The Settings view is not available here; use orgai projects show and orgai settings.', 'warn')
+      })
+  },
+  {
+    name: 'mcp',
+    aliases: ['servers'],
+    summary: "The project's MCP servers: turn one on or off, choose the roles that may use it, add one from your library",
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('mcp')
+        else ctx.notify('The MCP view is not available here; use orgai mcp list.', 'warn')
+      })
+  },
+  {
+    name: 'skills',
+    summary: "The project's skills: turn one on or off, choose the roles that may load it, add one from your library",
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('skills')
+        else ctx.notify('The Skills view is not available here; use orgai skills list.', 'warn')
       })
   },
   {
@@ -568,7 +658,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
         const stat = sanitizeTty(diff.stat ?? '').trimEnd()
         const patch = sanitizeTty(diff.patch ?? '')
         const body = [stat, patch].filter((p) => p !== '').join('\n\n') || 'No changes.'
-        await ctx.openText(`Diff ${cleanLine(target.branch, 120)}`, body)
+        await ctx.openText(`Diff ${cleanLine(target.branch, 120)}`, body, { pager: true })
       })
   },
   {

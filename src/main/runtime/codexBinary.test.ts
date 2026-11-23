@@ -66,6 +66,30 @@ describe('lookupCodexBinary (cli-standalone 6.2)', () => {
     expect(lookupCodexBinary({ ...mac, fs, env: {}, bundleDir: '/R/app.asar.unpacked/out/cli' }).binary?.source).toBe('package')
   })
 
+  it('the npm package brings Codex: found hoisted or nested in @openai/codex, and it wins over a codex on PATH', () => {
+    const pkgDir = '/g/lib/node_modules/orgai-cli'
+    // Hoisted beside @openai/codex (what npm does for a dependency of orgai-cli).
+    const hoisted = `${pkgDir}/node_modules/@openai/codex-darwin-arm64`
+    const onPath = { '/usr/local/bin/codex': MACHO }
+    const fsHoisted = new FakeLookupFs({ [`${hoisted}/${MAC_VENDOR}/bin/codex`]: MACHO, ...onPath })
+    const resolveHoisted: ModuleResolver = (spec) => (spec === '@openai/codex-darwin-arm64/package.json' ? `${hoisted}/package.json` : undefined)
+    expect(lookupCodexBinary({ ...mac, fs: fsHoisted, env: { PATH: '/usr/local/bin' }, resolveModule: resolveHoisted, bundleDir: `${pkgDir}/out/cli` }).binary).toEqual({
+      path: `${hoisted}/${MAC_VENDOR}/bin/codex`,
+      source: 'package'
+    })
+    // Nested inside @openai/codex's own node_modules: the per-platform name does not resolve from the bundle, the main package does.
+    const nested = `${pkgDir}/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64`
+    const fsNested = new FakeLookupFs({ [`${nested}/${MAC_VENDOR}/bin/codex`]: MACHO, ...onPath })
+    const resolveNested: ModuleResolver = (spec) => (spec === '@openai/codex/package.json' ? `${pkgDir}/node_modules/@openai/codex/package.json` : undefined)
+    expect(lookupCodexBinary({ ...mac, fs: fsNested, env: { PATH: '/usr/local/bin' }, resolveModule: resolveNested, bundleDir: `${pkgDir}/out/cli` }).binary).toEqual({
+      path: `${nested}/${MAC_VENDOR}/bin/codex`,
+      source: 'package'
+    })
+    // @openai/codex installed without this platform's binary (--omit=optional): the one on PATH is what is left.
+    const fsNone = new FakeLookupFs({ ...onPath })
+    expect(lookupCodexBinary({ ...mac, fs: fsNone, env: { PATH: '/usr/local/bin' }, resolveModule: resolveNested, bundleDir: `${pkgDir}/out/cli` }).binary).toEqual({ path: '/usr/local/bin/codex', source: 'path' })
+  })
+
   it('PATH: a native binary (Homebrew link) is used through its real path, with an adjacent codex-path', () => {
     const real = '/opt/homebrew/Caskroom/codex/0.169.0/codex'
     const fs = new FakeLookupFs({ [real]: MACHO }, ['/opt/homebrew/Caskroom/codex/0.169.0/codex-path']).link('/opt/homebrew/bin/codex', real)

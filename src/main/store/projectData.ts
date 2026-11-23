@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { storeSyncFor } from './shared/storeSync'
 import { join } from 'node:path'
 import type { EngagementDocumentInfo, EngagementNote, EngagementNoteContent, EngagementNoteWriter, Project } from '@shared/types'
 import {
@@ -165,6 +166,11 @@ function commitDocument(dataDir: string, projectId: string, text: string, by: 'u
  * rendered by OrgAI from the approved charter), empty text is written as is.
  */
 export function writeEngagementDocumentFromSetup(dataDir: string, projectId: string, text: string): void {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => writeEngagementDocumentFromSetupUnlocked(dataDir, projectId, text))
+}
+
+function writeEngagementDocumentFromSetupUnlocked(dataDir: string, projectId: string, text: string): void {
   commitDocument(dataDir, projectId, text, 'setup')
 }
 
@@ -177,6 +183,11 @@ export const ENGAGEMENT_STALE_MESSAGE = 'The engagement plan changed since you o
  * document exists is refused too). Then writeEngagementDocument rules apply.
  */
 export function updateEngagementDocument(dataDir: string, projectId: string, text: string, expectedUpdatedAt: number | undefined): EngagementDocumentInfo {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => updateEngagementDocumentUnlocked(dataDir, projectId, text, expectedUpdatedAt))
+}
+
+function updateEngagementDocumentUnlocked(dataDir: string, projectId: string, text: string, expectedUpdatedAt: number | undefined): EngagementDocumentInfo {
   const current = readEngagementDocumentInfo(dataDir, projectId).updatedAt ?? 0
   if (current !== (expectedUpdatedAt ?? 0)) throw new Error(ENGAGEMENT_STALE_MESSAGE)
   return writeEngagementDocument(dataDir, projectId, text, 'user')
@@ -197,6 +208,11 @@ function checkedText(label: string, text: unknown, max: number): string {
  * one read the same everywhere (the prompt, the editor). Returns what is stored afterwards.
  */
 export function writeEngagementDocument(dataDir: string, projectId: string, text: string, by: 'user' | 'setup' = 'user'): EngagementDocumentInfo {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => writeEngagementDocumentUnlocked(dataDir, projectId, text, by))
+}
+
+function writeEngagementDocumentUnlocked(dataDir: string, projectId: string, text: string, by: 'user' | 'setup' = 'user'): EngagementDocumentInfo {
   const file = engagementDocumentFile(dataDir, projectId)
   const clean = checkedText('The engagement document', text, ENGAGEMENT_DOCUMENT_MAX_CHARS)
   if (!clean.trim()) {
@@ -416,6 +432,16 @@ export function saveNote(
   input: { noteId?: string; title: string; text: string; retired?: boolean; expectedUpdatedAt?: number },
   writer: EngagementNoteWriter = { by: 'user' }
 ): EngagementNote {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => saveNoteUnlocked(dataDir, projectId, input, writer))
+}
+
+function saveNoteUnlocked(
+  dataDir: string,
+  projectId: string,
+  input: { noteId?: string; title: string; text: string; retired?: boolean; expectedUpdatedAt?: number },
+  writer: EngagementNoteWriter = { by: 'user' }
+): EngagementNote {
   if (typeof input.title !== 'string') throw new Error('The title must be text.')
   const title = input.title.trim()
   if (!title) throw new Error('Give the note a title.')
@@ -470,6 +496,11 @@ export function saveNote(
 
 /** Delete a note; resolves to the remaining notes (an unknown id changes nothing). */
 export function removeNote(dataDir: string, projectId: string, noteId: string): EngagementNote[] {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => removeNoteUnlocked(dataDir, projectId, noteId))
+}
+
+function removeNoteUnlocked(dataDir: string, projectId: string, noteId: string): EngagementNote[] {
   const notes = readIndex(dataDir, projectId)
   if (!isNoteId(noteId) || !notes.some((n) => n.id === noteId)) return notes.sort((a, b) => b.updatedAt - a.updatedAt)
   const rest = notes.filter((n) => n.id !== noteId)
@@ -507,11 +538,15 @@ export function readRetainedRunProjects(dataDir: string): Set<string> {
 /** Remember that a removed project's runs are kept, so boot housekeeping does not delete them. */
 export function retainRunProject(dataDir: string, projectId: string): void {
   if (!isSafeId(projectId)) throw new Error('Invalid project id')
-  const ids = readRetainedRunProjects(dataDir)
-  if (ids.has(projectId)) return
-  const list = [...ids, projectId].slice(-RETAINED_RUN_PROJECTS_MAX)
-  mkdirSync(dataDir, { recursive: true })
-  atomicWrite(retainedFile(dataDir), `${JSON.stringify({ version: 1, projectIds: list }, null, 2)}\n`)
+  // Read, add and write back under the data folder's write lock: two orgai sessions removing projects at the same
+  // time must both end up in the list, or housekeeping would delete the runs one of them chose to keep.
+  storeSyncFor(dataDir).locked(() => {
+    const ids = readRetainedRunProjects(dataDir)
+    if (ids.has(projectId)) return
+    const list = [...ids, projectId].slice(-RETAINED_RUN_PROJECTS_MAX)
+    mkdirSync(dataDir, { recursive: true })
+    atomicWrite(retainedFile(dataDir), `${JSON.stringify({ version: 1, projectIds: list }, null, 2)}\n`)
+  })
 }
 
 /** Run project ids housekeeping may delete: not live, not retained. */

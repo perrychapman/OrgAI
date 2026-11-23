@@ -288,6 +288,47 @@ describe('WorktreeIntegrator', () => {
     const { integrator } = setup()
     expect(await integrator.reconcileLeftovers()).toBeNull()
   })
+
+  describe('while another run is live in the project (this process or another orgai session)', () => {
+    const other = 'a run of this project is live in another orgai session'
+
+    it('a run start leaves the branches already in the repository alone: nothing is committed, nothing is announced', async () => {
+      vi.mocked(inspectPending).mockResolvedValue([
+        { agentId: 'x', path: '/repo/.claude/worktrees/agent-x', branch: 'worktree-agent-x', exists: true, commitsAhead: 0, changedFiles: ['a.ts'], uncommittedFiles: 2 }
+      ])
+      const { ctx, integrator, logs } = setup()
+      ctx.otherRunsLive = () => other
+      expect(await integrator.start()).toBeNull()
+      expect(vi.mocked(prepareRepo)).toHaveBeenCalled()
+      expect(vi.mocked(inspectPending)).not.toHaveBeenCalled()
+      expect(vi.mocked(commitLeftovers)).not.toHaveBeenCalled()
+      expect(logs()).toContain(`info: Report branches already in this repository are left alone: ${other}.`)
+      // Once no other run is live they are leftovers again, committed and announced as before.
+      ctx.otherRunsLive = () => null
+      expect(await integrator.reconcileLeftovers()).toContain('worktree-agent-x')
+      expect(vi.mocked(commitLeftovers)).toHaveBeenCalledTimes(1)
+    })
+
+    it('a branch this run did not make is not merged from here; its own branches are, as ever', async () => {
+      integrateTo('merged', 'Merged it.')
+      const { ctx, integrator } = setup()
+      ctx.otherRunsLive = () => other
+      const line = await integrator.integratePending({ path: '/repo/.claude/worktrees/agent-theirs', branch: 'worktree-agent-theirs' })
+      expect(line).toBe(`worktree-agent-theirs: not merged from here (${other}, and this branch may be its work in progress). Merge it once that run has ended.`)
+      expect(vi.mocked(integrateWorktree)).not.toHaveBeenCalled()
+      integrator.track('a1', { ...WT, status: 'conflict', changedFiles: ['a.ts'] })
+      expect(await integrator.integratePending({ path: WT.path, branch: WT.branch })).toBe('worktree-agent-a1: Merged it.')
+    })
+
+    it('a check that throws counts as nobody else being live', async () => {
+      const { ctx, integrator } = setup()
+      ctx.otherRunsLive = () => {
+        throw new Error('index unreadable')
+      }
+      expect(await integrator.reconcileLeftovers()).toBeNull()
+      expect(vi.mocked(inspectPending)).toHaveBeenCalled()
+    })
+  })
 })
 
 describe('nested isolation', () => {

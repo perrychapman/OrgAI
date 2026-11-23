@@ -256,6 +256,28 @@ export interface OwnershipOptions {
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
   /**
+   * Sessions (host/sessions.ts): several orgai processes on one CLI data folder. Only the orgai CLI passes it, and only
+   * with `listen: false`.
+   *
+   * daemon.json still names exactly one live host, so an orgai from before sessions (which knows nothing of them) keeps
+   * seeing the folder as taken and refuses. With this option a starting orgai that finds a live incumbent whose record
+   * says `sessions: true` joins instead of throwing HostAlreadyRunningError: it writes no daemon.json, binds its own
+   * liveness endpoint and returns with `advertised` false. When the advertised host ends while others run, it hands the
+   * record to one of them (`successor`) instead of removing it; after a crash a survivor takes it over (`adopt`).
+   */
+  sessions?: {
+    /**
+     * Called once, while the startup mutex is held and after the incumbent was judged, with this host's liveness
+     * endpoint: register the session (and sweep dead ones). Starting sessions therefore register one at a time, and a
+     * host that finds itself alone knows nobody else registered before it. A throw aborts the acquire.
+     */
+    register(facts: { endpoint: string; livenessProbe: boolean; processStartTime?: string; joined: boolean }): void
+    /** Whether the session with this host instance id is running (its session lock is held). */
+    isLive(hostInstanceId: string): boolean
+    /** At release, while daemon.json still names this host: the record of another running session to hand it to. */
+    successor(): DaemonInfo | undefined
+  }
+  /**
    * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron app, which never listens): neither exists; daemon.json carries `listening: false` and
    * the endpoint the listener will use. An 'inproc' host then binds a liveness-only listener on that endpoint instead
    * (DaemonInfo.livenessProbe); HostOwnership.listening stays false.
@@ -283,6 +305,22 @@ export interface HostOwnership {
   markDraining(): boolean
   /** Give up ownership (synchronous, idempotent; for will-quit and process 'exit'). */
   release(): void
+  /**
+   * Sessions only: false when this host joined a folder another live session advertises (it wrote no daemon.json).
+   * True for every host without `OwnershipOptions.sessions`.
+   */
+  readonly advertised: boolean
+  /**
+   * Sessions only: make daemon.json name this host when it names no running session (the advertised one crashed, or the
+   * record is gone). True when the record names this host afterwards. One non-blocking try at the startup mutex; a
+   * record of a host that is not a session (an older orgai) or that cannot be read is left to a starting host's rules.
+   */
+  adopt(): boolean
+  /**
+   * Run `fn` while holding the startup mutex, when it is free right now (one try, never waits). Returns undefined when
+   * it was busy and `fn` did not run. No session can register while `fn` runs, so a host that is alone stays alone.
+   */
+  tryUnderStartupMutex<T>(fn: () => T): { value: T } | undefined
 }
 
 const STARTUP_DIR = 'startup.mkdir'
@@ -360,7 +398,9 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     ...(kind !== undefined ? { hostKind: kind as HostKind } : {}),
     ...(hostKind === 'node' ? { legacyKind: 'node' as const } : {}),
     ...(appVersion !== undefined ? { appVersion } : {}),
-    ...(cwd !== undefined ? { ownerCwd: cwd } : {})
+    ...(cwd !== undefined ? { ownerCwd: cwd } : {}),
+    // Only the exact value true, and only for an orgai (inproc) host: the desktop app never shares its folder.
+    ...(raw.sessions === true && kind === 'inproc' ? { sessions: true as const } : {})
   }
 }
 
@@ -575,6 +615,9 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
   let probeBound = false
   let published = false
   let secretAclWarning: string | undefined
+  /** Sessions: a live incumbent that shares the folder keeps daemon.json; this host joins it. */
+  let joined = false
+  const joinable = (incumbent: DaemonInfo): boolean => !!opts.sessions && !listenNow && !underMutex && opts.hostKind === 'inproc' && incumbent.hostKind === 'inproc' && incumbent.sessions === true
   try {
     // (3) The incumbent.
     const file = readDaemonFileState(dataDir)
@@ -597,17 +640,22 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       const probeDecides = incumbent.listening === false && incumbent.hostKind === 'inproc' && incumbent.livenessProbe === true
       const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false && !lockProvesGone && !probeDecides
       if (live === 'same' || reachable || unboundButMaybeLive) {
-        removeStartupDir()
-        throw new HostAlreadyRunningError(incumbent, runDir)
+        // A running orgai that shares its folder (sessions) is joined, never robbed and never a refusal. Everything
+        // else that is running (an older orgai, the app) owns the folder alone, as before.
+        if (joinable(incumbent)) joined = true
+        else {
+          removeStartupDir()
+          throw new HostAlreadyRunningError(incumbent, runDir)
+        }
       }
-      if (live === 'unconfirmed') {
+      if (!joined && live === 'unconfirmed') {
         const why =
           incumbent.listening === false && !probeDecides
             ? 'it is an OrgAI app host and this launch holds the single-instance lock'
             : `its ${probeDecides ? 'liveness endpoint' : 'endpoint'} does not answer (${answer})`
         warn(`OrgAI host ownership: daemon.json names pid ${incumbent.pid}, which exists but could not be confirmed as that host, and ${why}; taking over.`)
       }
-      unlinkStaleEndpoint(incumbent.endpoint)
+      if (!joined) unlinkStaleEndpoint(incumbent.endpoint)
     } else if (file.kind === 'unusable') {
       // Never "no incumbent" (review M9): reclaimed only while it still names a pid that is provably gone and an
       // endpoint (if any) that does not answer.
@@ -620,8 +668,8 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       warn(`OrgAI host ownership: replacing an unusable daemon.json (${file.reason}) that names pid ${file.pid}, which is gone.`)
       if (file.endpoint) unlinkStaleEndpoint(file.endpoint)
     }
-    // No live host owns the data dir from here on, and we hold the mutex.
-    await sweepLeftovers()
+    // No live host owns the data dir from here on (or we join one that shares it), and we hold the mutex.
+    if (!joined) await sweepLeftovers()
     fault('after-probe')
     if (underMutex) {
       // withStartupMutex: the caller's work instead of publishing; nothing of ours to undo but the mutex.
@@ -669,6 +717,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       }
     }
 
+    const sharing = !!opts.sessions && !listenNow && opts.hostKind === 'inproc'
     const info: DaemonInfo = {
       hostInstanceId: id,
       pid,
@@ -679,14 +728,19 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       startedAt: now(),
       hostKind: opts.hostKind,
       appVersion: opts.appVersion,
-      ...(opts.ownerCwd ? { ownerCwd: opts.ownerCwd } : {})
+      ...(opts.ownerCwd ? { ownerCwd: opts.ownerCwd } : {}),
+      ...(sharing ? { sessions: true as const } : {})
     }
-    writeAtomic(daemonPath, JSON.stringify(info, null, 2), 0o600, id, () => fault('after-daemon-tmp'))
-    published = true
-    fault('after-daemon-starting')
+    // Sessions: registered under the mutex, before this host is advertised (or instead of it, when it joins).
+    if (sharing) opts.sessions?.register({ endpoint, livenessProbe: probeBound, ...(myStart ? { processStartTime: myStart } : {}), joined })
+    if (!joined) {
+      writeAtomic(daemonPath, JSON.stringify(info, null, 2), 0o600, id, () => fault('after-daemon-tmp'))
+      published = true
+      fault('after-daemon-starting')
+    }
     fault('before-startup-release')
     removeStartupDir()
-    return ownershipHandle(info, server, runtimeDir, secretAclWarning, listenNow)
+    return ownershipHandle(info, server, runtimeDir, secretAclWarning, listenNow, !joined)
   } catch (e) {
     if (e instanceof OwnershipFaultError) {
       const srv = server
@@ -864,6 +918,11 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       }
     }
     if (platform === 'win32') return
+    // Runtime dirs exist only for data folders whose socket path is too long for the run folder. A host of this data
+    // folder whose path fits never made one, so there is nothing of ours to find, and the base (the temp folder, which
+    // can hold many thousands of entries) is not read on every start. A leftover of another, long-path data folder is
+    // swept by that folder's next host.
+    if (Buffer.byteLength(socketPathFor(dataDir, id)) < SOCKET_PATH_MAX) return
     let base: string[] = []
     try {
       base = readdirSync(runtimeBase)
@@ -977,7 +1036,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
     return protectSecretOnWindows(runDir, write, { mode, warn, ...(opts.restrictAcl ? { restrict: opts.restrictAcl } : {}) })
   }
 
-  function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined, serves: boolean): HostOwnership {
+  function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined, serves: boolean, advertised: boolean): HostOwnership {
     let current = info
     let released = false
     /** The bound listener; undefined while the host does not listen (review M11). */
@@ -1005,7 +1064,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
         /* best effort */
       }
     }
-    return {
+    const handle: HostOwnership = {
       get info() {
         return current
       },
@@ -1032,6 +1091,58 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       markDraining() {
         return rewrite('draining')
       },
+      advertised,
+      adopt() {
+        const sessions = opts.sessions
+        if (released || !sessions) return false
+        /** Whether the record leaves nothing to do: it names this host (true), or a host this one must not replace. */
+        const settled = (): boolean | undefined => {
+          const file = readDaemonFileState(dataDir)
+          if (file.kind === 'unusable') return false
+          if (file.kind === 'missing') return undefined
+          if (file.info.hostInstanceId === id) return true
+          // An older orgai or the app (no `sessions`), or a session that is running: theirs.
+          if (file.info.sessions !== true || sessions.isLive(file.info.hostInstanceId)) return false
+          return undefined
+        }
+        try {
+          const before = settled()
+          if (before !== undefined) return before
+          const ran = handle.tryUnderStartupMutex(() => {
+            // Judged again inside the mutex: a starting host may have taken the record meanwhile.
+            const again = settled()
+            if (again !== undefined) return again
+            // The host this record would advertise is the one this handle describes; its state is 'ready' by now.
+            current = { ...current, state: current.state === 'starting' ? 'ready' : current.state }
+            writeAtomic(daemonPath, JSON.stringify(current, null, 2), 0o600, id)
+            return true
+          })
+          return ran?.value ?? false
+        } catch {
+          return false
+        }
+      },
+      tryUnderStartupMutex<T>(fn: () => T): { value: T } | undefined {
+        if (released) return undefined
+        try {
+          mkdirSync(startupDir, { mode: 0o700 })
+        } catch {
+          return undefined
+        }
+        try {
+          // Named like every other holder, so a contender sees a live owner (and a crash here a dead one).
+          const ownerTmp = join(startupDir, `${OWNER_JSON}.tmp`)
+          writeFileSync(ownerTmp, JSON.stringify({ pid, ...(myStart ? { processStartTime: myStart } : {}), hostInstanceId: id, createdAt: now() }), { mode: 0o600 })
+          renameSyncRetry(ownerTmp, join(startupDir, OWNER_JSON))
+          return { value: fn() }
+        } finally {
+          try {
+            rmSync(startupDir, { recursive: true, force: true })
+          } catch {
+            /* best effort: a contender reclaims a mutex whose owner is not holding it for long */
+          }
+        }
+      },
       release() {
         if (released) return
         released = true
@@ -1044,6 +1155,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
         }
       }
     }
+    return handle
 
     function releaseNow(): void {
       // One try at the mutex so a host starting right now does not read a half-removed state; go on regardless.
@@ -1085,10 +1197,24 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       }
       fault('release-after-secret-removed')
       if (ours) {
+        // Sessions: another orgai still runs on this folder. The record goes to it instead of going away, so the
+        // folder never looks free to an older orgai (which would then treat the survivors' runs as crashed).
+        let handed = false
         try {
-          unlinkSync(daemonPath)
+          const next = opts.sessions?.successor()
+          if (next && parseDaemonInfo(next)) {
+            writeAtomic(daemonPath, JSON.stringify(next, null, 2), 0o600, id)
+            handed = true
+          }
         } catch {
-          /* gone */
+          /* fall through: remove it; a survivor adopts the folder on its next check */
+        }
+        if (!handed) {
+          try {
+            unlinkSync(daemonPath)
+          } catch {
+            /* gone */
+          }
         }
       }
       fault('release-after-daemon-unlink')

@@ -39,6 +39,7 @@ import { isSafeId } from '@shared/defaults'
 import type { KnowledgeStoreApi } from '../runtime/types'
 import { hiddenCharIn, hiddenCharProblem } from '../capabilities/sanitize'
 import { atomicWrite, ensurePlainDir, isLink, listNotes, projectDataDir, readPlain } from './projectData'
+import { storeSyncFor } from './shared/storeSync'
 
 /**
  * The engagement knowledge graph store (types.ts "Engagement knowledge graph"): `<data>/projects/<id>/knowledge.json`
@@ -571,6 +572,11 @@ export function userSource(): KnowledgeSource {
  * retired node stays retired (the caller reports it). Caps are checked before anything is written.
  */
 export function upsertNode(dataDir: string, projectId: string, input: KnowledgeNodeUpsertInput, source: KnowledgeSource): KnowledgeNodeWriteResult {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => upsertNodeUnlocked(dataDir, projectId, input, source))
+}
+
+function upsertNodeUnlocked(dataDir: string, projectId: string, input: KnowledgeNodeUpsertInput, source: KnowledgeSource): KnowledgeNodeWriteResult {
   const graph = loadForWrite(dataDir, projectId)
   const kind = checkKey('kind', input.kind)
   const name = checkName('The name', input.name)
@@ -699,6 +705,11 @@ function dedupeFactTexts(texts: string[], existing: string[]): string[] {
  * The whole read-check-modify-write is one synchronous call (loadForWrite to writeGraph), so it is atomic in-process.
  */
 export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<KnowledgeNodeSaveInput, 'projectId'>): KnowledgeNode {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => saveNodeForUserUnlocked(dataDir, projectId, input))
+}
+
+function saveNodeForUserUnlocked(dataDir: string, projectId: string, input: Omit<KnowledgeNodeSaveInput, 'projectId'>): KnowledgeNode {
   const graph = loadForWrite(dataDir, projectId)
   // With nodeId, an omitted kind or name keeps the stored one (an append-only save; cli-spec 3.6 item 3).
   const stored = input.nodeId === undefined ? undefined : nodeById(graph, input.nodeId)
@@ -820,6 +831,11 @@ export function saveNodeForUser(dataDir: string, projectId: string, input: Omit<
 
 /** Remove a node and every edge touching it (unknown id throws). Returns the graph afterwards. */
 export function removeNode(dataDir: string, projectId: string, nodeId: string): KnowledgeGraph {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => removeNodeUnlocked(dataDir, projectId, nodeId))
+}
+
+function removeNodeUnlocked(dataDir: string, projectId: string, nodeId: string): KnowledgeGraph {
   const graph = loadForWrite(dataDir, projectId)
   const node = nodeById(graph, nodeId)
   graph.nodes = graph.nodes.filter((n) => n !== node)
@@ -838,6 +854,11 @@ export function removeNode(dataDir: string, projectId: string, nodeId: string): 
  * agent-written relation leaves the source alone, so an agent can still replace that note (edges carry no updatedBy).
  */
 export function saveEdge(dataDir: string, projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => saveEdgeUnlocked(dataDir, projectId, input, source))
+}
+
+function saveEdgeUnlocked(dataDir: string, projectId: string, input: Omit<KnowledgeEdgeSaveInput, 'projectId'>, source: KnowledgeSource): KnowledgeEdgeWriteResult {
   const graph = loadForWrite(dataDir, projectId)
   const relation = checkKey('relation', input.relation)
   const note = checkOptionalText('The note', input.note, KNOWLEDGE_EDGE_NOTE_MAX_CHARS)
@@ -893,6 +914,11 @@ export function saveEdge(dataDir: string, projectId: string, input: Omit<Knowled
 
 /** Remove one edge (unknown id throws). Returns the graph afterwards. */
 export function removeEdge(dataDir: string, projectId: string, edgeId: string): KnowledgeGraph {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => removeEdgeUnlocked(dataDir, projectId, edgeId))
+}
+
+function removeEdgeUnlocked(dataDir: string, projectId: string, edgeId: string): KnowledgeGraph {
   const graph = loadForWrite(dataDir, projectId)
   const edge = edgeById(graph, edgeId)
   graph.edges = graph.edges.filter((e) => e !== edge)
@@ -902,6 +928,11 @@ export function removeEdge(dataDir: string, projectId: string, edgeId: string): 
 
 /** Delete the graph file (a link is removed, never followed; an unreadable file too: this is the user's start-over). Returns the empty graph. */
 export function clearKnowledge(dataDir: string, projectId: string): KnowledgeGraph {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => clearKnowledgeUnlocked(dataDir, projectId))
+}
+
+function clearKnowledgeUnlocked(dataDir: string, projectId: string): KnowledgeGraph {
   const file = knowledgeFile(dataDir, projectId)
   cache.delete(file)
   recallSnapshots.delete(file)
@@ -971,6 +1002,11 @@ export function readRecallView(dataDir: string, projectId: string): { rankOn: Kn
  * a no-op with no write. Returns the inferred result afterwards. An id whose link is gone stays harmless.
  */
 export function dismissKnowledgeLink(dataDir: string, projectId: string, linkId: unknown): KnowledgeInferredResult {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => dismissKnowledgeLinkUnlocked(dataDir, projectId, linkId))
+}
+
+function dismissKnowledgeLinkUnlocked(dataDir: string, projectId: string, linkId: unknown): KnowledgeInferredResult {
   if (typeof linkId !== 'string' || !KNOWLEDGE_LINK_ID_RE.test(linkId)) throw new Error('That is not a connection id.')
   const graph = loadForWrite(dataDir, projectId)
   const list = graph.dismissedLinks ?? []
@@ -985,6 +1021,11 @@ export function dismissKnowledgeLink(dataDir: string, projectId: string, linkId:
  * for an agent caller ("Only the user can change that."); an already retired item is reported without a write.
  */
 export function retireItem(dataDir: string, projectId: string, input: KnowledgeRetireInput, source: KnowledgeSource): KnowledgeRetireResult {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => retireItemUnlocked(dataDir, projectId, input, source))
+}
+
+function retireItemUnlocked(dataDir: string, projectId: string, input: KnowledgeRetireInput, source: KnowledgeSource): KnowledgeRetireResult {
   const given = (['nodeId', 'edgeId', 'factId'] as const).filter((k) => input[k] !== undefined)
   if (given.length !== 1) throw new Error('Name exactly one of nodeId, edgeId or factId.')
   const graph = loadForWrite(dataDir, projectId)

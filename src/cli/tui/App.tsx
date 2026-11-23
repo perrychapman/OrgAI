@@ -27,7 +27,9 @@ import { isTrayFocusKey, PASTE_MAX_CHARS } from './input/keys'
 import { computeLayout } from './layout'
 import { InspectorPane } from './InspectorPane'
 import { CONFIG_HINT } from './configApi'
+import { McpView } from './McpView'
 import { SettingsView } from './SettingsView'
+import { SkillsView } from './SkillsView'
 import { TeamView } from './TeamView'
 import { editTextIn } from '../commands/teamRoleEdit'
 import { paneHint, statusHint, whichKeyLines, type RowKind } from './keymap'
@@ -40,6 +42,7 @@ import { agentLabel } from '../render'
 import { PaneLines, cutSegs, styleFor } from './panes/lines'
 import { runPickLines, runPickRows, type RunPickRow } from './runPick'
 import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, inspectRef, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
+import { takesSavedTeam } from './liveChangeText'
 import { usageText } from './usageText'
 import { NO_PROJECT_STAGE, SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
@@ -128,7 +131,7 @@ type Overlay =
   /** A short list (/model): Enter picks, Esc dismisses (undefined). */
   | { kind: 'pick'; title: string; options: readonly { value: string; label: string }[]; sel: number; resolve(value: string | undefined): void }
   /** /team or /settings (cli-parity 3.7): the view takes the body and its own keys; Esc backs out to the run view. */
-  | { kind: 'config'; view: 'team' | 'settings' }
+  | { kind: 'config'; view: 'team' | 'settings' | 'mcp' | 'skills' }
 
 const isOpen = (status: RunStatus | undefined): boolean => status !== undefined && isOpenStatus(status)
 const isWorking = (status: RunStatus | undefined): boolean => status === 'starting' || status === 'running'
@@ -150,7 +153,7 @@ export const ESC_AGAIN = 'Press Esc again to interrupt the run.'
 export const NOTHING_RUNNING = 'Nothing is running.'
 export const READ_ONLY_ESC = 'This session is read-only: there is nothing to interrupt.'
 export const PANES_NEED_FULLSCREEN = 'Panes need a full-screen terminal 70 columns wide; /agent <name> shows an agent.'
-export const PAGER_HINT = 'Set $PAGER (for example PAGER=less) to page long text.'
+export const PAGER_HINT = 'Set $PAGER (for example PAGER=less) to view a diff with colour and search.'
 
 /** The composer's placeholder: in send / continue modes it names the followed run (issue #29 M3). */
 export function placeholderFor(mode: ComposerMode, s: TuiState, width: number, env?: TuiEnv): string {
@@ -452,16 +455,21 @@ export function App(props: AppProps) {
     if (was !== undefined && state.activeRunId !== was) dismissNotices()
   }, [state.activeRunId, dismissNotices])
 
-  // Selector results memoized on the state slices they read, so a streaming delta that touches none of them (or only
-  // `partials`) does not recompute the tray, transcript, plan or worktrees on every render.
-  const { runs: stateRuns, activeChain: stateChain, activeRunId: stateActiveRun, project: stateProject } = state
+  // Selector results memoized on the state slices they read, so a streaming delta that touches none of them (a delta
+  // only replaces `state.partials`, never `state.runs`) does not recompute the tray, transcript, plan or worktrees on every render.
+  const { runs: stateRuns, activeChain: stateChain, activeRunId: stateActiveRun, project: stateProject, partials: statePartials } = state
   const cards = useMemo(() => trayCards(state), [stateRuns, stateChain, stateProject]) // eslint-disable-line react-hooks/exhaustive-deps
   // When the last decision went away (answered, expired or resolved elsewhere): a Shift+Tab right after it was probably
   // meant for that decision and is ignored on the composer (SHIFT_TAB_AFTER_CARDS_MS). A ref write, no re-render.
   if (prevCardCount.current > 0 && cards.length === 0) cardsEmptiedAt.current = now()
   prevCardCount.current = cards.length
   const top = topCard(state)
-  const summary = { ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }
+  // Everything statusSummary reads, so a streamed delta (which changes none of it) keeps the same object and the memoized status bar skips.
+  const { connection: stateConnection, planUsage: statePlanUsage, runOrder: stateRunOrder, hostKind: stateHostKind, readOnlyReason: stateReadOnly, othersHere: stateOthersHere } = state
+  const summary = useMemo(
+    () => ({ ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }),
+    [stateRuns, stateChain, stateActiveRun, stateProject, stateConnection, statePlanUsage, stateRunOrder, stateHostKind, stateReadOnly, stateOthersHere, launch.title] // eslint-disable-line react-hooks/exhaustive-deps
+  )
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
   const inline = env.bufferMode === 'inline'
   const readOnly = state.readOnlyReason !== undefined
@@ -769,23 +777,27 @@ export function App(props: AppProps) {
   // ---------- Text views ----------
 
   const openText = useCallback(
-    async (title: string, text: string): Promise<void> => {
+    async (title: string, text: string, opts?: { pager?: boolean }): Promise<void> => {
+      // Text opens in the app's own view: q or Esc closes it and the keys scroll. Only a diff is handed to the system
+      // pager (colour and search), where Esc does nothing and the user has to know q.
       let shown: 'shown' | 'no-pager' = 'no-pager'
-      try {
-        shown = await showInPager(text, {
-          env: processEnv,
-          // The pager shares our process group: hold Ctrl+C / Ctrl+Z handling while it owns the terminal.
-          suspend: () => (terminal.suspendForChild ? terminal.suspendForChild() : terminal.suspend()),
-          resume: () => (terminal.resumeFromChild ? terminal.resumeFromChild() : terminal.resume())
-        })
-      } catch (e) {
-        notify(`Could not open the pager: ${errText(e)}`, 'warn')
+      if (opts?.pager) {
+        try {
+          shown = await showInPager(text, {
+            env: processEnv,
+            // The pager shares our process group: hold Ctrl+C / Ctrl+Z handling while it owns the terminal.
+            suspend: () => (terminal.suspendForChild ? terminal.suspendForChild() : terminal.suspend()),
+            resume: () => (terminal.resumeFromChild ? terminal.resumeFromChild() : terminal.resume())
+          })
+        } catch (e) {
+          notify(`Could not open the pager: ${errText(e)}`, 'warn')
+        }
       }
       if (shown === 'no-pager') {
         // The overlay has its own title row: a text that opens with the same title and a blank line (a card's full view) does not repeat it (R2-L3).
         const lead = `${title}\n\n`
         const body = text.startsWith(lead) ? text.slice(lead.length) : text
-        setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(body).split('\n'), '', PAGER_HINT], offset: 0 })
+        setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(body).split('\n'), ...(opts?.pager ? ['', PAGER_HINT] : [])], offset: 0 })
       }
     },
     [processEnv, terminal, notify]
@@ -1020,7 +1032,7 @@ export function App(props: AppProps) {
     }
     session
       .worktreeDiff(branch)
-      .then((d) => openText(`Changes on ${sanitizeTty(branch)}`, `${d.stat}\n\n${d.patch}`))
+      .then((d) => openText(`Changes on ${sanitizeTty(branch)}`, `${d.stat}\n\n${d.patch}`, { pager: true }))
       .catch((err: unknown) => notify(`Could not read the diff: ${errText(err)}`, 'danger'))
   }
   const openKeys = (scope: 'composer' | 'tray'): void => {
@@ -1171,10 +1183,10 @@ export function App(props: AppProps) {
     openConfig: (view) => {
       const st = session.getState()
       if (!st.project) {
-        notify('Open a project folder first: /team and /settings show a project.', 'warn')
+        notify('Open a project folder first: /team, /settings, /mcp and /skills show a project.', 'warn')
         return
       }
-      if (!session.config) {
+      if (view === 'mcp' || view === 'skills' ? !session.tools : !session.config) {
         notify(`/${view} is not available here.`, 'warn')
         return
       }
@@ -1488,7 +1500,7 @@ export function App(props: AppProps) {
     () => ({ ...rawTranscript, rows: zoomIds ? rawTranscript.rows : withTeamMilestones(state, rawTranscript.rows) }),
     [rawTranscript, zoomIds, stateRuns, stateActiveRun] // eslint-disable-line react-hooks/exhaustive-deps
   )
-  const mainPartials = useMemo(() => partialRows(state, zoomFilter), [stateRuns, stateActiveRun, stateProject, zoomFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  const mainPartials = useMemo(() => partialRows(state, zoomFilter), [stateRuns, statePartials, stateActiveRun, stateProject, zoomFilter]) // eslint-disable-line react-hooks/exhaustive-deps
   // The footer shows the focused card (the inspector's `d` and Enter on a waiting row move it), so that is the one printed.
   const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols, state.activeChain[0] ?? state.activeRunId)
   const latestNotice = state.notices.at(-1)
@@ -1599,7 +1611,7 @@ export function App(props: AppProps) {
             onViewDiff={(row) => {
               session
                 .worktreeDiff(row.branch)
-                .then((d) => openText(`Changes on ${row.branch}`, `${d.stat}\n\n${d.patch}`))
+                .then((d) => openText(`Changes on ${row.branch}`, `${d.stat}\n\n${d.patch}`, { pager: true }))
                 .catch((err: unknown) => notify(`Could not read the diff: ${errText(err)}`, 'danger'))
             }}
           />
@@ -1713,10 +1725,39 @@ export function App(props: AppProps) {
   const status = <StatusBar compact={!inline} width={size.cols} summary={summary} {...(notice ? { notice } : {})} hints={inline || size.rows < 10 ? hints : footerHints} now={now} />
 
   const configHeight = inline ? Math.max(8, size.rows - 5) : Math.max(3, bodyRows)
-  const liveRun = Object.values(state.runs).some((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
+  const openRuns = Object.values(state.runs).filter((r) => isOpen(r.summary.status) && (!state.project || r.summary.projectId === state.project.id))
+  const liveRun = openRuns.length > 0
+  // /team, /mcp, /skills: a team run this terminal hosts answers a save in the status line (run.liveChange); only the others keep what they started with.
+  const liveRunKeepsTeam = openRuns.some((r) => !takesSavedTeam(r.summary))
   const overlayNode = overlay ? (
     overlay.kind === 'config' ? (
-      state.project && session.config ? (
+      state.project && session.tools && (overlay.view === 'mcp' || overlay.view === 'skills') ? (
+        overlay.view === 'mcp' ? (
+          <McpView
+            key="mcp"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.tools}
+            liveRun={liveRunKeepsTeam}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        ) : (
+          <SkillsView
+            key="skills"
+            width={size.cols}
+            height={configHeight}
+            env={env}
+            projectId={state.project.id}
+            api={session.tools}
+            liveRun={liveRunKeepsTeam}
+            {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
+            onClose={() => setOverlay(undefined)}
+          />
+        )
+      ) : state.project && session.config && (overlay.view === 'team' || overlay.view === 'settings') ? (
         overlay.view === 'team' ? (
           <TeamView
             key="team"
@@ -1725,7 +1766,7 @@ export function App(props: AppProps) {
             env={env}
             projectId={state.project.id}
             api={session.config}
-            liveRun={liveRun}
+            liveRun={liveRunKeepsTeam}
             {...(state.readOnlyReason ? { readOnly: state.readOnlyReason } : {})}
             {...(editText ? { editText } : {})}
             onClose={() => setOverlay(undefined)}

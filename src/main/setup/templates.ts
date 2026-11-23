@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { storeSyncFor } from '../store/shared/storeSync'
 import { join } from 'node:path'
 import {
   ORG_TEMPLATES_MAX,
@@ -235,8 +236,20 @@ export class TemplateService {
     return this.saveFromKit({ name: `${base}${suffix}`, description: found.info.description, kind: found.info.kind, orgText: found.orgText })
   }
 
+  /**
+   * The index is read, changed and written back by each save and remove: on a data folder several orgai sessions share
+   * that whole step runs under the folder's write lock, so two of them never drop each other's template.
+   */
+  private locked<T>(fn: () => T): T {
+    return storeSyncFor(this.deps.dataDir).locked(fn)
+  }
+
   /** Save a stored project's chart as a new template. Refuses at ORG_TEMPLATES_MAX and for an empty chart. */
   saveFromProject(input: OrgTemplateSaveInput): OrgTemplateInfo {
+    return this.locked(() => this.saveFromProjectNow(input))
+  }
+
+  private saveFromProjectNow(input: OrgTemplateSaveInput): OrgTemplateInfo {
     const name = cleanTemplateName(input?.name)
     const description = cleanTemplateDescription(input?.description)
     const project = this.stored(input?.projectId)
@@ -283,6 +296,10 @@ export class TemplateService {
    * characters, size). With `replaceId` the template keeps its id and creation time. Refuses at ORG_TEMPLATES_MAX.
    */
   saveFromKit(input: { name: string; description: string; kind: ProjectKind; orgText: string }, replaceId?: string): OrgTemplateInfo {
+    return this.locked(() => this.saveFromKitNow(input, replaceId))
+  }
+
+  private saveFromKitNow(input: { name: string; description: string; kind: ProjectKind; orgText: string }, replaceId?: string): OrgTemplateInfo {
     const name = cleanTemplateName(input.name)
     const description = cleanTemplateDescription(input.description)
     if (!isProjectKind(input.kind)) throw new Error('The template has an unknown kind.')
@@ -338,6 +355,10 @@ export class TemplateService {
   /** Delete a template; resolves to the remaining list. An unknown id throws "Template not found". */
   remove(templateId: string): OrgTemplateInfo[] {
     if (isBuiltinTemplateId(templateId)) throw new Error('This is one of the starting teams that come with OrgAI, so it cannot be removed. Duplicate it to make a copy you can change.')
+    return this.locked(() => this.removeNow(templateId))
+  }
+
+  private removeNow(templateId: string): OrgTemplateInfo[] {
     const templates = this.readIndex()
     if (!isSafeId(templateId) || !templates.some((t) => t.id === templateId)) throw new Error('Template not found')
     this.writeIndex(templates.filter((t) => t.id !== templateId))

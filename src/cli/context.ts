@@ -9,6 +9,7 @@ import { DESKTOP_DATA_DIR_NOTE, ignoresDesktopDataDir, platformUserDataDir, reso
 import { readOnlySnapshot } from './client/readOnlyStore'
 import { resolveProject } from './client/resolveProject'
 import type { SecretOverlay } from './secretOverlay'
+import { enableCliCompileCache } from './compileCache'
 import { CliError, EXIT, type CliContext, type CliGlobals, type CliIo, type InprocHostHandle, type InprocStartOptions } from './types'
 import { CLI_VERSION } from './version'
 
@@ -25,6 +26,8 @@ export interface BuildContextInput {
   pid?: number
   /** The home folder (default os.homedir()); tests. */
   home?: string
+  /** What this process runs, for the other orgai sessions' status and refusals ('tui', 'exec', 'projects'). */
+  command?: string
 }
 
 /** Printed once, the first time orgai opens a new data folder (cli-standalone-default.md 4.4). Never reads the app's folder. */
@@ -92,8 +95,10 @@ export function buildContext(input: BuildContextInput): CliContext {
   const pid = input.pid ?? process.pid
   // The started in-process host's owner key (memory only): connect() proves ownership of that host with it.
   let owner: { key: string; hostInstanceId: string; handle: InprocHostHandle } | undefined
-  const startInproc = reusableInproc((opts) =>
-    import('./inprocHost').then((m) =>
+  const startInproc = reusableInproc((opts) => {
+    // Before the host chunk loads: its compiled code is reused from <dataDir>/run/compile-cache when the file is unchanged.
+    enableCliCompileCache(paths.dataDir, { env })
+    return import('./inprocHost').then((m) =>
       m.startInprocHost({
         userDataDir: paths.userDataDir,
         dataDir: paths.dataDir,
@@ -101,6 +106,8 @@ export function buildContext(input: BuildContextInput): CliContext {
         mock: env.ORGAI_MOCK === '1',
         overlay: input.overlay ?? new Map(),
         ...(opts.background ? { background: opts.background } : {}),
+        ...(opts.tempSweep === false ? { tempSweep: false } : {}),
+        ...(input.command ? { command: input.command } : {}),
         cwd,
         ...(quietContexts.has(ctx) ? { quiet: true } : {})
       })
@@ -108,7 +115,7 @@ export function buildContext(input: BuildContextInput): CliContext {
       if (h.ownerKey && h.hostInstanceId) owner = { key: h.ownerKey, hostInstanceId: h.hostInstanceId, handle: h }
       return h
     })
-  )
+  })
   const ctx: CliContext = {
     globals,
     paths,

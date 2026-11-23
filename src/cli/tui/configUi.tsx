@@ -21,9 +21,9 @@ export interface PickOption {
 export type Dialog =
   | { kind: 'pick'; title: string; options: PickOption[]; sel: number; onPick(value: string): void }
   | { kind: 'checks'; title: string; options: PickOption[]; checked: string[]; sel: number; onDone(values: string[]): void }
-  | { kind: 'input'; title: string; text: string; hint: string; onSubmit(text: string): void }
+  | { kind: 'input'; title: string; text: string; hint: string; /** The text is a secret: shown as dots, never as typed. */ secret?: boolean; onSubmit(text: string): void }
   /** `lines` are read before `y`; n or Esc cancels. */
-  | { kind: 'confirm'; title: string; lines: string[]; onYes(): void }
+  | { kind: 'confirm'; title: string; lines: string[]; onYes(): void; /** Any key but y cancels (a widening save), not only n / Esc. */ strict?: boolean }
 
 /** A message shown in place above the footer. */
 export interface Message {
@@ -88,15 +88,19 @@ export function dialogKey(d: Dialog, e: InputEvent, page: number): { next: Dialo
       return { next: d }
     }
     case 'input': {
+      // A secret is usually a long token, and pasted: it gets a longer limit than a typed setting.
+      const max = d.secret ? 4000 : 400
       if (keyIs(e, 'enter')) return { next: undefined, then: () => d.onSubmit(d.text) }
       if (keyIs(e, 'backspace') || keyIs(e, 'delete')) return { next: { ...d, text: Array.from(d.text).slice(0, -1).join('') } }
-      if (e.type === 'paste') return { next: { ...d, text: (d.text + e.text.replace(/[\r\n]+/g, ' ')).slice(0, 400) } }
-      if (ch !== undefined && ch >= ' ') return { next: { ...d, text: (d.text + ch).slice(0, 400) } }
+      // A pasted secret often ends with a line break: it is dropped, not turned into a space that would be saved with it.
+      if (e.type === 'paste') return { next: { ...d, text: (d.text + e.text.replace(/[\r\n]+/g, d.secret ? '' : ' ')).slice(0, max) } }
+      if (ch !== undefined && ch >= ' ') return { next: { ...d, text: (d.text + ch).slice(0, max) } }
       return { next: d }
     }
     case 'confirm': {
       if (ch === 'y' || ch === 'Y') return { next: undefined, then: d.onYes }
       if (ch === 'n' || ch === 'N') return { next: undefined }
+      if (d.strict && e.type === 'key') return { next: undefined }
       return { next: d }
     }
   }
@@ -112,7 +116,7 @@ export function dialogKeys(d: Dialog): string[] {
     case 'input':
       return ['type the value', 'Enter saves', 'Esc back']
     case 'confirm':
-      return ['y confirms', 'n or Esc cancels']
+      return d.strict ? ['y saves', 'any other key cancels'] : ['y confirms', 'n or Esc cancels']
   }
 }
 
@@ -136,6 +140,24 @@ function optionLine(key: string, o: PickOption, selected: boolean, width: number
   return { key, segs }
 }
 
+/** Whether a confirm's lines show whole (title row included) in `rows` rows of `width` columns: the dialog does not scroll. */
+export function confirmFits(lines: readonly string[], width: number, rows: number): boolean {
+  let n = 1
+  for (const raw of lines) n += raw === '' ? 1 : wrapText(sanitizeTty(raw), width).length
+  return n <= rows
+}
+
+/**
+ * Whether `d` is a strict confirmation that the window as it is NOW would cut (the terminal was resized after it
+ * opened): `dialogLines` slices to the body rows, so the rest of what `y` would save could not be seen. The views close
+ * such a dialog and refuse instead of accepting `y`. Same size rule as the render (`contentSize` with the dialog's keys).
+ */
+export function strictConfirmCut(d: Dialog, width: number, height: number, env: TuiEnv, message?: Message): boolean {
+  if (d.kind !== 'confirm' || !d.strict) return false
+  const { width: cw, bodyRows } = contentSize(width, height, env, dialogKeys(d), message)
+  return !confirmFits(d.lines, cw, bodyRows)
+}
+
 /** The body lines of an open dialog within `width` x `height` (title first). */
 export function dialogLines(d: Dialog, width: number, height: number, env: TuiEnv): PaneLine[] {
   const ell = glyphs(env).ellipsis
@@ -153,8 +175,11 @@ export function dialogLines(d: Dialog, width: number, height: number, env: TuiEn
       break
     }
     case 'input': {
-      const cursor = asciiOnly(env) ? '_' : '▏'
-      const shown = d.text.length > width - 4 ? `${ell}${d.text.slice(-(width - 4 - ell.length))}` : d.text
+      const ascii = asciiOnly(env)
+      const cursor = ascii ? '_' : '▏'
+      // A secret is never shown: one dot per character typed (the same length, so backspacing reads right).
+      const raw = d.secret ? (ascii ? '*' : '•').repeat(Array.from(d.text).length) : d.text
+      const shown = raw.length > width - 4 ? `${ell}${raw.slice(-(width - 4 - ell.length))}` : raw
       out.push({ key: 'in', segs: [{ text: '> ', tone: 'accent' }, { text: shown }, { text: cursor, tone: 'accent' }] })
       if (d.hint) for (const [i, l] of wrapText(clean(d.hint, 400), width).entries()) out.push({ key: `h${i}`, segs: [{ text: l, dim: true }] })
       break

@@ -1,7 +1,14 @@
 /**
  * The orgai host (cli-standalone-default.md 4.1): a pure-Node OrgAI host inside the CLI process, the only host there is.
- * Ownership is taken with `wait: 'none'`, so another orgai on the data folder is refused at once with exit 6 (its pid and
- * cwd come from daemon.json). By default the host listens on nothing (`listen: false`: no Unix socket or named pipe, no
+ *
+ * Sessions (docs/design/cli-sessions.md): any number of orgai processes share one data folder. Each is a session
+ * (main/host/sessions.ts): it registers under the startup mutex, routes every shared file through the data folder's
+ * write lock (main/store/shared/storeSync.ts), hosts its own runs and holds the projects it works in. A second orgai is
+ * therefore not refused; what is refused (exit 6, naming the other session's folder and pid) is a second session on
+ * the same project, and changing a run another session hosts. An orgai from before sessions, or one started with
+ * `listen: true`, still owns the folder alone and is refused, or refuses, as before (ownedMessage.ts).
+ *
+ * By default the host listens on nothing (`listen: false`: no Unix socket or named pipe, no
  * daemon.secret, no icacls, and no lsof / ps peer check): this process's own commands and the terminal UI reach it
  * through `connectLocal`, an in-memory stream pair served by the same HostSocketServer code (surface 'inproc'), which
  * keeps the JSON codec, frame caps, run subscriptions and journal of the socket path. With `listen: true` it also binds
@@ -20,6 +27,9 @@ import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, acquireHostOwnership, runDirHint, runDirOf, type HostOwnership } from '../main/host/ownership'
+import { isSessionLive, registerSession, sweepDeadSessions, type SessionHandle, type SessionRecord } from '../main/host/sessions'
+import { sweepStaleSkillDirsAsync } from '../main/runtime/claudeSkills'
+import { createSharedStoreSync, enableStoreSync } from '../main/store/shared/storeSync'
 import { LineReader, newNonce } from '../main/host/protocol'
 import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
@@ -33,7 +43,7 @@ import { openUrl } from './openUrl'
 import { unavailableCustodianFactory } from '../main/store/unavailableCustodian'
 import { DEFAULT_CALL_TIMEOUT_MS, SocketHostClient } from './client/hostClient'
 import { CliError, EXIT, type ConnectResult, type InprocHostHandle } from './types'
-import { RPC_BULK_FRAME_MAX_BYTES, type HostClientKind, type HostScope } from '../shared/types'
+import { RPC_BULK_FRAME_MAX_BYTES, type DaemonInfo, type HostClientKind, type HostScope } from '../shared/types'
 import { CLI_VERSION } from './version'
 
 export interface StartInprocHostOptions {
@@ -61,6 +71,17 @@ export interface StartInprocHostOptions {
   listen?: boolean
   /** This process's cwd, written to daemon.json as `ownerCwd` for the refusal other terminals print. Default process.cwd(). */
   cwd?: string
+  /** What this process is, in a word or two, for the other sessions' status and refusals ('tui', 'exec', 'projects set'). Default 'orgai'. */
+  command?: string
+  /**
+   * Sweep stale run skill folders out of the temp folder after the start, when this is the only session (a folder read
+   * off the start path; a management command's short host skips it). Default true.
+   */
+  tempSweep?: boolean
+  /** How often a session checks that daemon.json still names a running one, and takes it over if not (ms). Default 2000; 0 = never. */
+  adoptEveryMs?: number
+  /** This host's instance id. Default: the process's own (currentHostInstanceId). Tests that put two hosts in one process give each its own. */
+  hostInstanceId?: string
   /**
    * The terminal UI owns the screen: console output goes to main.log only, never to the terminal (installLogging's
    * console mirror writes to stderr too). Default false.
@@ -136,6 +157,29 @@ export interface InprocHost extends InprocHostHandle {
   readonly host: OrgAIHost
   readonly server: HostSocketServer
   readonly ownership: HostOwnership
+  /** This process's session; undefined with `listen: true` (the folder is then owned alone). */
+  readonly session?: SessionHandle
+}
+
+/** How long a starting orgai waits for another one that is starting at the same moment (it holds the startup mutex for a moment). */
+export const SESSION_START_WAIT_MS = 15_000
+
+/** daemon.json for a session that takes over advertising the folder (ownership.ts `successor` and `adopt`). */
+export function daemonInfoOfSession(s: SessionRecord, endpointFallback: string): DaemonInfo {
+  return {
+    hostInstanceId: s.hostInstanceId,
+    pid: s.pid,
+    ...(s.processStartTime ? { processStartTime: s.processStartTime } : {}),
+    endpoint: s.endpoint || endpointFallback,
+    listening: false,
+    ...(s.endpoint && s.livenessProbe ? { livenessProbe: true as const } : {}),
+    state: 'ready',
+    startedAt: s.startedAt,
+    hostKind: 'inproc',
+    appVersion: s.appVersion,
+    ...(s.cwd ? { ownerCwd: s.cwd } : {}),
+    sessions: true
+  }
 }
 
 /** No safeStorage outside Electron: nothing can be encrypted, and stored values cannot be decrypted. */
@@ -213,7 +257,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   }
   const { userDataDir, dataDir } = opts
   const logsDir = join(userDataDir, 'logs')
-  const hostInstanceId = currentHostInstanceId()
+  const hostInstanceId = opts.hostInstanceId ?? currentHostInstanceId()
   const hostKind = 'inproc' as const
   // In memory only (never daemon.json, daemon.secret or a log): this process's proof that it started the host, so its
   // own commands get every scope; any other client of the socket is refused as not_owner (spec 4.1).
@@ -236,21 +280,55 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   // <tmpdir>/orgai-logs), and the console may be the terminal UI's screen. They go to main.log once it is open, or to
   // stderr when ownership is refused.
   const heldWarnings: string[] = []
+  // Sessions: every orgai that does not serve a socket shares the folder. A socket (`listen: true`, tests of the raw
+  // protocol) needs daemon.secret, which is one file for the folder, so that host owns the folder alone as before.
+  const sharing = opts.listen !== true
+  const cwd = opts.cwd ?? process.cwd()
+  let session: SessionHandle | undefined
   try {
-    // wait: 'none' (spec 4.2): another orgai, starting or running, is refused at once; a provably stale record is reclaimed.
     ownership = await acquireHostOwnership({
       dataDir,
       hostKind,
       appVersion: CLI_VERSION,
       hostInstanceId,
-      wait: 'none',
+      // Alone on the folder (listen: true): another orgai, starting or running, is refused at once (spec 4.2). Sharing
+      // it: an orgai that is starting right now holds the startup mutex for a moment, and this one waits its turn.
+      ...(sharing ? { wait: 'wait' as const, liveWaitMs: SESSION_START_WAIT_MS, retryMs: 25 } : { wait: 'none' as const }),
       listen: opts.listen === true,
       warn: (m) => void heldWarnings.push(m),
-      ownerCwd: opts.cwd ?? process.cwd(),
-      onConnection: (s) => server.accept(s)
+      ownerCwd: cwd,
+      onConnection: (s) => server.accept(s),
+      ...(sharing
+        ? {
+            sessions: {
+              // Under the startup mutex: what dead sessions left goes first, then this one registers.
+              register: (facts) => {
+                sweepDeadSessions(dataDir)
+                session = registerSession(dataDir, {
+                  hostInstanceId,
+                  pid: process.pid,
+                  ...(facts.processStartTime ? { processStartTime: facts.processStartTime } : {}),
+                  startedAt: Date.now(),
+                  appVersion: CLI_VERSION,
+                  cwd,
+                  command: opts.command ?? 'orgai',
+                  endpoint: facts.endpoint,
+                  ...(facts.livenessProbe ? { livenessProbe: true } : {})
+                })
+              },
+              isLive: (id) => id === hostInstanceId || isSessionLive(dataDir, id),
+              // The oldest other session takes over advertising the folder when this one leaves.
+              successor: () => {
+                const next = session?.others()[0]
+                return next ? daemonInfoOfSession(next, ownershipRef?.endpoint ?? '') : undefined
+              }
+            }
+          }
+        : {})
     })
     ownershipRef = ownership
   } catch (e) {
+    ;(session as SessionHandle | undefined)?.release()
     server.close()
     for (const m of heldWarnings) process.stderr.write(`${m}\n`)
     // Each "owned" refusal names the way out when nothing is really running: delete the run folder (review M2 on PR 49).
@@ -261,6 +339,24 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable') throw new CliError(`${ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {})} ${runDirHint(runDir)}`, EXIT.hostBusy)
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
     throw e
+  }
+  // From here on every store of this data folder reads and writes through the session's sync (set before any is built).
+  const held = session as SessionHandle | undefined
+  const sync = held ? createSharedStoreSync(held) : undefined
+  const disableSync = sync ? enableStoreSync(dataDir, sync) : undefined
+  // After a crash of the session daemon.json names, a survivor takes the record over, so the folder never looks free
+  // to an orgai from before sessions for longer than this check's period.
+  const adoptEveryMs = opts.adoptEveryMs ?? 2000
+  const adoptTimer = held && adoptEveryMs > 0 ? setInterval(() => void ownership.adopt(), adoptEveryMs) : undefined
+  adoptTimer?.unref()
+  // A session that joined while the advertised one was leaving may find no record at all (that one saw nobody to hand
+  // it to): take it now rather than at the first tick. A no-op when the record names a running session.
+  if (held && !ownership.advertised) ownership.adopt()
+  const endSession = (): void => {
+    if (adoptTimer) clearInterval(adoptTimer)
+    disableSync?.()
+    sync?.close()
+    held?.release()
   }
   // Logging only once ownership is held: a refused second orgai must not create logs/ or rotate main.log under the owner
   // (it reports on stderr only; spec 4.2).
@@ -287,6 +383,7 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   const onExit = (): void => {
     stopCerts()
     ownership.release()
+    endSession()
   }
   process.on('exit', onExit)
 
@@ -308,6 +405,8 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     } catch {
       // release is best effort here; the shutdown already released.
     }
+    // After the release (which hands daemon.json to another session while this one is still listed among them).
+    endSession()
     process.off('exit', onExit)
     resolveClosed()
   }
@@ -345,8 +444,23 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
       // At the hard limit the process ends (its exit hook releases), never a release with writers still alive.
       exitAtHardLimit: opts.exitAtHardLimit ?? (() => inprocHardLimitExit()),
       ...(opts.shutdownLimits ? { shutdownLimits: opts.shutdownLimits } : {}),
+      // Sharing the folder: housekeeping deletes what no run in the index points to, so it runs below, and only alone.
+      ...(held ? { deferHousekeeping: true } : {}),
       onDrained: cleanup
     })
+    if (held) {
+      // The only session: clean up what earlier ones left, inside the startup mutex so that nobody can join meanwhile
+      // (a session registers inside it). With others running, or the mutex busy, this start skips it; the next lone one does it.
+      const booted = host
+      const alone = ownership.tryUnderStartupMutex(() => {
+        if (held.others().length > 0) return false
+        booted.housekeep()
+        return true
+      })
+      // Stale run skill folders in the temp folder: read off the start path. Folders are judged by age, so a session
+      // that starts meanwhile loses nothing.
+      if (alone?.value === true && opts.tempSweep !== false) void sweepStaleSkillDirsAsync().catch(() => undefined)
+    }
   } catch (e) {
     cleanup()
     throw e
@@ -383,6 +497,13 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     host: booted,
     server,
     ownership,
+    ...(held ? { session: held } : {}),
+    // The project a command works in, opened up front: it learns at once who else is in it.
+    openProject: (projectId: string): { ok: true; others: SessionRecord[] } | { ok: false } => {
+      if (!held) return { ok: true, others: [] }
+      return held.openProject(projectId).ok ? { ok: true, others: held.othersIn(projectId) } : { ok: false }
+    },
+    otherSessions: (): SessionRecord[] => (held ? held.others() : []),
     closed,
     ownerKey,
     hostInstanceId,

@@ -155,7 +155,8 @@ import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager, StartUserChoice } from '../runtime/runManager'
 import type { HostItemChange, HostProjectChange } from '../runtime/hostChange'
-import { upsertFieldsOf } from '../runtime/hostChange'
+import { terminalUpsertField, upsertFieldsOf } from '../runtime/hostChange'
+import { lockedForProcess } from '../store/shared/storeSync'
 import type { EvolveService } from '../evolve/service'
 import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import { overridesWidening } from '../runtime/runOverrides'
@@ -265,7 +266,8 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'auth_failed',
   'protocol_mismatch',
   'too_many_connections',
-  'too_many_requests'
+  'too_many_requests',
+  'session_busy'
 ])
 
 /** Used when no env is given (unit tests that only exercise other channels): app:info reports placeholders. */
@@ -352,7 +354,11 @@ export class HostDispatcher {
     const leased = mutation && !COMMIT_LEASED_CHANNELS.has(g.channel)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
     let writing = false
+    // What the session guard holds for the length of this request (a project held alone while it is removed or moved).
+    let guardDone: (() => void) | undefined
     try {
+      // Several orgai sessions on this data folder: what the request names must be this session's to change.
+      if (mutation) guardDone = this.services.sessionGuard?.(g.channel, g.args) || undefined
       // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
       // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
       // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the
@@ -368,6 +374,7 @@ export class HostDispatcher {
       throw rpcError(err)
     } finally {
       if (writing) this.secretWritesInFlight -= 1
+      if (guardDone) guardDone()
       release?.()
     }
   }
@@ -628,7 +635,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     // Read BEFORE the save: the save ingests team files inside the service, and a live run must not see that as the user's edit.
     // A copy: nothing the save or its ingest does to the stored object may reach the comparison.
     const stored = ctx.surface === 'desktop' && typeof project?.id === 'string' ? projects.get(project.id) : null
-    const before = stored ? structuredClone(stored) : null
+    // The terminal's own orgai process shares its data folder with other orgai processes: the stored project can be
+    // newer than the copy the user edited, and can change again before the save takes the write lock. There the edit
+    // is read against the version the request was made from (ProjectStore.baseOf); unknown = no live change.
+    const base = ctx.surface === 'inproc' && typeof projects.baseOf === 'function' ? projects.baseOf(project) : null
+    const before = stored ? structuredClone(stored) : base
     // Spend and command settings (daily / monthly caps, test gate, schedules near the plan limit) are widened in the window only.
     if (ctx.surface !== 'desktop' && typeof project?.id === 'string') {
       const current = projects.get(project.id)
@@ -1114,9 +1125,17 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
 
 /** Project skills, the skill library, the repo import and evaluation: the services 1:1, ids checked first. */
 /**
+ * The user's own surface: the desktop window, or the terminal's own orgai process (surface 'inproc': the host runs
+ * inside the `orgai` command the user typed and serves that process only). A save from either (projects:save, mcp:*,
+ * skills:*) is the user's own action and may reach the project's live runs (the terminal's through
+ * RunManagerOptions.liveUserSaves). A socket client is not.
+ */
+const isUsersOwnSurface = (ctx: InvokeContext): boolean => ctx.surface === 'desktop' || ctx.surface === 'inproc'
+
+/**
  * Live work runs of the project and a change the user saved in the desktop window (RunManager.applyProjectChange).
- * Desktop surface only; undefined for any other surface, an empty answer or a failure (the save's own result and error
- * are never affected).
+ * The user's own surfaces only (isUsersOwnSurface); undefined for any other surface, an empty answer or a failure (the
+ * save's own result and error are never affected).
  */
 async function liveRunsOf(
   ctx: InvokeContext,
@@ -1125,7 +1144,7 @@ async function liveRunsOf(
   saved: Project,
   change: HostProjectChange
 ): Promise<LiveRunChange[] | undefined> {
-  if (ctx.surface !== 'desktop') return undefined
+  if (!isUsersOwnSurface(ctx)) return undefined
   try {
     const live = await runs.applyProjectChange(projectId, saved, change, { source: 'user' })
     return Array.isArray(live) && live.length ? live : undefined
@@ -1155,12 +1174,25 @@ const skillChange = (before: Project, ids: string[], names: string[], scope: Ite
   ...scope
 })
 const uniq = (list: string[]): string[] => [...new Set(list.filter((s) => typeof s === 'string' && s))]
+/** What a save handler did in its one locked step: the service's result and, when a live run may take it, the change. */
+interface SavedStep<R> {
+  result: R
+  change?: HostProjectChange
+}
 /**
- * The stored project BEFORE a desktop save, as a copy (projects:save does the same): the save and its team-file ingest
- * change the store's object, and live runs take only what this save changed against it (review M1). Null elsewhere.
+ * The read of the project before a save and the save itself as ONE step under the data folder's write lock
+ * (lockedForProcess: re-entrant with the service's own hold; plain `fn()` with one process per data folder). Several
+ * orgai processes share a data folder, and without it another one could save between the read and the save, so its
+ * change would look like this save's. The live part (withLive) runs after the lock is released.
+ */
+const oneStep = <R>(fn: () => SavedStep<R>): SavedStep<R> => lockedForProcess(fn)
+/**
+ * The stored project BEFORE a save from the user's own surface (call it inside oneStep), as a copy (projects:save does the
+ * same): the save and its team-file ingest change the store's object, and live runs take only what this save changed
+ * against it (review M1). Null for any other surface.
  */
 const beforeSave = (ctx: InvokeContext, getProject: (id: string) => Project | null, projectId: unknown): Project | null => {
-  if (ctx.surface !== 'desktop' || typeof projectId !== 'string') return null
+  if (!isUsersOwnSurface(ctx) || typeof projectId !== 'string') return null
   const p = getProject(projectId)
   return p ? structuredClone(p) : null
 }
@@ -1194,53 +1226,65 @@ function registerSkillIpc(
   }
   handle(IPC.skillsList, (_e, projectId: unknown): SkillInfo[] => skills.list(projectIdArg(projectId)))
   handle(IPC.skillsRead, (_e, input: unknown): SkillContent => skills.read(projectSkill(input)))
-  /** Attach liveRuns (desktop only, non-empty only) to a skills mutation result. */
+  /** Attach liveRuns (the user's own surfaces only, non-empty only) to a skills mutation result. */
   const withLive = (ctx: InvokeContext, result: SkillMutationResult, projectId: string, change: HostProjectChange): SkillMutationResult | Promise<SkillMutationResult> => {
-    if (ctx.surface !== 'desktop') return result
+    if (!isUsersOwnSurface(ctx)) return result
     return liveRunsOf(ctx, runs, projectId, result.project, change).then((live) => (live ? { ...result, liveRuns: live } : result))
   }
   const skillName = (p: Project | null | undefined, id: string): string | undefined => p?.skills?.find((s) => s.id === id)?.name
   handle(IPC.skillsCreate, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillCreateInput>(input)
-    const before = beforeSave(ctx, getProject, i.projectId)
-    const result = skills.create(i)
-    if (!before) return result
-    // Review L1: the skill this call created (its name, new since before), never another new item of the same save.
-    const had = new Set((before.skills ?? []).map((s) => s.id))
-    const name = typeof i.draft?.name === 'string' ? i.draft.name.trim() : ''
-    const made = result.project.skills?.find((s) => !had.has(s.id) && s.name === name)
-    if (!made) return result
-    return withLive(ctx, result, i.projectId, skillChange(before, [made.id], [made.name], skillGrants(made.id, i.roleIds)))
+    const step = oneStep((): SavedStep<SkillMutationResult> => {
+      const before = beforeSave(ctx, getProject, i.projectId)
+      const result = skills.create(i)
+      if (!before) return { result }
+      // Review L1: the skill this call created (its name, new since before), never another new item of the same save.
+      const had = new Set((before.skills ?? []).map((s) => s.id))
+      const name = typeof i.draft?.name === 'string' ? i.draft.name.trim() : ''
+      const made = result.project.skills?.find((s) => !had.has(s.id) && s.name === name)
+      if (!made) return { result }
+      return { result, change: skillChange(before, [made.id], [made.name], skillGrants(made.id, i.roleIds)) }
+    })
+    return step.change ? withLive(ctx, step.result, i.projectId, step.change) : step.result
   })
   handle(IPC.skillsUpdate, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillUpdateInput>(input)
     const args = { ...i, ...projectSkill(i) }
-    const before = beforeSave(ctx, getProject, i.projectId)
-    const result = skills.update(args)
-    if (!before) return result
-    const names = uniq([skillName(before, args.skillId) ?? '', skillName(result.project, args.skillId) ?? ''])
-    // A draft rewrites the skill (any field the save changed); otherwise only `enabled`, when given.
-    const fields = i.draft !== undefined ? undefined : i.enabled !== undefined ? ['enabled'] : []
-    return withLive(ctx, result, i.projectId, skillChange(before, [args.skillId], names, { ...(fields ? { fields } : {}), ...skillGrants(args.skillId, i.roleIds) }))
+    const step = oneStep((): SavedStep<SkillMutationResult> => {
+      const before = beforeSave(ctx, getProject, i.projectId)
+      const result = skills.update(args)
+      if (!before) return { result }
+      const names = uniq([skillName(before, args.skillId) ?? '', skillName(result.project, args.skillId) ?? ''])
+      // A draft rewrites the skill (any field the save changed); otherwise only `enabled`, when given.
+      const fields = i.draft !== undefined ? undefined : i.enabled !== undefined ? ['enabled'] : []
+      return { result, change: skillChange(before, [args.skillId], names, { ...(fields ? { fields } : {}), ...skillGrants(args.skillId, i.roleIds) }) }
+    })
+    return step.change ? withLive(ctx, step.result, i.projectId, step.change) : step.result
   })
   handle(IPC.skillsRemove, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = projectSkill(input)
-    const before = beforeSave(ctx, getProject, i.projectId)
-    const result = skills.remove(i)
-    if (!before) return result
-    return withLive(ctx, result, i.projectId, skillChange(before, [i.skillId], uniq([skillName(before, i.skillId) ?? i.skillId]), { fields: [] }))
+    const step = oneStep((): SavedStep<SkillMutationResult> => {
+      const before = beforeSave(ctx, getProject, i.projectId)
+      const result = skills.remove(i)
+      if (!before) return { result }
+      return { result, change: skillChange(before, [i.skillId], uniq([skillName(before, i.skillId) ?? i.skillId]), { fields: [] }) }
+    })
+    return step.change ? withLive(ctx, step.result, i.projectId, step.change) : step.result
   })
   handle(IPC.skillsLinkLibrary, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillLinkLibraryInput>(input)
     const args = { ...i, ...libraryArg(i) }
-    const before = beforeSave(ctx, getProject, i.projectId)
-    const result = skills.linkLibrary(args)
-    if (!before) return result
-    // Review L1: the link this call made (its library id, new since before).
-    const had = new Set((before.skills ?? []).map((s) => s.id))
-    const linked = result.project.skills?.find((s) => s.libraryId === args.libraryId && !had.has(s.id))
-    if (!linked) return result
-    return withLive(ctx, result, i.projectId, skillChange(before, uniq([args.libraryId, linked.id]), [linked.name], skillGrants(linked.id, i.roleIds)))
+    const step = oneStep((): SavedStep<SkillMutationResult> => {
+      const before = beforeSave(ctx, getProject, i.projectId)
+      const result = skills.linkLibrary(args)
+      if (!before) return { result }
+      // Review L1: the link this call made (its library id, new since before).
+      const had = new Set((before.skills ?? []).map((s) => s.id))
+      const linked = result.project.skills?.find((s) => s.libraryId === args.libraryId && !had.has(s.id))
+      if (!linked) return { result }
+      return { result, change: skillChange(before, uniq([args.libraryId, linked.id]), [linked.name], skillGrants(linked.id, i.roleIds)) }
+    })
+    return step.change ? withLive(ctx, step.result, i.projectId, step.change) : step.result
   })
   handle(IPC.skillsPromote, (_e, input: unknown): SkillMutationResult => skills.promote(projectSkill(input)))
   // Import: read-only scans of the stored project's folder; the renderer supplies choices and the preview digest.
@@ -1334,39 +1378,52 @@ function registerMcpIpc(
   projects?: Partial<Pick<ProjectStore, 'renamedAwaySlugs' | 'forgetRenamedServer'>>
 ): void {
   handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
-  /** Attach liveRuns (desktop only, non-empty only) to an MCP mutation result. */
+  /** Attach liveRuns (the user's own surfaces only, non-empty only) to an MCP mutation result. */
   const withLive = (ctx: InvokeContext, result: McpMutationResult, projectId: string, change: HostProjectChange): McpMutationResult | Promise<McpMutationResult> => {
-    if (ctx.surface !== 'desktop') return result
+    if (!isUsersOwnSurface(ctx)) return result
     return liveRunsOf(ctx, runs, projectId, result.project, change).then((live) => (live ? { ...result, liveRuns: live } : result))
   }
   const serverName = (p: Project | null | undefined, id: string): string | undefined => p?.mcpServers?.find((s) => s.id === id)?.name
   handle(IPC.mcpUpsert, (ctx, input: McpUpsertInput): McpMutationResult | Promise<McpMutationResult> => {
-    const before = beforeSave(ctx, getProject, input?.projectId)
-    // Third review: a renamed role's old slug that main moved to an id grant (ProjectStore renamedSlugGrants) and no role
-    // holds now is not written back by a stale whole-spec copy; any other slug is kept as sent. The user acted on this
-    // server, so main stops carrying its id grant into later renderer saves.
-    if (typeof input?.projectId === 'string' && input.spec && typeof input.spec.id === 'string') {
-      const away = projects?.renamedAwaySlugs?.(input.projectId)
-      if (away?.size && Array.isArray(input.spec.roles) && input.spec.roles.some((s) => away.has(s))) input = { ...input, spec: { ...input.spec, roles: input.spec.roles.filter((s) => !away.has(s)) } }
-      projects?.forgetRenamedServer?.(input.projectId, input.spec.id)
-    }
-    const result = mcp.upsert(input)
-    if (!before) return result
-    // The spec replaces the stored one: the fields it sets and the ones it leaves out (cleared). Grants are not named:
-    // the run's grants to the server stay (review M1).
-    const stored = before.mcpServers?.find((s) => s.id === input.spec.id)
-    // Review L4: for a server linked to a library entry, library-sourced keys the input did not change against the
-    // entry are not the user's edit (the saved copy is refreshed from the library; the raw `before` is not).
-    const entry = stored?.libraryId ? mcp.libraryEntries().find((e) => e.id === stored.libraryId) : undefined
-    const fields = upsertFieldsOf((input.spec ?? {}) as unknown as Record<string, unknown>, stored as unknown as Record<string, unknown> | undefined, entry as unknown as Record<string, unknown> | undefined)
-    return withLive(ctx, result, input.projectId, mcpChange(before, [input.spec.id], [input.spec.name], { fields }))
+    const step = oneStep((): SavedStep<McpMutationResult> => {
+      const before = beforeSave(ctx, getProject, input?.projectId)
+      // Third review: a renamed role's old slug that main moved to an id grant (ProjectStore renamedSlugGrants) and no role
+      // holds now is not written back by a stale whole-spec copy; any other slug is kept as sent. The user acted on this
+      // server, so main stops carrying its id grant into later renderer saves.
+      if (typeof input?.projectId === 'string' && input.spec && typeof input.spec.id === 'string') {
+        const away = projects?.renamedAwaySlugs?.(input.projectId)
+        if (away?.size && Array.isArray(input.spec.roles) && input.spec.roles.some((s) => away.has(s))) input = { ...input, spec: { ...input.spec, roles: input.spec.roles.filter((s) => !away.has(s)) } }
+        projects?.forgetRenamedServer?.(input.projectId, input.spec.id)
+      }
+      // The terminal's own host: the server as mcp:list answers it now, read before the save under the same lock
+      // (hostChange.ts terminalUpsertField).
+      const shown = before && ctx.surface === 'inproc' ? mcp.list(input.projectId).find((s) => s.spec.id === input.spec?.id)?.spec : undefined
+      const result = mcp.upsert(input)
+      if (!before) return { result }
+      if (ctx.surface === 'inproc') {
+        const field = terminalUpsertField(input.spec as unknown as Record<string, unknown>, shown as unknown as Record<string, unknown> | undefined)
+        return field ? { result, change: mcpChange(before, [input.spec.id], [input.spec.name], { fields: [field] }) } : { result }
+      }
+      // The spec replaces the stored one: the fields it sets and the ones it leaves out (cleared). Grants are not named:
+      // the run's grants to the server stay (review M1).
+      const stored = before.mcpServers?.find((s) => s.id === input.spec.id)
+      // Review L4: for a server linked to a library entry, library-sourced keys the input did not change against the
+      // entry are not the user's edit (the saved copy is refreshed from the library; the raw `before` is not).
+      const entry = stored?.libraryId ? mcp.libraryEntries().find((e) => e.id === stored.libraryId) : undefined
+      const fields = upsertFieldsOf((input.spec ?? {}) as unknown as Record<string, unknown>, stored as unknown as Record<string, unknown> | undefined, entry as unknown as Record<string, unknown> | undefined)
+      return { result, change: mcpChange(before, [input.spec.id], [input.spec.name], { fields }) }
+    })
+    return step.change ? withLive(ctx, step.result, input.projectId, step.change) : step.result
   })
   handle(IPC.mcpRemove, (ctx, input: { projectId: string; serverId: string }): McpMutationResult | Promise<McpMutationResult> => {
-    const before = beforeSave(ctx, getProject, input?.projectId)
-    if (typeof input?.projectId === 'string' && typeof input.serverId === 'string') projects?.forgetRenamedServer?.(input.projectId, input.serverId)
-    const result = mcp.remove(input)
-    if (!before) return result
-    return withLive(ctx, result, input.projectId, mcpChange(before, [input.serverId], [serverName(before, input.serverId) ?? input.serverId], { fields: [] }))
+    const step = oneStep((): SavedStep<McpMutationResult> => {
+      const before = beforeSave(ctx, getProject, input?.projectId)
+      if (typeof input?.projectId === 'string' && typeof input.serverId === 'string') projects?.forgetRenamedServer?.(input.projectId, input.serverId)
+      const result = mcp.remove(input)
+      if (!before) return { result }
+      return { result, change: mcpChange(before, [input.serverId], [serverName(before, input.serverId) ?? input.serverId], { fields: [] }) }
+    })
+    return step.change ? withLive(ctx, step.result, input.projectId, step.change) : step.result
   })
   handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
@@ -1397,14 +1454,17 @@ function registerMcpIpc(
     return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction) })
   })
   handle(IPC.mcpLinkLibrary, (ctx, input: McpLinkLibraryInput): McpMutationResult | Promise<McpMutationResult> => {
-    const before = beforeSave(ctx, getProject, input?.projectId)
-    const result = mcp.linkLibrary(input)
-    if (!before) return result
-    // Review L1: the link this call made (its library id, new since before).
-    const had = new Set((before.mcpServers ?? []).map((s) => s.id))
-    const linked = result.project.mcpServers?.find((s) => s.libraryId === input.libraryId && !had.has(s.id))
-    if (!linked) return result
-    return withLive(ctx, result, input.projectId, mcpChange(before, uniq([linked.id, input.libraryId]), [linked.name]))
+    const step = oneStep((): SavedStep<McpMutationResult> => {
+      const before = beforeSave(ctx, getProject, input?.projectId)
+      const result = mcp.linkLibrary(input)
+      if (!before) return { result }
+      // Review L1: the link this call made (its library id, new since before).
+      const had = new Set((before.mcpServers ?? []).map((s) => s.id))
+      const linked = result.project.mcpServers?.find((s) => s.libraryId === input.libraryId && !had.has(s.id))
+      if (!linked) return { result }
+      return { result, change: mcpChange(before, uniq([linked.id, input.libraryId]), [linked.name]) }
+    })
+    return step.change ? withLive(ctx, step.result, input.projectId, step.change) : step.result
   })
   handle(IPC.mcpPromote, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.promote(input))
   // Resolves when the browser flow ends (or fails, as state 'error'); client id and secret are write-only.
@@ -1427,12 +1487,15 @@ function registerMcpIpc(
   handle(MCP_SCOPE_IPC.mcpCopyFromLibrary, (_e, input: unknown) => mcp.copyFromLibrary(mcpCopyArgs(input)))
   handle(MCP_SCOPE_IPC.mcpSetProjectOverrides, (ctx, input: unknown): McpMutationResult | Promise<McpMutationResult> => {
     const args = mcpOverridesArgs(input)
-    const before = beforeSave(ctx, getProject, args.projectId)
-    const result = mcp.setProjectOverrides(args)
-    if (!before) return result
-    // Only the override maps the input gave (review M1): a stored launch change of the same server stays out.
-    const fields = [...(args.env !== undefined ? ['envOverrides'] : []), ...(args.headers !== undefined ? ['headerOverrides'] : [])]
-    return withLive(ctx, result, args.projectId, mcpChange(before, [args.serverId], [serverName(result.project, args.serverId) ?? args.serverId], { fields }))
+    const step = oneStep((): SavedStep<McpMutationResult> => {
+      const before = beforeSave(ctx, getProject, args.projectId)
+      const result = mcp.setProjectOverrides(args)
+      if (!before) return { result }
+      // Only the override maps the input gave (review M1): a stored launch change of the same server stays out.
+      const fields = [...(args.env !== undefined ? ['envOverrides'] : []), ...(args.headers !== undefined ? ['headerOverrides'] : [])]
+      return { result, change: mcpChange(before, [args.serverId], [serverName(result.project, args.serverId) ?? args.serverId], { fields }) }
+    })
+    return step.change ? withLive(ctx, step.result, args.projectId, step.change) : step.result
   })
   handle(MCP_SCOPE_IPC.connectorPresetsList, () => mcp.connectorPresetsList())
   // The service validates the whole definition (validateUserPreset); the handler passes the raw structured-clone input.

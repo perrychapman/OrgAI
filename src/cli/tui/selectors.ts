@@ -118,6 +118,8 @@ const CARD_KINDS = Object.keys(CARD_BUCKETS) as CardKind[]
 function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
   const out: TrayCard[] = []
   const projectKind = s.project && run.summary.projectId === s.project.id ? (s.project.kind === 'engagement' ? 'engagement' : 'code') : undefined
+  // An org chart card of a run of the open project compares with that project's saved roles when the host gave it no run baseline.
+  const savedRoles = s.project && run.summary.projectId === s.project.id ? s.project.roles : undefined
   // A card of a run the user is not following names that run ("R3 Build the report"), so it is not mistaken for the followed one (R2-L2).
   const foreign = !s.activeChain.includes(run.summary.id)
   const name = foreign ? clipLine(safeLine(runName(run.summary)), 24) : ''
@@ -137,6 +139,7 @@ function cardsOfRun(s: TuiState, run: TuiRun): TrayCard[] {
         ...(agentId ? { agentId, ...(foreign && !run.agents[agentId] ? {} : { agentLabel: agentLabel(run.agents[agentId]) }) } : {}),
         runKind: run.summary.kind,
         ...(projectKind ? { projectKind } : {}),
+        ...(savedRoles ? { savedRoles } : {}),
         arrivedSeq: cardArrivalSeq(card) ?? 0,
         kind,
         card
@@ -544,7 +547,11 @@ function cachedEntryRow(e: TranscriptEntry, runId: string, who: string, toolName
   return row
 }
 
+/** Test counter: how many entries were turned into rows (a cache hit does not count). */
+export const selectorStats = { entryRowBuilds: 0 }
+
 function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id: string) => string | undefined): TranscriptRow | null {
+  selectorStats.entryRowBuilds++
   const key = `${runId}|${e.id}`
   const harness = e.source === 'harness'
   const base = { key, runId, agentId: e.agentId, agentLabel: who, at: e.at }
@@ -628,7 +635,7 @@ export function partialRows(s: TuiState, filter: TranscriptFilter = {}): Partial
   const run = activeRun(s)
   if (!run) return []
   const out: PartialRow[] = []
-  for (const [agentId, text] of Object.entries(run.partials)) {
+  for (const [agentId, text] of Object.entries(s.partials?.[run.summary.id] ?? {})) {
     if (!text || (filter.agentIds && !filter.agentIds.has(agentId))) continue
     out.push({ key: `partial|${run.summary.id}|${agentId}`, runId: run.summary.id, agentId, agentLabel: agentLabel(run.agents[agentId]), identityTone: agentIdentityTone(s.project?.roles ?? [], run.agents[agentId]), text })
   }
@@ -798,14 +805,16 @@ export function windowText(u: UsageStatus | undefined): string | undefined {
 }
 
 export function statusSummary(s: TuiState): StatusSummary {
-  const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status))
+  // This terminal's live runs: one that is live in another orgai session is neither its to stop at quit nor waiting on it.
+  const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status) && !r.summary.liveElsewhere)
   const chips = runChips(s)
   const out: StatusSummary = {
     needsYou: decisionCount(live.map(waitRunOf)),
     liveRuns: live.length,
     ...(chips.length > 0 ? { runChips: chips } : {}),
     connection: s.connection,
-    ...(s.project ? { projectName: safeLine(s.project.name) } : {}),
+    // A project open in other orgai sessions too says so beside its name ("Alpha (2 terminals)").
+    ...(s.project ? { projectName: s.othersHere ? `${safeLine(s.project.name)} (${s.othersHere + 1} terminals)` : safeLine(s.project.name) } : {}),
     ...(s.hostKind ? { hostKind: s.hostKind } : {}),
     ...(s.readOnlyReason ? { readOnlyReason: safeLine(s.readOnlyReason) } : {})
   }

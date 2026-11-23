@@ -370,11 +370,13 @@ export class MaintenanceService {
 
     if (isGitRepo(root) && removeExcludeLine(root)) removed.push('.git/info/exclude entry')
 
-    if (project.setup?.architecture || project.setup?.architecturePath) {
-      const setup = { ...project.setup }
+    // On the project as it is stored now (the steps above awaited), not on the copy this started with.
+    const latest = this.projects.get(project.id) ?? project
+    if (latest.setup?.architecture || latest.setup?.architecturePath) {
+      const setup = { ...latest.setup }
       delete setup.architecture
       delete setup.architecturePath
-      this.projects.save({ ...project, setup })
+      this.projects.save({ ...latest, setup })
     }
 
     return { ok: true, message: removed.length ? `Removed ${removed.join(', ')}.` : 'Nothing to remove.' }

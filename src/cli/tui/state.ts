@@ -19,12 +19,14 @@ import type {
   Project,
   RunEvent,
   RunRecord,
+  RunRosterChange,
   RunsEventParams,
   RunSummary,
   TranscriptEntry
 } from '../../shared/types'
 import { applyRunDelegation } from '../../shared/delegationView'
 import { statusEventEndFacts } from '../../shared/view/runChains'
+import { runTag } from '../../shared/view/runLabels'
 import type { SnapshotResult } from '../client/runStream'
 import { safeLine } from '../output'
 import { StreamSanitizers, sanitizeTty } from './sanitizeTty'
@@ -42,6 +44,8 @@ import {
   type TuiRun,
   type TuiState
 } from './types'
+import { liveChangeNotice, type LiveChangeNotice } from './liveChangeText'
+import { rosterNotice } from './orgChartCard'
 
 // ---------- Partial streams ----------
 
@@ -184,7 +188,7 @@ const OPEN_STATUSES = new Set(['starting', 'running', 'idle', 'stopping'])
 const TERMINAL_STATUSES = new Set(['finished', 'error', 'paused'])
 
 function newRun(summary: RunSummary): TuiRun {
-  return { summary, agents: {}, transcript: [], partials: {}, cards: emptyCards(), recordLoaded: false }
+  return { summary, agents: {}, transcript: [], cards: emptyCards(), recordLoaded: false }
 }
 
 /** A placeholder summary for a run the state has not seen yet (the session fetches the real one). */
@@ -246,11 +250,21 @@ function capped(run: TuiRun): TuiRun {
   return { ...run, transcript: run.transcript.slice(over), omitted: (run.omitted ?? 0) + over }
 }
 
-function withoutPartial(run: TuiRun, agentId: string): TuiRun {
-  if (!(agentId in run.partials)) return run
-  const partials = { ...run.partials }
-  delete partials[agentId]
-  return { ...run, partials }
+/** The state without one agent's streaming text (the same state when it has none). */
+function withoutPartial(s: TuiState, runId: string, agentId: string): TuiState {
+  const mine = s.partials?.[runId]
+  if (!mine || !(agentId in mine)) return s
+  const rest = { ...mine }
+  delete rest[agentId]
+  return withRunPartials(s, runId, rest)
+}
+
+/** The state with a run's whole streaming set replaced (an empty set removes the run's entry). */
+function withRunPartials(s: TuiState, runId: string, set: Record<string, string>): TuiState {
+  const all = { ...s.partials }
+  if (Object.keys(set).length === 0) delete all[runId]
+  else all[runId] = set
+  return { ...s, partials: all }
 }
 
 type RunLogLine = NonNullable<TuiRun['logs']>[number]
@@ -362,12 +376,18 @@ export function applySnapshot(s: TuiState, res: SnapshotResult, opts: { activeRu
       }
     }
     opts.partials?.clearRun(summary.id)
-    runs[summary.id] = prev ? { ...prev, summary, cards, partials: {} } : { ...newRun(summary), cards }
+    runs[summary.id] = prev ? { ...prev, summary, cards } : { ...newRun(summary), cards }
   }
   if (s.hostInstanceId && s.hostInstanceId !== res.hostInstanceId) {
     for (const [id, run] of Object.entries(runs)) if (run.messages?.length) runs[id] = { ...run, messages: [] }
   }
-  let out: TuiState = { ...s, runs, hostInstanceId: res.hostInstanceId, lastSeq: res.seq, cardSeq: seq, connection: 'live' }
+  // A snapshot restarts every listed run's streams; runs the state dropped lose theirs too.
+  let partials = s.partials
+  if (partials) {
+    const kept = Object.entries(partials).filter(([id]) => runs[id] && !listedIds.has(id))
+    if (kept.length !== Object.keys(partials).length) partials = Object.fromEntries(kept)
+  }
+  let out: TuiState = { ...s, runs, ...(partials ? { partials } : {}), hostInstanceId: res.hostInstanceId, lastSeq: res.seq, cardSeq: seq, connection: 'live' }
   if (opts.activeRunId && out.activeRunId !== opts.activeRunId) out = setActiveRun(out, opts.activeRunId)
   out = { ...out, runOrder: withOrder(out, listed) }
   if (snap.activeRun) out = applyRecord(out, snap.activeRun, { omitted: snap.activeRunOmitted, partials: opts.partials })
@@ -485,6 +505,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   const existing = out.runs[e.runId]
   if (!existing && (e.type === 'agent.partial' || e.type === 'agent.remove' || e.type === 'agent.message')) return out
   let compactedNotice: string | undefined
+  let liveChange: LiveChangeNotice | undefined
+  let rosterNote: { text: string; tone: 'ok' | 'warn' } | undefined
   let run: TuiRun = existing ?? newRun(stubSummary(out, e.runId, now))
   const summary = run.summary
 
@@ -499,9 +521,9 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       Object.assign(next, statusEventEndFacts(e))
       if (TERMINAL_STATUSES.has(e.status) && next.endedAt === undefined) next.endedAt = now
       run = { ...run, summary: next }
-      if (TERMINAL_STATUSES.has(e.status) && Object.keys(run.partials).length > 0) {
+      if (TERMINAL_STATUSES.has(e.status) && out.partials?.[e.runId]) {
         opts.partials?.clearRun(e.runId)
-        run = { ...run, partials: {} }
+        out = withRunPartials(out, e.runId, {})
       }
       break
     }
@@ -524,6 +546,24 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'run.moved':
       run = { ...run, summary: { ...summary, projectId: e.projectId } }
       break
+    case 'run.liveChange': {
+      // A change the user saved while this run is live (docs: "Host changes in a live run"): say what the run does with
+      // it. "This run" is the run on screen; another run of the project is named by its tag (R2).
+      const at = out.runOrder.indexOf(e.runId)
+      const who = e.runId === out.activeRunId ? undefined : runTag(at >= 0 ? at + 1 : undefined)
+      liveChange = liveChangeNotice(e.change, Array.isArray(e.what) ? e.what : [], who)
+      break
+    }
+    case 'run.roster': {
+      // An org chart the user approved on this card reached the live run: say what its team became.
+      const at = out.runOrder.indexOf(e.runId)
+      const who = e.runId === out.activeRunId ? undefined : runTag(at >= 0 ? at + 1 : undefined)
+      const change: RunRosterChange | undefined = e.change
+      if (change && Array.isArray(change.added) && Array.isArray(change.changed) && Array.isArray(change.removed) && Array.isArray(change.deferred)) {
+        rosterNote = rosterNotice(change, who)
+      }
+      break
+    }
     case 'run.model':
       // The root's live model (a model switch): the status bar and the inspector read summary.modelSelection.
       if (!e.selection || typeof e.selection.model !== 'string' || typeof e.selection.connection !== 'string') return out
@@ -537,22 +577,24 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       const agents: Record<string, AgentInstance> = { ...run.agents }
       delete agents[e.agentId]
       opts.partials?.clear(e.runId, e.agentId)
-      run = withoutPartial({ ...run, agents }, e.agentId)
+      run = { ...run, agents }
+      out = withoutPartial(out, e.runId, e.agentId)
       break
     }
     case 'transcript':
       if (!e.entry || typeof e.entry.id !== 'string') return out
       run = appendEntries(run, [e.entry])
       opts.partials?.clear(e.runId, e.entry.agentId)
-      run = withoutPartial(run, e.entry.agentId)
+      out = withoutPartial(out, e.runId, e.entry.agentId)
       break
     case 'agent.partial': {
       const text = opts.partials ? opts.partials.update(e.runId, e.agentId, e.text) : typeof e.text === 'string' ? sanitizeTty(e.text) : ''
-      if (text === '') run = withoutPartial(run, e.agentId)
-      else if (run.partials[e.agentId] === text) return out
-      else run = { ...run, partials: { ...run.partials, [e.agentId]: text } }
-      // Fast path: a partial changes neither status, order nor the chain, so skip withOrder / followSuccessors.
-      return putRun(out, run)
+      // Fast path: a partial changes neither status, order nor the chain, and it leaves `runs` as it is (the same
+      // object), so no memo keyed on the runs recomputes per delta.
+      if (text === '') return withoutPartial(out, e.runId, e.agentId)
+      const mine = out.partials?.[e.runId]
+      if (mine?.[e.agentId] === text) return out
+      return withRunPartials(out, e.runId, { ...mine, [e.agentId]: text })
     }
     case 'agent.compacted': {
       // RunManager re-sends the agent with its count right after; counted here too so the row and notice agree at once.
@@ -633,6 +675,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
   }
 
   if (compactedNotice) out = addNotice(out, compactedNotice, 'warn', now)
+  if (liveChange) out = addNotice(out, safeLine(liveChange.text), liveChange.tone, now)
+  if (rosterNote) out = addNotice(out, safeLine(rosterNote.text), rosterNote.tone, now)
   return finish(out, run, existing, summary)
 }
 

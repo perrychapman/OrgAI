@@ -63,11 +63,28 @@ function refuseManaged(ctx: CliContext): void {
   if (m) throw usage(worktreeRefusal(m.mainCheckout))
 }
 
-/** Hand off to the lazily loaded TUI (quietInproc first). Shared with commands/interactive.ts. */
+/**
+ * Hand off to the lazily loaded TUI (quietInproc first). Shared with commands/interactive.ts.
+ *
+ * The host starts while the TUI chunk (ink, react, the layout engine) loads, instead of after it: the two take about
+ * as long as each other and neither needs the other. runTui's own start then finds the host already starting (one
+ * host per process, context.ts reusableInproc) and waits for the same one; a refused start surfaces there as before.
+ */
 export async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn: TuiHostConnection) => Promise<TuiLaunch>): Promise<number> {
   quietInproc(ctx)
-  const { runTui } = await import('../tui/index')
-  return runTui(ctx, {}, flags, { prepare })
+  // Only where the TUI will really open: without a terminal runTui refuses before it connects, and no host is wanted.
+  const warm = ctx.io.stdinIsTTY && ctx.io.stdout.isTTY === true ? ctx.startInproc() : undefined
+  // Its failure is reported by runTui's own start (the same promise); here it must only not go unhandled.
+  warm?.catch(() => undefined)
+  try {
+    const tui = await import('../tui/index')
+    return await tui.runTui(ctx, {}, flags, { prepare })
+  } catch (e) {
+    // Whatever failed (the chunk, a refusal before the TUI connected): a host started here must not outlive the
+    // command. Stopping one the TUI already stopped does nothing.
+    await warm?.then((h) => h.stop(true)).catch(() => undefined)
+    throw e
+  }
 }
 
 /** The folder's project, else onboarding (no run asked for). */

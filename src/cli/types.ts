@@ -30,7 +30,10 @@ export const EXIT = {
   rateLimited: 4,
   /** Authentication failed (a connection or the host handshake). */
   auth: 5,
-  /** The host is busy (starting, draining, refused a stop while leases are held). */
+  /**
+   * Busy: the host is starting, draining or refused a stop while leases are held; the project or run is open in
+   * another orgai session; or an orgai from before sessions owns the data folder.
+   */
   hostBusy: 6,
   /** Ended by SIGINT (128 + 2). */
   sigint: 130,
@@ -119,10 +122,34 @@ export type ConnectResult =
       daemon?: DaemonInfo
     }
 
+/** One running orgai session, as read-only commands and the terminal UI show it. */
+export interface SessionSummary {
+  hostInstanceId: string
+  pid: number
+  /** Epoch ms. */
+  startedAt: number
+  appVersion: string
+  cwd: string
+  /** What it runs: 'tui', 'exec', 'projects', ... */
+  command: string
+  /** Ids of the projects it holds. */
+  projects: string[]
+}
+
 /** A read-only view of the data dir without a host (src/cli/storeReader.ts, W2-T4): never writes, never migrates. */
 export interface ReadOnlySnapshot {
-  /** From daemon.json (and pid liveness): 'stopped' when no live host advertises. */
+  /** From daemon.json (and pid liveness) and the session locks: 'stopped' when no orgai runs on the folder. */
   hostState: 'stopped' | 'starting' | 'ready' | 'draining'
+  /**
+   * The orgai sessions running on this data folder right now (main/host/sessions.ts), oldest first. Runs they host
+   * keep their live status in `runs`. Empty when none runs, and for a folder an older orgai owns alone.
+   */
+  sessions: SessionSummary[]
+  /**
+   * A running host that does not share the folder owns it (an orgai from before sessions): a command that needs a host
+   * cannot start one beside it and reads the saved files instead. False while only sessions run, or nothing does.
+   */
+  soleOwner: boolean
   /** Pending decision cards live only in a host's memory. */
   liveInboxAvailable: false
   daemon?: DaemonInfo
@@ -162,10 +189,35 @@ export interface InprocHostHandle {
    * CliContext.connect (a draining host answers 'draining').
    */
   connectLocal?(scopes: HostScope[], opts?: { clientKind?: HostClientKind; cwd?: string }): Promise<ConnectResult>
+  /**
+   * Sessions (several orgai processes on one data folder): this process works in the project from now on. Any number
+   * of sessions can have a project open; `others` are the ones that do. `ok: false` only while another session is
+   * removing or moving the project. Absent on a handle that has no sessions (a fake).
+   */
+  openProject?(projectId: string): { ok: true; others: SessionPeer[] } | { ok: false }
+  /** The other orgai sessions running on this data folder right now. */
+  otherSessions?(): SessionPeer[]
+}
+
+/** Another orgai session on this data folder, as this process sees it. */
+export interface SessionPeer {
+  pid: number
+  cwd: string
+  /** What it runs: 'tui', 'exec', 'projects', ... */
+  command: string
+  /** Ids of the projects it has open. */
+  projects: string[]
+  /** Epoch ms. */
+  startedAt: number
 }
 
 /** How the in-process host starts (ensureHost / withHost pass it to CliContext.startInproc). */
 export interface InprocStartOptions {
+  /**
+   * Sweep stale run skill folders from the temp folder after the start (inprocHost.ts `tempSweep`). A management
+   * command's short host passes false: it would only keep the process alive while the folder is read.
+   */
+  tempSweep?: boolean
   /**
    * bootOrgAIHost's background work: management commands keep connection probes and
    * turn model discovery, community prices and the usage monitor off. Default: all on. The first start in a process

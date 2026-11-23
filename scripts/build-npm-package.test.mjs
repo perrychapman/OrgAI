@@ -63,6 +63,14 @@ function fakeRepo({ license = false } = {}) {
       },
       'node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64': { version: '0.3.1', os: ['darwin'], cpu: ['arm64'], optional: true, resolved: 'https://registry.npmjs.org/x.tgz', integrity: 'sha512-b' },
       'node_modules/zod': { version: '4.1.0', resolved: 'https://registry.npmjs.org/zod/-/zod-4.1.0.tgz', integrity: 'sha512-c', dev: true },
+      // Codex is a dependency of the package too, with one optional binary per platform (an npm alias of the same name).
+      'node_modules/@openai/codex': {
+        version: '0.169.0',
+        resolved: 'https://registry.npmjs.org/@openai/codex/-/codex-0.169.0.tgz',
+        integrity: 'sha512-d',
+        optionalDependencies: { '@openai/codex-darwin-arm64': 'npm:@openai/codex@0.169.0-darwin-arm64' }
+      },
+      'node_modules/@openai/codex-darwin-arm64': { name: '@openai/codex', version: '0.169.0-darwin-arm64', os: ['darwin'], cpu: ['arm64'], optional: true, resolved: 'https://registry.npmjs.org/y.tgz', integrity: 'sha512-e' },
       'node_modules/electron': { version: '45.0.0', dev: true }
     }
   }
@@ -107,8 +115,8 @@ test('main --dry-run prints the plan and writes nothing', () => {
     const out = lines.join('\n')
     assert.match(out, /Dry run/)
     assert.match(out, /install\.json: \{"channel":"npm","version":"9\.9\.9","commit":"aaaaaaaaaaaa"\}/)
-    assert.match(out, /dependencies @anthropic-ai\/claude-agent-sdk@0\.3\.1, zod@4\.1\.0/)
-    assert.match(out, /npm-shrinkwrap\.json: 3 package\(s\), 1 optional/)
+    assert.match(out, /dependencies @anthropic-ai\/claude-agent-sdk@0\.3\.1, @openai\/codex@0\.169\.0, zod@4\.1\.0/)
+    assert.match(out, /npm-shrinkwrap\.json: 5 package\(s\), 2 optional/)
     assert.match(out, /no LICENSE in the repo: license UNLICENSED/)
     assert.equal(r.dryRun, true)
     assert.equal(fs.existsSync(path.join(root, 'release')), false)
@@ -135,12 +143,20 @@ test('main writes the package folder, packs it with npm and records the sha256',
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
     assert.deepEqual(pkg.bin, { orgai: 'out/cli/orgai.mjs' })
     assert.equal(fs.readFileSync(path.join(pkgDir, 'out', 'cli', 'orgai.mjs'), 'utf8').split(/\r?\n/, 1)[0], '#!/usr/bin/env -S node --disable-sigusr1')
-    assert.deepEqual(pkg.dependencies, { '@anthropic-ai/claude-agent-sdk': '0.3.1', zod: '4.1.0' })
+    assert.deepEqual(pkg.dependencies, { '@anthropic-ai/claude-agent-sdk': '0.3.1', '@openai/codex': '0.169.0', zod: '4.1.0' })
     assert.equal(pkg.scripts, undefined)
     assert.equal(pkg.license, 'SEE LICENSE IN LICENSE')
     assert.deepEqual(pkg.repository, { type: 'git', url: 'git+https://github.com/me/OrgAI.git' })
     const sw = JSON.parse(fs.readFileSync(path.join(pkgDir, 'npm-shrinkwrap.json'), 'utf8'))
-    assert.deepEqual(Object.keys(sw.packages).sort(), ['', 'node_modules/@anthropic-ai/claude-agent-sdk', 'node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64', 'node_modules/zod'])
+    assert.deepEqual(Object.keys(sw.packages).sort(), [
+      '',
+      'node_modules/@anthropic-ai/claude-agent-sdk',
+      'node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64',
+      'node_modules/@openai/codex',
+      'node_modules/@openai/codex-darwin-arm64',
+      'node_modules/zod'
+    ])
+    assert.equal(sw.packages['node_modules/@openai/codex-darwin-arm64'].optional, true, "Codex's per-platform binary stays optional")
     assert.equal(sw.packages['node_modules/zod'].dev, undefined, 'repo-only flags dropped')
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pkgDir, 'out', 'cli', 'install.json'), 'utf8')), { channel: 'npm', version: '9.9.9', commit: 'bbbbbbbbbbbb' })
     assert.ok(fs.existsSync(path.join(pkgDir, 'out', 'cli', 'chunk-a.mjs')))

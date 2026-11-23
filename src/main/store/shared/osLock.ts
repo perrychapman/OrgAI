@@ -5,16 +5,24 @@
  * process's locks, so no pid, start time, heartbeat or age ever decides that a holder is gone.
  *
  * This module is the mechanism only: one coordinator per path and process (shared holders share one connection with a
- * reference count; exclusive waiters queue in FIFO order; claims never queue). Lock order, reentrancy per async context
- * and the lock catalogue live in lockOrder.ts.
+ * reference count; exclusive waiters queue in FIFO order; claims never queue).
+ *
+ * What the product uses of it today is the mechanism's parts: the lock file checks, the busy tests and the probe, on
+ * which syncLock.ts builds the synchronous locks of the sessions (docs/design/cli-sessions.md). The asynchronous,
+ * waiting API below (acquireOsLock, the shared mode, upgrade and downgrade) was written for a larger design that was
+ * not built; it has no caller outside its tests, which are kept because they exercise this same mechanism across
+ * processes on every platform CI runs.
  *
  * Lock files are never opened, read or closed outside SQLite: closing a raw descriptor would drop this process's POSIX
  * locks on the inode (SQLite "how to corrupt" 2.2). They are checked with lstat only.
  *
+ * `node:sqlite` is loaded on first use (sqliteLoader.ts), never when this module is imported.
+ *
  * Electron-free; relative imports only.
  */
 import { closeSync, existsSync, lstatSync, openSync } from 'node:fs'
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
+import { sqlite } from './sqliteLoader'
 
 export type LockMode = 'exclusive' | 'shared'
 
@@ -117,7 +125,8 @@ export function ensureLockFile(path: string): void {
   }
 }
 
-function isBusy(e: unknown): boolean {
+/** SQLITE_BUSY / SQLITE_LOCKED: the lock is held by another connection (in this process or another). */
+export function isBusy(e: unknown): boolean {
   const err = e as { errcode?: number; code?: string; message?: string }
   // SQLITE_BUSY (5); SQLITE_LOCKED (6) for a same-process table lock. node:sqlite puts the primary code in errcode.
   return err?.errcode === 5 || err?.errcode === 6 || /database is locked/i.test(String(err?.message ?? ''))
@@ -137,7 +146,7 @@ export function isWindowsSharingViolation(e: unknown, platform: NodeJS.Platform 
 function openConnection(path: string): DatabaseSync {
   const problem = lockFileProblem(path)
   if (problem) throw new LockFileUnsafeError(path, problem)
-  const db = new DatabaseSync(path)
+  const db = new (sqlite().DatabaseSync)(path)
   try {
     db.exec('PRAGMA busy_timeout = 0')
     // No rollback journal file: an exclusive hold writes nothing, and a -journal path is one more name to trust.
@@ -195,7 +204,7 @@ export function probeOsLock(path: string): 'held' | 'free' | 'missing' {
   if (problem) throw new LockFileUnsafeError(path, problem)
   let db: DatabaseSync
   try {
-    db = new DatabaseSync(path, { readOnly: true })
+    db = new (sqlite().DatabaseSync)(path, { readOnly: true })
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT' || !existsSync(path)) return 'missing'
     throw e

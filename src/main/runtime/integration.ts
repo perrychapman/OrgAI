@@ -99,6 +99,14 @@ export class WorktreeIntegrator {
     return this.host.agent(agentId)?.name ?? agentId
   }
 
+  private otherRunsLive(): string | null {
+    try {
+      return this.ctx.otherRunsLive?.() ?? null
+    } catch {
+      return null
+    }
+  }
+
   /** Run `fn` after every earlier operation on the same working directory has finished. */
   private exclusive<T>(dir: string, fn: () => Promise<T>): Promise<T> {
     const key = dir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
@@ -387,6 +395,9 @@ export class WorktreeIntegrator {
   private async integratePendingNow(wt: { path: string; branch: string }): Promise<string> {
     const ownerId = [...this.worktrees].find(([, info]) => info.branch === wt.branch)?.[0]
     const tracked = ownerId ? this.worktrees.get(ownerId) : undefined
+    // A branch this run did not make, while another run is working in the project: it may be that run's report at work.
+    const other = tracked ? null : this.otherRunsLive()
+    if (other) return `${wt.branch}: not merged from here (${other}, and this branch may be its work in progress). Merge it once that run has ended.`
     if (tracked && UNSETTLED.has(tracked.status)) {
       return `${wt.branch}: still in progress (${tracked.status}); the harness merges it when its report finishes.`
     }
@@ -594,6 +605,12 @@ export class WorktreeIntegrator {
    * uncommitted work so it is safe, then tell the orchestrator they exist. Returns that message.
    */
   async reconcileLeftovers(): Promise<string | null> {
+    // Another run is working in this project: a branch found here may be its report at work, not a leftover.
+    const other = this.otherRunsLive()
+    if (other) {
+      this.log('info', `Report branches already in this repository are left alone: ${other}.`)
+      return null
+    }
     const pending = await inspectPending(this.root)
     if (!pending.length) return null
     const lines: string[] = []

@@ -16,7 +16,7 @@ describe('configured team sidebar', () => {
     expect(new Set(available.map(row => row.identityTone)).size).toBe(3)
     const s = withAgents([agent('root', 'lead', null), agent('worker', 'builder', 'root', 'thinking')])
     s.runs.r1.transcript = [{ id: 'text1', agentId: 'worker', at: 1, block: { kind: 'text', text: 'Building the feature.' } }]
-    s.runs.r1.partials = { worker: 'Still building' }
+    s.partials = { r1: { worker: 'Still building' } }
     const tone = available.find(row => row.label === 'builder')!.identityTone
     expect(orgTreeRows(s, { includeRoles: true }).find(row => row.id === 'worker')?.identityTone).toBe(tone)
     expect(transcriptRows(s).rows.find(row => row.agentId === 'worker')?.identityTone).toBe(tone)

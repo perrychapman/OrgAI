@@ -71,6 +71,8 @@ import type { AppSettingsProposalPayload, CliCommandStatus, SchedulesProposalPay
 import { scheduledRunCap } from '../schedules/validate'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
+import { createSessionGuard } from './sessionGuard'
+import { oneChangePerCall, storeSyncFor } from '../store/shared/storeSync'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
 import type { HostRuntimeEnv } from './runtimeEnv'
@@ -176,6 +178,13 @@ export interface BootOrgAIHostOptions {
   background?: HostBackgroundOptions
   housekeeping?: Partial<HousekeepingSteps>
   /**
+   * Several orgai sessions on one data folder (docs/design/cli-sessions.md): the boot runs no housekeeping. It deletes
+   * what no run in the index points to and prunes old runs, which is only right while no other session is working, so
+   * the caller runs `OrgAIHost.housekeep()` itself when it finds itself alone, and sweeps the temp folder off the start
+   * path. Default false: housekeeping runs here, as before.
+   */
+  deferHousekeeping?: boolean
+  /**
    * Called once a shutdown released ownership (Wave 7, cli-standalone.md 4.3: after the writers settled and the socket
    * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`.
    */
@@ -225,6 +234,11 @@ export interface OrgAIHost {
   shutdown: ShutdownCoordinator
   /** Stop background timers and probes (before-quit). Idempotent. */
   dispose(): void
+  /**
+   * The boot housekeeping (runs of removed projects, runs past retention, record files and scratch dirs nothing points
+   * to), without the temp folder sweep. Returns how many runs or files went. Boot calls it unless `deferHousekeeping`.
+   */
+  housekeep(): number
 }
 
 /**
@@ -316,7 +330,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
     : projectId === SKILLS_PROJECT_ID ? skillsProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
     : projects.get(projectId)
-  const mcp = new McpService({
+  const mcp = oneChangePerCall(dataDir, new McpService({
     projects,
     secrets,
     library: new McpLibraryStore(dataDir),
@@ -332,13 +346,18 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Wave 7 (round 6 item 9): only an authorization's final commit holds a mutation lease. `activityRef` is set below,
     // before any call can arrive.
     commitLease: (label) => (activityRef ? activityRef.acquire('inFlightRpcMutations', label) : () => {})
-  })
-  const skills = new SkillService({
+  }), { except: ['activeAuthorizationCount', 'refreshingCount', 'dispose'] })
+  // oneChangePerCall (here and below): with several orgai sessions on this data folder, each call into a service that
+  // rewrites a project's own files runs as one change under the write lock. One process per data folder: unchanged.
+  const skills = oneChangePerCall(
     dataDir,
-    projects,
-    onLibraryChanged: (entries) => events.emit(IPC.skillLibraryChanged, entries),
-    onProjectChanged: emitProject
-  })
+    new SkillService({
+      dataDir,
+      projects,
+      onLibraryChanged: (entries) => events.emit(IPC.skillLibraryChanged, entries),
+      onProjectChanged: emitProject
+    })
+  )
   // Team files: a code project's team as plain files under .orgai/ (the project cache stays what runs read). Every
   // ProjectStore.save passes through its hook; the folders are checked at boot (index.ts), on window focus and at project open / run start.
   const teamFiles = new TeamFilesService({
@@ -371,7 +390,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     withAdapter: (project) => connections.withAdapter(project),
     onProjectChanged: emitProject
   })
-  const setup = new SetupService(projects, {
+  const setup = oneChangePerCall(dataDir, new SetupService(projects, {
     dataDir,
     removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
     mcp: {
@@ -381,7 +400,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     skills: { applyProposal: (projectId, payload, o) => skills.applyProposal(projectId, payload, o) },
     templates: () => templates.list()
-  })
+  }))
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
   const codexCompletion = (): RunConnection | undefined => {
@@ -460,10 +479,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
   // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
   // outputs:changed itself for the versions the watcher captures and the revision ends it settles.
-  const outputs = createOutputsService(dataDir, {
-    ...(opts.desktop?.trashItem ? { trash: opts.desktop.trashItem } : {}),
-    onChange: (projectId, ids, what) => events.emit(OUTPUTS_IPC.outputsChanged, { projectId, ids, what })
-  })
+  const outputs = oneChangePerCall(
+    dataDir,
+    createOutputsService(dataDir, {
+      ...(opts.desktop?.trashItem ? { trash: opts.desktop.trashItem } : {}),
+      onChange: (projectId, ids, what) => events.emit(OUTPUTS_IPC.outputsChanged, { projectId, ids, what })
+    })
+  )
   const outputWatcher = createOutputWatcher({
     service: outputs,
     scopeOf: (projectId) => {
@@ -492,11 +514,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     log: (m) => log.info(m)
   })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
-    // Mid-run org changes: the desktop app's only decision path for an org chart card is the renderer's ProposalCard,
-    // which diffs against runBaseline. The CLI host (TUI, exec) shows no diff, so it never opts in (fail closed).
-    ...(opts.desktop ? { liveRosterCards: true as const } : {}),
+    // Mid-run org changes: a host opts in only when every path that can approve an org chart card shows its diff
+    // against runBaseline. The desktop app: the renderer's ProposalCard. The orgai command's own host: the TUI tray
+    // (decisions.ts orgChartCardLines, the shared orgDiff the desktop uses, and a second key press before it changes a
+    // live run); exec has no approving path (its policy declines, fails or waits) and no other process reaches a card.
+    ...(opts.desktop || hostKind === 'inproc' ? { liveRosterCards: true as const } : {}),
     // The desktop window's saves (projects:save, mcp:*, skills:*) reach the project's live work runs (applyProjectChange).
     ...(opts.desktop ? { liveHostChanges: true as const } : {}),
+    // The terminal's own orgai process serves only itself: a project save the user typed there (TUI /team) does too.
+    ...(!opts.desktop && hostKind === 'inproc' ? { liveUserSaves: true as const } : {}),
     ...(opts.desktop
       ? {
           todos: {
@@ -705,14 +731,14 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   })
   // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
   runStore.onRunsRemoved = (removed: RunSummary[]) => quick.runsRemoved(removed)
-  const skillEvaluation = new SkillEvaluationService({
+  const skillEvaluation = oneChangePerCall(dataDir, new SkillEvaluationService({
     dataDir,
     project: (projectId) => projects.get(projectId),
     listRuns: (projectId) => rm.list(projectId),
     getRun: (runId) => rm.get(runId),
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
-  })
+  }), { except: ['inFlightCount', 'dispose'] })
   skillEvaluationService = skillEvaluation
   // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
   // completion runs on the connection of the project being analysed.
@@ -815,7 +841,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     afterRun: (i) => evolveProject.run(i.projectId, () => evolveEngine.afterRun(i))
   }
   if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
-  const caps = new CapabilityService({
+  const caps = oneChangePerCall(dataDir, new CapabilityService({
     projects,
     skills,
     mcp,
@@ -831,7 +857,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     env: mockAdapter ? {} : processEnv,
     platform,
     mock: mockAdapter
-  })
+  }), { except: ['inFlightCount', 'dispose'] })
   capabilities = caps
   const maintenance = new MaintenanceService(projects, teamFiles, {
     runs: runStore,
@@ -873,20 +899,28 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
   const steps: HousekeepingSteps = { ...defaultHousekeeping, ...opts.housekeeping }
-  const ctx: HousekeepingContext = {
+  const housekeepingContext = (): HousekeepingContext => ({
     dataDir,
     runStore,
     keepRunsFor,
     knownProjects: new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID])
+  })
+  const housekeep = (): number => {
+    const ctx = housekeepingContext()
+    let dropped = 0
+    for (const projectId of steps.orphanRunProjects(ctx)) dropped += steps.removeProject(ctx, projectId)
+    dropped += steps.prune(ctx)
+    dropped += steps.sweepOrphans(ctx)
+    dropped += steps.sweepScratchDirs(ctx)
+    if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+    return dropped
   }
-  let dropped = 0
-  for (const projectId of steps.orphanRunProjects(ctx)) dropped += steps.removeProject(ctx, projectId)
-  dropped += steps.prune(ctx)
-  dropped += steps.sweepOrphans(ctx)
-  dropped += steps.sweepScratchDirs(ctx)
-  steps.sweepStaleSkillDirs(ctx)
-  if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
-  void startFinishedCopiesSweep(hostKind, maintenance, (m) => log.info(m))
+  if (!opts.deferHousekeeping) {
+    housekeep()
+    steps.sweepStaleSkillDirs(housekeepingContext())
+  }
+  // UI overhaul: the boot sweep of finished copies kept past keepFailedBranchesDays (desktop only, never throws).
+  if (!opts.deferHousekeeping) void startFinishedCopiesSweep(hostKind, maintenance, (m) => log.info(m))
 
   // Wave 7 (cli-standalone.md 4.3): the one shutdown sequence. The activity tracker drains and settles the writers; the
   // coordinator closes the socket, releases ownership (never before the writers are done), ends the process through
@@ -1005,7 +1039,19 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     ...(opts.desktop ? { desktop: opts.desktop } : {}),
     host: hostControl,
-    secrets
+    secrets,
+    // Several orgai sessions on this data folder: a mutating request may only touch this session's projects and runs.
+    ...(storeSyncFor(dataDir).shared
+      ? {
+          sessionGuard: createSessionGuard({
+            sync: storeSyncFor(dataDir),
+            project: (id) => projects.get(id),
+            run: (id) => rm.summary(id) ?? runStore.get(id),
+            hostedElsewhere: (id) => runStore.hostedElsewhere(id),
+            workingElsewhereIn: (projectId) => runStore.workingElsewhereIn(projectId)
+          })
+        }
+      : {})
   }
   const dispatcher = new HostDispatcher(services)
   dispatcherRef = dispatcher
@@ -1031,5 +1077,5 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets.dispose()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose, housekeep }
 }

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { SyncedFile, storeSyncFor } from '../store/shared/storeSync'
 import type { ModelPrice } from '@shared/types'
 import { sanitizeModelPrice } from '../runtime/pricing'
 
@@ -111,9 +112,12 @@ export class CommunityPrices {
   private timers: ReturnType<typeof setTimeout>[] = []
   private lastError = ''
 
+  /** Keeps the cache file correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private synced: SyncedFile
+
   constructor(private deps: CommunityPricesDeps) {
     this.file = join(deps.dataDir, 'model-prices.json')
-    this.load()
+    this.synced = new SyncedFile(this.file, storeSyncFor(deps.dataDir), () => this.load())
   }
 
   private now(): number {
@@ -138,9 +142,12 @@ export class CommunityPrices {
   private save(prices: Prices): boolean {
     const tmp = `${this.file}.tmp`
     try {
-      mkdirSync(dirname(this.file), { recursive: true })
-      writeFileSync(tmp, JSON.stringify({ version: 1, fetchedAt: this.fetchedAt, prices }), 'utf8')
-      renameSync(tmp, this.file)
+      // The whole list is replaced by a fresh fetch, so nothing is merged: the lock only keeps two sessions' writes apart.
+      this.synced.replace(() => {
+        mkdirSync(dirname(this.file), { recursive: true })
+        writeFileSync(tmp, JSON.stringify({ version: 1, fetchedAt: this.fetchedAt, prices }), 'utf8')
+        renameSync(tmp, this.file)
+      })
       return true
     } catch (e) {
       console.warn(`Community model prices fetched but not saved to disk: ${(e as Error).message}`)
@@ -155,11 +162,14 @@ export class CommunityPrices {
 
   /** The cached prices, or undefined when the setting is off or nothing is cached. */
   get(): Prices | undefined {
+    // A list another orgai session fetched since this one last looked (so this one does not fetch it again).
+    this.synced.fresh()
     return this.deps.enabled() ? this.prices : undefined
   }
 
   /** When the cache was last fetched (epoch ms), 0 = never. */
   get lastFetchedAt(): number {
+    this.synced.fresh()
     return this.fetchedAt
   }
 
@@ -169,6 +179,7 @@ export class CommunityPrices {
    */
   async refresh(staleAfterMs = DAY_MS): Promise<boolean> {
     if (this.disposed || this.busy || !this.deps.enabled()) return false
+    this.synced.fresh()
     // A fetchedAt in the future (skew, tampered file) counts as stale.
     const age = this.now() - this.fetchedAt
     if (this.prices && this.fetchedAt && age >= 0 && age < staleAfterMs) return false

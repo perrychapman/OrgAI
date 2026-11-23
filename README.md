@@ -36,6 +36,11 @@ Type `/` for searchable commands, Ctrl+O to expand tool details, and Tab to move
 Decisions appear inline above the prompt; Shift+Tab selects the decision without interrupting ordinary typing.
 Esc twice interrupts a working run from the composer. Enter sends; Alt+Enter adds a line.
 
+You can keep several terminals open at the same time, in different projects or in the same one, and run `orgai exec`
+or any other command beside them. Each terminal steers the runs it started; a run started in another terminal shows
+read-only, as last saved, and the status bar says how many terminals are in the project. `orgai status` and
+`/sessions` list what is running.
+
 Folders that are not registered projects open setup choices in the same terminal flow, at the current window size. Use Up/Down and
 Enter to choose a quick run, guided setup, or the default team; the numbered shortcuts still work. The orgai TUI
 answers every approval and question card itself.

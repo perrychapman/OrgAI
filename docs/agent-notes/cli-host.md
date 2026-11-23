@@ -2,6 +2,124 @@
 
 Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, TUI, packaged and standalone CLI, vault, shutdown and handoff, repository lock. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
+- Sessions (docs/design/cli-sessions.md, 2026-11-22): any number of `orgai` processes share one CLI data folder and
+  its projects (several terminals can work in one project; "Sharing a project" below). This replaces "one `orgai`
+  per CLI data folder"; lines below that say a second `orgai` is refused or
+  that read-only commands print a "saved snapshot" note now hold only beside an `orgai` that owns the folder alone (an
+  older version, or a host started with `listen: true`). Each fact says how it was checked; only macOS was run.
+  - A session is one host process. It holds `<data>/run/sessions/<id>.lock` for its life (a kernel lock through
+    SQLite's `BEGIN EXCLUSIVE` on an empty file, `store/shared/syncLock.ts` over `osLock.ts`) and writes `<id>.json`
+    (pid, cwd, command, open projects). Alive means the lock is held: never a pid, a start time or an age. A held
+    lock is pinned in a module-level set: a handle that became unreachable was collected and its finalizer closed the
+    connection, silently freeing the lock (found by a test child; `syncLock.test.ts` "a lock outlives its handle"
+    fails without the pin). `node:sqlite` loads on first use (`sqliteLoader.ts`); on Node 22.22.3 the load prints an
+    ExperimentalWarning, which is dropped for that one load (checked on 22.22.3 and 26.0.0).
+  - Shared files: every store that keeps a JSON file in memory goes through `store/shared/storeSync.ts`. `write`
+    takes the data folder's one write lock (`sessions/write.lock`, blocking, 15 s budget, held only in synchronous
+    code), re-reads the file if its stamp (size, mtime ns, inode) changed, runs the change and records the new stamp;
+    `refresh` before a read is one `stat` (about 1 microsecond, measured), so there is no staleness window (a 50 ms
+    throttle was tried and removed: a host test read a neighbour's save too late). `SOLO` (the desktop app, tests) does
+    none of it. Stores converted: runs, projects, settings, vault, skill / MCP library, connector presets, org templates,
+    retained run projects, models and price caches, the outputs index; the skill library's folder changes run under the
+    lock. A re-read that cannot parse keeps memory and never writes an emptied copy. Checked by `runsShared.test.ts`,
+    `sharedStores.test.ts` (two sessions in one process), two real processes x 100 runs, and the unchanged store suites
+    (798 tests) for the `SOLO` path.
+  - Runs: `runs.json` gained `owners` (run id to session id, open runs only; an older `orgai` and the app ignore and
+    drop it). A run whose owner's lock is held keeps its status elsewhere and `RunStore.upsert` / `moveToProject` refuse
+    it (`RunBusyError`); otherwise an open run is normalized as crashed on read, and a read re-checks the owners every
+    second so a host's death shows without a write. An open run of a stored project opens the project in `upsert`. `list` / `get` / `all` / `getRecord` mark a run another
+    session hosts with `liveElsewhere` (pid, cwd, command; added on read, never stored).
+    `RunManager.continueRun` refuses a conversation with a member hosted elsewhere (`assertHostedHere`; inert alone).
+    A live record reaches disk every 1.5 s, so another session reads it that much behind.
+  - Projects: open in any number of sessions (`project-<sha256 prefix>.lock` held SHARED, `syncLock.ts`
+    `trySyncSharedLock`: a read transaction on the empty file); held alone (the same lock, exclusive) only to remove a
+    project or move it to another folder, which succeeds only when nobody else has it open (`sessions.ts`
+    `openProject` / `exclusiveProject` / `othersIn`). `host/sessionGuard.ts` runs before every mutating RPC: every
+    short string in the arguments that is a stored project id or a run id counts (no per-channel table); a run hosted
+    elsewhere throws `RunBusyError`; the projects named are opened; `projects:remove`, `maintenance:uninstallRepo`, and a
+    `projects:save` that changes the path, hold the project alone until the request is done (the guard returns the
+    release, the dispatcher calls it in `finally`) or throw `ProjectBusyError`; one session at a time tries for a
+    project alone (`alone-turn.lock`), and a session's exclusive holds are released when it ends;
+    `maintenance:integrateWorktree` / `discardWorktree` throw `WorktreesBusyError` while another session hosts a work
+    run that is working in the project (`RunStore.workingElsewhereIn`: starting, running or stopping, or idle with a worktree
+    still active, merging or under review in its saved record, `hasWorktreeAtWork`). All three are
+    `session_busy` on the wire and exit 6 in the CLI (`manage.ts` `hostError`, `exec.ts` `hostFailure`). Checked by
+    `sessions.test.ts` (also across processes), `sessionGuard.test.ts`, `inprocHost.test.ts` (two hosts in one project
+    over RPC), `cli.int.test.ts`, e2e.
+  - Sharing a project (the second change of 2026-11-22). Rule: a project's own file is read, changed and rewritten
+    as ONE step under the write lock. Three shapes: a locked wrapper around a module function (the work is in its
+    `...Unlocked` half: `store/knowledge.ts`, `store/projectData.ts` notes and engagement document,
+    `runtime/permissionRules.ts` through `lockedForProcess`, `store/staffingProfile.ts`);
+    `TeamFilesService.oneChange` around `check`, `beforeSave`, `approve`, `reject`, `undo`, `enable`, `markRemoved`,
+    `createFromFolder`, `adopted` (its status cache key also carries `TeamFilesStore.stamp` when shared);
+    `oneChangePerCall(dataDir, service, { except })` in `bootstrap.ts` for McpService, SkillService,
+    SkillEvaluationService, the outputs service, SetupService and CapabilityService (a Proxy: each call under the
+    lock; `except` names in-memory counters the activity tracker polls; a call that returns a promise holds the lock
+    for its synchronous start only, so code that awaits and then saves must save onto the stored project, not its
+    old copy: `SetupService.prepare`, `maintenance.uninstallRepo`; the outputs service's `ensureV1`, `commitVersion`
+    and `markAnswered` take the lock themselves). Not covered, last writer wins: a team review file. Work across awaits takes `store/shared/namedLock.ts` `withNamedLock` (`work-<hash>.lock`, 60 s wait,
+    then `SessionBusyError`): the evolve service's `serial`, the outputs service's `queued`. With `SOLO` (desktop,
+    most tests) every one of these is a plain call. A NEW project-scoped writer must use one of the three shapes and
+    be labelled `PROJECT_LOCKED` in `writePathInventory.allowlist.ts`. Checked by `store/sameProject.test.ts` (two real
+    processes, phase barriers so both hit one file at the same moment: 4 x 60 writes each, all 480 kept; with one
+    lock removed 34 to 57 of 120 were lost).
+  - Project record: `ProjectStore.save` / `saveFromRenderer` run as one `change`, on `rebased(project)`: when the
+    caller's `updatedAt` is older than the stored one and this process still remembers that version (`versions`, the
+    last 8 per project, shared folder only), the save is `mergeProject(base, mine, theirs)` (`store/projectMerge.ts`:
+    whole fields, lists with ids per item); an unknown base is stored as it is. `nextUpdatedAt` keeps two saves of one
+    project from sharing an `updatedAt` (shared only). Checked by `projectMerge.test.ts`, `sameProject.test.ts`.
+  - Worktrees: `RuntimeContext.otherRunsLive()` (RunManager: another work run of the project that is working, in this
+    process or by `RunStore.workingElsewhereIn`; an idle run counts only while `hasWorktreeAtWork`) makes `WorktreeIntegrator.reconcileLeftovers` skip (nothing committed or announced)
+    and `integratePending` refuse a branch this run does not track. This also covers two runs of one project in the
+    desktop app. Checked by `integration.test.ts`.
+  - Terminal UI: `TuiState.othersHere` (the status bar shows "Name (2 terminals)"), kept current by
+    `session.ts` `watchElsewhere` every `TUI_WATCH_ELSEWHERE_MS` (1500): it also re-reads the run list and, for a
+    followed run with `liveElsewhere`, its record. `pickDefault` never opens such a run, and send / interrupt / stop / model and mode
+    changes on one are refused in the session before any request (`ownActiveId`); `statusSummary.liveRuns` leaves
+    such runs out (the quit prompt counts this terminal's runs). Checked by `session.test.ts`
+    and `e2e/cli-parallel.mjs` (two terminal UIs in one project).
+  - Not built, on purpose: answering or steering a run from another terminal, and one shared host process. Both
+    need one process to trust another with approvals (docs/design/cli-sessions.md "Considered and not built").
+  - Ownership (`ownership.ts` `sessions` option, CLI only, `listen: false` only): a live incumbent whose daemon.json
+    says `sessions: true` is joined (no daemon.json written, `advertised` false); `register` runs under the startup
+    mutex (sweep dead sessions, then register), so starts are serialized and a starting `orgai` waits up to 15 s for
+    one holding the mutex (`wait: 'wait'`, 25 ms polls). At release the advertised session rewrites daemon.json to name
+    the oldest other session (`successor`); after a crash a survivor's 2 s timer takes it over (`adopt`). So an older
+    `orgai`, which reads only daemon.json, always sees one live host and refuses. Gap: up to 2 s after a crash of the
+    advertised session an older `orgai` could take the folder. Checked by `inprocHostRace.test.ts` (three real-process
+    cases) and e2e; no older binary was run against this build.
+  - The boot housekeeping (runs of removed projects, prune, orphan records, scratch folders) runs only when the session
+    is alone, inside the startup mutex (`tryUnderStartupMutex`); `bootOrgAIHost` gets `deferHousekeeping` and returns
+    `housekeep()`. The temp folder sweep of stale skill folders is asynchronous and skipped by management commands
+    (`tempSweep: false`). The retention prune at every run end (`RunManager`, `store.prune`) still runs in every
+    session: under the write lock, on the newest index, ended runs only.
+  - Review (2026-11-22, one independent read-only pass; both external reviewers were out of quota): it found that
+    `ConnectionService` built the proxy list before the lock (fixed: `SettingsStore.setProxies` takes an updater),
+    that the docs called the run-end prune alone-only (corrected), and that another session's folder name reached
+    refusals unsanitized (fixed in `parseSessionRecord`). Its settings-merge finding does not apply to the CLI: `orgai
+    settings set` and the TUI send one key, merged in the host onto the stored settings.
+  - Vault: every commit under the write lock; a value change re-reads first; a creation re-checks under the lock and
+    fails clean if another session created one meanwhile (the retry opens it); a vault another session created is
+    opened in the background; `secrets init` / `reset` are refused while another session runs. Checked with the fake
+    custodian (`sharedStores.test.ts`); no real key store.
+  - Read-only commands: `ReadOnlySnapshot.sessions` and `soleOwner`. `status` lists sessions (text and JSON
+    `sessions`); `ownerSnapshot` returns the files only for a sole owner, so `usage show`, `secrets status` and
+    doctor's connection checks start their own host beside sessions. TUI `/sessions` lists the others.
+  - Startup: `ownership.ts` no longer reads the runtime base (the temp folder) unless this data folder's socket path
+    needs it; with the skill sweep off the start path that removed two temp folder reads per start. `compileCache.ts`
+    enables V8's compile cache in `<data>/run/compile-cache/<version>` before the host and TUI chunks load; never for hostless
+    commands, never against `NODE_COMPILE_CACHE`. Measured before (d10dea58) and after on the built CLI, median of 11:
+    `settings list` 335 ms to 206 ms with 80,000 entries in the temp folder, 236 ms to 204 ms with a clean one; hostless
+    commands unchanged (64 ms). `launchTui` starts the host while the TUI chunk
+    loads. TUI streaming: partial text moved out of `TuiRun` into `TuiState.partials`, so a delta no longer replaces
+    `state.runs` and recomputes every selector (1.9 ms to 0.05 ms per delta on a 5,000 entry transcript, reducer plus
+    selectors, no React; `streamPerf.test.ts`).
+  - Not built: two sessions in one project; following another session's run live; an automatic `/sessions` refresh.
+    The phase 1 modules of `parallel-sessions.md` that nothing called (`lockOrder`, `sharedJsonFile`, `journal`,
+    `atomicWrite`, `paths`, `hostRegistry`, `consumers`, `startTokens`, `chainClaim`, `sessionBinding`) were removed on
+    2026-11-22 (checked: each was imported only by the others and by its own tests; typecheck and the unit suite pass
+    without them). `osLock.ts` stays: `syncLock.ts` uses its lock file checks, busy tests and probe; its asynchronous
+    API has no caller but its tests.
 - CLI & host: THE MODEL (docs/design/cli-standalone-default.md, status "implemented on feat/cli-standalone-default", 2026-11-08). The `orgai` CLI (npm package `orgai-cli`) and the OrgAI desktop app share NOTHING, like Claude Code and Claude Desktop: separate data folders (app `<userData>/data`, override `ORGAI_DATA_DIR`; CLI `orgai-cli`, override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored by the CLI; product markers in each folder), separate vaults and key custody (desktop `OrgAI Vault` / `ORGAI_VAULT_*`; CLI `OrgAI CLI Vault` / `ORGAI_CLI_VAULT_*`), approvals, libraries and Codex logins. The app has no socket server, no `--headless-host`, no handoff and no Terminal access setting, and its package does not contain the CLI; it offers an Install row (App settings > Terminal) that runs `npm install -g orgai-cli`. `orgai` runs in-process; no run lives behind the scenes. The sections below are partly HISTORY (cli-spec.md and cli-standalone.md are superseded where they differ); the spec's section 6 lists the corpus exclusions.
   - Waves 0-5 landed the socket protocol, the in-process host, the self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see cli-spec.md "Implementation status" for deviations and what is unverified.
   - Wave 7 (standalone `orgai`; docs/design/cli-standalone.md; merged to dev via PR #24, 2026-11-07; its Node host, daemon and handoff parts are removed). Verified on macOS by unit tests, in-process integration tests and a few e2e scripts; nothing ran on Windows or Linux, against a real OS key store, the real npm registry or a packaged build (see Unverified at the end of this bullet).
@@ -27,15 +145,24 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     publish (D2 fallback). release.yml has three desktop build jobs on two OSes (Windows x64, macOS arm64, macOS x64) and
     no Linux leg: Linux is covered only by verify-npm. The app no longer contains the CLI (standalone spec 5.2); `pack:verify` has no CLI-driven checks.
   - Model (docs/design/cli-standalone-default.md, implemented 2026-11-08): see the first bullet. `orgai` always runs its host in-process (`src/cli/inprocHost.ts`, ownership in `src/main/host/ownership.ts`, one `orgai` per CLI data folder, a second one is refused with exit 6; read-only commands read files beside an owner, `src/cli/client/readOnlyStore.ts`). There is no `--host`, daemon, Node or headless host, no `orgai app`, `terminal-access`, `watch`, `inbox`, `decide` or `attach`, and no launcher or shared host. Cards are answered inside the owning TUI. `ORGAI_SECRET_*` / `--secret-env` rules follow spec 4.1 (Round 6 item 8); `ORGAI_SECRET_*` names are refused as `--from-env` / `--client-secret-from-env` sources (exit 2).
-  - Mid-run org changes are DESKTOP ONLY (owner decision, fourth review of the live roster, 2026-11-18): the `orgai`
-    host's RunManager is built without `RunManagerOptions.liveRosterCards` (bootstrap.ts sets it only with `desktop`),
-    because the TUI decides org chart cards without a diff against runBaseline (`src/cli/tui/decisions.ts`). So a CLI /
-    TUI / exec run keeps the pre-feature behaviour exactly even though the adapters' sessions declare `liveRoster`: no
-    runBaseline on the payload (an agent-supplied one is dropped), `ctx.roles` untouched, card effect 'next-run', and
-    propose_org_change says "applies from the next run". The headless exec policy only ever declines a proposal.
-    Checked by runRoster.test.ts (the gate fails closed) and runManagerRoster.test.ts (a RunManager without the option on
-    a liveRoster session). Turning it on for the CLI needs a TUI org chart diff against runBaseline with every field
-    that can move, then the option in the inproc bootstrap.
+  - Mid-run org changes in the terminal (2026-11-23). They were desktop only by owner decision (fourth review of the
+    live roster, 2026-11-18) because the TUI decided org chart cards without a diff against runBaseline; the note here
+    said what turning it on needs: "a TUI org chart diff against runBaseline with every field that can move, then the
+    option in the inproc bootstrap". Both are done. The card (`src/cli/tui/orgChartCard.ts`, used by `decisions.ts`)
+    renders the desktop's own diff (`src/shared/view/orgDiff.ts` `diffOrgChart` over `orgDiffBase`). A card that changes
+    this live run (`orgChartAppliesNow`: effect 'now' / 'after-turn' and a runBaseline) shows, in its scrollable
+    compact body, the `from -> to` of every changed field and, for an added role, its model, tools, tier, effort,
+    connection, staffing, skills, spawn rights, responsibilities and prompt (PR 68 review H1). `y` is refused with a
+    one-line reason until that body was scrolled to its end or `v` opened the full view, the mechanism the permission
+    cards use (`readAll`); a body or full view cut at 64 KB never unlocks `y` (decline it). Then Approve is a two-step
+    key: "Change this run's team now (1 added, 1 changed)?". A card that applies from the next run keeps the short
+    preview. Checked by `DecisionTray.orgGate.test.tsx` and `decisions.test.ts`; e2e section j is not runnable on
+    Windows (no pty). bootstrap.ts sets `liveRosterCards` for hostKind 'inproc' as well: the TUI tray is the only approving
+    path there (exec's policy declines, fails or waits; no other process reaches a card). A `run.roster` event shows
+    as one status notice (`rosterNotice`). A card without a runBaseline (setup, /evolve, a single-assistant run) is
+    compared with the saved team and applies from the next run as before. Checked by orgChartCard.test.ts,
+    decisions.test.ts, runRoster.test.ts and e2e `cli-tui.mjs` section j (the mock's `[mock:org-change]`: the new
+    role joins the run and takes work); no live provider.
   - PR 49 (in-memory dispatch, lazy loading, run choices, exec flags; review fixes 2026-11-12). Each item says how it was checked; nothing here was run against a live provider, and no e2e beyond the area scripts listed in the PR 49 fix report.
     - `orgai exec -q` / `--quiet`: stdout carries only the sanitized final answer, logs go nowhere or to stderr, JSON output is unchanged (exec.test.ts "--quiet ..." cases).
     - `--output-last-message <file>`: the final answer is written to a temporary file and renamed over the destination (relative to the cwd), never through a link; a failed write fails the command (exec.test.ts; the link case needs symlink privilege and fails with EPERM on a Windows account without it, a test-environment limit).
@@ -179,7 +306,7 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     vendor binary and never spawned. `checkCodexBinary` runs `--version` (cached by realpath + mtime + size) in
     `CodexAppServer.start` and the OpenAI probe; outside 0.169.x it refuses ("Codex <v> is not supported; install
     @openai/codex@0.169.0"; the pin moved from 0.166.0 to 0.167.0 on 2026-11-12 and to 0.169.0 on 2026-11-20), except `ORGAI_CODEX_PATH`, which gets one run warning (a test ties package.json's pin to
-    `CODEX_PINNED_VERSION`). Codex is not a dependency of the npm package. The Codex MCP restart creates no app-server after End
+    `CODEX_PINNED_VERSION`). Codex is a dependency of the npm package since 2026-11-23 (`scripts/lib/npmPackage.mjs` `NPM_RUNTIME_PACKAGES`): `lookupCodexBinary` step 2 finds the bundled per-platform binary, hoisted or nested, before PATH; `verify-npm` step 7 runs that binary and fails unless it is the pinned version and answers `initialize` (checked on macOS arm64 by a real install: `codex-cli 0.169.0; initialize answered`; other platforms by CI). The Codex MCP restart creates no app-server after End
     session; `codex --version` / app-server children untrack from `host/shutdown.ts` on 'error' and 'close' as well as 'exit'.
     Unit-tested with fake file systems and fake servers only; no real claude or codex binary was resolved through these paths.
   - Doctor (`src/cli/doctor/`): installChecks (channel, every `orgai` on PATH, shadowed newer one), runtimeChecks, secretsChecks (vault
@@ -252,6 +379,13 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     composer at a new run first (`App.tsx` `startLaunchRun`; never a runs:send to a focused live run, `--team` kept).
     Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
     Merge Review, the real pager and CSI-u Ctrl+. on real terminals are not driven.
+  - Text views (2026-11-23, owner: "I hate when I get stuck in this screen", after /evolve left him in `less`): every
+    text a command shows (/help, /evolve, /usage, /logs, /runs, /sessions, /outputs, a card's full view) opens in the
+    app's own view (`App.tsx` `openText`: q or Esc closes, the keys scroll). Only a diff (`openText(..., { pager: true
+    })`: /diff, `v` on a worktree, `w` in the inspector) is handed to the system pager, and the default `less` gets a
+    prompt that says how to leave (`pager.ts` `LESS_PROMPT`; a pager set through $PAGER keeps its own arguments).
+    Checked by pager.test.ts, App.inspector.test.tsx, e2e `cli-tui.mjs` (Esc closes /logs) and `cli-parallel.mjs` (Esc
+    closes /sessions), and the prompt once by hand in a pty with less 668 on macOS.
   - Wave 6 (history, removed 2026-11-08): the app-bundled `orgai` launcher, `app:cliShim*` IPC and `CliShimRow`. The packaged app holds no CLI, and the RunAsNode fuse stays on (accepted: the certificate reader runs the app binary as Node, so any local process can run JS as the signed OrgAI binary with its entitlements via `ELECTRON_RUN_AS_NODE=1`; the self-control gate's rule for that assignment is a text check; standalone spec section 2); `npm run pack:verify` (`scripts/verify-pack.mjs`) checks that, that the app keeps its own unpacked runtime packages, and (check (e)) boots hidden on the mock adapter with a temp `ORGAI_DATA_DIR` and quits cleanly (CI step is `continue-on-error` until (e) has passed once on both runners; standalone spec section 12). The only shim code left is cleanup of old OrgAI-written shims (`shimInstaller.ts`, Install row below).
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,
@@ -440,8 +574,40 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   `previewTierChange` (now exported; the touched roles are listed before `y`), then connections:update; App rows through
   `orgai settings`' `SETTING_KEYS` / `parseSettingValue`, then settings:set. The project's connection row is read-only.
   Host calls: `TuiSessionApi.config` (`configApi.ts`), reads on the shared client, writes on a one-call 'configure'
-  connection (`callConfigured`); a save updates the session's project. Mid-run: the host lets a project be saved while a
-  run is live and RunManager keeps the live run's roles as they started, so a save during a live run says it applies from
-  the next run. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
+  connection (`callConfigured`); a save updates the session's project. Mid-run (2026-11-22): a role edit saved in /team
+  reaches the team work runs this terminal hosts (ARCHITECTURE.md "Host changes in a live run", TERMINAL), and each
+  run's answer shows as one status notice (`liveChangeText.ts`: "The team: this run uses the change now." or "from the
+  next run" with the reason). A single-assistant run and a run another terminal hosts keep the team they started with:
+  only then /team adds its "keeps the team it started with" note (`takesSavedTeam`). /settings saves change no role, so
+  a live run keeps the settings it started with. Checked by e2e/cli-tui.mjs section i (mock adapter) and unit tests; no
+  live provider. Both views are overlays of the body (status bar, tray and composer stay), focus target 'config', Esc
   backs out one level. The first time a terminal opens a project it shows one notice naming /team and /settings
   (`<userDataDir>/tui-hints.json`, `hintStore`).
+- TUI `/mcp` and `/skills` (2026-11-23; `McpView.tsx` / `mcpModel.ts`, `SkillsView.tsx` / `skillsModel.ts`, host calls in
+  `toolsApi.ts`, built like /team on `configUi.tsx`): the project's servers and skills as a list; Space turns one on or
+  off, `r` ticks the roles (MCP: `McpServerSpec.roles` slugs, every role ticked = no list; skills: the complete set of
+  role ids), `l` adds one from the library, `x` removes it after `y`, Enter shows the details (a skill's text is read
+  in the background). Each save is ONE field of ONE item, so it reaches the live team runs this terminal hosts
+  (ARCHITECTURE.md "Host changes in a live run", TERMINAL); the run answers in the status line, and the view adds its
+  "keeps what it started with" note only when some live run does not take the save. `setMcp` reads mcp:list afresh
+  and upserts the spec with that one field changed, which is what the host's one-field rule expects. `s` in /mcp
+  (2026-11-23) sets or deletes one secret value: a hidden input (`configUi.tsx` 'input' dialog with `secret: true`:
+  dots, never the text; a pasted line break is dropped; up to 4000 characters), saved with mcp:setSecret, or
+  mcpLibrary:setSecret when the values live in the linked library entry (`McpServerInfo.secretScope`); the value is
+  never read back and never in a message; e2e checks the raw pty output never carries it. A live run is not told
+  about a new secret (mcp:setSecret has no live path on any host). Not in the views: adding a new server or skill by
+  hand, and sign-in (the `orgai mcp` / `orgai skills` commands). A WIDENING save asks first (PR 68 review, M1): turning
+  an item on, linking one from the library, or a roles / grants change that adds at least one role (including "every
+  role") opens a `confirm` dialog (`strict`: `y` saves, any other key cancels, nothing is saved). The MCP dialog shows
+  the name, transport, the command and every argument (one per line) or the URL, the NAMES of env variables, headers
+  and secret slots (never a value), the source and who gets it; the skill dialog the name, source, files, who holds it
+  and the first 12 lines of SKILL.md. The text is read afresh when the dialog opens (`skills:read` for a project
+  skill, never the text cached for the details; `skillLibrary:read` through `TuiToolsApi.readLibrarySkill` for a
+  library entry). Fail closed (PR 68 recheck, N2 / N3): when that read fails no dialog opens, nothing is saved and
+  the one-line message points to the `orgai skills` command. Text is sanitized and never cut: a definition that does
+  not fit the window is refused with a message instead of being cut, and a strict dialog that a resize has since
+  made too small is closed on the next key instead of accepting `y` (`strictConfirmCut`, N4). Narrowing keeps saving at once. The
+  predicates and line builders are pure (`mcpWidens`, `mcpConfirmLines`, `skillWidens`, `skillConfirmLines`), checked by
+  `widening.test.ts` and the view tests; the selected row is one clamped index for highlight and action (L5). Checked by
+  the four view and model test files and e2e `cli-tui.mjs` section i (mock adapter); no live provider. The views were
+  written by a local model from a design brief and reviewed line by line.
