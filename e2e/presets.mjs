@@ -34,7 +34,7 @@ const focusOn = (testid, ms = 5_000) =>
   )
 async function openPane() {
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+  await page.getByRole('tab', { name: 'Tools and services', exact: true }).click()
   await page.locator('[data-testid=presets-section]').waitFor({ timeout: 10_000 })
 }
 async function closeFormWithEscape() {

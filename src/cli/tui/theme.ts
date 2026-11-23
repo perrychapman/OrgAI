@@ -23,14 +23,14 @@ export function terminalThemeFor(env: Record<string, string | undefined>): 'dark
  */
 const TERMINAL_PALETTES = {
   dark: {
-    primary: '#e8ebf3', secondary: '#a3adc2', surface: '#181c27', brandBase: '#ffffff',
-    accent: '#a592ff', running: '#4cb8ff', ok: '#34d399', warn: '#f5b73d', danger: '#ff7b7b',
-    identity: '#b18aff', identityCyan: '#64d8e8', identityGreen: '#7dd3a8', identityAmber: '#edc46a', identityPink: '#ef9dc6', identityBlue: '#8bb8ff', message: '#5d8bd6', code: '#a3adc2'
+    primary: '#eef0f7', secondary: '#bcc3d3', surface: '#1a1e2c', brandBase: '#ffffff',
+    accent: '#b6acff', running: '#6fd3f3', ok: '#52d6a0', warn: '#f5b260', danger: '#ff8a80',
+    identity: '#b18aff', identityCyan: '#64d8e8', identityGreen: '#7dd3a8', identityAmber: '#edc46a', identityPink: '#ef9dc6', identityBlue: '#8bb8ff', message: '#5d8bd6', code: '#bcc3d3'
   },
   light: {
-    primary: '#12151f', secondary: '#4a5368', surface: '#f4f5f9', brandBase: '#12151f',
-    accent: '#4f33d6', running: '#0a5fa2', ok: '#096a48', warn: '#7d4a00', danger: '#b3242f',
-    identity: '#7136c8', identityCyan: '#096e80', identityGreen: '#236e48', identityAmber: '#805600', identityPink: '#a02e70', identityBlue: '#285db0', message: '#2f67b4', code: '#4a5368'
+    primary: '#12151f', secondary: '#444c60', surface: '#f4f5f9', brandBase: '#12151f',
+    accent: '#4a3bd0', running: '#086a8c', ok: '#0c6b47', warn: '#944705', danger: '#b3261e',
+    identity: '#7136c8', identityCyan: '#096e80', identityGreen: '#236e48', identityAmber: '#805600', identityPink: '#a02e70', identityBlue: '#285db0', message: '#2f67b4', code: '#444c60'
   }
 } as const
 

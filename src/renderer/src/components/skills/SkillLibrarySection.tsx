@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { BookOpen, FolderPlus, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { BookOpen, FolderPlus, Pencil, Plus, Sparkles, Trash2, TriangleAlert } from 'lucide-react'
+import { useAppStore } from '../../store/useAppStore'
 import type { SkillDraft, SkillLibraryInfo } from '@shared/types'
 import { SKILL_BODY_MAX_CHARS } from '@shared/types'
 import { draftProblems, hasDraftProblems, libraryRemoveLines, skillElevatedHint, skillScriptPaths, sourceLabel, usedByList } from '../../lib/skills'
@@ -73,7 +74,7 @@ export default function SkillLibrarySection(): ReactElement {
   return (
     <SettingsSection
       id={APP_SETTINGS_SECTIONS.skillLibrary}
-      title="Skill library"
+      title="Your skills"
       description="Define a skill once; any project can link it."
       testId="skill-library"
       actions={
@@ -83,6 +84,9 @@ export default function SkillLibrarySection(): ReactElement {
           </Button>
           <Button icon={FolderPlus} testId="skill-library-add-folder" disabled={adding} onClick={() => void addFolder()}>
             Add from folder
+          </Button>
+          <Button variant="ghost" icon={Sparkles} testId="skill-library-helper" onClick={() => void useAppStore.getState().openAssistant('skills', { fresh: true })}>
+            Ask the Skills helper
           </Button>
         </>
       }

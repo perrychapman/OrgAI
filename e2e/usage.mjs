@@ -89,7 +89,7 @@ try {
   check(await page.locator('[data-testid=trends-totals]').isVisible(), 'the current month shows the run')
 
   await openAppSettings(page)
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await page.getByRole('tab', { name: 'AI providers', exact: true }).click()
   const adv = page.locator('[data-testid=settings-advanced][data-pane=app-connections]')
   await adv.waitFor({ timeout: 10_000 })
   if (!(await adv.evaluate((el) => el.open))) await adv.locator('> summary').click()

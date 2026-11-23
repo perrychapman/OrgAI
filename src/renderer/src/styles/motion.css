@@ -246,6 +246,125 @@ details.motion-none::details-content {
   animation-delay: calc((1 + min(var(--i, 0), 5)) * var(--motion-stagger));
 }
 
+/* ---------- Live cues (UI overhaul, docs/design/ui-overhaul/impl-foundation.md "Motion") ---------- */
+/*
+ * Loops are only for live state that is true right now (motion-design skill): a working agent pulses (cyan), something
+ * waiting on the person breathes (amber), a reporting line that is carrying work flows, a working progress bar sheens.
+ * Each loop stops at its resting frame:
+ *   - under reduced motion (global.css caps every animation at 0.01 ms and one iteration, so the end frame shows; the
+ *     keyframes below end on the resting look),
+ *   - under Pause motion: any ancestor with [data-motion-paused] (the surface's own Pause motion toggle) sets
+ *     animation: none on these classes.
+ * The state never depends on motion: the same element always also carries a word or a static colour.
+ */
+@keyframes motion-pulse-ring {
+  from {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+@keyframes motion-breathe-soft {
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes motion-flow-y {
+  to {
+    background-position: 0 12px;
+  }
+}
+@keyframes motion-flow-x {
+  to {
+    background-position: 12px 0;
+  }
+}
+@keyframes motion-sheen {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Working dot: a cyan ring expands and fades from the dot (pseudo-element, transform + opacity only). The element needs
+   a border-radius; it gets position: relative. --pulse-color overrides the ring colour (default --working). */
+.motion-pulse {
+  position: relative;
+}
+.motion-pulse::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--pulse-color, var(--working));
+  pointer-events: none;
+  opacity: 0;
+  animation: motion-pulse-ring calc(var(--dur-pulse) * 0.9) var(--ease-out) infinite;
+}
+/* Waiting on you: the dot (or badge) breathes between full and 45 % opacity. Ends on full opacity. */
+.motion-breathe {
+  animation: motion-breathe-soft var(--dur-pulse) var(--ease-in-out) infinite;
+}
+/* A reporting line that carries work right now: dashes flow toward the child. Static lines use --border-strong. */
+.motion-flow-v,
+.motion-flow-h {
+  --flow-color: var(--working);
+}
+.motion-flow-v {
+  background: repeating-linear-gradient(to bottom, var(--flow-color) 0 6px, transparent 6px 12px);
+  animation: motion-flow-y calc(var(--dur-slow) * 2.7) linear infinite;
+}
+.motion-flow-h {
+  background: repeating-linear-gradient(to right, var(--flow-color) 0 6px, transparent 6px 12px);
+  animation: motion-flow-x calc(var(--dur-slow) * 2.7) linear infinite;
+}
+/* Indeterminate working bar: a light band passes over the fill. Rests with no band. */
+.motion-sheen {
+  background-image: linear-gradient(100deg, transparent 30%, rgb(255 255 255 / 0.35) 50%, transparent 70%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  background-position: -200% 0;
+  animation: motion-sheen calc(var(--dur-signal)) linear infinite;
+}
+/* Hover lift for clickable cards and tiles: 2 px up with a deeper shadow. The distance token is 0 under reduced motion. */
+.motion-lift {
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+.motion-lift:hover {
+  transform: translateY(calc(var(--motion-distance-sm) * -0.5));
+  box-shadow: var(--elev-2);
+}
+/* A page or section rising in on arrival (same recipe as .motion-arrive-band, named for the boards' rise-in). */
+.motion-rise {
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 5) * var(--motion-stagger));
+}
+
+/* Pause motion on the surface stops every loop at its resting frame. */
+[data-motion-paused] :is(.motion-pulse, .motion-breathe, .motion-flow-v, .motion-flow-h, .motion-sheen),
+[data-motion-paused] .motion-pulse::after,
+[data-motion-paused].motion-pulse::after {
+  animation: none;
+}
+/* Reduced motion: loops do not run even once (global.css would otherwise play one 0.01 ms iteration). */
+@media (prefers-reduced-motion: reduce) {
+  :is(.motion-pulse, .motion-breathe, .motion-flow-v, .motion-flow-h, .motion-sheen),
+  .motion-pulse::after {
+    animation: none !important;
+  }
+}
+:root[data-reduce-motion='on'] :is(.motion-pulse, .motion-breathe, .motion-flow-v, .motion-flow-h, .motion-sheen),
+:root[data-reduce-motion='on'] .motion-pulse::after {
+  animation: none !important;
+}
+
 /* ---------- Opt-out ---------- */
 .motion-none,
 .motion-none::before,

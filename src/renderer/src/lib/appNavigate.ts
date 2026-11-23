@@ -105,10 +105,12 @@ export const SURFACE_TARGETS: Readonly<Record<AtlasSurfaceId, NavTarget>> = {
   'app-settings-general-notifications': app(APP_SETTINGS_SECTIONS.notifications),
   'app-settings-general-canvas': app(APP_SETTINGS_SECTIONS.canvas),
   'app-settings-general-new-projects': app(APP_SETTINGS_SECTIONS.newProjects),
-  'app-settings-general-motion': app(APP_SETTINGS_PANES.general, 'app-general'),
+  // ui-overhaul: Motion moved to the renderer-only Appearance pane (lib/settingsMenu.ts maps 'appearance').
+  'app-settings-general-motion': app('appearance'),
   'app-settings-general-assistant-models': app(APP_SETTINGS_SECTIONS.assistantModels),
   'app-settings-general-new-projects-advanced': app(APP_SETTINGS_PANES.general, 'app-general'),
-  'app-settings-general-terminal': app(APP_SETTINGS_PANES.general, 'app-general'),
+  // ui-overhaul: the orgai command row is visible on General ("On this computer"), not in Advanced.
+  'app-settings-general-terminal': app(APP_SETTINGS_PANES.general),
   'app-settings-connections': app(APP_SETTINGS_PANES.connections),
   'app-settings-connections-proxies': app(APP_SETTINGS_PANES.connections),
   'app-settings-connections-costs': app(APP_SETTINGS_SECTIONS.costs),

@@ -89,7 +89,7 @@ export function GeneralSection({ project, patch }: { project: Project; patch: (p
   const uid = useId()
   const kind = projectKindOf(project)
   return (
-    <SettingsSection id="settings-section-general" title="General">
+    <SettingsSection id="settings-section-general" title="Basics">
       <SettingsCard>
         <p className="settings-card-note project-kind-line" data-testid="project-kind-line" data-kind={kind}>
           {projectKindLine(kind)}

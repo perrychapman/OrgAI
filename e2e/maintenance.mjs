@@ -71,7 +71,7 @@ try {
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created')
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
+  await page.getByRole('tab', { name: 'Branches', exact: true }).click()
   await page.waitForSelector('.maint-row', { timeout: 20_000 })
   const count = await rows.count()
   check(count === 2, 'maintenance lists two pending branches', String(count))
