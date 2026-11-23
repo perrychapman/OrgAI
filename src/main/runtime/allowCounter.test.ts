@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { PermissionSuggestion } from '@shared/types'
-import { ALLOW_COUNT_KEYS_MAX, ALLOW_COUNT_KEY_MAX_CHARS, ALLOW_COUNT_MAX, allowCountFile, allowCountKey, allowCountOf, bumpAllowCount, readAllowCounts } from './allowCounter'
+import { ALLOW_COUNT_KEYS_MAX, ALLOW_COUNT_KEY_MAX_CHARS, ALLOW_COUNT_MAX, allowCountFile, allowCountHash, allowCountKey, allowCountOf, bumpAllowCount, readAllowCounts } from './allowCounter'
 import { removeProjectData } from '../store/projectData'
+
+const h = allowCountHash
 
 let dir: string
 beforeEach(() => {
@@ -70,9 +72,38 @@ describe('counter file', () => {
     bumpAllowCount(dir, 'p1', 'Read')
     const file = allowCountFile(dir, 'p1')
     expect(file).toBe(join(dir, 'projects', 'p1', 'allow-counts.json'))
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 1, entries: [['Read', 2]] })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ v: 2, entries: [[h('Read'), 2]] })
     expect(readdirSync(dirname(file))).toEqual(['allow-counts.json'])
-    expect([...readAllowCounts(dir, 'p1')]).toEqual([['Read', 2]])
+    expect([...readAllowCounts(dir, 'p1')]).toEqual([[h('Read'), 2]])
+  })
+
+  it('stores only the SHA-256 of a key: the command text and paths never reach the disk (security review L1)', () => {
+    const key = 'Bash(curl --header "Authorization: hunter2" https://private.example/deploy:*) | Edit(//home/me/secret-project/**)'
+    bumpAllowCount(dir, 'p1', key)
+    const text = readFileSync(allowCountFile(dir, 'p1'), 'utf8')
+    for (const secret of ['hunter2', 'private.example', 'secret-project', 'Bash', 'Edit']) expect(text).not.toContain(secret)
+    expect(h(key)).toMatch(/^[0-9a-f]{64}$/)
+    expect(text).toContain(h(key))
+    expect(allowCountOf(dir, 'p1', key)).toBe(1)
+    expect(allowCountOf(dir, 'p1', `${key} `)).toBeUndefined()
+  })
+
+  it('migrates a version 1 file (plain keys): counts survive and the plain text is rewritten away at once', () => {
+    const file = allowCountFile(dir, 'p1')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ v: 1, entries: [['Bash(npm run secret-task:*)', 4], ['Read', 2]] }))
+    expect(allowCountOf(dir, 'p1', 'Bash(npm run secret-task:*)')).toBe(4)
+    const text = readFileSync(file, 'utf8')
+    expect(text).not.toContain('secret-task')
+    expect(JSON.parse(text)).toEqual({ v: 2, entries: [[h('Bash(npm run secret-task:*)'), 4], [h('Read'), 2]] })
+    expect(bumpAllowCount(dir, 'p1', 'Read')).toBe(3)
+  })
+
+  it('drops a version 2 entry whose key is not a hash (a hand-edited plain key)', () => {
+    const file = allowCountFile(dir, 'p1')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ v: 2, entries: [['Read', 3], [h('Glob'), 2]] }))
+    expect([...readAllowCounts(dir, 'p1')]).toEqual([[h('Glob'), 2]])
   })
 
   it('is removed with the project data', () => {
@@ -90,10 +121,10 @@ describe('counter file', () => {
     bumpAllowCount(dir, 'p1', 'Bash(new:*)')
     const counts = readAllowCounts(dir, 'p1')
     expect(counts.size).toBe(ALLOW_COUNT_KEYS_MAX)
-    expect(counts.has('Bash(k1:*)')).toBe(false)
-    expect(counts.get('Bash(k0:*)')).toBe(2)
-    expect(counts.get('Bash(new:*)')).toBe(1)
-    expect([...counts.keys()].at(-1)).toBe('Bash(new:*)')
+    expect(counts.has(h('Bash(k1:*)'))).toBe(false)
+    expect(counts.get(h('Bash(k0:*)'))).toBe(2)
+    expect(counts.get(h('Bash(new:*)'))).toBe(1)
+    expect([...counts.keys()].at(-1)).toBe(h('Bash(new:*)'))
   })
 
   it('caps a count at 9999', () => {
@@ -118,10 +149,10 @@ describe('counter file', () => {
     )
     const counts = readAllowCounts(dir, 'p1')
     expect(counts.size).toBe(ALLOW_COUNT_KEYS_MAX)
-    for (const bad of ['a', 'b', 'c', '', 'd', 'e', 'inf']) expect(counts.has(bad)).toBe(false)
+    for (const bad of ['a', 'b', 'c', '', 'd', 'e', 'inf']) expect(counts.has(h(bad))).toBe(false)
     // the 500 most recent survive: the early valid ones (dup, frac) were pushed out by the many
-    expect(counts.has('K519')).toBe(true)
-    expect(counts.has('K0')).toBe(false)
+    expect(counts.has(h('K519'))).toBe(true)
+    expect(counts.has(h('K0'))).toBe(false)
     expect([...counts.values()].every((n) => Number.isInteger(n) && n >= 1 && n <= ALLOW_COUNT_MAX)).toBe(true)
   })
 
@@ -148,6 +179,6 @@ describe('counter file', () => {
 
   it('returns plain structured-clone safe values', () => {
     bumpAllowCount(dir, 'p1', 'Read')
-    expect(structuredClone([...readAllowCounts(dir, 'p1')])).toEqual([['Read', 1]])
+    expect(structuredClone([...readAllowCounts(dir, 'p1')])).toEqual([[h('Read'), 1]])
   })
 })

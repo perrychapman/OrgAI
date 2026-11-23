@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runTestGate, TEST_GATE_DETAIL_CHARS, testGateCommand, testGateEnv, testGateMissingCommand } from './testGate'
+import { runTestGate, scrubTestOutput, TEST_GATE_DETAIL_CHARS, testGateCommand, testGateEnv, testGateMissingCommand } from './testGate'
 
 // Real shell, real processes: the commands below are plain `node -e` lines that behave the same under cmd.exe and /bin/sh.
 let dir: string
@@ -67,7 +67,42 @@ describe('testGateEnv', () => {
       session_token: 't',
       SLACK_BOT_TOKEN: 'b'
     })
-    expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', USERPROFILE: 'C:\\Users\\u', TMPDIR: '/tmp', NODE_ENV: 'test', NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org' })
+    expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', USERPROFILE: 'C:\\Users\\u', TMPDIR: '/tmp' })
+  })
+
+  it('is an allowlist: a variable with an innocent name that is not on it never reaches the command (security review L6)', () => {
+    const env = testGateEnv({
+      PATH: '/bin',
+      HOME: '/home/u',
+      DATABASE_URL: 'postgres://user:pw@db/prod',
+      SENTRY_DSN: 'https://abc@sentry.io/1',
+      STRIPE_KEY_LIVE: 'sk_live_1',
+      SSH_AUTH_SOCK: '/tmp/agent.sock',
+      KUBECONFIG: '/home/u/.kube/config',
+      NODE_OPTIONS: '--require /evil.js',
+      NODE_ENV: 'production',
+      NPM_CONFIG_REGISTRY: 'https://registry.example',
+      npm_config_userconfig: '/home/u/.npmrc',
+      GIT_ASKPASS: '/bin/askpass',
+      EDITOR: 'vim'
+    })
+    expect(env).toEqual({ PATH: '/bin', HOME: '/home/u' })
+  })
+
+  it('keeps what Node, npm and a shell need on Windows and POSIX, in any letter case, plus locale and CI', () => {
+    const base = {
+      Path: 'C:\\Windows', PATHEXT: '.COM;.EXE', SystemRoot: 'C:\\Windows', windir: 'C:\\Windows', ComSpec: 'C:\\Windows\\System32\\cmd.exe', SYSTEMDRIVE: 'C:',
+      USERPROFILE: 'C:\\Users\\u', HOMEDRIVE: 'C:', HOMEPATH: '\\Users\\u', APPDATA: 'C:\\Users\\u\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local',
+      ProgramFiles: 'C:\\Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramData: 'C:\\ProgramData', TEMP: 'C:\\t', TMP: 'C:\\t', USERNAME: 'u',
+      OS: 'Windows_NT', PROCESSOR_ARCHITECTURE: 'AMD64', NUMBER_OF_PROCESSORS: '8',
+      HOME: '/home/u', USER: 'u', LOGNAME: 'u', SHELL: '/bin/zsh', TMPDIR: '/tmp', LANG: 'en_US.UTF-8', LC_ALL: 'C', LC_CTYPE: 'UTF-8', TZ: 'UTC', TERM: 'xterm', CI: 'true',
+      XDG_CACHE_HOME: '/home/u/.cache'
+    }
+    expect(testGateEnv(base)).toEqual(base)
+  })
+
+  it('still drops a secret-looking name even if it were ever allowed (a second check)', () => {
+    expect(testGateEnv({ PATH: '/bin', CI_TOKEN: 'x', LC_PASSWORD: 'y' })).toEqual({ PATH: '/bin' })
   })
 
   it('drops provider secrets, routing variables and OrgAI control variables, keeps the rest', () => {
@@ -90,6 +125,33 @@ describe('testGateEnv', () => {
       ELECTRON_RUN_AS_NODE: '1'
     })
     expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', CI: 'true' })
+  })
+})
+
+describe('scrubTestOutput (security review L6)', () => {
+  it('masks obvious credentials and leaves ordinary output alone', () => {
+    const text = [
+      'Authorization: Bearer abc.def-123',
+      'key sk-proj-ABCdef123456',
+      'API_TOKEN=supersecretvalue',
+      'clone https://user:hunter2pass@github.com/o/r.git',
+      'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+      'AKIAABCDEFGHIJKLMNOP',
+      'npm_abcdefghijklmnopqrstuvwxyz0123',
+      '12 passing (3s)  at src/app.test.ts:42:7'
+    ].join('\n')
+    const out = scrubTestOutput(text)
+    for (const secret of ['abc.def-123', 'ABCdef123456', 'supersecretvalue', 'hunter2pass', 'ghp_abc', 'AKIAABCDEFGHIJKLMNOP', 'npm_abcdefghij']) expect(out).not.toContain(secret)
+    expect(out).toContain('12 passing (3s)  at src/app.test.ts:42:7')
+    expect(out).toContain('https://github.com/o/r.git')
+  })
+
+  it('is applied to the detail a run returns', async () => {
+    const r = await runTestGate(`node -e "console.log('token=abcdefgh1234 and sk-live-ABCDEFG'); process.exit(1)"`, dir)
+    expect(r.outcome).toBe('failed')
+    expect(r.detail).not.toContain('abcdefgh1234')
+    expect(r.detail).not.toContain('sk-live-ABCDEFG')
+    expect(r.detail).toContain('[redacted]')
   })
 })
 
@@ -128,8 +190,8 @@ describe('runTestGate', () => {
   })
 
   it('passes no provider secret to the command, and no OrgAI control variable', async () => {
-    const env = { ...process.env, OPENAI_API_KEY: 'sk-SECRET', ANTHROPIC_API_KEY: 'sk-ant-SECRET', CODEX_API_KEY: 'x', ORGAI_DATA_DIR: '/d', CLAUDE_CODE_OAUTH_TOKEN: 'tok', KEEP_ME: 'yes' }
-    const script = "const k=['OPENAI_API_KEY','ANTHROPIC_API_KEY','CODEX_API_KEY','ORGAI_DATA_DIR','CLAUDE_CODE_OAUTH_TOKEN'].filter(n=>process.env[n]!==undefined);console.log('leaked='+k.join(',')+';keep='+process.env.KEEP_ME)"
+    const env = { ...process.env, OPENAI_API_KEY: 'sk-SECRET', ANTHROPIC_API_KEY: 'sk-ant-SECRET', CODEX_API_KEY: 'x', ORGAI_DATA_DIR: '/d', CLAUDE_CODE_OAUTH_TOKEN: 'tok', CI: 'yes', NOT_ON_THE_LIST: 'no' }
+    const script = "const k=['OPENAI_API_KEY','ANTHROPIC_API_KEY','CODEX_API_KEY','ORGAI_DATA_DIR','CLAUDE_CODE_OAUTH_TOKEN','NOT_ON_THE_LIST'].filter(n=>process.env[n]!==undefined);console.log('leaked='+k.join(',')+';keep='+process.env.CI)"
     const r = await runTestGate(`node -e "${script}"`, dir, { env })
     expect(r.outcome).toBe('passed')
     expect(r.detail).toContain('leaked=;keep=yes')

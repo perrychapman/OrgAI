@@ -372,6 +372,68 @@ describe('integrateWorktree', () => {
       expect(res.refused).toBeUndefined()
     })
   })
+
+  describe('the commit the gate saw is the commit that merges (security review M2)', () => {
+    const commitInCopy = (wt: { path: string }, file: string): string => {
+      put(wt.path, file, 'export const sneaky = true\n')
+      git(wt.path, 'add -A')
+      git(wt.path, 'commit -q -m sneaky')
+      return git(wt.path, 'rev-parse HEAD')
+    }
+
+    it('hands the recorded tip to the gate, and a gate that commits to the branch is not merged', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('tip1')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      let seen = ''
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', async (_files, tip) => {
+        seen = tip
+        commitInCopy(wt, 'src/sneaky.js') // what a test command running repository code could do
+        return { behavior: 'merge' }
+      })
+      expect(seen).toMatch(/^[0-9a-f]{40}$/)
+      expect(res.info.status).toBe('conflict')
+      expect(res.message).toContain('changed after it was reviewed')
+      expect(existsSync(join(root, 'src/sneaky.js'))).toBe(false)
+      expect(existsSync(join(root, 'src/feature.js'))).toBe(false)
+      expect(git(root, 'log -1 --format=%s')).toBe('initial')
+      expect(existsSync(wt.path)).toBe(true)
+      expect(branches()).toContain(wt.branch)
+    })
+
+    it('refuses an approval of the old commit when the branch has moved on since', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('tip2')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', async (_files, tip) => {
+        commitInCopy(wt, 'src/sneaky2.js')
+        return { behavior: 'merge', sha: tip }
+      })
+      expect(res.info.status).toBe('conflict')
+      expect(existsSync(join(root, 'src/sneaky2.js'))).toBe(false)
+    })
+
+    it('merges a new tip the gate re-approved (sha)', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('tip3')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', async () => {
+        const sha = commitInCopy(wt, 'src/second.js')
+        return { behavior: 'merge', sha }
+      })
+      expect(res.info.status, res.message).toBe('merged')
+      expect(existsSync(join(root, 'src/second.js'))).toBe(true)
+    })
+
+    it('a gate that does not move the branch still merges, and the recorded tip is what lands', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('tip4')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', async (_files, tip) => ({ behavior: 'merge', sha: tip }))
+      expect(res.info.status, res.message).toBe('merged')
+      expect(git(root, 'log -1 --format=%P').split(' ')).toHaveLength(2)
+    })
+  })
 })
 
 describe('inspectPending', () => {

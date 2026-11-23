@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type { PermissionSuggestion } from '@shared/types'
 import { isSafeId } from '@shared/defaults'
@@ -17,6 +18,7 @@ import { allowRuleStrings, deriveSuggestions } from './permissionRules'
  * saved rules sit in its repository, and a counter has no business there. Bounded (ALLOW_COUNT_KEYS_MAX keys, least
  * recently allowed dropped; counts capped at ALLOW_COUNT_MAX), written atomically, and rebuilt field by field on every
  * read (a damaged or hand-edited file reads as what is valid in it). Structured-clone safe: plain numbers and strings.
+ * The file stores the SHA-256 of each key, never the key (commands and paths can be private); only equality is needed.
  */
 
 /** Most keys kept per project; past it the least recently allowed key is dropped. */
@@ -52,19 +54,39 @@ export function allowCountKey(toolName: string, input: unknown, suggestions?: re
   return key.length <= ALLOW_COUNT_KEY_MAX_CHARS ? key : null
 }
 
-/** One stored entry from an untrusted file, or null. */
-function cleanEntry(v: unknown): [string, number] | null {
+/**
+ * What the file stores for a key: its SHA-256 (lower-case hex). A key is a rule built from a command or a path
+ * (`Bash(npm run deploy --token ...:*)`, `Edit(//home/me/secret-project/**)`), and the file only ever needs to say "this
+ * same key again", so the plain text is not kept on disk (security review L1).
+ */
+export function allowCountHash(key: string): string {
+  return createHash('sha256').update(key, 'utf8').digest('hex')
+}
+
+const HASH_RE = /^[0-9a-f]{64}$/
+
+/** One stored entry from an untrusted file (`v` 2: key is a hash; version 1: the plain key, hashed here), or null. */
+function cleanEntry(v: unknown, plain: boolean): [string, number] | null {
   if (!Array.isArray(v) || v.length !== 2) return null
   const [key, count] = v as [unknown, unknown]
-  if (typeof key !== 'string' || !key || key.length > ALLOW_COUNT_KEY_MAX_CHARS) return null
+  if (typeof key !== 'string' || !key) return null
+  if (plain ? key.length > ALLOW_COUNT_KEY_MAX_CHARS : !HASH_RE.test(key)) return null
   if (typeof count !== 'number' || !Number.isFinite(count) || count < 1) return null
-  return [key, Math.min(ALLOW_COUNT_MAX, Math.floor(count))]
+  return [plain ? allowCountHash(key) : key, Math.min(ALLOW_COUNT_MAX, Math.floor(count))]
+}
+
+function writeCounts(dataDir: string, projectId: string, counts: Map<string, number>): void {
+  const dir = projectDataDir(dataDir, projectId)
+  ensurePlainDir(dataDir, projectId, dir)
+  atomicWrite(allowCountFile(dataDir, projectId), JSON.stringify({ v: 2, entries: [...counts] }) + '\n')
 }
 
 /**
- * The project's counts, least recently allowed first (a Map keeps that order). A missing, oversized, linked or damaged
- * file, an unsafe project id and every invalid entry read as nothing. Duplicate keys keep the later entry; past
- * ALLOW_COUNT_KEYS_MAX the oldest are dropped. Never throws.
+ * The project's counts keyed by allowCountHash(key), least recently allowed first (a Map keeps that order). A missing,
+ * oversized, linked or damaged file, an unsafe project id and every invalid entry read as nothing. Duplicate keys keep the
+ * later entry; past ALLOW_COUNT_KEYS_MAX the oldest are dropped. A version 1 file (plain keys, written before L1) is read
+ * by hashing its keys and rewritten as version 2 at once, so the plain text leaves the disk (a failed rewrite keeps the
+ * counts in memory and leaves the old file for the next try). Never throws.
  */
 export function readAllowCounts(dataDir: string, projectId: string): Map<string, number> {
   const out = new Map<string, number>()
@@ -73,15 +95,24 @@ export function readAllowCounts(dataDir: string, projectId: string): Map<string,
     const file = readPlain(allowCountFile(dataDir, projectId), FILE_MAX_BYTES)
     if (!file) return out
     const parsed = JSON.parse(file.text) as unknown
-    const entries = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { entries?: unknown }).entries : undefined
-    if (!Array.isArray(entries)) return out
+    const obj = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { entries?: unknown; v?: unknown }) : undefined
+    const entries = obj?.entries
+    if (!obj || !Array.isArray(entries)) return out
+    const plain = obj.v !== 2
     for (const raw of entries) {
-      const e = cleanEntry(raw)
+      const e = cleanEntry(raw, plain)
       if (!e) continue
       out.delete(e[0])
       out.set(e[0], e[1])
     }
     while (out.size > ALLOW_COUNT_KEYS_MAX) out.delete(out.keys().next().value as string)
+    if (plain) {
+      try {
+        writeCounts(dataDir, projectId, out)
+      } catch {
+        /* the next bump rewrites it */
+      }
+    }
   } catch {
     return new Map()
   }
@@ -90,7 +121,7 @@ export function readAllowCounts(dataDir: string, projectId: string): Map<string,
 
 /** How many times the project's user allowed `key` once; undefined when it has no record (unknown, never 0 by guess). */
 export function allowCountOf(dataDir: string, projectId: string, key: string): number | undefined {
-  return readAllowCounts(dataDir, projectId).get(key)
+  return readAllowCounts(dataDir, projectId).get(allowCountHash(key))
 }
 
 /**
@@ -102,13 +133,12 @@ export function bumpAllowCount(dataDir: string, projectId: string, key: string):
   try {
     if (!dataDir || !isSafeId(projectId) || !key || key.length > ALLOW_COUNT_KEY_MAX_CHARS) return undefined
     const counts = readAllowCounts(dataDir, projectId)
-    const next = Math.min(ALLOW_COUNT_MAX, (counts.get(key) ?? 0) + 1)
-    counts.delete(key)
-    counts.set(key, next)
+    const hash = allowCountHash(key)
+    const next = Math.min(ALLOW_COUNT_MAX, (counts.get(hash) ?? 0) + 1)
+    counts.delete(hash)
+    counts.set(hash, next)
     while (counts.size > ALLOW_COUNT_KEYS_MAX) counts.delete(counts.keys().next().value as string)
-    const dir = projectDataDir(dataDir, projectId)
-    ensurePlainDir(dataDir, projectId, dir)
-    atomicWrite(allowCountFile(dataDir, projectId), JSON.stringify({ v: 1, entries: [...counts] }) + '\n')
+    writeCounts(dataDir, projectId, counts)
     return next
   } catch {
     return undefined

@@ -16,6 +16,7 @@ import {
   isGitRepo,
   localBranchExists,
   removeExcludeLine,
+  sameBranchName,
   UnfinishedGitStateError,
   type GateDecision
 } from './runtime/worktrees'
@@ -229,18 +230,13 @@ export class MaintenanceService {
     if (!writesToProjectFolder(project) || !isGitRepo(root)) return { ok: false, message: 'This project has no git repository, so there are no branches to delete.' }
     if (!isValidBranchName(branch)) return { ok: false, message: 'That is not a branch name OrgAI will delete.' }
     if (!(await localBranchExists(root, branch))) return { ok: false, message: `There is no local branch named ${branch}.` }
-    if ((await currentBranchName(root)) === branch) return { ok: false, message: `${branch} is the branch this checkout is on, so it was not deleted. Switch to another branch first.` }
-    const protectedNames = new Set(await defaultBranchNames(root))
-    const mainBranch = project.mainBranch?.trim()
-    if (mainBranch) protectedNames.add(mainBranch)
-    if (protectedNames.has(branch)) return { ok: false, message: `${branch} is this project's default or main branch, so it was not deleted.` }
-    const live = this.liveBranches(project.id)
-    if (live === 'unknown') return { ok: false, message: 'A run of this project is active and OrgAI cannot tell which branches it uses, so nothing was deleted. Try again when the run has ended.' }
-    if (live.has(branch)) return { ok: false, message: `${branch} is used by a run that is still active, so it was not deleted.` }
+    const refused = await this.deleteBranchRefusal(project.id, root, branch)
+    if (refused) return { ok: false, message: refused }
     if (!this.isReportBranch(project, branch)) return { ok: false, message: `${branch} is not a report branch OrgAI made, so it was left alone.` }
     const copy = (await inspectPending(root)).find((w) => w.branch === branch)
     try {
-      const result = await deleteReportBranch(root, branch, copy ? { copyPath: copy.path } : {})
+      // The same conditions again under the repository lock: a run may have started, or the default branch changed, since.
+      const result = await deleteReportBranch(root, branch, { ...(copy ? { copyPath: copy.path } : {}), recheck: () => this.deleteBranchRefusal(project.id, root, branch) })
       if (!result.ok) return { ok: false, message: result.message }
       this.deps.log?.(`Deleted the report branch ${branch} of ${project.name}${result.removedCopy ? ' with its finished copy' : ''}.`)
       return { ok: true, message: result.removedCopy ? `Deleted ${branch} and its finished copy.` : `Deleted ${branch}.` }
@@ -248,6 +244,26 @@ export class MaintenanceService {
       if (e instanceof UnfinishedGitStateError) return { ok: false, message: e.message }
       throw e
     }
+  }
+
+  /**
+   * Why `branch` may not be deleted right now, or undefined: it is the checkout's branch, the repository's default branch
+   * or Project.mainBranch, or a live run uses it (or the live runs cannot be read). Read fresh on each call (the project,
+   * the live runs, git), because deleteBranch asks again under the repository lock. Names are compared case-insensitively on
+   * a case-insensitive file system (sameBranchName), where `Main` is `main`.
+   */
+  private async deleteBranchRefusal(projectId: string, root: string, branch: string): Promise<string | undefined> {
+    const project = this.project(projectId)
+    const onBranch = await currentBranchName(root)
+    if (onBranch !== null && sameBranchName(onBranch, branch)) return `${branch} is the branch this checkout is on, so it was not deleted. Switch to another branch first.`
+    const protectedNames = new Set(await defaultBranchNames(root))
+    const mainBranch = project.mainBranch?.trim()
+    if (mainBranch) protectedNames.add(mainBranch)
+    if ([...protectedNames].some((n) => sameBranchName(n, branch))) return `${branch} is this project's default or main branch, so it was not deleted.`
+    const live = this.liveBranches(projectId)
+    if (live === 'unknown') return 'A run of this project is active and OrgAI cannot tell which branches it uses, so nothing was deleted. Try again when the run has ended.'
+    if ([...live].some((n) => sameBranchName(n, branch))) return `${branch} is used by a run that is still active, so it was not deleted.`
+    return undefined
   }
 
   /**

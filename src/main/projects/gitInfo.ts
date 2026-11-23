@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { GIT_RECENT_COMMITS_MAX } from '../../shared/types'
 import type { GitCommitInfo, GitSummary } from '../../shared/types'
 import { gitExecutable } from '../host/systemBinaries'
@@ -15,8 +17,9 @@ import { HOSTILE_CONFIG_OVERRIDES, hasPlainGitDir, readOnlyGitEnv } from '../run
  * program through core.fsmonitor, hooks, pager or ssh nor write a lock or cache. One program path is NOT closed by those
  * overrides: `git status` runs a `filter.<name>.clean` / `.process` driver (named by the repository's config, selected by
  * its .gitattributes) to hash a changed file, and no `-c` switch turns that off. So before `status` the local config is
- * asked for `filter.*` keys, and when the repository defines any (or the question fails) status is not run and
- * `dirtyFiles` is reported as 0: dirty counting is skipped for repositories with their own filter drivers. The other
+ * asked for `filter.*` keys in every scope but the user's global and system ones, a worktree-config file is looked for
+ * (`extensions.worktreeConfig`, `config.worktree`), and when the repository defines any (or the question fails) status is
+ * not run and `dirtyFiles` is reported as 0: dirty counting is skipped for repositories with their own filter drivers. The other
  * commands here (rev-parse, symbolic-ref, for-each-ref, log with --no-textconv --no-ext-diff, rev-list) run no filter.
  * Nothing here fetches, merges or writes.
  * `root` must hold a real `.git` directory (hasPlainGitDir): a `.git` file, a symlink or a linked worktree is "not a
@@ -108,14 +111,36 @@ async function detectDefault(bin: string, root: string, local: LocalBranch[], cu
 }
 
 /**
- * True unless the repository's own config (includes followed) is known to define no `filter.*` driver. `git status` runs a
+ * True unless the repository is known to hand `git status` no filter driver of its own. `git status` runs a
  * `filter.<name>.clean` / `.process` program, named by the repository's config and selected by its .gitattributes, to hash
- * a file whose stat data changed, and no `-c` override switches that off. A failure to ask counts as "has one" (fail closed).
+ * a file whose stat data changed, and no `-c` override switches that off. Every way the repository can name one is closed:
+ * - `extensions.worktreeConfig` set, or a `config.worktree` file in the git directory (git reads it for this work tree
+ *   when the extension is on, and `config --local` does not show it): status is skipped without reading it. The git
+ *   directory is `<root>/.git`, the one readOnlyGitEnv pins (hasPlainGitDir has already refused a `.git` file or a
+ *   `commondir`, so a linked worktree never gets here);
+ * - any `filter.*` key in a scope other than the user's `system` and `global` ones: the local config, anything it
+ *   includes, and (belt and braces) a worktree or command scope. Asked with `--show-scope` over every config git reads, so
+ *   a scope this code does not know counts as the repository's.
+ * A failure to ask (including a git too old for --show-scope) counts as "has one" (fail closed).
  */
-async function hasLocalFilterDriver(bin: string, root: string): Promise<boolean> {
-  const r = await run(bin, root, ['config', '--local', '--includes', '--name-only', '--get-regexp', '^filter\\.'])
-  if (r.ok) return r.out.trim().length > 0
-  return r.exitCode !== 1
+async function hasRepoFilterDriver(bin: string, root: string): Promise<boolean> {
+  try {
+    if (existsSync(join(root, '.git', 'config.worktree'))) return true
+  } catch {
+    return true
+  }
+  const ext = await run(bin, root, ['config', '--local', '--type=bool', '--get', 'extensions.worktreeConfig'])
+  if (ext.ok) {
+    if (ext.out.trim() !== 'false') return true
+  } else if (ext.exitCode !== 1) return true // exit 1 is "not set"; anything else (unreadable, not a boolean) fails closed
+  const r = await run(bin, root, ['config', '--show-scope', '--includes', '--name-only', '--get-regexp', '^filter\\.'])
+  if (!r.ok) return r.exitCode !== 1
+  for (const line of r.out.split('\n')) {
+    if (!line.trim()) continue
+    const scope = line.includes('\t') ? line.slice(0, line.indexOf('\t')).trim() : ''
+    if (scope !== 'system' && scope !== 'global') return true
+  }
+  return false
 }
 
 /** Count of `status --porcelain=v1 -z` entries: a rename or copy entry carries a second path token that is not an entry. */
@@ -228,7 +253,7 @@ export async function gitSummary(path: string, mainBranch?: string): Promise<Git
     const defaultBranch = await detectDefault(bin, path, local, branch, mainBranch)
     const exists = defaultBranch !== null && local.some((b) => b.name === defaultBranch)
     // Dirty counting is skipped (0) for a repository with its own filter drivers: status could run one of its programs.
-    const skipStatus = await hasLocalFilterDriver(bin, path)
+    const skipStatus = await hasRepoFilterDriver(bin, path)
     const [status, commits, unmergedBranches, upstream] = await Promise.all([
       skipStatus ? Promise.resolve({ ok: false, out: '', truncated: false } as GitResult) : run(bin, path, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']),
       exists ? recentCommits(bin, path, defaultBranch) : Promise.resolve([] as GitCommitInfo[]),

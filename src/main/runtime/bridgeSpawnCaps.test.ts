@@ -53,7 +53,7 @@ const BRIDGED: BridgedRoleChoice[] = [
   { roleId: 'r-solo', connection: 'proxy-1', adapter: 'claude' }
 ]
 
-function rig(project: Partial<Project> = {}, roles: Role[] = chart()) {
+function rig(project: Partial<Project> = {}, roles: Role[] = chart(), bridged: BridgedRoleChoice[] = BRIDGED) {
   const p = makeProject({ roles, maxSubagentDepth: 3, maxConcurrentSubagents: 10, ...project })
   const parent = fakeCtx({ project: p, roles })
   const events: RunEvent[] = []
@@ -63,7 +63,7 @@ function rig(project: Partial<Project> = {}, roles: Role[] = chart()) {
   const b = new BridgedSessions({
     adapters: { codex, claude },
     parent: () => parent,
-    bridged: BRIDGED,
+    bridged,
     connections: new Map([
       [bridgeKey('openai', 'codex'), OPENAI_CONN],
       [bridgeKey('proxy-1', 'claude'), { connection: 'proxy-1', adapter: 'claude' }]
@@ -166,5 +166,71 @@ describe('BridgedSessions.spawn spawn caps', () => {
     await tick()
     expect(r.codex.sessions).toHaveLength(3)
     await expect(delegate(r, 'oa')).rejects.toThrow(/3 reports are already working; the limit is 3/)
+  })
+})
+
+describe('a bridged child gets what is left of the caps, not the whole of them (security review L3)', () => {
+  // r-oa can delegate to a helper on the same connection, so the child has a role it may spawn.
+  const withHelper = (helperCap?: number): Role[] => [
+    ...chart().map((x) => (x.id === 'r-oa' ? { ...x, canSpawn: true, spawnable: ['r-oa2'] } : x)),
+    role({ id: 'r-oa2', slug: 'oa2', name: 'OpenAI helper', reportsTo: 'r-oa', connection: 'openai', ...(helperCap ? { maxConcurrent: helperCap } : {}) })
+  ]
+  const BRIDGED2: BridgedRoleChoice[] = [...BRIDGED, { roleId: 'r-oa2', connection: 'openai', adapter: 'codex' }]
+  const childCtx = (r: ReturnType<typeof rig>): RuntimeContext => r.codex.sessions.at(-1)!.ctx
+
+  it('hands the child Project.maxAgentsPerRun minus the agents already started and itself', async () => {
+    const r = rig({ maxAgentsPerRun: 5 }, withHelper(), BRIDGED2)
+    r.agents.set('cl-1', agentOf({ id: 'cl-1', roleId: 'r-eng', roleSlug: 'engineer', parentId: ROOT_AGENT_ID, state: 'done' }))
+    void delegate(r, 'oa')
+    await tick()
+    expect(childCtx(r).project.maxAgentsPerRun).toBe(3)
+    expect(childCtx(r).roles.find((x) => x.id === 'r-oa')!.spawnable).toEqual(['r-oa2'])
+  })
+
+  it('lets the child spawn nothing when the run has no agents left after it', async () => {
+    const r = rig({ maxAgentsPerRun: 2 }, withHelper(), BRIDGED2)
+    r.agents.set('cl-1', agentOf({ id: 'cl-1', roleId: 'r-eng', roleSlug: 'engineer', parentId: ROOT_AGENT_ID }))
+    void delegate(r, 'oa')
+    await tick()
+    const ctx = childCtx(r)
+    expect(ctx.roles.map((x) => x.id)).toEqual(['r-oa'])
+    expect(ctx.roles[0]).toMatchObject({ canSpawn: false, spawnable: [] })
+  })
+
+  it('hands the child the free slots of a capped role, and hides the role when none is free', async () => {
+    const r = rig({}, withHelper(2), BRIDGED2)
+    r.agents.set('h-1', agentOf({ id: 'h-1', roleId: 'r-oa2', roleSlug: 'oa2', parentId: ROOT_AGENT_ID }))
+    void delegate(r, 'oa')
+    await tick()
+    expect(childCtx(r).roles.find((x) => x.id === 'r-oa2')!.maxConcurrent).toBe(1)
+
+    const full = rig({}, withHelper(1), BRIDGED2)
+    full.agents.set('h-1', agentOf({ id: 'h-1', roleId: 'r-oa2', roleSlug: 'oa2', parentId: ROOT_AGENT_ID }))
+    void delegate(full, 'oa')
+    await tick()
+    const ctx = childCtx(full)
+    expect(ctx.roles.map((x) => x.id)).toEqual(['r-oa'])
+    expect(ctx.roles[0]).toMatchObject({ canSpawn: false, spawnable: [] })
+  })
+
+  it('leaves an uncapped run uncapped for the child', async () => {
+    const r = rig({}, withHelper(), BRIDGED2)
+    void delegate(r, 'oa')
+    await tick()
+    const ctx = childCtx(r)
+    expect(ctx.project.maxAgentsPerRun).toBeUndefined()
+    expect(ctx.roles.find((x) => x.id === 'r-oa2')!.maxConcurrent).toBeUndefined()
+  })
+})
+
+describe('spawnAllowanceAfter', () => {
+  it('counts the agent being started against the total and its own role, clamped at zero', async () => {
+    const { spawnAllowanceAfter } = await import('./spawnCaps')
+    const roles = [{ id: 'a', name: 'A', slug: 'a', maxConcurrent: 3 }, { id: 'b', name: 'B', slug: 'b' }]
+    const agents = [{ id: ROOT_AGENT_ID, state: 'thinking' as const }, { id: 'x', state: 'thinking' as const, roleId: 'a' }, { id: 'y', state: 'done' as const, roleId: 'a' }]
+    const out = spawnAllowanceAfter({ project: { maxAgentsPerRun: 4 }, roles, roleId: 'a', agents, pending: ['b'] })
+    expect(out.agentsLeft).toBe(0) // 2 started + 1 pending + this one = 4
+    expect([...out.roleLeft]).toEqual([['a', 1]]) // 3 - 1 live - this one
+    expect(spawnAllowanceAfter({ project: {}, roles, roleId: 'b', agents }).agentsLeft).toBeUndefined()
   })
 })

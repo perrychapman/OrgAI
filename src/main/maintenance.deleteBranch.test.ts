@@ -141,6 +141,49 @@ describe('deleteBranch: refusals change nothing', () => {
     expect(localBranches()).toContain('worktree-agent-blind')
   })
 
+  it('asks again under the repository lock: a run that started after the first check still stops the delete (security review L8)', async () => {
+    const copy = addCopy('late1')
+    let calls = 0
+    // The first look finds no run; by the time the lock is held a run is live and the stored records cannot show it.
+    const res = await service({}, { hasLiveRun: () => ++calls > 1 }).deleteBranch('p1', copy.branch)
+    expect(calls).toBeGreaterThan(1)
+    expect(res.ok).toBe(false)
+    expect(res.message).toMatch(/cannot tell which branches it uses/)
+    expect(existsSync(copy.path)).toBe(true)
+    expect(localBranches()).toContain(copy.branch)
+  })
+
+  it('asks again under the lock for the protected names too: a branch that became the main branch since is kept (security review L8)', async () => {
+    const copy = addCopy('late2')
+    let later = false
+    const project = { id: 'p1', name: 'Demo', path: root, roles: [] } as unknown as Project
+    const svc = new MaintenanceService(
+      { get: () => (later ? { ...project, mainBranch: copy.branch } : project), list: () => [project] } as unknown as ProjectStore,
+      undefined,
+      { log: () => {}, hasLiveRun: () => ((later = true), false) }
+    )
+    const res = await svc.deleteBranch('p1', copy.branch)
+    expect(res.ok).toBe(false)
+    expect(res.message).toMatch(/default or main branch/)
+    expect(existsSync(copy.path)).toBe(true)
+    expect(localBranches()).toContain(copy.branch)
+  })
+
+  it('compares the protected and current branch names case-insensitively where the file system is (security review L8)', async () => {
+    const { sameBranchName } = await import('./runtime/worktrees')
+    expect(sameBranchName('Main', 'main', 'win32')).toBe(true)
+    expect(sameBranchName('Main', 'main', 'darwin')).toBe(true)
+    expect(sameBranchName('Main', 'main', 'linux')).toBe(false)
+    expect(sameBranchName('main', 'main', 'linux')).toBe(true)
+    expect(sameBranchName('main', 'mainline', 'win32')).toBe(false)
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+      git(root, 'checkout -q -b side')
+      const res = await service().deleteBranch('p1', 'MAIN')
+      expect(res.ok).toBe(false)
+      expect(localBranches()).toContain('main')
+    }
+  })
+
   it('refuses a branch the live run names by agent id even when the record has no worktree yet', async () => {
     addBareBranch('worktree-agent-early', false)
     const live = runsDeps([{ summary: { id: 'r1', status: 'running' }, agents: [{ ...agent('early', ''), worktree: undefined } as AgentInstance] }], true)

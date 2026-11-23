@@ -121,8 +121,31 @@ describe('desktopOnlyProjectChanges (pure)', () => {
       expect(desktopOnlyProjectChanges(capped, withRoles([role('r1', { maxConcurrent: 3, knowledgeWrite: false }), role('r2', { knowledgeWrite: false })]))).toEqual([])
     })
 
-    it('does not count a removed role, and a new role starts uncapped without a refusal', () => {
-      expect(desktopOnlyProjectChanges(capped, withRoles([role('r2'), role('r3')]))).toEqual([])
+    it('does not count a removed role that carries no limit, and a new role starts uncapped without a refusal', () => {
+      expect(desktopOnlyProjectChanges(capped, withRoles([role('r1', { maxConcurrent: 3, knowledgeWrite: false }), role('r3')]))).toEqual([])
+    })
+
+    it('refuses removing a role that carries a cap or a knowledge restriction (security review M4)', () => {
+      expect(desktopOnlyProjectChanges(capped, withRoles([role('r2'), role('r3')]))).toEqual(['Role.maxConcurrent', 'Role.knowledgeWrite'])
+      const capOnly = withLimits({ roles: [role('c1', { maxConcurrent: 2 })] })
+      expect(desktopOnlyProjectChanges(capOnly, { ...capOnly, roles: [] } as Project)).toEqual(['Role.maxConcurrent'])
+      const restrictedOnly = withLimits({ roles: [role('k1', { knowledgeWrite: false })] })
+      expect(desktopOnlyProjectChanges(restrictedOnly, { ...restrictedOnly, roles: [] } as Project)).toEqual(['Role.knowledgeWrite'])
+    })
+
+    it('refuses the same role re-added under a new id, by slug or by name, even when it keeps the cap (security review M4)', () => {
+      const swapped = (over: Record<string, unknown>) => withRoles([{ ...role('r1-new', { maxConcurrent: 3, knowledgeWrite: false }), ...over }, role('r2')])
+      expect(desktopOnlyProjectChanges(capped, swapped({ slug: 'r1', name: 'Other' }))).toEqual(['Role.maxConcurrent', 'Role.knowledgeWrite'])
+      expect(desktopOnlyProjectChanges(capped, swapped({ slug: 'other', name: 'R1' }))).toEqual(['Role.maxConcurrent', 'Role.knowledgeWrite'])
+      // The uncapped re-add the finding describes.
+      expect(desktopOnlyProjectChanges(capped, withRoles([role('r1-new'), role('r2')]))).toEqual(['Role.maxConcurrent', 'Role.knowledgeWrite'])
+    })
+
+    it('refuses a second role with the same slug or name that lacks the limit while the original stays (security review M4)', () => {
+      const kept = role('r1', { maxConcurrent: 3, knowledgeWrite: false })
+      expect(desktopOnlyProjectChanges(capped, withRoles([kept, role('r9', { slug: 'r1', name: 'Sneaky' }), role('r2')]))).toEqual(['Role.maxConcurrent', 'Role.knowledgeWrite'])
+      expect(desktopOnlyProjectChanges(capped, withRoles([kept, role('r9', { slug: 'sneaky', name: 'r1' }), role('r2')]))).toEqual(['Role.maxConcurrent', 'Role.knowledgeWrite'])
+      expect(desktopOnlyProjectChanges(capped, withRoles([kept, role('r9', { slug: 'r1', name: 'R1', maxConcurrent: 2, knowledgeWrite: false }), role('r2')]))).toEqual([])
     })
 
     it('refuses setting or lowering keepFailedBranchesDays, allows raising, clearing and keeping it', () => {

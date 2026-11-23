@@ -99,7 +99,7 @@ support for what the overhaul boards draw that the app did not have. The orchest
 - **Test gate** (`runtime/testGate.ts`).
   - The user's command runs in the finished copy before merge:
     - cmd.exe or /bin/sh;
-    - provider and OrgAI variables scrubbed;
+    - environment is an allowlist (PATH, home, temp, locale, CI and what Node needs);
     - stdin closed;
     - 10 minutes, after which the process tree is killed;
     - the last 4000 characters kept.
@@ -191,6 +191,32 @@ support for what the overhaul boards draw that the app did not have. The orchest
   - **L5.** The retention sweep takes no activity lease.
   - **L6.** A `mainBranch` checkout switch is not named in the merge message.
   - **L7.** An agent that runs `git merge` itself is not blocked by the gate.
+
+## Reviewer fixes (second pass, approved with fixes)
+
+- **M1.** `runs:switchModel` (any surface) refuses, `applied: false` with the start refusal's wording, a model with no known
+  price on a project with a daily or monthly cap: a live switch, and a selection saved for the next continuation. Nothing is
+  saved. A mock run is exempt as at start.
+- **M2.** The merge gate records the branch's commit before the review card and the test command (`worktrees.ts branchTip`,
+  passed to the gate), merges that commit, not the branch name, and refuses when the branch moved. With merge review on,
+  `reviewGate` asks the user again (once) about the new tip when the tests committed to it, then refuses.
+- **M3.** `gitInfo` skips `git status` when `extensions.worktreeConfig` is set, a `.git/config.worktree` exists, or any
+  `filter.*` key sits in a scope other than the user's system and global config (`config --show-scope`).
+- **M4.** A non-desktop save cannot remove a role that carries `maxConcurrent` or `knowledgeWrite: false`, re-add it under
+  a new id, or add another role with the same slug or name that lacks the limit. `ProjectStore` does not stop role id
+  changes (a role's id is whatever the saved copy says), so the guard does.
+- **L1.** `allow-counts.json` is version 2: SHA-256 of each key. A version 1 file is hashed and rewritten on first read.
+- **L3.** A bridged child gets what is left of `maxAgentsPerRun` and of each capped role (`spawnCaps.ts spawnAllowanceAfter`);
+  with nothing left it cannot spawn.
+- **L4.** `strongerModelCheck` treats an unknown role and parent tier as everyday, so a result above everyday asks.
+- **L5.** `retryAgent` sends the agent's brief fenced and labelled as agent-written data (`fencedAgentBrief`).
+- **L6.** The test command's environment is an allowlist; its output tail is scrubbed of obvious credentials and goes only
+  to the run log and the maintenance result shown to the user, never to a model message.
+- **L7.** A skill export folder never takes a Windows device name (`con`, `nul`, `com1`...).
+- **L8.** `deleteBranch` asks its refusal questions again under the repository lock; branch names compare case-insensitively
+  on Windows and macOS.
+- **Report only.** L2: the stronger-model question stays pending after the Claude 580 s wait, and Codex and the mock have no
+  timeout (adapter work). L9: a loose `branchNamePattern` can make a user's branch count as a report branch for delete.
 
 ## Not built, and why
 

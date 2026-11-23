@@ -710,9 +710,11 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     // The service's reader keeps to regular files and refuses links, size and count caps included.
     const files = readStoredFolder(this.specDir(project.id, spec))
     const slug = spec.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, SKILL_NAME_MAX) || 'skill'
+    // A Windows device name (con, nul, com1 ...) is not a folder name there: the export folder gets a suffix (security review L7).
+    const folder = /^(con|prn|aux|nul|com\d|lpt\d)$/.test(slug) ? `${slug}-skill` : slug
     let target = ''
     for (let n = 1; n < 1000; n++) {
-      const candidate = resolve(destDir, n === 1 ? slug : `${slug}-${n}`)
+      const candidate = resolve(destDir, n === 1 ? folder : `${folder}-${n}`)
       try {
         mkdirSync(candidate)
         target = candidate

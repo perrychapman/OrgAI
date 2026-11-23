@@ -77,6 +77,34 @@ export function spawnCapRefusal(input: SpawnCapInput): string | undefined {
   return undefined
 }
 
+/** What is left of the caps once one more agent of `roleId` has started (for the session that agent runs). */
+export interface SpawnAllowance {
+  /** Agents the run may still start after this one; undefined when the project has no total cap. 0 means none. */
+  agentsLeft?: number
+  /** Per role with a Role.maxConcurrent cap: live agents of it that may still start (0 means none). Roles without a cap are absent. */
+  roleLeft: Map<string, number>
+}
+
+/**
+ * The remaining allowance after the agent being started now (the caller has already passed spawnCapRefusal, and this
+ * agent is not in `agents` or `pending` yet). A bridged child gets this instead of the full caps (bridge.ts), so it cannot
+ * start more agents than the run has left or more of a capped role than are free. Pure.
+ */
+export function spawnAllowanceAfter(input: SpawnCapInput): SpawnAllowance {
+  const agents = [...input.agents]
+  const pending = [...(input.pending ?? [])]
+  const total = capOf(input.project.maxAgentsPerRun)
+  const out: SpawnAllowance = { roleLeft: new Map() }
+  if (total !== undefined) out.agentsLeft = Math.max(0, total - spawnCapCounts({ roleId: input.roleId, agents, pending }).started - 1)
+  for (const r of input.roles) {
+    const cap = capOf(r.maxConcurrent)
+    if (cap === undefined) continue
+    const live = spawnCapCounts({ roleId: r.id, agents, pending }).liveOfRole + (r.id === input.roleId ? 1 : 0)
+    out.roleLeft.set(r.id, Math.max(0, cap - live))
+  }
+  return out
+}
+
 /** AgentInstance.brief for a spawn: the delegation text the parent wrote, cut to AGENT_BRIEF_MAX_CHARS; undefined when there is none. */
 export function agentBriefOf(text: unknown): string | undefined {
   if (typeof text !== 'string') return undefined

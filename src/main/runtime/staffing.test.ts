@@ -792,8 +792,18 @@ describe('strongerModelCheck (Project.askBeforeStrongerModel)', () => {
     expect(strongerModelCheck({ role: DEEP, project: ON, resolved: resolved({ tier: 'everyday' }) })).toEqual({ ask: false })
     expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: resolved({ tier: 'deep', mode: 'fixed' }) })).toEqual({ ask: false })
     expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: resolved({ tier: 'deep', source: 'plan-guard' }) })).toEqual({ ask: false })
-    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'deep' }) })).toEqual({ ask: false })
     expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: { mode: 'auto', source: 'role' } as never })).toEqual({ ask: false })
+  })
+
+  it('asks when neither the role nor its parent has a known tier and the result is above everyday, keeping on everyday (security review L4)', () => {
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'deep' }) })).toEqual({ ask: true, keepTier: 'everyday', to: 'deep' })
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'top' }) })).toEqual({ ask: true, keepTier: 'everyday', to: 'top' })
+    // At or below everyday there is nothing stronger to ask about, and the other gates still hold.
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'everyday' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'fast' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: {}, resolved: resolved({ tier: 'deep' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'deep', mode: 'fixed' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'deep', source: 'plan-guard' }) })).toEqual({ ask: false })
   })
 
   it("resolveStaffing alone never lands above the role's own tier, so a plain pick never asks", () => {
