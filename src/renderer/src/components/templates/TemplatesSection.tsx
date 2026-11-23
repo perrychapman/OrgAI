@@ -112,7 +112,16 @@ export default function TemplatesSection(): ReactElement {
           onSelect={setSelected}
           sections={[
             { id: 'builtin', label: 'Comes with OrgAI' },
-            { id: 'saved', label: 'Saved from your projects', note: `${saved.length} ${saved.length === 1 ? 'template' : 'templates'}` }
+            {
+              id: 'saved',
+              label: 'Saved from your projects',
+              note: `${saved.length} ${saved.length === 1 ? 'template' : 'templates'}`,
+              emptyNote: (
+                <p className="muted template-empty" data-testid="templates-empty">
+                  None yet. On a project's Team tab, choose Templates &gt; Save this team as a template.
+                </p>
+              )
+            }
           ]}
           items={templates.map(
             (t): GalleryItem => ({

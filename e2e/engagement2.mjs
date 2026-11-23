@@ -75,7 +75,10 @@ async function createEngagement({ name, dir, template = false }) {
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
   if (template) {
     await form.locator('[data-testid=setup-choice-template]').check({ force: true })
-    await form.locator('[data-testid=new-project-template]').selectOption({ index: 0 })
+    // The saved template by name (the built-in charts are options too).
+    const sel = form.locator('[data-testid=new-project-template]')
+    const value = await sel.locator('option', { hasText: TEMPLATE }).first().getAttribute('value')
+    await sel.selectOption(value ?? { index: 0 })
     await form.getByRole('button', { name: 'Create from template', exact: true }).click()
   } else {
     await pickSetup(form, true)
@@ -114,10 +117,24 @@ try {
   const aRoles = await roleNames(A)
   const bRoles0 = await roleNames(B)
 
-  // With no templates the apply item is disabled with a reason.
+  // The app's built-in charts (OrgTemplateInfo.builtIn) are templates too: with them, Replace the team is enabled on a
+  // fresh profile and applying one goes through the same confirm dialog; without them the item is disabled with a reason.
+  const builtins = (await page.evaluate(() => window.orgai.templates.list())).filter((t) => t.builtIn)
   await openTemplatesMenu()
-  check((await page.locator('[data-testid=start-from-template]').getAttribute('aria-disabled')) === 'true', 'Templates menu: Replace the team is disabled with no templates')
-  check(/No templates yet/.test(await page.locator('[data-testid=start-from-template]').innerText()), 'Templates menu: the reason says "No templates yet"')
+  if (builtins.length > 0) {
+    check((await page.locator('[data-testid=start-from-template]').getAttribute('aria-disabled')) !== 'true', 'Templates menu: Replace the team is enabled with the built-in templates')
+    await page.locator('[data-testid=start-from-template]').click()
+    const firstApply = page.locator('[data-testid=template-apply-dialog]')
+    await firstApply.waitFor({ state: 'visible' })
+    check((await firstApply.locator('[data-testid=template-option]').count()) === builtins.length && (await firstApply.locator('[data-testid=template-apply-confirm]').count()) === 1, 'applying a built-in asks first in the apply dialog')
+    await page.keyboard.press('Escape')
+    await firstApply.waitFor({ state: 'detached' })
+    check(JSON.stringify(await roleNames(A)) === JSON.stringify(aRoles), 'closing the apply dialog changes nothing')
+    await openTemplatesMenu()
+  } else {
+    check((await page.locator('[data-testid=start-from-template]').getAttribute('aria-disabled')) === 'true', 'Templates menu: Replace the team is disabled with no templates')
+    check(/No templates yet/.test(await page.locator('[data-testid=start-from-template]').innerText()), 'Templates menu: the reason says "No templates yet"')
+  }
   await shot('templates-menu')
   await page.locator('[data-testid=start-from-save]').click()
   const saveDialog = page.locator('[data-testid=template-save-dialog]')
@@ -129,14 +146,22 @@ try {
   const savedNotice = page.locator('[data-testid=template-saved-notice]')
   await savedNotice.waitFor({ state: 'visible' })
   check(clean(await savedNotice.innerText()).includes(`Saved the template ${TEMPLATE}.`), 'saving shows the "Saved the template" notice', clean(await savedNotice.innerText()))
-  const listed = await page.evaluate(() => window.orgai.templates.list())
+  const listedAll = await page.evaluate(() => window.orgai.templates.list())
+  const listed = listedAll.filter((t) => !t.builtIn)
   check(listed.length === 1 && listed[0].name === TEMPLATE && listed[0].roleCount === aRoles.length, 'templates.list has the saved template with A\'s role count', JSON.stringify(listed.map((t) => [t.name, t.roleCount])))
+  check(listedAll.length === listed.length + builtins.length, 'templates.list is the saved template plus the built-ins', JSON.stringify(listedAll.map((t) => t.name)))
 
   // Manage templates -> App settings pane.
   // Phase 2: the notice is a message of the notice row; its actions sit beside the message element.
   await page.locator('[data-testid=team-notice-row]').getByRole('button', { name: 'Manage templates' }).click()
   await page.locator('[data-testid=templates-section]').waitFor({ state: 'visible' })
   check((await page.locator('[data-testid=template-row]').count()) === 1 && clean(await page.locator('[data-testid=template-row]').innerText()).includes(TEMPLATE), 'App settings > Templates and kit lists the row')
+  if (builtins.length > 0) {
+    check((await page.locator('[data-testid=template-builtin]').count()) === builtins.length, 'the built-ins are listed apart from your templates')
+    await page.locator('[data-testid=template-builtin]').first().locator('.settings-gallery-pick').click()
+    check((await page.locator('[data-testid=template-detail] [data-testid=template-remove]').count()) === 0, 'a built-in template cannot be removed')
+    await page.locator('[data-testid=template-row]').first().locator('.settings-gallery-pick').click()
+  }
   const s1 = await windowShift(page)
   check(s1.ok, 'Manage templates deep link did not shift the window', JSON.stringify(s1))
   await shot('templates-section')
@@ -157,7 +182,7 @@ try {
   await saveDialog.locator('[data-testid=template-replace]').click()
   await saveDialog.waitFor({ state: 'detached' })
   await page.locator('[data-testid=template-saved-notice]').waitFor({ state: 'visible' })
-  const afterReplace = await page.evaluate(() => window.orgai.templates.list())
+  const afterReplace = (await page.evaluate(() => window.orgai.templates.list())).filter((t) => !t.builtIn)
   check(afterReplace.length === 1 && afterReplace[0].name === TEMPLATE, 'Replace it keeps one template with that name', JSON.stringify(afterReplace.map((t) => t.name)))
 
   // New project from the template.
@@ -173,7 +198,8 @@ try {
   await page.locator('[data-testid=start-from-template]').click()
   const applyDialog = page.locator('[data-testid=template-apply-dialog]')
   await applyDialog.waitFor({ state: 'visible' })
-  check((await applyDialog.locator('[data-testid=template-option]').count()) === 1, 'the apply dialog lists the template')
+  check((await applyDialog.locator('[data-testid=template-option]').count()) === 1 + builtins.length, 'the apply dialog lists the template (and the built-ins)')
+  await applyDialog.locator('[data-testid=template-option]', { hasText: TEMPLATE }).locator('input[type=radio]').check({ force: true })
   await shot('template-apply-dialog')
   await applyDialog.locator('[data-testid=template-apply-confirm]').click()
   await applyDialog.waitFor({ state: 'detached' })
@@ -192,7 +218,7 @@ try {
   await page.getByRole('button', { name: 'Remove template', exact: true }).click()
   await page.locator('[data-testid=templates-empty]').waitFor({ state: 'visible' })
   check(true, 'removing the template shows templates-empty')
-  check((await page.evaluate(() => window.orgai.templates.list())).length === 0, 'templates.list is empty after removal')
+  check((await page.evaluate(() => window.orgai.templates.list())).filter((t) => !t.builtIn).length === 0, 'templates.list has no saved template after removal')
 
   // Practice kit (native dialogs are not driven).
   if (!(await page.evaluate(() => !!window.orgai.kit))) {

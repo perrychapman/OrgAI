@@ -30,7 +30,9 @@ try {
   await found.waitFor({ timeout: 10_000 })
   check((await found.innerText()).trim() === 'Found 2 Claude Code agents and AGENTS.md.', 'form names the agents found', await found.innerText())
   const radios = form.locator('[data-testid=setup-choice] input[type=radio]')
-  check((await radios.count()) === 3, 'three setup choices replace the Architect checkbox')
+  // With templates (the built-in charts count) "Start from a template" is a fourth choice.
+  const hasTemplates = (await page.evaluate(() => window.orgai.templates.list())).length > 0
+  check((await radios.count()) === (hasTemplates ? 4 : 3), `${hasTemplates ? 'four' : 'three'} setup choices replace the Architect checkbox`, String(await radios.count()))
   check((await form.locator('[data-testid=setup-choice] legend').innerText()).trim() === 'How should the team start?', 'setup choice legend reads "How should the team start?"')
   check((await form.locator('[data-testid=architect-setup]').count()) === 0, 'no Architect checkbox when agents exist')
   await shot('form')

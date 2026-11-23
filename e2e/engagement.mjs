@@ -65,7 +65,8 @@ async function createEngagement({ name, client, dir, refs = [] }) {
 }
 const openSettingsPane = async (pane) => {
   await projectTab(page, 'Settings').click()
-  await page.getByRole('tab', { name: pane, exact: true }).click()
+  // The pane is "Branches" on code projects and "Maintenance" on engagements (settings overhaul).
+  await page.getByRole('tab', { name: pane === 'Maintenance' ? /^(Branches|Maintenance)$/ : pane, exact: pane !== 'Maintenance' }).click()
   await sleep(300)
 }
 /** Poll the saved project until its client matches (the save is debounced), up to 10 s. */
