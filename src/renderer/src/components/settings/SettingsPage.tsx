@@ -1,25 +1,22 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useRef, useState } from 'react'
 import { PaneTitleContext } from './SettingsSection'
-import { SettingsNav, settingsPanelId, settingsTabId, type SettingsNavItem, type SettingsNavOtherGroup } from './SettingsNav'
+import { SettingsNav, settingsPanelId, settingsTabId, type SettingsNavGroup } from './SettingsNav'
 
 /**
- * Shared frame of both settings pages (ui-overhaul settings boards): the settings menu (a glass left rail from 640px
- * of container width, a strip above the content below that) and one tabpanel holding the active pane. The panel starts
- * with the page header: a scope caption ("App", "Project: Notes API"), an h2 reading the tab label (tabIndex -1, the
- * focus target after a deep link; sections inside are h3) and the pane's one-line description. Only the active pane
- * is rendered. `idBase` namespaces tab/panel ids ('app-settings', 'project-settings').
+ * The one Settings view's frame (ui-overhaul settings boards): the settings menu (a glass left rail from 640px of
+ * container width, a strip above the content below that) with its App and Project groups, and one tabpanel holding the
+ * active pane. The panel starts with the page header: a scope caption ("App", "Project: Notes API"), an h2 reading the
+ * tab label (tabIndex -1, the focus target after a deep link; sections inside are h3) and the pane's one-line
+ * description. Only the active pane is rendered. `idBase` namespaces tab/panel ids.
  */
 export function SettingsPage({
   title,
   idBase,
-  label,
-  panes,
+  groups,
   active,
   onSelect,
   scope,
-  navHeading,
-  other,
   wide,
   headerActions,
   children
@@ -27,17 +24,11 @@ export function SettingsPage({
   /** Optional page heading above the layout. Omit when the topbar h1 already names the page. */
   title?: string
   idBase: string
-  /** Accessible name of the tablist. */
-  label: string
-  panes: SettingsNavItem[]
-  active: string
-  onSelect: (pane: string) => void
+  groups: SettingsNavGroup[]
+  active: { group: string; pane: string }
+  onSelect: (group: string, pane: string) => void
   /** Caption above the pane heading. */
   scope?: ReactNode
-  /** Caption above this page's tabs in the menu. */
-  navHeading?: ReactNode
-  /** The other settings page's group in the menu. */
-  other?: SettingsNavOtherGroup
   /** The active pane uses the wide column (galleries with a detail panel). */
   wide?: boolean
   /** Buttons right of the pane heading (the board's primary page actions). */
@@ -48,33 +39,32 @@ export function SettingsPage({
   const scroller = useRef<HTMLDivElement>(null)
   // Only a pane the user picked arrives with the view recipe; first render and deep links swap with no motion.
   const [picked, setPicked] = useState<string | null>(null)
-  const pane = panes.find((p) => p.id === active)
+  const key = `${active.group}:${active.pane}`
+  const pane = groups.find((g) => g.key === active.group)?.items.find((p) => p.id === active.pane)
   const paneLabel = pane?.label ?? ''
   return (
     <div className="settings-scroll" ref={scroller}>
       {title && <div className="settings-page-title">{title}</div>}
       <div className="settings-layout">
         <SettingsNav
-          items={panes}
+          groups={groups}
           active={active}
           idBase={idBase}
-          label={label}
-          heading={navHeading}
-          other={other}
-          onSelect={(id) => {
-            if (id === active) return
+          onSelect={(group, id) => {
+            if (group === active.group && id === active.pane) return
             if (scroller.current) scroller.current.scrollTop = 0
-            setPicked(id)
-            onSelect(id)
+            setPicked(`${group}:${id}`)
+            onSelect(group, id)
           }}
         />
         <div
-          key={active}
-          className={`settings-col${wide ? ' is-wide' : ''}${picked === active ? ' motion-view' : ''}`}
+          key={key}
+          className={`settings-col${wide ? ' is-wide' : ''}${picked === key ? ' motion-view' : ''}`}
           role="tabpanel"
           id={settingsPanelId(idBase)}
-          aria-labelledby={settingsTabId(idBase, active)}
-          data-pane={active}
+          aria-labelledby={settingsTabId(idBase, active.group, active.pane)}
+          data-pane={active.pane}
+          data-group={active.group}
         >
           <header className="settings-pane-head">
             <div className="settings-pane-heading">
