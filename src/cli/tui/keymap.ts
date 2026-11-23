@@ -80,7 +80,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'inspector', keys: 'd', label: "Go to this agent's decision card", hint: { order: 2, text: 'd decide' }, rows: ['waiting'] },
   { scope: 'inspector', keys: 'w', label: 'Open its worktree diff in the pager', hint: { order: 1, text: 'w diff' }, rows: ['agent'] },
   { scope: 'inspector', keys: 't', label: 'Show / hide its thinking rows', hint: { order: 2, text: 't thinking' } },
-  { scope: 'inspector', keys: 'u', label: 'The usage tables in the pager (/usage)', hint: { order: 3, text: 'u usage' } },
+  { scope: 'inspector', keys: 'u', label: 'The usage tables (/usage)', hint: { order: 3, text: 'u usage' } },
   { scope: 'inspector', keys: 'Esc', label: 'Close; the tree keeps the same row', hint: { order: 4, text: 'Esc back' } },
   // ---- Decision Tray ----
   { scope: 'tray', keys: 'Alt+D, F2', label: 'Focus the tray to answer; until it has focus a card shows only this', unfocusedHint: 'Alt+D or F2 to answer' },
@@ -90,7 +90,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'tray', keys: 'Esc', label: 'Back to the composer (every kind); inside a note, confirm or secret field it cancels that first', hint: { order: 3, text: 'Esc back' } },
   { scope: 'tray', keys: 'Permission', label: 'y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny (opens an optional note), v full view; y/s/a work once the end of the command was shown (a cut command needs v)' },
   { scope: 'tray', keys: 'Rule request', label: 'r grant for the run, a always grant for the project (asks to confirm), n deny' },
-  { scope: 'tray', keys: 'Proposal', label: 'y approve, e revise with a note, d decline, s enter secrets, v view in the pager' },
+  { scope: 'tray', keys: 'Proposal', label: 'y approve, e revise with a note, d decline, s enter secrets, v view in full' },
   { scope: 'tray', keys: 'Left, Right, Enter', label: 'In fullscreen approvals: select an action, then Enter confirms; Up/Down scroll the details' },
   { scope: 'tray', keys: 'Question', label: '1-9 pick an option, Space toggle (multiple choice), c custom answer, Enter submit' },
   { scope: 'tray', keys: 'Merge review', label: 'v view the diff, m merge, h hold (keep the branch), x discard (asks to confirm)' },

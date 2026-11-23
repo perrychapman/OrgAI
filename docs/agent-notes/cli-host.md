@@ -370,6 +370,13 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     composer at a new run first (`App.tsx` `startLaunchRun`; never a runs:send to a focused live run, `--team` kept).
     Unit tests (ink-testing-library) and e2e `cli-tui.mjs` through a python3 pty on macOS (SKIP on win32);
     Merge Review, the real pager and CSI-u Ctrl+. on real terminals are not driven.
+  - Text views (2026-11-23, owner: "I hate when I get stuck in this screen", after /evolve left him in `less`): every
+    text a command shows (/help, /evolve, /usage, /logs, /runs, /sessions, /outputs, a card's full view) opens in the
+    app's own view (`App.tsx` `openText`: q or Esc closes, the keys scroll). Only a diff (`openText(..., { pager: true
+    })`: /diff, `v` on a worktree, `w` in the inspector) is handed to the system pager, and the default `less` gets a
+    prompt that says how to leave (`pager.ts` `LESS_PROMPT`; a pager set through $PAGER keeps its own arguments).
+    Checked by pager.test.ts, App.inspector.test.tsx, e2e `cli-tui.mjs` (Esc closes /logs) and `cli-parallel.mjs` (Esc
+    closes /sessions), and the prompt once by hand in a pty with less 668 on macOS.
   - Wave 6 (history, removed 2026-11-08): the app-bundled `orgai` launcher, `app:cliShim*` IPC and `CliShimRow`. The packaged app holds no CLI, and the RunAsNode fuse stays on (accepted: the certificate reader runs the app binary as Node, so any local process can run JS as the signed OrgAI binary with its entitlements via `ELECTRON_RUN_AS_NODE=1`; the self-control gate's rule for that assignment is a text check; standalone spec section 2); `npm run pack:verify` (`scripts/verify-pack.mjs`) checks that, that the app keeps its own unpacked runtime packages, and (check (e)) boots hidden on the mock adapter with a temp `ORGAI_DATA_DIR` and quits cleanly (CI step is `continue-on-error` until (e) has passed once on both runners; standalone spec section 12). The only shim code left is cleanup of old OrgAI-written shims (`shimInstaller.ts`, Install row below).
   - Wave 3: adapters call `ctx.onRootTurnEnded` on every root turn end before 'idle' and expose `settlement()`;
     `ContinuationDriver.isSettledForTurn(gen)`; RunManager `trySettleExecRun` (pure `execSettle.ts`), stall watchdog,

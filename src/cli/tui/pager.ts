@@ -52,6 +52,14 @@ export function parsePagerEnv(value: string | undefined): { file: string; args: 
 }
 
 /**
+ * The prompt of the default `less`: it says how to leave, because Esc does nothing there. No `?`, `:`, `.`, `%` or
+ * backslash (less reads those in a prompt string). A pager the user set through $PAGER keeps its own prompt.
+ */
+export const LESS_PROMPT = 'q closes, arrows and space scroll, / searches'
+/** Arguments of the default `less`: raw colour codes (the diff's own, sanitizeDiffForPager) and the prompt above. */
+export const LESS_ARGS: readonly string[] = ['-R', `-Ps${LESS_PROMPT}`]
+
+/**
  * The pager to run, always as an absolute path: a bare name is spawned from the TUI's cwd (the project folder, an
  * untrusted repo), and Windows looks in the cwd before PATH, as does execvp for an empty or '.' PATH entry. So a bare
  * $PAGER word is resolved through whichOnPath (absolute PATH entries only); a relative path with a separator, or a name
@@ -64,7 +72,7 @@ export function pagerCommand(env: NodeJS.ProcessEnv, which: (name: string, env: 
     if (file) return { file, args: fromEnv.args }
   }
   const less = which('less', env)
-  if (less) return { file: less, args: ['-R'] }
+  if (less) return { file: less, args: [...LESS_ARGS] }
   const more = which('more', env)
   if (more) return { file: more, args: [] }
   return null
