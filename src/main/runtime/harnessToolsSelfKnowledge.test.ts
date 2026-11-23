@@ -240,7 +240,7 @@ describe('propose_project_settings', () => {
     const ctx = chatCtx({ storedProject: () => stored({ kind: 'engagement', permissionMode: 'default' }) })
     await call(ctx, { title: 'Harmless tweak', permissionMode: 'auto', client: 'Acme', brief: 'New brief' })
     const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
-    expect(req.title).toBe('Settings for project "Real project": Brief (new text); Permission mode Ask for everything risky → Unattended; Client unset → Acme')
+    expect(req.title).toBe('Settings for project "Real project": Brief (new text); Permission mode Ask for everything risky → Unattended; Who it is for unset → Acme')
   })
 
   it('the title uses human labels and values, with no raw field names', async () => {
