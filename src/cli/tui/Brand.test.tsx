@@ -25,7 +25,7 @@ describe('Brand', () => {
     }
     for (const terminalTheme of ['dark', 'light'] as const) {
       const palette = terminalPalette({ terminalTheme })
-      const background = terminalTheme === 'dark' ? '#181c27' : '#ffffff'
+      const background = terminalTheme === 'dark' ? '#1a1e2c' : '#ffffff'
       const contrast = (Math.max(luminance(palette.brandBase), luminance(background)) + 0.05) /
         (Math.min(luminance(palette.brandBase), luminance(background)) + 0.05)
       const accentContrast = (Math.max(luminance(palette.accent), luminance(background)) + 0.05) /
