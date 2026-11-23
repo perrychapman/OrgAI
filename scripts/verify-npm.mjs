@@ -32,8 +32,9 @@
 //        it runs. The flow was driven by hand against the built bundle with a throwaway data folder (Wave 7 integration).
 //   (8)  the CLI's own data folder: a fresh install writes `product.json` marking it orgai-cli, and a decoy ORGAI_DATA_DIR
 //        (the app's variable) stays empty: the CLI ignores it
-//   (7)  Codex, when `codex` is on PATH or ORGAI_CODEX_PATH names it: `--version` and an app-server `initialize`
-//        handshake on a temp CODEX_HOME (token-free per the Codex schema; UNVERIFIED until run). SKIP otherwise.
+//   (7)  Codex. The package brings it: the installed per-platform binary answers `--version` with the pinned version
+//        and an app-server `initialize` handshake on a temp CODEX_HOME (token-free per the Codex schema). A tarball
+//        without the dependency: the same for a `codex` on PATH or ORGAI_CODEX_PATH, SKIP when there is none.
 //
 // Writes only its temp folders (outside the checkout; removed at the end unless --keep). npm downloads the pinned
 // dependencies from the registry (the user's npm config and cache apply). A host left behind (there should be none: the
@@ -429,6 +430,25 @@ export function startLocalRegistry({ tarball, pkg, hasShrinkwrap, upstream }) {
 }
 
 /**
+ * The native Codex executable inside an installed per-platform package (`<dir>/vendor/<target>/bin/codex[.exe]`), or
+ * undefined when the package has none.
+ */
+export function bundledCodexBinary(packageDir, platform = process.platform, exists = fs.existsSync, list = (d) => fs.readdirSync(d)) {
+  const vendor = path.join(packageDir, 'vendor')
+  let targets
+  try {
+    targets = list(vendor)
+  } catch {
+    return undefined
+  }
+  for (const target of [...targets].sort()) {
+    const exe = path.join(vendor, target, 'bin', platform === 'win32' ? 'codex.exe' : 'codex')
+    if (exists(exe)) return exe
+  }
+  return undefined
+}
+
+/**
  * Spawns `codex app-server`, sends `initialize` and waits for its answer (id 1). Resolves { ok, detail }; never
  * rejects. `command` / `prefix` come from launchCommand on Windows (a .cmd shim) or the binary itself.
  */
@@ -624,6 +644,12 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     const native = claudeNativePackage(platform, arch)
     const nativeLoc = [`node_modules/${native}`, `node_modules/${native}-musl`].find((l) => tree.has(l))
     if (!nativeLoc) problems1.push(`this platform's Claude runtime (${native}) is not installed`)
+    // The package brings Codex (a dependency since 2026-11-23): this platform's binary must be installed with it,
+    // hoisted beside @openai/codex or nested inside it.
+    const codexDep = pkg.dependencies?.['@openai/codex']
+    const codexNative = `@openai/codex-${platform}-${arch}`
+    const codexLoc = codexDep ? [...tree.keys()].find((l) => l === `node_modules/${codexNative}` || l.endsWith(`/node_modules/${codexNative}`)) : undefined
+    if (codexDep && !codexLoc) problems1.push(`this platform's Codex binary (${codexNative}) is not installed`)
     let info
     try {
       info = JSON.parse(fs.readFileSync(path.join(layout.packageDir, 'out', 'cli', 'install.json'), 'utf8'))
@@ -783,9 +809,12 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       report('(8) data folder', problems8.length === 0 ? 'ok' : 'fail', problems8.length ? problems8.join('; ') : 'product.json marks the CLI folder (orgai-cli), also in a fresh user\'s default orgai-cli folder; ORGAI_DATA_DIR was ignored')
     }
 
-    // (7) Codex, bring-your-own
-    const codex = env.ORGAI_CODEX_PATH && fs.existsSync(env.ORGAI_CODEX_PATH) ? env.ORGAI_CODEX_PATH : whichOnPath('codex', env, platform)
-    if (!codex) report('(7) codex', 'skip', 'no codex on PATH and no ORGAI_CODEX_PATH (Codex is bring-your-own)')
+    // (7) Codex. A package that brings it: the installed binary itself must be the pinned version and answer the
+    // handshake, whatever codex is on PATH. A package without it (an older tarball): bring-your-own, as before.
+    const bundledCodex = codexLoc ? bundledCodexBinary(path.join(layout.packageDir, ...codexLoc.split('/')), platform) : undefined
+    const codex = codexDep ? bundledCodex : env.ORGAI_CODEX_PATH && fs.existsSync(env.ORGAI_CODEX_PATH) ? env.ORGAI_CODEX_PATH : whichOnPath('codex', env, platform)
+    if (codexDep && !codex) report('(7) codex', 'fail', `the package depends on @openai/codex@${codexDep} but ${codexNative} has no vendor/<target>/bin/codex binary`)
+    else if (!codex) report('(7) codex', 'skip', 'no codex on PATH and no ORGAI_CODEX_PATH (this package does not bring Codex)')
     else {
       const codexHome = path.join(work, 'codex-home')
       fs.mkdirSync(codexHome, { mode: 0o700 })
@@ -793,8 +822,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const viaCmd = platform === 'win32' && /\.(cmd|bat)$/i.test(codex)
       const ver = await run({ ...(viaCmd ? launchCommand(platform, codex, ['--version'], env) : { command: codex, args: ['--version'] }), cwd: work, env: codexEnv, timeoutMs: CHECK_TIMEOUT_MS })
       const hs = ver.code === 0 ? await handshake({ ...(viaCmd ? launchCommand(platform, codex, ['app-server'], env) : { command: codex, args: ['app-server'] }), cwd: work, env: codexEnv }) : { ok: false, detail: 'skipped' }
-      const ok = ver.code === 0 && hs.ok
-      report('(7) codex', ok ? 'ok' : 'fail', ok ? `${codex}: ${ver.stdout.trim()}; ${hs.detail}` : `${codex}: ${ver.code === 0 ? hs.detail : showRun(ver)}`)
+      // The bundled binary must be the version the package pins.
+      const pinned = !codexDep || ver.stdout.includes(codexDep)
+      const ok = ver.code === 0 && hs.ok && pinned
+      const where = codexDep ? `bundled ${path.relative(layout.packageDir, codex)}` : codex
+      report('(7) codex', ok ? 'ok' : 'fail', ok ? `${where}: ${ver.stdout.trim()}; ${hs.detail}` : `${where}: ${ver.code !== 0 ? showRun(ver) : !pinned ? `is ${ver.stdout.trim()}, the package pins ${codexDep}` : hs.detail}`)
     }
   } finally {
     await proxy?.close().catch(() => {})

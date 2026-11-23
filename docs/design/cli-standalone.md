@@ -705,11 +705,16 @@ never used silently.
 
 ### 6.2 Codex (**D7**)
 
-Not a dependency of the npm package (347 MB most Claude users never run). Resolution (synchronous, file-system only,
-in `resolveCodexBinary`):
+A dependency of the npm package since 2026-11-23 (D7 reversed, see the decision table): the package brings the Codex
+version it was tested with, as it brings the Claude runtime, and step 2 below finds it before anything on PATH. The
+earlier choice was bring-your-own (the per-platform binary is about 360 MB that a Claude-only user never runs); it
+meant an OpenAI connection was refused whenever the user's own `codex` had moved past the tested release line, which
+it does every few days. Measured on macOS arm64: the installed package goes from 405 MB to about 765 MB.
+Resolution (synchronous, file-system only, in `lookupCodexBinary`):
 
 1. `ORGAI_CODEX_PATH`.
-2. The per-platform package if `createRequire` resolves it from our bundle (the app, the archive).
+2. The per-platform package if `createRequire` resolves it from our bundle (the app, the npm package, the archive),
+   hoisted beside `@openai/codex` or nested inside its `node_modules`.
 3. `codex` on PATH, by walking the PATH directories with `statSync` (never the cwd; no `where.exe` spawn). Windows
    order per directory: `codex.exe`, `codex.cmd`, `codex.ps1`; the extensionless sh script npm also writes there is
    skipped. POSIX: `codex`.
@@ -854,7 +859,7 @@ Anything only checked by unit tests or fakes stays marked unverified in CLAUDE.m
 | D4 | Agent-reachable vault key on all platforms, including the macOS weakening | **Accepted (owner, 2026-11-07):** accept, documented |
 | D5 | When to retire the app-bundled CLI; whether to ship the archive | **Accepted (owner, 2026-11-07):** deprecation in the release after phase A, stub one release later; archive on demand |
 | D6 | Dual-write window | **Accepted (owner, 2026-11-07):** this release and the next |
-| D7 | Codex: bring-your-own with a version check, or a pinned optional dependency | **Accepted (owner, 2026-11-07):** bring-your-own |
+| D7 | Codex: bring-your-own with a version check, or a pinned optional dependency | **Accepted (owner, 2026-11-07):** bring-your-own. **Reversed 2026-11-23** (asked for by the fork's owner after his own `codex` 0.171 was refused): a pinned dependency of the npm package; bring-your-own remains the fallback when the binary is not installed, and `ORGAI_CODEX_PATH` still overrides |
 | D8 | Desktop handoff grant (4.4 step 5): `host.status` and `host.stop` (forced included) for any `desktop` hello with `daemon.secret`, whatever Terminal access is. Not an authentication of the app: any same-user process holding the secret can stop a Node host; the descendant check refuses agents where it works | **Accepted (owner, 2026-11-07):** accept |
 | D9 | Node host Terminal access level: stored setting (default `operate`), asked once on `daemon start` from a terminal, changed with `orgai terminal-access` | **Accepted (owner, 2026-11-07):** accept; revisit a `full` default for macOS and Linux, where the peer check refuses the host's own descendants |
 | D10 | Shrinkwrap in the published package | **Owner decision 2026-11-06, to revisit: `NPM_SHRINKWRAP=none`** in release.yml and ci.yml (exact top-level pins, no `npm-shrinkwrap.json`). With npm 11 a honoured shrinkwrap installed every platform's Claude runtime (about 2 GB); `none` installs about 300 MB. The `full` path stays behind that one setting |
