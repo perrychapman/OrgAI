@@ -96,25 +96,8 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
   const engagement = kind === 'engagement'
   const rootName =project.roles.find((r) => r.reportsTo === null)?.name ?? 'the orchestrator'
   const canChooseMode = !needsSetup && !isVirtualProjectId(project.id)
-  // A one-shot mode from Home (never stored) wins for this opening; the sticky mode is read otherwise and left alone.
-  const modeOnce = useAppStore((s) => s.newRunModeOnce)
-  const [mode, setModeState] = useState<NewRunMode>(() => {
-    const o = useAppStore.getState().newRunModeOnce
-    return o && o.projectId === project.id ? o.mode : readNewRunMode(project.id)
-  })
-  const modeProject = useRef(project.id)
-  useEffect(() => {
-    if (modeOnce && modeOnce.projectId === project.id) {
-      modeProject.current = project.id
-      setModeState(modeOnce.mode)
-      useAppStore.getState().setNewRunModeOnce(null)
-      return
-    }
-    if (modeProject.current !== project.id) {
-      modeProject.current = project.id
-      setModeState(readNewRunMode(project.id))
-    }
-  }, [project.id, modeOnce])
+  const [mode, setModeState] = useState<NewRunMode>(() => readNewRunMode(project.id))
+  useEffect(() => setModeState(readNewRunMode(project.id)), [project.id])
   const ask = canChooseMode && mode === 'ask'
   const setMode = (m: NewRunMode): void => {
     setModeState(m)

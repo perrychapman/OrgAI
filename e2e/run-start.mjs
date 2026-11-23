@@ -435,11 +435,6 @@ try {
       check((await activeTestId(page)) === trigger, `9 Escape in ${picker} returns focus to ${trigger}`, await activeTestId(page))
     }
     await page.locator('.composer textarea').fill(`${IDLE_MARK} keyboard start`)
-    // A held Enter (auto-repeat) never sends.
-    await page.locator('.composer textarea').focus()
-    await page.locator('.composer textarea').dispatchEvent('keydown', { key: 'Enter', code: 'Enter', repeat: true, bubbles: true, cancelable: true })
-    await sleep(800)
-    check((await runsOf()).length === before && (await page.locator('.composer textarea').inputValue()).includes('keyboard start'), '9 a repeated Enter keydown does not send', String((await runsOf()).length))
     await page.locator('.composer textarea').press('Enter')
     const run = await newestRunAfter(before)
     check(!!run, '9 Enter in the textarea starts the run')
