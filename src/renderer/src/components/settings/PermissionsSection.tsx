@@ -63,7 +63,7 @@ function useSectionTarget(openSummary: () => void): void {
       requestAnimationFrame(() => {
         const section = document.getElementById(target)
         const h3 = section?.querySelector<HTMLElement>('h3')
-        // The Permissions section title repeats the pane title and is hidden (display: none), so the pane heading takes the focus.
+        // A section whose title is hidden (it repeats the pane title) hands focus to the pane heading; a visible one takes it.
         const heading = h3?.checkVisibility() ? h3 : section?.closest('[role=tabpanel]')?.querySelector<HTMLElement>('.settings-pane-title')
         scrollWithin(section, 'start')
         if (heading) {
@@ -172,7 +172,7 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
       >
         <SettingsCard className="perm-mode-card">
           <div className="perm-mode-head" id={row('mode-row')}>
-            <PermissionModeCards mode={project.permissionMode} label={copy.permissionMode.label} onChange={(permissionMode) => patch({ permissionMode })} />
+            <PermissionModeCards mode={project.permissionMode} label={copy.permissionMode.label} projectName={project.name} onChange={(permissionMode) => patch({ permissionMode })} />
             <p className="perm-mode-now">
               <span className="sr-only">Now: </span>
               <span className="perm-mode-tradeoff" data-testid="permission-mode-tradeoff">

@@ -1055,6 +1055,35 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+.perm-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 20px;
+}
+.perm-card-current {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
+}
+.perm-card-desc {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1h);
+}
+/* Forced colours: the chosen card keeps a visible outline (the tint and border colour are dropped). */
+@media (forced-colors: active) {
+  .perm-card.is-on,
+  .appearance-mode.is-on {
+    outline: 3px solid Highlight;
+    outline-offset: 1px;
+  }
+}
 .perm-card-bars {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1159,7 +1188,8 @@
   background: var(--surface-3);
   color: var(--text-secondary);
 }
-.perm-outcome.is-ask {
+.perm-outcome.is-ask,
+.perm-outcome.is-askSafe {
   background: var(--warning-soft);
   color: var(--warning-text);
 }
@@ -1167,7 +1197,8 @@
   background: var(--success-soft);
   color: var(--success-text);
 }
-.perm-outcome.is-check {
+.perm-outcome.is-check,
+.perm-outcome.is-goOrCheck {
   background: var(--working-soft, var(--surface-3));
   color: var(--working-text, var(--text-secondary));
 }
@@ -1335,6 +1366,10 @@
 .appearance-mode-name {
   flex: 1 1 auto;
   font-weight: var(--weight-semibold);
+}
+.appearance-mode-check {
+  flex: none;
+  color: var(--accent-text);
 }
 .appearance-mode-note {
   font-size: var(--text-caption);

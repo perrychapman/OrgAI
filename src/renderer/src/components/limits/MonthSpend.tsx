@@ -23,7 +23,7 @@ function monthStart(now: Date): number {
  * usage overview the Usage page reads (main's priced run records; unknown cost is said, never shown as $0), and a way
  * to the Usage page filtered to the project. No meter: a monthly limit is not a project setting.
  */
-export function MonthSpend({ project }: { project: Project }): ReactElement | null {
+export function MonthSpend({ project }: { project: Project }): ReactElement {
   const [spend, setSpend] = useState<Spend | null>(null)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
@@ -47,11 +47,13 @@ export function MonthSpend({ project }: { project: Project }): ReactElement | nu
     st.setView('usage')
   }
 
-  if (failed) return null
   const month = new Date().toLocaleDateString(undefined, { month: 'long' })
   let title = 'Loading this month…'
   let line = ''
-  if (spend) {
+  if (failed) {
+    title = "This month's spend is not available"
+    line = 'The Usage page may still show it.'
+  } else if (spend) {
     if (spend.runs === 0) {
       title = `Nothing spent in ${month} yet`
       line = 'No runs in this project this month.'
@@ -62,7 +64,7 @@ export function MonthSpend({ project }: { project: Project }): ReactElement | nu
     }
   }
   return (
-    <div className="settings-card month-spend" data-testid="limits-month-spend" aria-busy={spend === null}>
+    <div className="settings-card month-spend" data-testid="limits-month-spend" aria-busy={spend === null && !failed}>
       <div className="month-spend-row">
         <div className="month-spend-text">
           <div className="month-spend-title">{title}</div>

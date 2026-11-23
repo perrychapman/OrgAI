@@ -75,7 +75,14 @@ export function SettingsSearch(): ReactElement {
   }
 
   return (
-    <div className="settings-search" data-testid="settings-search">
+    <div
+      className="settings-search"
+      data-testid="settings-search"
+      onBlur={(e) => {
+        // Focus left the field and its results (Tab away, a click elsewhere): close the list.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setQ('')
+      }}
+    >
       <label htmlFor={inputId} className="sr-only">
         Search settings
       </label>
@@ -90,7 +97,6 @@ export function SettingsSearch(): ReactElement {
         spellCheck={false}
         value={q}
         aria-controls={open ? listId : undefined}
-        aria-expanded={open}
         data-testid="settings-search-input"
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={onInputKey}

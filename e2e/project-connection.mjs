@@ -148,7 +148,7 @@ try {
       check(((await page.locator(`[data-testid=project-connection-option][data-id="${proxyId}"]`).textContent()) ?? '').includes(PROXY), 'the row names the proxy by its own name')
       const idleRow = page.locator(`[data-testid=project-connection-option][data-id="${idleId}"]`)
       check(await idleRow.locator('input').isDisabled(), `the not-connected proxy radio is inert at ${tag}`)
-      check(/Not connected\. Connect it in App settings > Connections\./.test((await idleRow.locator('[data-testid=project-connection-why]').textContent()) ?? ''), 'the not-connected row says why')
+      check(/Not connected\. Connect it in Settings > AI providers\./.test((await idleRow.locator('[data-testid=project-connection-why]').textContent()) ?? ''), 'the not-connected row says why')
       check((await page.locator('#settings-section-connection').getByText('This project cannot start as configured').count()) === 0, 'no mixed-family danger banner')
       await noOverflow(`Project settings > Connection ${tag}`)
       await shot(`settings-${w}x${h}-${theme}`)

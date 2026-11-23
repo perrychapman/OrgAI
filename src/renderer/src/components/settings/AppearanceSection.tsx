@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Check, Plus } from 'lucide-react'
 import type { AppearanceSettings, ThemeMode } from '@shared/types'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { normalizeHex } from '../../lib/theme'
@@ -99,6 +99,7 @@ export function AppearanceSection({ appearance, onChange }: { appearance: Appear
                   <span className="appearance-mode-label">
                     <span className="appearance-mode-name">{m.label}</span>
                     {m.note && <span className="appearance-mode-note">{m.note}</span>}
+                    {appearance.theme === m.value && <Check className="appearance-mode-check" size={14} aria-hidden="true" />}
                   </span>
                 </label>
               ))}

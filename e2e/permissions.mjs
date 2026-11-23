@@ -490,6 +490,30 @@ try {
     await paneTab('Permissions')
     const projectModes = await page.locator('[data-testid=permission-mode-cards] .perm-card-mode').allTextContents()
     check(projectModes.includes('Ask for everything risky') && projectModes.includes('Auto-accept edits'), 'the project mode cards use the shared short names', projectModes.join(' | '))
+    // ui-overhaul mode cards: a pick saves, the effects table follows, More options toggles, Bypass asks first.
+    const before = (await findProject(page, NAME))?.permissionMode
+    const card = (m) => page.locator(`[data-testid=permission-mode-card][data-mode=${m}]`)
+    const target = before === 'acceptEdits' ? 'default' : 'acceptEdits'
+    await card(target).click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.permissionMode === target, `clicking a mode card saves ${target}`)
+    check((await card(target).locator('.perm-card-current').count()) === 1, 'the chosen card says Current')
+    const firstCell = (await page.locator('[data-testid=permission-mode-effects] td').first().innerText()).trim()
+    check(firstCell === (target === 'acceptEdits' ? 'Goes ahead' : 'Asks first'), 'the effects table follows the mode', firstCell)
+    const more = page.locator('[data-testid=permission-mode-more]')
+    check((await more.getAttribute('aria-expanded')) === 'false' && (await card('bypassPermissions').count()) === 0, 'More options starts closed')
+    await more.click()
+    check((await more.getAttribute('aria-expanded')) === 'true' && (await card('bypassPermissions').count()) === 1, 'More options shows the other modes')
+    await card('bypassPermissions').click()
+    const confirmBtn = page.locator('[data-testid=permission-bypass-confirm]')
+    await confirmBtn.waitFor({ timeout: 5000 }).catch(() => {})
+    check(await confirmBtn.isVisible(), 'Skip all checks asks for confirmation')
+    await page.keyboard.press('Escape')
+    await sleep(500)
+    check((await findProject(page, NAME))?.permissionMode === target, 'cancelling the confirmation keeps the mode')
+    await card(before ?? 'auto').click()
+    await sleep(700)
+    check((await findProject(page, NAME))?.permissionMode === (before ?? 'auto'), 'the mode is restored')
   }
 
   // N10: with worktrees off, the review switch says why it is disabled.

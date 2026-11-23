@@ -28,7 +28,7 @@ export function projectMenuPanes(engagement: boolean): SettingsMenuPane[] {
   return [
     { id: 'general', label: 'Basics', description: engagement ? 'Name, client, folder, plan and the provider this engagement uses.' : 'Name, folder, brief and the provider this project uses.' },
     { id: 'permissions', label: 'Permissions', description: 'How much the team asks you, and what it may touch.' },
-    { id: 'limits', label: 'Spending limits', description: 'A team can never spend past these without asking you.' },
+    { id: 'limits', label: 'Spending limits', description: 'What this project spent, the cap that stops a run, and how big a run can get.' },
     engagement
       ? { id: 'maintenance', label: 'Maintenance', description: 'What OrgAI keeps for this engagement, and how to clear it.' }
       : { id: 'maintenance', label: 'Branches', description: "How the team's changes get from an agent into your code." }
