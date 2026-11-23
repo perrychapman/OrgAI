@@ -1,11 +1,26 @@
-import type { ReactElement } from 'react'
-import { useEffect, useId, useState } from 'react'
-import { Check, FolderPlus, MessageSquare, Plug } from 'lucide-react'
+import type { ReactElement, ReactNode } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Check, MessageSquare, Plug } from 'lucide-react'
+import type { ConnectionId, PermissionMode } from '@shared/types'
 import { openNewChat, useAppStore } from '../../store/useAppStore'
 import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
+import { writeLastProjectKind } from '../../lib/projectsForm'
+import { cleanIpcError } from '../../lib/ipcError'
+import {
+  ASK_OPTIONS,
+  STAGE_TITLES,
+  WORK_OPTIONS,
+  askChoiceFor,
+  connectOptions,
+  nextStage,
+  prevStage,
+  readWelcomeDone,
+  writeWelcomeDone,
+  type WelcomeStage,
+  type WorkKind
+} from '../../lib/welcome'
 import { Button } from '../ui/Button'
-import { EmptyState } from '../ui/EmptyState'
 import { Icon } from '../ui/Icon'
 import { NewProjectForm } from './NewProjectForm'
 import '../../styles/onboarding.css'
@@ -17,36 +32,17 @@ const OPTIONS: { value: Start; title: string; text: string }[] = [
   { value: 'chat', title: 'Chat now', text: 'Ask a question about OrgAI or your work, or hand over a task. No project needed.' }
 ]
 
-/** Session-and-relaunch memory of "Skip setup" (renderer only; cleared by choosing New project from the empty state). */
-const SKIP_KEY = 'orgai.welcome.skipped'
-function readSkipped(): boolean {
-  try {
-    return window.localStorage.getItem(SKIP_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-function writeSkipped(on: boolean): void {
-  try {
-    if (on) window.localStorage.setItem(SKIP_KEY, '1')
-    else window.localStorage.removeItem(SKIP_KEY)
-  } catch {
-    /* storage unavailable: the choice lasts for this window */
-  }
-}
+/** Where the setup was when the user left Home (e.g. to sign in); kept for this window only. */
+let resumeAt: { stage: WelcomeStage; work: WorkKind; connection: ConnectionId | null; ask: PermissionMode | null } | null = null
 
 type ConnectState = { label: string; ready: boolean; detail: string }
 
-/** Step 1 reads the real default connection; nothing is chosen here, sign-in lives in App settings: Connections. */
+/** The real default connection, for the start stage's side card. */
 function useConnectState(): ConnectState {
   const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
   const connections = useAppStore((s) => s.connections)
-  const loadConnections = useAppStore((s) => s.loadConnections)
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const auth = useAppStore((s) => s.auth)
-  useEffect(() => {
-    if (!connections) void loadConnections()
-  }, [connections, loadConnections])
   if (mock) return { label: 'Mock adapter', ready: true, detail: 'Runs use scripted data. No sign-in is needed and no tokens are spent.' }
   const info = connections?.find((c) => c.isDefault) ?? connections?.find((c) => c.connection.id === defaultConnection)
   const id = info?.connection.id ?? defaultConnection ?? 'anthropic'
@@ -55,61 +51,224 @@ function useConnectState(): ConnectState {
   if (state === 'connected') return { label: name, ready: true, detail: info?.status.account ? `Connected as ${info.status.account}.` : 'Connected.' }
   if (state === 'connecting') return { label: name, ready: false, detail: 'Connecting…' }
   if (state === undefined) return { label: name, ready: false, detail: 'Checking the connection…' }
-  return { label: name, ready: false, detail: 'Not connected yet. Sign in once and every team can use it. Sign-in opens in your browser; OrgAI never sees your password.' }
+  return { label: name, ready: false, detail: 'Not connected yet. Sign in once in Settings and every team can use it.' }
+}
+
+function openConnections(setView: (v: 'appSettings') => void): void {
+  requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+  setView('appSettings')
+}
+
+/** One glass radio card (native radio inside a label, so arrows move within the group). */
+function Choice({ name, value, checked, onPick, title, text, badge, kind }: { name: string; value: string; checked: boolean; onPick: () => void; title: string; text: string; badge?: string; kind?: string }): ReactElement {
+  return (
+    <label className="welcome-option glass" data-kind={kind} data-testid="welcome-option" data-value={value}>
+      <input type="radio" name={name} value={value} checked={checked} onChange={onPick} aria-labelledby={`${name}-${value}-t`} aria-describedby={`${name}-${value}-d`} />
+      <span id={`${name}-${value}-t`} className="welcome-option-title">
+        {title}
+        {badge && <span className="welcome-option-badge">{badge}</span>}
+      </span>
+      <span id={`${name}-${value}-d`} className="welcome-option-text">
+        {text}
+      </span>
+    </label>
+  )
 }
 
 /**
- * First launch, no projects (ui-overhaul Welcome board): the steps of getting started, the connection the teams will use,
- * one radio choice (Start a project / Chat now) and the panel it opens, with a side panel saying what is being set up.
- * The form stays mounted (hidden) while Chat is picked so typed text survives a switch, and it never grabs focus from
- * the radio group. "Skip setup" shows the plain empty state instead.
+ * First launch, no projects (ui-overhaul Welcome board). Three setup steps, then the start choice:
+ * 1 Connect: the real connections; picking a connected one makes it the default (connections:setDefault), an unconnected
+ *   one offers Sign in (App settings: Connections, which opens the browser).
+ * 2 What first: code, not-code or Chat; it preselects the New project kind (or opens Chat).
+ * 3 How much to ask: the app's default permission mode for new projects (settings:set defaultPermissionMode).
+ * Then the start choice (Start a project / Chat now) with the inline New project form, as before. "Skip setup" goes
+ * straight there. Finishing or skipping is remembered (lib/welcome WELCOME_DONE_KEY).
  */
 export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): ReactElement {
-  const [start, setStart] = useState<Start>('project')
-  const [skipped, setSkipped] = useState(readSkipped)
   const setView = useAppStore((s) => s.setView)
-  const name = `${useId()}-start`
+  const connections = useAppStore((s) => s.connections)
+  const loadConnections = useAppStore((s) => s.loadConnections)
+  const defaultConnection = useAppStore((s) => s.defaultConnection)
+  const setDefaultConnection = useAppStore((s) => s.setDefaultConnection)
+  const mock = useAppStore((s) => s.appInfo?.mockAdapter ?? false)
+  const uid = useId()
   const connect = useConnectState()
 
-  if (skipped) {
+  const [stage, setStage] = useState<WelcomeStage>(() => resumeAt?.stage ?? (readWelcomeDone() ? 'start' : 1))
+  const [work, setWork] = useState<WorkKind>(() => resumeAt?.work ?? 'code')
+  const [chosenConnection, setChosenConnection] = useState<ConnectionId | null>(() => resumeAt?.connection ?? null)
+  const [ask, setAsk] = useState<PermissionMode | null>(() => resumeAt?.ask ?? null)
+  const [start, setStart] = useState<Start>('project')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const moved = useRef(false)
+
+  useEffect(() => {
+    if (!connections) void loadConnections()
+  }, [connections, loadConnections])
+  // Step 3 preselects the saved default when it is one of the three offered modes.
+  useEffect(() => {
+    if (stage !== 3 || ask !== null) return
+    let live = true
+    window.orgai.settings
+      .get()
+      .then((s) => live && setAsk(askChoiceFor(s.defaultPermissionMode)))
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [stage, ask])
+  // Keep the place while the user is elsewhere (signing in), for this window only.
+  useEffect(() => {
+    resumeAt = stage === 'start' ? null : { stage, work, connection: chosenConnection, ask }
+  }, [stage, work, chosenConnection, ask])
+  // After Next / Back, focus the new step's heading (never on mount: Home owns the first focus).
+  useEffect(() => {
+    if (moved.current) headingRef.current?.focus()
+  }, [stage])
+
+  const options = connectOptions(connections, defaultConnection)
+  const picked = options.find((o) => o.id === (chosenConnection ?? options[0]?.id)) ?? null
+
+  const go = (to: WelcomeStage): void => {
+    moved.current = true
+    setError(null)
+    if (to === 'start') {
+      writeWelcomeDone()
+      if (work !== 'chat') writeLastProjectKind(work)
+      setStart(work === 'chat' ? 'chat' : 'project')
+    }
+    setStage(to)
+  }
+
+  const next = async (): Promise<void> => {
+    if (stage === 'start' || busy) return
+    setError(null)
+    setBusy(true)
+    try {
+      if (stage === 1 && picked && picked.connected && picked.id !== defaultConnection) await setDefaultConnection(picked.id)
+      if (stage === 3 && ask) {
+        const s = await window.orgai.settings.get()
+        if (s.defaultPermissionMode !== ask) await useAppStore.getState().trackSave(() => window.orgai.settings.set({ ...s, defaultPermissionMode: ask }))
+      }
+      const to = nextStage(stage, work)
+      if (to === 'start' && work === 'chat') {
+        writeWelcomeDone()
+        setStage('start')
+        setStart('chat')
+        void openNewChat()
+        return
+      }
+      go(to)
+    } catch (e) {
+      setError(cleanIpcError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (stage !== 'start') {
+    const t = STAGE_TITLES[stage]
+    const steps = ([1, 2, 3] as const).filter((n) => n !== 3 || work !== 'chat')
+    let body: ReactNode
+    if (stage === 1) {
+      body = mock ? (
+        <p className="welcome-note" data-testid="welcome-mock-note">
+          The mock adapter is on: runs use scripted data, so no sign-in is needed and no tokens are spent.
+        </p>
+      ) : options.length === 0 ? (
+        <p className="welcome-note">Reading your connections…</p>
+      ) : (
+        <div className="welcome-options" role="radiogroup" aria-labelledby={`${uid}-h`}>
+          {options.map((o) => (
+            <Choice key={o.id} name={`${uid}-conn`} value={o.id} checked={picked?.id === o.id} onPick={() => setChosenConnection(o.id)} title={o.name} text={o.sub} badge={o.connected ? 'Connected' : undefined} />
+          ))}
+        </div>
+      )
+    } else if (stage === 2) {
+      body = (
+        <div className="welcome-options" role="radiogroup" aria-labelledby={`${uid}-h`}>
+          {WORK_OPTIONS.map((o) => (
+            <Choice key={o.kind} name={`${uid}-work`} value={o.kind} kind={o.kind} checked={work === o.kind} onPick={() => setWork(o.kind)} title={o.name} text={o.sub} />
+          ))}
+        </div>
+      )
+    } else {
+      body = (
+        <div className="welcome-options" role="radiogroup" aria-labelledby={`${uid}-h`}>
+          {ASK_OPTIONS.map((o) => (
+            <Choice key={o.mode} name={`${uid}-ask`} value={o.mode} checked={ask === o.mode} onPick={() => setAsk(o.mode)} title={o.name} text={o.sub} />
+          ))}
+        </div>
+      )
+    }
+    const needsSignIn = stage === 1 && !mock && !!picked && !picked.connected
+    const nextLabel = stage === 3 || (stage === 2 && work === 'chat') ? (work === 'chat' ? 'Open Chat' : 'Open OrgAI') : 'Continue'
     return (
-      <div className="dash-first welcome-skipped" data-testid="welcome-skipped">
-        <EmptyState
-          icon={FolderPlus}
-          title="Start with a project"
-          description="Point OrgAI at a folder and it proposes a team for it. Or try Chat first to look around."
-          testId="home-first-empty"
-          actions={
-            <>
-              <Button
-                variant="primary"
-                icon={FolderPlus}
-                testId="welcome-new-project"
-                onClick={() => {
-                  writeSkipped(false)
-                  setSkipped(false)
-                  setStart('project')
-                }}
-              >
-                New project
+      <div className="dash-first welcome welcome-setup" data-testid="welcome-setup" data-stage={stage}>
+        <div className="welcome-main">
+          <div className="welcome-top">
+            <ol className="welcome-steps welcome-steps-row" aria-label="Setup steps">
+              {steps.map((n) => (
+                <li key={n} className="welcome-step" data-done={n < stage || undefined} aria-current={n === stage ? 'step' : undefined}>
+                  <span className="welcome-step-mark" aria-hidden="true">
+                    {n < stage ? <Icon icon={Check} size="xs" /> : n}
+                  </span>
+                  <span>{STAGE_TITLES[n].label}</span>
+                  {n < stage && <span className="sr-only"> (done)</span>}
+                </li>
+              ))}
+            </ol>
+            <Button variant="ghost" size="sm" testId="welcome-skip" onClick={() => go('start')}>
+              Skip setup
+            </Button>
+          </div>
+          <div className="welcome-head motion-rise" key={stage}>
+            <h2 id={`${uid}-h`} ref={headingRef} tabIndex={-1} className="welcome-title">
+              {t.title}
+            </h2>
+            <p className="welcome-sub">{t.sub}</p>
+          </div>
+          {body}
+          <p className="welcome-foot">{t.foot}</p>
+          {error && (
+            <p className="field-msg error" role="alert" data-testid="welcome-error">
+              {error}
+            </p>
+          )}
+          <div className="welcome-actions">
+            {stage !== 1 && (
+              <Button testId="welcome-back" onClick={() => go(prevStage(stage))}>
+                Back
               </Button>
-              <Button icon={MessageSquare} testId="welcome-open-chat" onClick={() => void openNewChat()}>
-                Open Chat
+            )}
+            <span className="welcome-actions-note">You can change all of this later in Settings</span>
+            {needsSignIn && (
+              <Button testId="welcome-continue-anyway" variant="ghost" onClick={() => void next()}>
+                Continue without it
               </Button>
-            </>
-          }
-        />
+            )}
+            {needsSignIn ? (
+              <Button variant="primary" icon={Plug} testId="welcome-sign-in" onClick={() => openConnections(setView)}>
+                Sign in
+              </Button>
+            ) : (
+              <Button variant="primary" loading={busy} testId="welcome-next" onClick={() => void next()}>
+                {nextLabel}
+              </Button>
+            )}
+          </div>
+        </div>
+        <aside className="welcome-aside" aria-label="What you are setting up">
+          <div className="welcome-aside-label">What you are setting up</div>
+          <SetupPreview work={work} />
+        </aside>
       </div>
     )
   }
 
-  const steps = [
-    { n: 1, label: 'Connect an AI', done: connect.ready },
-    { n: 2, label: 'Choose how to start', done: false },
-    { n: 3, label: start === 'chat' ? 'Open Chat' : 'Pick the folder', done: false }
-  ]
-  const current = connect.ready ? 2 : 1
-
+  const name = `${uid}-start`
   return (
     <div className="dash-first welcome" data-testid="welcome">
       <div className="welcome-main">
@@ -151,83 +310,60 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
       </div>
 
       <aside className="welcome-aside" aria-label="Getting started">
-        <div className="welcome-top">
-          <ol className="welcome-steps" aria-label="Setup steps">
-            {steps.map((s) => (
-              <li key={s.n} className="welcome-step" data-done={s.done || undefined} aria-current={s.n === current ? 'step' : undefined}>
-                <span className="welcome-step-mark" aria-hidden="true">
-                  {s.done ? <Icon icon={Check} size="xs" /> : s.n}
-                </span>
-                <span>{s.label}</span>
-                {s.done && <span className="sr-only"> (done)</span>}
-              </li>
-            ))}
-          </ol>
-          <Button
-            variant="ghost"
-            size="sm"
-            testId="welcome-skip"
-            onClick={() => {
-              writeSkipped(true)
-              setSkipped(true)
-            }}
-          >
-            Skip setup
-          </Button>
-        </div>
-
         <section className="welcome-connect glass" data-ready={connect.ready || undefined} data-testid="welcome-connect" aria-label="The AI your teams will use">
           <span className="welcome-connect-dot" aria-hidden="true" />
           <div className="welcome-connect-text">
             <div className="welcome-connect-title">{connect.label}</div>
             <div className="welcome-connect-detail">{connect.detail}</div>
           </div>
-          <Button
-            size="sm"
-            variant={connect.ready ? 'secondary' : 'primary'}
-            icon={Plug}
-            testId="welcome-connections"
-            onClick={() => {
-              requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
-              setView('appSettings')
-            }}
-          >
+          <Button size="sm" variant={connect.ready ? 'secondary' : 'primary'} icon={Plug} testId="welcome-connections" onClick={() => openConnections(setView)}>
             {connect.ready ? 'Change' : 'Sign in'}
           </Button>
         </section>
-
         <div className="welcome-aside-label">What you are setting up</div>
-        {start === 'chat' ? (
-          <div className="welcome-card glass motion-rise">
-            <span className="welcome-card-mark" aria-hidden="true">
-              <Icon icon={MessageSquare} size="sm" />
-            </span>
-            <div>
-              <div className="welcome-card-title">Chat</div>
-              <div className="welcome-card-text">One assistant that answers questions and can take on a task. No folder, no team.</div>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="welcome-card glass motion-rise">
-              <span className="welcome-card-mark" aria-hidden="true">
-                O
-              </span>
-              <div>
-                <div className="welcome-card-title">Orchestrator</div>
-                <div className="welcome-card-text">Plans each task, splits it up and checks in with you when it needs a decision.</div>
-              </div>
-            </div>
-            <div className="welcome-edge" aria-hidden="true" />
-            <div className="welcome-card welcome-card-ghost">
-              <div>
-                <div className="welcome-card-title">The team</div>
-                <div className="welcome-card-text">Once you pick a folder, the Architect looks at it and proposes the roles. Nothing is created until you approve.</div>
-              </div>
-            </div>
-          </>
-        )}
+        <SetupPreview work={start === 'chat' ? 'chat' : 'code'} />
       </aside>
     </div>
+  )
+}
+
+/** The side panel: what the choice sets up, in words. Roles are never invented: the Architect proposes them later. */
+function SetupPreview({ work }: { work: WorkKind }): ReactElement {
+  if (work === 'chat') {
+    return (
+      <div className="welcome-card glass motion-rise">
+        <span className="welcome-card-mark" aria-hidden="true">
+          <Icon icon={MessageSquare} size="sm" />
+        </span>
+        <div>
+          <div className="welcome-card-title">Chat</div>
+          <div className="welcome-card-text">One assistant that answers questions and can take on a task. No folder, no team.</div>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <>
+      <div className="welcome-card glass motion-rise">
+        <span className="welcome-card-mark" aria-hidden="true">
+          O
+        </span>
+        <div>
+          <div className="welcome-card-title">Orchestrator</div>
+          <div className="welcome-card-text">Plans each task, splits it up and checks in with you when it needs a decision.</div>
+        </div>
+      </div>
+      <div className="welcome-edge" aria-hidden="true" />
+      <div className="welcome-card welcome-card-ghost" data-kind={work}>
+        <div>
+          <div className="welcome-card-title">The team</div>
+          <div className="welcome-card-text">
+            {work === 'engagement'
+              ? 'Once you pick a working folder, the Architect proposes roles that research, analyse and write. Nothing is created until you approve.'
+              : 'Once you pick a folder, the Architect looks at the code and proposes roles that build, review and test. Nothing is created until you approve.'}
+          </div>
+        </div>
+      </div>
+    </>
   )
 }

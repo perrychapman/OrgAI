@@ -22,6 +22,38 @@ const { app, page, shot } = await launch({ shotPrefix: 'layout' })
 try {
   log('auth pill:', await page.locator('[data-testid=auth-pill]').innerText())
 
+  // ---- First launch setup steps (ui-overhaul Welcome); only on a data dir with no projects yet ----
+  if (await page.locator('[data-testid=dash-start-choice]').isVisible().catch(() => false)) {
+    await page.evaluate(() => localStorage.removeItem('orgai.welcome.done'))
+    await page.reload()
+    const setup = page.locator('[data-testid=welcome-setup]')
+    await setup.waitFor({ timeout: 15_000 })
+    check((await setup.getAttribute('data-stage')) === '1', 'W1 first launch opens on step 1 of the setup')
+    check((await page.locator('.welcome-steps [aria-current=step]').count()) === 1, 'W1 exactly one step is current')
+    const n1 = await page.locator('[data-testid=welcome-next], [data-testid=welcome-sign-in]').count()
+    check(n1 === 1, 'W1 step 1 offers one primary action (Continue, or Sign in when the pick is not connected)')
+    // Step 1 -> 2: continue (without signing in when nothing is connected; no IPC is spent on a mock).
+    const anyway = page.locator('[data-testid=welcome-continue-anyway]')
+    if (await anyway.isVisible().catch(() => false)) await anyway.click()
+    else await page.locator('[data-testid=welcome-next]').click()
+    await page.locator('[data-testid=welcome-setup][data-stage="2"]').waitFor({ timeout: 5000 })
+    check(await page.evaluate(() => document.activeElement?.classList.contains('welcome-title') ?? false), 'W2 Continue moves focus to the new step heading')
+    // Arrow keys move inside the radiogroup.
+    await page.locator('[data-testid=welcome-option][data-value=code] input').focus()
+    await page.keyboard.press('ArrowDown')
+    check(await page.locator('[data-testid=welcome-option][data-value=engagement] input').isChecked(), 'W2 ArrowDown picks the next kind of work')
+    await page.locator('[data-testid=welcome-next]').click()
+    await page.locator('[data-testid=welcome-setup][data-stage="3"]').waitFor({ timeout: 5000 })
+    check((await page.locator('[data-testid=welcome-option]').count()) === 3, 'W3 step 3 offers three ways to ask')
+    await page.locator('[data-testid=welcome-back]').click()
+    check((await page.locator('[data-testid=welcome-setup]').getAttribute('data-stage')) === '2', 'W3 Back returns to step 2')
+    await page.locator('[data-testid=welcome-skip]').click()
+    await page.locator('[data-testid=dash-start-choice]').waitFor({ timeout: 5000 })
+    check(await page.locator('[data-testid=project-kind-option][data-kind=engagement] input').isChecked(), 'W4 Skip setup lands on the start choice with the picked kind preselected')
+    check(await page.evaluate(() => localStorage.getItem('orgai.welcome.done') === '1'), 'W4 skipping is remembered')
+    await shot('welcome-start')
+  }
+
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'existing-repo project created')
   check(project?.setup === undefined, 'skip AI setup leaves no setup record')
@@ -553,7 +585,7 @@ try {
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   await appearance.waitFor({ timeout: 10_000 })
-  await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
+  await themeGroup.getByRole('radio', { name: /^Dark\b/ }).check()
   await sleep(800)
   check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'dark', 'Settings > Appearance Dark flips data-theme back to dark')
 

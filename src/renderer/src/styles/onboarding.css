@@ -169,8 +169,114 @@
   height: var(--space-5);
   background: var(--border-strong);
 }
-.welcome-skipped {
-  max-width: 640px;
+/* The three setup steps (stage 1 to 3). */
+.welcome-steps-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+.welcome-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.welcome-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.02em;
+}
+.welcome-title:focus {
+  outline: none;
+}
+.welcome-title:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.welcome-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
+  gap: var(--space-3);
+}
+.welcome-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  align-items: start;
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+.welcome-option:hover {
+  border-color: var(--border-strong);
+  transform: translateY(calc(var(--motion-distance-sm) * -0.5));
+}
+.welcome-option input {
+  grid-row: 1 / span 2;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.welcome-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-faint);
+  box-shadow: 0 0 0 1px var(--accent), var(--elev-2);
+}
+.welcome-option[data-kind='engagement']:has(input:checked) {
+  border-color: var(--eng-line);
+  background: var(--eng-soft);
+  box-shadow: 0 0 0 1px var(--eng-line), var(--elev-2);
+}
+.welcome-option[data-kind='engagement'] input {
+  accent-color: var(--eng);
+}
+.welcome-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.welcome-option-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-semibold);
+}
+.welcome-option-badge {
+  padding: 0 var(--space-1h);
+  border-radius: var(--radius-full);
+  background: var(--success-soft);
+  color: var(--success-text);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+}
+.welcome-option-text {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.welcome-note {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+.welcome-actions-note {
+  flex: 1 1 auto;
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
 }
 
 /* New project or engagement (ui-overhaul NewProject board): the two kinds look separate. Code is violet with a
