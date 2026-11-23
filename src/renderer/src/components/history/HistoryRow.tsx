@@ -1,6 +1,6 @@
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
-import { useMemo } from 'react'
-import { ChevronDown, ChevronRight, Files } from 'lucide-react'
+import { useMemo, useRef } from 'react'
+import { CalendarClock, ChevronDown, ChevronRight, Files } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
 import { MenuButton, type ContextMenuControl } from '../ui/ContextMenu'
 import { Button } from '../ui/Button'
@@ -15,7 +15,8 @@ import { displayRunName, isOrgChangeRun, runKindWord } from '../../lib/orgChange
 import { statusOfRun, statusText } from '../../lib/runStatus'
 import { outputsCountLabel, outputsOfRuns } from '../../lib/outputs'
 import { quickFolderLabel } from '../../lib/assistants'
-import { agentsLabel, chainFacts, resultLine, type OutputsPhase } from '../../lib/runHistory'
+import { agentsLabel, agentTally, branchFacts, chainFacts, mergeWord, resultLine, tallyText, type OutputsPhase } from '../../lib/runHistory'
+import { useAgentStrip } from './useAgentStrip'
 import { groupStatus } from './groupStatus'
 import { openChainOutputs } from './openChainOutputs'
 
@@ -81,7 +82,14 @@ export function HistoryRow({
     const btn = e.target instanceof Element ? e.target.closest<HTMLElement>('button.run-open, button.hb-main') : null
     if (btn) menu.onKeyDown(e, group.key, { anchor: btn, invoker: btn, fallbackFocus })
   }
-  const result = resultLine({ word: status.word, note: status.note, error: newest.error, pauseReason: newest.pauseReason, sessions })
+  const cellRef = useRef<HTMLTableCellElement>(null)
+  const strip = useAgentStrip(newest, cellRef)
+  const branch = useMemo(() => branchFacts(strip.agents), [strip.agents])
+  const merge = open ? '' : mergeWord(branch)
+  const tally = useMemo(() => agentTally(strip.agents.map((a) => a.state), 16), [strip.agents])
+  const scheduled = members.find((m) => m.scheduleId)
+  const baseResult = resultLine({ word: status.word, note: status.note, error: newest.error, pauseReason: newest.pauseReason, sessions })
+  const result = merge ? `${baseResult} · ${merge}` : baseResult
   const tone = status.tone
   return (
     <>
@@ -117,8 +125,13 @@ export function HistoryRow({
                 </span>
               </span>
             </button>
-            {(viewed || outputCount > 0 || filesUnknown) && (
+            {(viewed || scheduled || outputCount > 0 || filesUnknown) && (
               <span className="hb-tags">
+                {scheduled && (
+                  <Badge tone="neutral" icon={CalendarClock} title={scheduled.scheduleName ? `Started by the schedule ${scheduled.scheduleName}` : 'Started by a schedule'} testId="history-scheduled">
+                    Scheduled
+                  </Badge>
+                )}
                 {viewed && (
                   <Badge tone="accent" title="This conversation is open on the Live tab">
                     Open in Live
@@ -143,7 +156,7 @@ export function HistoryRow({
             {quickFolderLabel(first.quick)}
           </td>
         )}
-        <td className="hb-c-agents tabular">
+        <td className="hb-c-agents tabular" ref={cellRef}>
           {facts.agents === null ? (
             <span title="Not recorded for this run">
               <span aria-hidden="true">{'–'}</span>
@@ -152,6 +165,17 @@ export function HistoryRow({
           ) : (
             agentsLabel(facts.agents)
           )}
+          {strip.phase === 'ready' && tally.total > 0 && (
+            <span className="hb-strip" role="img" aria-label={`Final state of ${agentsLabel(tally.total)}${members.length > 1 ? ' in the latest session' : ''}: ${tallyText(tally)}`} data-testid="history-row-strip">
+              {tally.marks.map((m, i) => (
+                <span key={i} className="hb-mark" data-mark={m} />
+              ))}
+              {tally.more > 0 && <span className="hb-marks-more">+{tally.more}</span>}
+              {tally.counts.error > 0 && <span className="hb-strip-bad">{tally.counts.error} failed</span>}
+            </span>
+          )}
+          {strip.phase === 'loading' && <span className="hb-strip-note" data-testid="history-row-strip-loading">Checking agents…</span>}
+          {strip.phase === 'failed' && <span className="hb-strip-note" data-testid="history-row-strip-failed">Agents not loaded</span>}
         </td>
         <td className="hb-c-time tabular" title={`Last activity ${new Date(last).toLocaleString()}`}>
           {facts.wallMs === null ? (
