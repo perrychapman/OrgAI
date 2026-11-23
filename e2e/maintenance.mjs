@@ -113,6 +113,102 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: 15_000 }).catch(() => {})
   check((await rows.count()) === 0, 'no pending branches left')
 
+  // "Finished copies on this computer": a count and size, "None", or a stated failure; never a bare 0 or a blank.
+  const copiesText = (await page.locator('[data-testid=finished-copies-size]').innerText().catch(() => '')).trim()
+  check(/^(None|\d+ copies?( · (at least )?[\d.,]+ ?\w+)?|Measuring…|Could not be measured)$/.test(copiesText), 'finished copies shows a value or a stated unknown', copiesText)
+  await page.waitForFunction(() => !/Measuring/.test(document.querySelector('[data-testid=finished-copies-size]')?.textContent ?? ''), null, { timeout: 15_000 }).catch(() => {})
+  const copiesDone = (await page.locator('[data-testid=finished-copies-size]').innerText().catch(() => '')).trim()
+  check(copiesDone !== '' && !/Measuring/.test(copiesDone), 'finished copies settles to a value or a stated unknown', copiesDone)
+
+  // ---------- Delete branch (three fresh report branches, each with one commit) ----------
+  const plantWithCommit = (id) => {
+    const wt = plant(id)
+    writeFile(wt, `src/${id}.js`, `export const ${id} = 1\n`)
+    git(wt, ['add', '-A'])
+    git(wt, ['commit', '-q', '-m', `Implementer: ${id}`])
+  }
+  plantWithCommit('delF')
+  plantWithCommit('delG')
+  plantWithCommit('delM')
+  await page.getByRole('button', { name: 'Refresh', exact: true }).first().click()
+  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 3, null, { timeout: 15_000 }).catch(() => {})
+  check((await rows.count()) === 3, 'delete-branch fixture: three report branches listed', String(await rows.count()))
+  const rowF = rows.filter({ hasText: 'worktree-agent-delF' })
+  const rowG = rows.filter({ hasText: 'worktree-agent-delG' })
+  const rowM = rows.filter({ hasText: 'worktree-agent-delM' })
+  const opener = (row) => row.locator('[data-testid=delete-branch]')
+  const exists = (b) => gitSafe(repo, ['branch', '--list', b]).trim() !== ''
+  const dlg = page.locator('dialog[open]')
+  const closeDialogs = async () => {
+    for (let i = 0; i < 3 && (await dlg.count()) > 0; i++) {
+      await page.keyboard.press('Escape')
+      await sleep(250)
+    }
+  }
+
+  // The project's main branch is a protected branch: its row offers no Delete (the checkout's current branch and the default
+  // branch are refused the same way; a checked-out branch cannot have a finished copy, so only the main-branch row can be drawn).
+  // Leave the pane and come back so the Main branch list is read again (it was read before these branches existed), then pick one.
+  await page.getByRole('tab', { name: 'Branches', exact: true }).evaluate((el) => el.parentElement?.querySelector('[role=tab]:not([aria-selected=true])')?.click())
+  await sleep(500)
+  await page.getByRole('tab', { name: 'Branches', exact: true }).click()
+  await page.waitForSelector('.maint-row', { timeout: 15_000 })
+  const mainSelect = page.getByLabel('Main branch', { exact: true })
+  await mainSelect.selectOption('worktree-agent-delM')
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid=delete-branch]').length === 2, null, { timeout: 15_000 }).catch(() => {})
+  check((await opener(rowM).count()) === 0, 'the main-branch row offers no Delete branch')
+  check((await opener(rowF).count()) === 1 && (await opener(rowG).count()) === 1, 'the other report branches offer Delete branch')
+
+  // Dialog: names the exact branch, focus starts on "Keep branch".
+  await opener(rowF).click()
+  await dlg.waitFor({ timeout: 10_000 })
+  const dlgText = (await dlg.innerText()).replace(/\s+/g, ' ')
+  check(/worktree-agent-delF/.test(dlgText) && !/worktree-agent-delG/.test(dlgText), 'the dialog names the exact branch', dlgText)
+  const focused = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+  check(focused === 'Keep branch', 'focus starts on "Keep branch"', focused)
+  await page.keyboard.press('Escape')
+  await dlg.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  check(exists('worktree-agent-delF'), 'Escape deletes nothing')
+  await opener(rowF).click()
+  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.getByRole('button', { name: 'Keep branch', exact: true }).click()
+  await dlg.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  check(exists('worktree-agent-delF'), '"Keep branch" deletes nothing')
+
+  // A held Enter on the opener (auto-repeat) cannot confirm; neither can a double click.
+  await opener(rowF).focus()
+  await page.keyboard.down('Enter')
+  for (let i = 0; i < 6; i++) {
+    await sleep(60)
+    await page.keyboard.down('Enter')
+  }
+  await page.keyboard.up('Enter')
+  await sleep(600)
+  check(exists('worktree-agent-delF') && exists('worktree-agent-delG'), 'a held Enter on the opener deletes nothing')
+  await closeDialogs()
+  await opener(rowF).dblclick()
+  await sleep(600)
+  check(exists('worktree-agent-delF') && exists('worktree-agent-delG'), 'a double click on the opener deletes nothing')
+  await closeDialogs()
+  check((await dlg.count()) === 0, 'the dialogs are closed again')
+
+  // A confirmed delete removes exactly that branch (and its finished copy).
+  await opener(rowF).click()
+  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.getByRole('button', { name: 'Delete branch', exact: true }).click()
+  const deletedNote = await waitNotice(/Deleted worktree-agent-delF/)
+  check(/Deleted worktree-agent-delF/.test(deletedNote), 'a confirmed delete reports the branch', deletedNote)
+  check(!exists('worktree-agent-delF') && !fs.existsSync(path.join(repo, '.claude', 'worktrees', 'agent-delF')), 'the confirmed branch and its copy are gone')
+  check(exists('worktree-agent-delG') && exists('worktree-agent-delM') && fs.existsSync(path.join(repo, '.claude', 'worktrees', 'agent-delG')), 'the other branches and copies are untouched')
+  await mainSelect.selectOption('')
+  // Tidy the rest through Discard so the uninstall below is not refused for unmerged work.
+  for (const id of ['delG', 'delM']) {
+    await rows.filter({ hasText: `worktree-agent-${id}` }).getByRole('button', { name: 'Discard' }).click()
+    await confirmDialog('Discard branch')
+    await waitNotice(new RegExp(`Discarded worktree-agent-${id}`))
+  }
+  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: 15_000 }).catch(() => {})
+
   await page.getByRole('button', { name: /Remove OrgAI files from repository/ }).click()
   await confirmDialog('Remove files')
   const removed = await waitNotice(/^Removed /)

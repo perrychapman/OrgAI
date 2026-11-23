@@ -399,7 +399,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
             <SettingRow
               id={row('stronger')}
               title="Ask before using a more capable model"
-              description="When automatic staffing would put an agent on a stronger model than its role normally uses, you are asked first. Say no and it keeps the usual one."
+              description="Today this only applies when you retry a failed agent and the retry would run it on a stronger model than its role normally uses. You are asked first, and if you say no it keeps the usual one."
               control={
                 <Switch
                   checked={project.askBeforeStrongerModel === true}

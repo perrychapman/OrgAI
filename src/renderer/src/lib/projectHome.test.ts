@@ -274,9 +274,18 @@ describe('first run date', () => {
 
 describe('monthSpendFrom (runInsights.projectSpend)', () => {
   const period = (spentUsd: number, runs: number, unknownRuns: number) => ({ spentUsd, runs, unknownRuns, from: 0, until: 1 })
-  it('is null without runs or an answer', () => {
+  it('is null without an answer', () => {
     expect(monthSpendFrom(null)).toBeNull()
-    expect(monthSpendFrom({ month: period(0, 0, 0), monthProjectionUsd: null })).toBeNull()
+    expect(monthSpendFrom(undefined)).toBeNull()
+    expect(monthSpendFrom({ month: period(Number.NaN, 0, 0), monthProjectionUsd: null })).toBeNull()
+  })
+  it('reads a month with no run as no spend yet, not as unknown or a figure', () => {
+    const s = monthSpendFrom({ month: period(0, 0, 0), maxMonthlyUsd: 50, monthProjectionUsd: null })!
+    expect(s.empty).toBe(true)
+    expect(s.text).toBe('No spend yet')
+    expect(s.runs).toBe(0)
+    expect(s.limitText).toBe('of $50.00 a month')
+    expect(s.projectionText).toBeUndefined()
   })
   it('keeps unknown as unknown, never $0, and marks a lower bound', () => {
     expect(monthSpendFrom({ month: period(0, 2, 2), monthProjectionUsd: null })!.text).toBe('unknown')

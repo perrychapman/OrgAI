@@ -565,17 +565,27 @@ try {
   // The report that was handed the brief gets the quiet "Added" row.
   const nodes = page.locator('.react-flow__node')
   let addedText = ''
-  // The report may spawn and be handed the brief a little after the root's rows show (slow runners): sweep the nodes again, up to 20 s.
+  const sweepLog = []  // The report may spawn and be handed the brief a little after the root's rows show (slow runners): sweep the nodes again, up to 20 s.
   for (let round = 0; round < 10 && !addedText; round++) {
+    // Canvas fold: a finished report leaves the canvas for a "done" group after a 6 s grace (lib/foldFinished.ts), and the report
+    // that was handed the brief finishes first. Whether its node is still there depends on timing alone (this was the intermittent
+    // failure, with or without any style change), so open every folded group before sweeping the nodes.
+    const folded = page.locator('[data-testid=done-group]').getByRole('button', { name: /^Show reports under / })
+    for (let g = 0; g < (await folded.count()) && g < 4; g++) {
+      await folded.nth(0).click().catch(() => {})
+      await sleep(300)
+    }
     for (let i = 0; i < (await nodes.count()) && !addedText; i++) {
       await nodes.nth(i).click().catch(() => {})
       await sleep(300)
-      const t = (await page.locator('[data-testid=knowledge-read-row] .entry-plain').allInnerTexts()).find((x) => /^Added \d+ known items?: /.test(x.trim()))
+      const rowsHere = await page.locator('[data-testid=knowledge-read-row] .entry-plain').allInnerTexts()
+      sweepLog.push(`r${round} n${i}/${await nodes.count()} ${rowsHere.length} rows`)
+      const t = rowsHere.find((x) => /^Added \d+ known items?: /.test(x.trim()))
       if (t) addedText = t.trim()
     }
     if (!addedText) await sleep(1500)
   }
-  check(/^Added 1 known item: .*Jane Doe/.test(addedText), 'a report has the quiet "Added 1 known item: Jane Doe" row', addedText)
+  check(/^Added 1 known item: .*Jane Doe/.test(addedText), 'a report has the quiet "Added 1 known item: Jane Doe" row', `${addedText} | ${sweepLog.slice(-12).join('; ')}`)
   if (addedText) check((await page.locator('[data-testid=knowledge-read-row]:has-text("Added") details').count()) === 0, 'the Added row has no output')
 
   // Usage (3.5) and RunMeta (reads are not recorded changes).

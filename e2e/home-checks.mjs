@@ -149,6 +149,13 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
 
   // Running now: a live run shows, with the agent strip as one image with a text alternative; Open opens it.
   check((await page.locator('[data-testid=home-running]').count()) === 0, `${tag}: nothing running, no "running now"`)
+  // A month with no run reads "No spend yet" (projectSpend is the source; never $0 and never the old overview fallback).
+  const emptySpend = page.locator('[data-testid=home-spend-figure]')
+  const hadRuns = await page.evaluate(async (id) => (await window.orgai.runInsights.projectSpend(id)).month.runs, pid)
+  if (hadRuns === 0) {
+    check(await emptySpend.waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false), `${tag}: an empty month still shows the spend section`)
+    check(clean(await emptySpend.innerText()) === 'No spend yet', `${tag}: an empty month reads "No spend yet"`, clean(await emptySpend.innerText().catch(() => '')))
+  }
   await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'Add response caching' }), pid)
   await page.locator('[data-testid=home-running]').waitFor({ state: 'visible', timeout: 15_000 })
   check(clean(await page.locator('[data-testid=home-running]').innerText()).includes('Add response caching'), `${tag}: "running now" names the run`)
@@ -161,6 +168,25 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   // Month spend appears once the run is in the usage numbers (a fresh Home reads it at once).
   await openHome(page)
   check(await page.locator('[data-testid=home-spend]').waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false), `${tag}: "spend this month" appears for a project with a run this month`)
+  const spendNow = await page.evaluate(async (id) => (await window.orgai.runInsights.projectSpend(id)).month.runs, pid)
+  if (spendNow > 0) {
+    await page.waitForFunction(() => !/No spend yet/.test(document.querySelector('[data-testid=home-spend-figure]')?.textContent ?? ''), null, { timeout: 20_000 }).catch(() => {})
+    check(!/No spend yet/.test(await page.locator('[data-testid=home-spend-figure]').innerText()), `${tag}: once a run is counted the month is no longer "No spend yet"`)
+  }
+
+  // The schedule's outcome bar is the Schedules page's RunBars: bars with a shape under each, a keyboard readout.
+  const schedId = await page.evaluate(async (id) => (await window.orgai.schedules.list()).find((s) => s.target?.projectId === id)?.id, pid)
+  if (schedId) {
+    await page.evaluate((sid) => window.orgai.schedules.runNow(sid), schedId)
+    const bars = page.locator('[data-testid=home-schedules] [data-testid=home-nightly]')
+    check(await bars.first().waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false), `${tag}: the schedule row draws its recent runs`)
+    check((await bars.first().locator('.runbars-bar').count()) >= 1 && (await bars.first().locator('.runbars-mark-fill, .runbars-mark-line, .runbars-mark-ring').count()) >= 1, `${tag}: each bar has a shape under it (the outcome is not colour alone)`)
+    const chart = bars.first().locator('.runbars-chart')
+    check((await chart.getAttribute('tabindex')) === '0' && /Last \d+ runs?/.test((await chart.getAttribute('aria-label')) ?? ''), `${tag}: the bars are one focusable group with every run in its label`)
+    await chart.focus()
+    await page.keyboard.press('ArrowRight')
+    check(await page.waitForFunction(() => /still running|finished|failed|stopped|needed you/.test(document.querySelector('[data-testid=home-nightly-readout]')?.textContent ?? ''), null, { timeout: 5000 }).then(() => true, () => false), `${tag}: Right arrow reads one run in words`)
+  }
 
   // Both sizes and themes.
   for (const [w, h] of [[1440, 900], [1024, 640]]) {

@@ -1,5 +1,8 @@
 // Token-free (mock adapter). Team > Catalog > Skills: create a skill, grant it to a role, import from a
 // fixture repo's .claude/skills (preview, apply, Undo), run Evaluate with evaluation disabled; App settings > Skill library.
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { check, cleanup, createProject, finish, findProject, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
@@ -65,6 +68,49 @@ try {
   check(proj.roles.some((r) => (r.skills ?? []).length > 0), 'a role holds the skill grant')
   check((await row.locator('[data-testid=skill-no-roles]').count()) === 0, 'the warning goes once a role holds the skill')
   await shot('granted')
+
+  // Duplicate makes "<name>-copy" (no grants) and the list refreshes without a reload.
+  const countBefore = await section.locator('[data-testid=skill-row]').count()
+  await row.getByRole('button', { name: /More actions/ }).click()
+  await page.locator('[data-testid=skill-duplicate]').click()
+  const copyRow = section.locator('[data-testid=skill-row][data-name="api-design-copy"]')
+  await copyRow.waitFor({ timeout: 10_000 })
+  check((await section.locator('[data-testid=skill-row]').count()) === countBefore + 1, 'Duplicate adds exactly one row, named "<name>-copy"')
+  check((await findProject(page, NAME))?.skills?.some((s) => s.name === 'api-design-copy'), 'the copy is stored on the project')
+  check((await copyRow.locator('[data-testid=skill-no-roles]').count()) === 1, 'the copy carries no role grants')
+  check((await section.locator('[data-testid=skill-row][data-name="api-design"]').count()) === 1, 'the original is untouched')
+
+  // Export: the native folder dialog is replaced in the main process (no e2e dialog stub covers an open dialog). Cancel first,
+  // then pick a throwaway folder: the skill is written to a new folder under it and its path is shown.
+  const exportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-skill-export-'))
+  await app.evaluate(({ dialog }) => {
+    globalThis.__origOpen = dialog.showOpenDialog
+    dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+  })
+  await row.getByRole('button', { name: /More actions/ }).click()
+  await page.locator('[data-testid=skill-export]').click()
+  await sleep(800)
+  check((await section.locator('[data-testid=skill-exported]').count()) === 0 && fs.readdirSync(exportDir).length === 0, 'cancelling the folder picker exports nothing and says nothing')
+  await app.evaluate(({ dialog }, dest) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dest] })
+  }, exportDir)
+  await row.getByRole('button', { name: /More actions/ }).click()
+  await page.locator('[data-testid=skill-export]').click()
+  const exportedNote = section.locator('[data-testid=skill-exported]')
+  const gotExport = await exportedNote.waitFor({ timeout: 10_000 }).then(() => true, () => false)
+  check(gotExport && /Exported to /.test(await exportedNote.innerText()), 'Export tells where the skill went')
+  const exportedFolders = fs.readdirSync(exportDir)
+  check(exportedFolders.length === 1 && fs.existsSync(path.join(exportDir, exportedFolders[0], 'SKILL.md')), 'Export wrote one new folder holding SKILL.md', exportedFolders.join(','))
+  await app.evaluate(({ dialog }) => {
+    if (globalThis.__origOpen) dialog.showOpenDialog = globalThis.__origOpen
+  })
+  fs.rmSync(exportDir, { recursive: true, force: true })
+
+  // Remove the copy again so the later counts match the original flow.
+  await copyRow.getByRole('button', { name: /More actions/ }).click()
+  await page.locator('[data-testid=skill-remove]:visible').last().click()
+  await page.getByRole('button', { name: /^(Delete|Remove|Unlink)/ }).last().click()
+  await copyRow.waitFor({ state: 'detached', timeout: 10_000 })
 
   // Import from the repo. The banner names the counts once; one skill is refused.
   const banner = section.locator('[data-testid=skill-import-banner]')
