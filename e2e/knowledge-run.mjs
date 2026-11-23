@@ -242,7 +242,10 @@ try {
     const chip = w.locator(`[data-testid=${id}]:visible`)
     if ((await chip.count()) === 0) {
       const more = w.locator('[data-testid=run-meta-more]')
-      if (await more.isVisible().catch(() => false)) await more.click()
+      if (await more.isVisible().catch(() => false)) {
+        await more.click()
+        await chip.first().waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
+      }
     }
     return chip.first()
   }
@@ -250,7 +253,8 @@ try {
   await sleep(400)
   const meta = await metaChipIn(page, 'run-meta-recorded')
   // The button carries an sr-only " (opens Knowledge)" suffix in its accessible name; the visible text is checked.
-  const metaText = async () => clean((await meta.innerText().catch(() => '')).replace(/\([^)]*opens Knowledge\)/, ''))
+  // `meta` was resolved while the menu may have been open; later reads must reach the chip again (the menu closes on navigation).
+  const metaText = async () => clean((await (await metaChipIn(page, 'run-meta-recorded')).innerText().catch(() => '')).replace(/\([^)]*opens Knowledge\)/, ''))
   await meta.waitFor({ state: 'visible', timeout: 8000 })
   check((await metaText()) === 'Recorded 8 changes', 'RunMeta reads "Recorded 8 changes"', await metaText())
   const WANT_TITLE = 'What the team recorded this run: 4 items, 2 relations, 1 note, 1 retired. Opens Knowledge.'
@@ -363,8 +367,9 @@ try {
     const r = await rowTexts()
     check(JSON.stringify(r.filter((t) => EXPECTED_ROWS.includes(t))) === JSON.stringify(EXPECTED_ROWS), `${tag}: the eleven knowledge sentences show`, JSON.stringify(r).slice(0, 400))
     check((await page.locator('[data-testid=knowledge-row-open]').count()) === RECORDING_ROWS.length, `${tag}: every recording row has an Open link`)
-    const metaVisible = await meta.isVisible().catch(() => false)
-    check(metaVisible && (await metaText()) === 'Recorded 8 changes', `${tag}: RunMeta reads "Recorded 8 changes"`)
+    await sleep(600) // the header's fold settles after a resize or theme change
+    const metaVisible = await (await metaChipIn(page, 'run-meta-recorded')).isVisible().catch(() => false)
+    check(metaVisible && (await metaText()) === 'Recorded 8 changes', `${tag}: RunMeta reads "Recorded 8 changes"`, `${metaVisible} ${await metaText()} ${await page.evaluate(() => [...document.querySelectorAll('[data-testid^=run-meta]')].map((e) => e.getAttribute('data-testid') + ':' + (e.offsetParent ? 'v' : 'h')).join(','))}`)
     const geo = []
     const writeRows = page.locator('[data-testid=knowledge-write-row]')
     for (let i = 0; i < (await writeRows.count()); i++) geo.push(await writeRowGeometry(writeRows.nth(i)))

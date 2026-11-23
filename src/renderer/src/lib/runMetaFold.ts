@@ -7,6 +7,10 @@ export interface FoldedItem {
   interactive: boolean
   /** The test id of the chip's button (or of the chip), repeated on its menu item: only one of the two is visible at a time. */
   testId?: string
+  /** The chip button's title (what it does), repeated on its menu item. */
+  title?: string
+  /** The chip's screen-reader-only text, repeated after the label. */
+  srText?: string
 }
 
 /**
