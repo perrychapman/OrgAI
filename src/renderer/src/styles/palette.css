@@ -1,0 +1,156 @@
+/*
+ * Command palette (components/layout/CommandPalette.tsx). It rides the shared .dialog entry and exit (ui.css: the
+ * dialog element fades and rises through @starting-style, so reduced motion needs no rule of its own); this file only
+ * sets its place (high on the screen), its glass and the rows. Colours and radii are tokens, both themes.
+ */
+.dialog.palette {
+  /* Near the top, where a search bar sits, not centred like a question. */
+  margin: 12vh auto auto;
+  max-width: 560px;
+  width: calc(100vw - var(--space-8));
+  max-height: min(70vh, 30rem);
+  background: var(--glass-strong, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border-color: var(--glass-line, var(--border-strong));
+}
+.palette-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(70vh, 30rem);
+}
+.palette-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  height: var(--control-lg);
+  box-sizing: content-box;
+  padding-block: var(--space-2);
+  border-bottom: 1px solid var(--glass-line, var(--border-subtle));
+  color: var(--text-tertiary);
+}
+.palette-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-body);
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--text-tertiary);
+}
+/* The field itself shows the ring, since the input draws none. */
+.palette-field:focus-within {
+  box-shadow: inset 0 -2px 0 var(--focus-ring);
+}
+.palette-kbd,
+.palette-foot kbd {
+  padding: 1px var(--space-1h);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.palette-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-1h);
+  overscroll-behavior: contain;
+}
+.palette-group + .palette-group {
+  margin-top: var(--space-1);
+}
+.palette-group-label {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+}
+.palette-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-lg);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.palette-option.is-active {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
+.palette-option-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-tertiary);
+}
+.palette-option.is-active .palette-option-icon {
+  color: var(--accent-text);
+}
+.palette-option[data-attention] .palette-option-icon {
+  color: var(--warning-text);
+}
+.palette-option-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.palette-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.palette-option-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.palette-option[data-attention] .palette-option-hint {
+  color: var(--warning-text);
+}
+.palette-option-group {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.palette-empty {
+  padding: var(--space-2);
+}
+.palette-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--glass-line, var(--border-subtle));
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.palette-foot-fill {
+  flex: 1;
+}
+@media (max-width: 720px) {
+  .palette-foot {
+    display: none;
+  }
+}

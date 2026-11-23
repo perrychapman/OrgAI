@@ -35,7 +35,8 @@
 }
 /* The frame itself stays on the page surface; the stage paints the backdrop colour and the accent wash. */
 .canvas.canvas-frame {
-  background: var(--surface-0);
+  /* Transparent: the ambient ground (.app, shell.css) shows around the stage. */
+  background: transparent;
 }
 .frame-stage {
   grid-area: stage;
