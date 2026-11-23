@@ -5,12 +5,14 @@
 //
 // Checked:
 //  1. Two TUIs open at once in different projects; neither is refused; `orgai status` lists both sessions with the
-//     project each holds; daemon.json names one of them and says the folder is shared; /sessions in one names the other.
+//     project each has open; daemon.json names one of them and says the folder is shared; /sessions in one names the other.
 //  2. Both run work at the same time; each run reaches the index and neither loses the other's.
-//  3. A third TUI and an `orgai exec` in a held project are refused (exit 6) naming the session's folder and pid, and
-//     change nothing; a command in a third project and a management command work beside both.
-//  4. From a third terminal the held project's run reads as live, with no "saved snapshot" note.
-//  5. The session daemon.json names quits: the record goes to the other session at once; its project is free again.
+//  3. The same project in a second terminal: a third TUI opens in the first one's project, both status bars count two terminals, it
+//     starts on a new run (not on the first terminal's live one) and runs its own work beside it; `orgai exec` and
+//     `projects set` work there too. Removing the project needs it alone: refused (exit 6) naming where it is open.
+//     A command in a third project and a management command work beside all of them.
+//  4. From another terminal the first terminal's run reads as live, with no "saved snapshot" note.
+//  5. The session daemon.json names quits: the record goes to the other session at once.
 //  6. A session is killed (SIGKILL): its run reads as ended when orgai closed, the survivor is untouched, and the
 //     killed session's project opens again.
 //  7. After the last session nothing advertises the folder and no session file is left.
@@ -96,18 +98,18 @@ try {
   let st = await statusJson(repoC)
   const holds = (pid) => st?.sessions?.find((s) => s.pid === pid)?.projects ?? []
   check(st?.sessions?.length === 2 && st.hostState === 'ready', 'status lists two running sessions', JSON.stringify(st?.sessions)?.slice(0, 400))
-  check(holds(pidA).includes(projA.id) && holds(pidB).includes(projB.id), 'each session holds the project its terminal opened', JSON.stringify(st?.sessions)?.slice(0, 400))
+  check(holds(pidA).includes(projA.id) && holds(pidB).includes(projB.id), 'each session has the project its terminal opened', JSON.stringify(st?.sessions)?.slice(0, 400))
   check(st?.sessions?.every((s) => s.command === 'tui'), 'both sessions say they run the terminal UI', JSON.stringify(st?.sessions?.map((s) => s.command)))
   const daemon = readDaemon()
   check(daemon?.sessions === true && [pidA, pidB].includes(daemon.pid), 'daemon.json names one of the two and says the folder is shared', JSON.stringify(daemon)?.slice(0, 300))
   const statusText = (await cli(['status', '--all-projects'], { cwd: repoC })).out
-  check(/orgai sessions running: 2/.test(statusText) && /holds Alpha/.test(statusText) && /holds Beta/.test(statusText), 'the status text names both sessions and what they hold', statusText.slice(0, 500))
+  check(/orgai sessions running: 2/.test(statusText) && / in Alpha/.test(statusText) && / in Beta/.test(statusText), 'the status text names both sessions and the project each is in', statusText.slice(0, 500))
 
   // /sessions inside one terminal lists the other one.
   await type(a, '/sessions')
   a.key('enter')
   const listed = await a.waitFor(/1 other orgai session/, 15_000).catch(() => null)
-  check(!!listed && a.screen().includes(`pid ${pidB}`) && /This terminal holds Alpha/.test(a.screen()), '/sessions in one terminal names the other session and what this one holds', a.screen().slice(0, 700))
+  check(!!listed && a.screen().includes(`pid ${pidB}`) && /This terminal is in Alpha/.test(a.screen()), '/sessions in one terminal names the other session and the project this one is in', a.screen().slice(0, 700))
   // The listing is long text: it opens in the pager (less by default, closed with q) or, without one, in the TUI's own
   // overlay (closed with Esc). Either way the terminal must come back to its prompt.
   a.write('q')
@@ -133,26 +135,49 @@ try {
   const owners = Object.values(index?.owners ?? {})
   check(owners.length === 2 && new Set(owners).size === 2, 'the run index names a different host for each open run', JSON.stringify(index?.owners))
 
-  // ---------- 3. A held project is refused; everything else works beside ----------
+  // ---------- 3. The same project in a second terminal ----------
   const c = tui(repoA, SCRIPT.c)
   open.push(c)
-  const refused = await Promise.race([c.exited, sleep(20_000).then(() => null)])
-  const refusedText = `${c.text()} ${c.stderr()}`
-  check(refused?.code === 6, 'a second terminal UI on a held project exits 6', `${JSON.stringify(refused)} ${refusedText.slice(-300)}`)
-  check(new RegExp(`The project Alpha is open in another orgai session \\(.*, pid ${pidA}\\)\\. Use that one, or quit it first\\.`).test(refusedText.replace(/\s+/g, ' ')), 'the refusal names the project, the other session\'s folder and its pid', refusedText.slice(-400))
-  const execRefused = await cli(['exec', '--team', 'single', 'refused work'], { cwd: repoA, env: { ORGAI_MOCK_SCRIPT: SCRIPT.c } })
-  check(execRefused.code === 6 && /open in another orgai session/.test(execRefused.err), 'orgai exec in a held project exits 6 with the same sentence', show(execRefused))
-  const setRefused = await cli(['projects', 'set', '--brief', 'changed from outside'], { cwd: repoB })
-  check(setRefused.code === 6, 'changing a held project from another terminal exits 6', show(setRefused))
-  check((await runsOf(repoA)).length === 1 && (json((await cli(['projects', 'show', '--output-format', 'json'], { cwd: repoB })).out)?.project?.brief ?? '') === '', 'the refused commands changed nothing')
+  const cReady = await c.waitFor(READY, 30_000).catch(() => null)
+  check(!!cReady && !c.exitInfo, 'a second terminal UI opens in a project that is already open in another one', `${JSON.stringify(c.exitInfo)} ${c.text().slice(-300)} ${c.stderr().slice(-300)}`)
+  const pidC = await c.waitPid()
+  const also = await c.waitFor(/Alpha \(2 terminals\)/, 10_000).catch(() => null)
+  check(!!also, 'its status bar says the project is open in two terminals', c.screen().slice(-400))
+  const told = await a.waitFor(/Alpha \(2 terminals\)/, 10_000).catch(() => null)
+  check(!!told, 'the first terminal learns it within a moment', a.screen().slice(-400))
+  check(/What would you like your team to work on\?/.test(c.screen()) && !c.screen().includes('E2E-PARALLEL-ALPHA-DONE'), 'it starts on a new run, not on the first terminal\'s live one', c.screen().slice(0, 700))
+  st = await statusJson(repoC)
+  check(st?.sessions?.length === 3 && holds(pidA).includes(projA.id) && holds(pidC).includes(projA.id), 'status lists three sessions, two of them in the one project', JSON.stringify(st?.sessions)?.slice(0, 500))
+  await type(c, 'do more alpha work from the second terminal')
+  c.key('enter')
+  await c.waitFor('E2E-PARALLEL-GAMMA-DONE', 40_000)
+  check(!a.exitInfo && a.screen().includes('E2E-PARALLEL-ALPHA-DONE') && !a.screen().includes('E2E-PARALLEL-GAMMA-DONE'), 'the first terminal and its run are untouched by the second terminal\'s work')
+  let runsInA = await runsOf(repoA)
+  check(runsInA.length === 2 && runsInA.every((r) => r.summary.status !== 'finished' && r.summary.status !== 'error'), 'the project has both terminals\' runs, both live', JSON.stringify(runsInA.map((r) => r.summary.status)))
+  const shared = json(fs.readFileSync(path.join(HOST_DATA_DIR, 'runs.json'), 'utf8'))
+  const ownersInA = (shared?.runs ?? []).filter((r) => r.projectId === projA.id).map((r) => shared.owners?.[r.id])
+  check(ownersInA.length === 2 && ownersInA.every(Boolean) && new Set(ownersInA).size === 2, 'the run index names a different host for each of the project\'s two runs', JSON.stringify(shared?.owners))
+  const execSame = await cli(['exec', '--team', 'single', '--output-format', 'json', 'a third run in alpha'], { cwd: repoA, env: { ORGAI_MOCK_SCRIPT: SCRIPT.c }, timeoutMs: 120_000 })
+  check(execSame.code === 0 && json(execSame.out)?.outcome, 'orgai exec runs in that project beside both terminals', show(execSame))
+  const setSame = await cli(['projects', 'set', '--brief', 'changed from a third terminal'], { cwd: repoA })
+  check(setSame.code === 0 && json((await cli(['projects', 'show', '--output-format', 'json'], { cwd: repoA })).out)?.project?.brief === 'changed from a third terminal', 'a project open in two terminals is changed from a third', show(setSame))
+  const removeRefused = await cli(['projects', 'remove', '--yes'], { cwd: repoA })
+  check(removeRefused.code === 6 && /The project Alpha is open in another orgai session \(.*, pid \d+\)\. Quit it there first\./.test(removeRefused.err), 'removing it needs it alone: refused with exit 6, naming where it is open', show(removeRefused))
+  runsInA = await runsOf(repoA)
+  check(runsInA.length === 3 && !!json((await cli(['projects', 'show', '--output-format', 'json'], { cwd: repoA })).out)?.project, 'the refused removal changed nothing: the project and its three runs are there', String(runsInA.length))
+  const cQuit = await quit(c)
+  check(cQuit !== null && !a.exitInfo, 'the second terminal quits; the first is still open', JSON.stringify(cQuit))
+  const aloneAgain = await until('the first terminal to be alone in the project again', () => !/\(2 terminals\)/.test(a.screen()), 10_000).then(() => true, () => false)
+  check(aloneAgain, 'and its status bar no longer counts a second terminal', a.screen().slice(-400))
+  void pidC
   const execC = await cli(['exec', '--team', 'single', '--output-format', 'json', 'gamma work'], { cwd: repoC, env: { ORGAI_MOCK_SCRIPT: SCRIPT.c }, timeoutMs: 120_000 })
-  check(execC.code === 0 && json(execC.out)?.outcome, 'orgai exec in a third project runs beside both terminals', show(execC))
+  check(execC.code === 0 && json(execC.out)?.outcome, 'orgai exec in a third project runs beside the terminals', show(execC))
   const settings = await cli(['settings', 'list', '--output-format', 'json'], { cwd: repoC })
-  check(settings.code === 0, 'a management command runs beside both terminals', show(settings))
+  check(settings.code === 0, 'a management command runs beside the terminals', show(settings))
   st = await statusJson(repoC)
   check(st?.sessions?.length === 2, 'the two terminal sessions are the ones left once those commands ended', JSON.stringify(st?.sessions?.map((s) => s.command)))
 
-  // ---------- 4. A third terminal reads the held project's run as live ----------
+  // ---------- 4. Another terminal reads the first terminal's run as live ----------
   const listA = await cli(['runs', 'list'], { cwd: repoA })
   check(listA.code === 0 && /R1\s+(Idle|Running|Waiting)/.test(listA.out), 'runs list shows the other session\'s run as live', listA.out.slice(0, 300))
   check(!/saved snapshot/.test(listA.err), 'and prints no "saved snapshot" note: the index says which session hosts the run', listA.err.slice(0, 200))
@@ -168,7 +193,7 @@ try {
   check(st?.sessions?.length === 1 && st.sessions[0].pid === survivor.pid, 'status lists the one session left', JSON.stringify(st?.sessions)?.slice(0, 300))
   check(!survivor.t.exitInfo && survivor.t.screen().includes(survivor.done), 'the other terminal is untouched by that quit')
   const freed = await cli(['exec', '--team', 'single', '--output-format', 'json', 'work after the quit'], { cwd: advertised.repo, env: { ORGAI_MOCK_SCRIPT: SCRIPT.c }, timeoutMs: 120_000 })
-  check(freed.code === 0, 'the project that session held is free again', show(freed))
+  check(freed.code === 0, 'a run starts in the project that session had open', show(freed))
 
   // ---------- 6. A session is killed ----------
   const killedRuns = await runsOf(survivor.repo)

@@ -1,13 +1,13 @@
 // RunStore on a data folder several orgai sessions share (docs/design/cli-sessions.md). Two sessions in one process
 // stand in for two processes where only the merge logic matters; the last block uses real processes.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { RunSummary } from '@shared/types'
-import { ProjectBusyError, RunBusyError, registerSession, type SessionHandle } from '../host/sessions'
-import { RunStore, loadRunIndex, parseRunOwners } from './runs'
+import { RunBusyError, registerSession, type SessionHandle } from '../host/sessions'
+import { RunStore, hasWorktreeAtWork, loadRunIndex, parseRunOwners } from './runs'
 import { createSharedStoreSync, type StoreSync } from './shared/storeSync'
 import { killAndWait, viteNodeCli } from './shared/testing/viteNode'
 
@@ -153,20 +153,68 @@ describe('two sessions, one run index', () => {
     expect(a.store.get('old-live')?.status).toBe('idle')
   })
 
-  it('an open run in a stored project claims the project; a Chat run claims nothing', () => {
+  it('two sessions each host a run in the same project; each sees the other\'s as live elsewhere and cannot change it', () => {
     const a = session(A)
     const b = session(B)
-    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'running' }))
-    expect(a.handle.holdsProject('proj_1')).toBe(true)
-    expect(() => b.store.upsert(run('b1', { projectId: 'proj_1', status: 'running' }))).toThrow(ProjectBusyError)
-    expect(b.store.get('b1')).toBeNull()
-    // An ended run of that project may still be written by anyone (a late title, usage): it is not live work.
-    b.store.upsert(run('b-old', { projectId: 'proj_1' }))
-    // Chat runs in both sessions at once.
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'running', startedAt: 1 }))
+    b.store.upsert(run('b1', { projectId: 'proj_1', status: 'running', startedAt: 2 }))
+    // An open run opens its project for the session that hosts it; a Chat run has no project.
+    expect(a.handle.hasProjectOpen('proj_1')).toBe(true)
+    expect(b.handle.hasProjectOpen('proj_1')).toBe(true)
     a.store.upsert(run('a-chat', { status: 'running' }))
-    b.store.upsert(run('b-chat', { status: 'running' }))
-    expect(b.handle.holdsProject('quick')).toBe(false)
-    expect(onDisk().owners).toEqual({ a1: A, 'a-chat': A, 'b-chat': B })
+    expect(a.handle.hasProjectOpen('quick')).toBe(false)
+    expect(onDisk().owners).toEqual({ a1: A, b1: B, 'a-chat': A })
+
+    // Each session's view of the project's runs: its own as it is, the other's marked with where it is live.
+    const where = { pid: process.pid, cwd: `/work/${A}`, command: 'tui' }
+    expect(b.store.list('proj_1').map((r) => [r.id, r.status, r.liveElsewhere])).toEqual([
+      ['b1', 'running', undefined],
+      ['a1', 'running', where]
+    ])
+    expect(b.store.get('a1')?.liveElsewhere).toEqual(where)
+    expect(a.store.get('a1')?.liveElsewhere).toBeUndefined()
+    expect(b.store.all().find((r) => r.id === 'a1')?.liveElsewhere).toEqual(where)
+    // Who is working in the project elsewhere: runs that are starting, running or stopping, of kind work.
+    expect(a.store.workingElsewhereIn('proj_1')).toEqual([B])
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    expect(b.store.workingElsewhereIn('proj_2')).toEqual([])
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'idle', startedAt: 1 }))
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    expect(b.store.get('a1')?.liveElsewhere).toEqual(where)
+    // Idle, but one of its reports still works in the background (or its branch waits at a merge card): at work.
+    const recordOf = (agents: Record<string, unknown>): void => {
+      mkdirSync(join(dataDir, 'runs'), { recursive: true })
+      writeFileSync(join(dataDir, 'runs', 'a1.json'), JSON.stringify({ summary: run('a1', { projectId: 'proj_1', status: 'idle' }), agents, transcript: [], logs: [] }))
+    }
+    recordOf({ root: { id: 'root' }, w1: { id: 'w1', worktree: { path: '/r/wt', branch: 'worktree-agent-w1', status: 'active' } } })
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    recordOf({ root: { id: 'root' }, w1: { id: 'w1', worktree: { path: '/r/wt', branch: 'worktree-agent-w1', status: 'review' } } })
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    // Its reports are done; a branch left in conflict or held is a leftover, not work in progress.
+    recordOf({ root: { id: 'root' }, w1: { id: 'w1', worktree: { path: '/r/wt', branch: 'worktree-agent-w1', status: 'conflict' } } })
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    // A record that cannot be read counts as at work: nothing of that run is touched.
+    writeFileSync(join(dataDir, 'runs', 'a1.json'), '{ damaged')
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    // A paused run's session has ended: nothing of it runs, whatever its record says.
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'paused', startedAt: 1 }))
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'idle', startedAt: 1 }))
+    rmSync(join(dataDir, 'runs', 'a1.json'))
+    a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'running', kind: 'setup', startedAt: 3 }))
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'finished', kind: 'setup', startedAt: 3 }))
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'running', startedAt: 1 }))
+    // The mark is never stored, even when a summary that carries it is written back.
+    expect(() => b.store.upsert({ ...(b.store.get('a1') as RunSummary), title: 'not mine' })).toThrow(RunBusyError)
+    b.store.upsert({ ...run('b1', { projectId: 'proj_1', status: 'running', startedAt: 2 }), liveElsewhere: where })
+    expect(JSON.stringify(onDisk())).not.toContain('liveElsewhere')
+
+    // Its host ends the run: nobody is live elsewhere in the project for the other session any more.
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'finished', startedAt: 1 }))
+    expect(b.store.get('a1')?.liveElsewhere).toBeUndefined()
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    expect(onDisk().owners).toEqual({ b1: B, 'a-chat': A })
   })
 
   it('a re-read that fails keeps the runs in memory instead of emptying the index', () => {
@@ -285,4 +333,23 @@ setInterval(() => {}, 1000)`,
     expect(next.get('k1')).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
     expect(next.hostedElsewhere('k1')).toBeNull()
   }, 120_000)
+})
+
+describe('hasWorktreeAtWork', () => {
+  it('is true while any agent worktree is active, waiting on children, merging or under review', () => {
+    const wt = (status: string, state = 'working') => ({ a: { state, worktree: { status } } })
+    for (const s of ['active', 'waiting-children', 'merging', 'review']) expect(hasWorktreeAtWork(wt(s))).toBe(true)
+    for (const s of ['merged', 'empty', 'removed', 'conflict', 'held']) expect(hasWorktreeAtWork(wt(s))).toBe(false)
+    // A report that was interrupted or failed keeps its worktree 'active': nobody works there any more.
+    for (const state of ['done', 'error']) {
+      expect(hasWorktreeAtWork(wt('active', state))).toBe(false)
+      expect(hasWorktreeAtWork(wt('waiting-children', state))).toBe(false)
+      // The harness merging it, or the user at its merge card, is work whatever the agent's state.
+      expect(hasWorktreeAtWork(wt('merging', state))).toBe(true)
+      expect(hasWorktreeAtWork(wt('review', state))).toBe(true)
+    }
+    expect(hasWorktreeAtWork({ root: {}, a: { worktree: null } })).toBe(false)
+    expect(hasWorktreeAtWork(undefined)).toBe(false)
+    expect(hasWorktreeAtWork('agents')).toBe(false)
+  })
 })

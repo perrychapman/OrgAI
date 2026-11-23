@@ -166,6 +166,11 @@ function commitDocument(dataDir: string, projectId: string, text: string, by: 'u
  * rendered by OrgAI from the approved charter), empty text is written as is.
  */
 export function writeEngagementDocumentFromSetup(dataDir: string, projectId: string, text: string): void {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => writeEngagementDocumentFromSetupUnlocked(dataDir, projectId, text))
+}
+
+function writeEngagementDocumentFromSetupUnlocked(dataDir: string, projectId: string, text: string): void {
   commitDocument(dataDir, projectId, text, 'setup')
 }
 
@@ -178,6 +183,11 @@ export const ENGAGEMENT_STALE_MESSAGE = 'The engagement plan changed since you o
  * document exists is refused too). Then writeEngagementDocument rules apply.
  */
 export function updateEngagementDocument(dataDir: string, projectId: string, text: string, expectedUpdatedAt: number | undefined): EngagementDocumentInfo {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => updateEngagementDocumentUnlocked(dataDir, projectId, text, expectedUpdatedAt))
+}
+
+function updateEngagementDocumentUnlocked(dataDir: string, projectId: string, text: string, expectedUpdatedAt: number | undefined): EngagementDocumentInfo {
   const current = readEngagementDocumentInfo(dataDir, projectId).updatedAt ?? 0
   if (current !== (expectedUpdatedAt ?? 0)) throw new Error(ENGAGEMENT_STALE_MESSAGE)
   return writeEngagementDocument(dataDir, projectId, text, 'user')
@@ -198,6 +208,11 @@ function checkedText(label: string, text: unknown, max: number): string {
  * one read the same everywhere (the prompt, the editor). Returns what is stored afterwards.
  */
 export function writeEngagementDocument(dataDir: string, projectId: string, text: string, by: 'user' | 'setup' = 'user'): EngagementDocumentInfo {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => writeEngagementDocumentUnlocked(dataDir, projectId, text, by))
+}
+
+function writeEngagementDocumentUnlocked(dataDir: string, projectId: string, text: string, by: 'user' | 'setup' = 'user'): EngagementDocumentInfo {
   const file = engagementDocumentFile(dataDir, projectId)
   const clean = checkedText('The engagement document', text, ENGAGEMENT_DOCUMENT_MAX_CHARS)
   if (!clean.trim()) {
@@ -417,6 +432,16 @@ export function saveNote(
   input: { noteId?: string; title: string; text: string; retired?: boolean; expectedUpdatedAt?: number },
   writer: EngagementNoteWriter = { by: 'user' }
 ): EngagementNote {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => saveNoteUnlocked(dataDir, projectId, input, writer))
+}
+
+function saveNoteUnlocked(
+  dataDir: string,
+  projectId: string,
+  input: { noteId?: string; title: string; text: string; retired?: boolean; expectedUpdatedAt?: number },
+  writer: EngagementNoteWriter = { by: 'user' }
+): EngagementNote {
   if (typeof input.title !== 'string') throw new Error('The title must be text.')
   const title = input.title.trim()
   if (!title) throw new Error('Give the note a title.')
@@ -471,6 +496,11 @@ export function saveNote(
 
 /** Delete a note; resolves to the remaining notes (an unknown id changes nothing). */
 export function removeNote(dataDir: string, projectId: string, noteId: string): EngagementNote[] {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return storeSyncFor(dataDir).locked(() => removeNoteUnlocked(dataDir, projectId, noteId))
+}
+
+function removeNoteUnlocked(dataDir: string, projectId: string, noteId: string): EngagementNote[] {
   const notes = readIndex(dataDir, projectId)
   if (!isNoteId(noteId) || !notes.some((n) => n.id === noteId)) return notes.sort((a, b) => b.updatedAt - a.updatedAt)
   const rest = notes.filter((n) => n.id !== noteId)

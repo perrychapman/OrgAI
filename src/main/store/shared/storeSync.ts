@@ -45,8 +45,8 @@ export interface StoreSync {
   /** Whether session `id` is running. Always false when not shared. */
   isSessionLive(id: string): boolean
   /**
-   * This session must hold `projectId` to change it: claims it, or throws ProjectBusyError (host/sessions.ts) when
-   * another session has it. A no-op when not shared.
+   * This session works in `projectId` from now on: opens it (host/sessions.ts; any number of sessions can), or throws
+   * ProjectBusyError while another session is removing or moving it. A no-op when not shared.
    */
   requireProject(projectId: string, what?: string): void
   /** The session behind a shared sync. */
@@ -191,6 +191,47 @@ const registry = new Map<string, StoreSync>()
 /** The sync for the stores of `dataDir`: the shared one a session installed, else {@link SOLO}. */
 export function storeSyncFor(dataDir: string): StoreSync {
   return registry.get(resolve(dataDir)) ?? SOLO
+}
+
+/**
+ * Run `fn` (synchronous) under the write lock of every shared data folder of this process, for a change to a file
+ * that is not addressed through its data folder (a project's own `.claude/settings.local.json`). An orgai process has
+ * one data folder, so this is that folder's lock; with none shared (the desktop app, most tests) it is just `fn()`.
+ */
+export function lockedForProcess<T>(fn: () => T): T {
+  const syncs = [...registry.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, s]) => s)
+  return syncs.reduceRight<() => T>((inner, s) => () => s.locked(inner), fn)()
+}
+
+/**
+ * A service whose every call runs as one change under `dataDir`'s write lock, for services that read, change and
+ * rewrite a project's own files in synchronous code (skills, outputs, setup, team reviews): two orgai sessions working
+ * in one project then do such a call one after the other, each on what the other left. A call that returns a promise
+ * holds the lock for its synchronous start only; work that spans awaits takes a named lock (namedLock.ts).
+ *
+ * Calls the service makes on itself are not wrapped (they are already inside the caller's hold). `except` names
+ * methods that only read this process's memory and are asked often (a count the activity tracker polls, `dispose`):
+ * they run without the lock. With one process per data folder the service is returned as it is.
+ */
+export function oneChangePerCall<T extends object>(dataDir: string, service: T, opts: { except?: readonly (keyof T & string)[] } = {}): T {
+  const sync = storeSyncFor(dataDir)
+  if (!sync.shared) return service
+  const plain = new Set<PropertyKey>(opts.except ?? [])
+  const wrapped = new Map<PropertyKey, unknown>()
+  return new Proxy(service, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target) as unknown
+      if (typeof value !== 'function') return value
+      if (plain.has(key)) return (value as (...args: unknown[]) => unknown).bind(target)
+      let fn = wrapped.get(key) as { of: unknown; call: unknown } | undefined
+      if (!fn || fn.of !== value) {
+        const method = value as (...args: unknown[]) => unknown
+        fn = { of: value, call: (...args: unknown[]) => sync.locked(() => Reflect.apply(method, target, args)) }
+        wrapped.set(key, fn)
+      }
+      return fn.call
+    }
+  })
 }
 
 /** Install `sync` for `dataDir` (before its stores are built). Returns the function that removes it again. */

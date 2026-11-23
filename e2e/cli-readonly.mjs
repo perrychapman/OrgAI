@@ -6,9 +6,9 @@
 //    show R1, projects list / show and doctor read the files: no host is started (no daemon.json) and stderr is quiet.
 // 2. A second orgai: while a slow mock `exec` runs in the project, the read-only commands answer from the files and
 //    show its run as live with no "saved snapshot" note (status lists the session with its folder, pid and project,
-//    doctor says the folder is shared). A command that needs a host (`connections list`) starts its own beside it. A
-//    second `exec` in the same project is refused at once with exit 6 naming the first one's folder and pid. When the
-//    first one ends the project is free again.
+//    doctor says the folder is shared). A command that needs a host (`connections list`) starts its own beside it, and
+//    so does one that changes the same project (`projects set`). Removing that project needs it alone: refused at
+//    once with exit 6 naming the first one's folder and pid. When the first one ends it can be removed.
 // 3. The removed commands (watch, inbox, decide, attach, daemon, app, terminal-access) and --host are usage errors.
 import * as fs from 'node:fs'
 import { check, finish, log, makeFixtureRepo, removeFixture } from './lib.mjs'
@@ -62,7 +62,7 @@ try {
     check(snap.code === 0 && /R2\s+(Running|Idle|Needs you)/.test(snap.out), 'runs list beside a running orgai shows its run as live', show(snap))
     check(!snap.err.includes('saved snapshot'), 'and needs no "saved snapshot" note (the index names the session hosting the run)', show(snap))
     const st = await cli(['--project', repo, 'status'])
-    check(st.code === 0 && st.out.includes('orgai sessions running: 1') && st.out.includes(`pid ${owner.pid}`) && st.out.includes('holds '), 'status lists the session (folder, pid and the project it holds)', show(st))
+    check(st.code === 0 && st.out.includes('orgai sessions running: 1') && st.out.includes(`pid ${owner.pid}`) && st.out.includes(' in '), 'status lists the session (folder, pid and the project it is in)', show(st))
     const stJson = json((await cli(['--project', repo, '--output-format', 'json', 'status'])).out)
     check(stJson?.hostState === 'ready' && stJson.sessions?.length === 1 && stJson.sessions[0].pid === owner.pid && stJson.sessions[0].command === 'exec' && stJson.sessions[0].projects.includes(project.id), 'status JSON carries the session with its command and projects', JSON.stringify(stJson?.sessions))
     const dr = await cli(['doctor'])
@@ -71,9 +71,12 @@ try {
     const began = Date.now()
     const beside = await cli(['--project', repo, 'connections', 'list'])
     check(beside.code === 0, 'a command that needs a host starts its own beside the running orgai', show(beside))
-    const refusedExec = await cli(['--project', repo, 'exec', 'hello'], { cwd: repo })
-    check(refusedExec.code === 6 && refusedExec.err.includes(`pid ${owner.pid}`) && refusedExec.err.includes('is open in another orgai session') && refusedExec.err.includes('Use that one, or quit it first.'), 'a second exec in the same project is refused with exit 6, naming where the project is open', show(refusedExec))
-    check(Date.now() - began < 20_000, 'both answers came at once (no waiting)', `${Date.now() - began} ms`)
+    // The same project: another orgai changes it beside the running one. Only what needs the project alone is refused.
+    const sameProject = await cli(['--project', repo, 'projects', 'set', '--brief', 'set beside the running orgai'], { cwd: repo })
+    check(sameProject.code === 0, 'a second orgai changes the same project beside the running one', show(sameProject))
+    const refusedRemove = await cli(['--project', repo, 'projects', 'remove', '--yes'], { cwd: repo })
+    check(refusedRemove.code === 6 && refusedRemove.err.includes(`pid ${owner.pid}`) && refusedRemove.err.includes('is open in another orgai session') && refusedRemove.err.includes('Quit it there first.'), 'removing the project while another orgai is in it is refused with exit 6, naming where it is open', show(refusedRemove))
+    check(Date.now() - began < 20_000, 'all three answers came at once (no waiting)', `${Date.now() - began} ms`)
     const noSocket = await cli(['--project', repo, 'runs', 'show', 'R1'])
     check(noSocket.code === 0, 'runs show works beside the running orgai', show(noSocket))
     check(JSON.parse(fs.readFileSync(DAEMON_JSON, 'utf8')).pid === owner.pid, 'the running orgai is still the one daemon.json names after those commands')
@@ -97,7 +100,7 @@ try {
     await until('the first orgai to end', () => typeof ownerPid !== 'number' || !alive(ownerPid), 30_000)
   } else await until('the folder to be free again', () => !fs.existsSync(DAEMON_JSON), 30_000)
   const free = await cli(['--project', repo, 'exec', '--team', 'single', 'hello again'], { cwd: repo })
-  check(free.code === 0, 'when the first orgai ends the project is free again', show(free))
+  check(free.code === 0, 'when the first orgai has ended a run starts in the project as ever', show(free))
 
   // ---------- 3. Removed commands ----------
   for (const argv of [['watch', 'R1'], ['inbox'], ['decide', 'x', 'allow'], ['attach', 'R1'], ['daemon', 'status'], ['app'], ['terminal-access'], ['--host', 'inproc', 'status']]) {

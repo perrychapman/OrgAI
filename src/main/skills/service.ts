@@ -102,9 +102,11 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     this.library = new SkillLibraryStore(deps.dataDir)
     this.libRoot = resolve(deps.dataDir, 'skills')
     this.projRoot = resolve(deps.dataDir, 'project-skills')
-    // Backups of an earlier session can never be undone: clear them.
+    // Backups of an earlier session can never be undone: clear them. Not while another orgai session runs on this
+    // data folder: the backups there may be the ones it can still undo (the next lone start clears them).
+    const others = storeSyncFor(deps.dataDir).session?.others().length ?? 0
     try {
-      if (existsSync(this.projRoot)) for (const name of readdirSync(this.projRoot)) removeFolder(join(this.projRoot, name, '.undo'))
+      if (others === 0 && existsSync(this.projRoot)) for (const name of readdirSync(this.projRoot)) removeFolder(join(this.projRoot, name, '.undo'))
     } catch {
       /* best effort */
     }

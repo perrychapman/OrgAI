@@ -8,7 +8,7 @@ one `orgai` at a time, install button in the app. Draft 3's phase 1 (commit 9510
 point.
 
 Superseded in one point (2026-11-22): G4, "one `orgai` at a time". Any number of `orgai` processes now share the data
-folder, one per project (`cli-sessions.md`). Where this document says another `orgai` is refused with exit 6 or that a
+folder and its projects (`cli-sessions.md`). Where this document says another `orgai` is refused with exit 6 or that a
 command answers from a "saved snapshot" (G4, 4.2, 4.3, 13), that now holds only beside an `orgai` from before sessions.
 Everything else here stands.
 
@@ -53,7 +53,7 @@ Goals:
 - G2. `orgai` hosts its runs in its own process; quitting ends them (the quit confirm, continuable later). There is
   no background host.
 - G3. The terminal running `orgai` answers every approval and question; no other process can.
-- G4. (Superseded by `cli-sessions.md`: several `orgai` processes share the folder, one per project.) One `orgai`
+- G4. (Superseded by `cli-sessions.md`: several `orgai` processes share the folder and its projects.) One `orgai`
   host process per CLI data folder. Another command that needs a host is refused at once (4.2); read-only commands
   keep working beside it (4.3).
 - G5. The app does not contain the CLI; it offers to install the standalone package and cleans up the old shim.
@@ -173,8 +173,9 @@ doctor reports the data folder, its marker, the vault custody and "another orgai
 splitting them by heading would keep stale `--host` / daemon text next to the valid parts). What is still true of them
 lives here and in the command table (`orgai help exec`, `orgai help tui`, `orgai help secrets`).
 
-- Exit codes: 0 ok, 1 failure, 2 usage, 3 needs the user, 4 usage limit, 5 authentication, 6 busy (the project or run
-  is open in another `orgai` session, or an `orgai` from before sessions owns the folder; `cli-sessions.md`), 130
+- Exit codes: 0 ok, 1 failure, 2 usage, 3 needs the user, 4 usage limit, 5 authentication, 6 busy (a run that is
+  live in another `orgai` session, a project that must be held alone while another session has it open, or an `orgai`
+  from before sessions owning the folder; `cli-sessions.md`), 130
   SIGINT, 143 SIGTERM.
 - `orgai exec` exit by outcome: `completed` and `completed-unplanned` 0; `unmerged-conflicts`, `blocked`,
   `incomplete-plan`, `needs-decision`, `budget-exceeded` 3; `rate-limited` 4; `auth-error` 5; `failed` and `stalled` 1;

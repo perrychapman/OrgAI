@@ -462,10 +462,10 @@ export function App(props: AppProps) {
   prevCardCount.current = cards.length
   const top = topCard(state)
   // Everything statusSummary reads, so a streamed delta (which changes none of it) keeps the same object and the memoized status bar skips.
-  const { connection: stateConnection, planUsage: statePlanUsage, runOrder: stateRunOrder, hostKind: stateHostKind, readOnlyReason: stateReadOnly } = state
+  const { connection: stateConnection, planUsage: statePlanUsage, runOrder: stateRunOrder, hostKind: stateHostKind, readOnlyReason: stateReadOnly, othersHere: stateOthersHere } = state
   const summary = useMemo(
     () => ({ ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }),
-    [stateRuns, stateChain, stateActiveRun, stateProject, stateConnection, statePlanUsage, stateRunOrder, stateHostKind, stateReadOnly, launch.title] // eslint-disable-line react-hooks/exhaustive-deps
+    [stateRuns, stateChain, stateActiveRun, stateProject, stateConnection, statePlanUsage, stateRunOrder, stateHostKind, stateReadOnly, stateOthersHere, launch.title] // eslint-disable-line react-hooks/exhaustive-deps
   )
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
   const inline = env.bufferMode === 'inline'

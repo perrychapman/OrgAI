@@ -228,7 +228,7 @@ export const runDoctor: CommandFn = async (ctx: CliContext, args: string[]): Pro
     daemonShares = daemonAlive && (parsed as { sessions?: unknown }).sessions === true
     const who = `pid ${parsed.pid}${parsed.ownerCwd ? `, started in ${safeLine(parsed.ownerCwd)}` : ''}, ${parsed.state}`
     const running = daemonShares
-      ? `orgai is running (${who}) and shares this folder: other terminals can work beside it, one per project (\`orgai status\` lists them)`
+      ? `orgai is running (${who}) and shares this folder: other terminals can work beside it, also in the same project (\`orgai status\` lists them)`
       : `Another orgai is running (${who}); commands that need a host are refused until it quits`
     add('daemon-json', daemonAlive ? 'ok' : 'warn', daemonAlive ? running : `daemon.json names pid ${parsed.pid}, which is not running (a stale file; the next orgai replaces it)`)
   } catch (e) {

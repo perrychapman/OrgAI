@@ -10,7 +10,7 @@ import {
   listSessions,
   liveSessions,
   parseSessionRecord,
-  projectHolder,
+  projectHolders,
   projectLockPath,
   registerSession,
   sessionLiveness,
@@ -104,54 +104,110 @@ describe('session registry', () => {
   })
 })
 
-describe('project claims', () => {
-  it('one session per project: the second is refused and told who holds it', () => {
+describe('open projects', () => {
+  it('any number of sessions have a project open, and each knows the others in it', () => {
     const a = register(A, { cwd: '/work/a' })
     const b = register(B)
-    expect(a.claimProject('proj_1')).toEqual({ ok: true })
-    expect(a.claimProject('proj_1')).toEqual({ ok: true }) // already ours
-    expect(a.holdsProject('proj_1')).toBe(true)
-    const refused = b.claimProject('proj_1')
-    expect(refused.ok).toBe(false)
-    expect(!refused.ok && refused.holder?.hostInstanceId).toBe(A)
-    expect(projectHolder(dataDir, 'proj_1')?.hostInstanceId).toBe(A)
-    expect(() => b.requireProject('proj_1')).toThrow(ProjectBusyError)
-    try {
-      b.requireProject('proj_1', 'The project Demo')
-    } catch (e) {
-      expect((e as ProjectBusyError).message).toBe(`The project Demo is open in another orgai session (/work/a, pid ${process.pid}). Use that one, or quit it first.`)
-      expect((e as ProjectBusyError).code).toBe('session_busy')
-    }
-    // Different projects never conflict.
-    expect(b.claimProject('proj_2')).toEqual({ ok: true })
-    expect(listSessions(dataDir).map((s) => s.record.projects)).toEqual([['proj_1'], ['proj_2']])
+    expect(a.openProject('proj_1')).toEqual({ ok: true })
+    expect(a.openProject('proj_1')).toEqual({ ok: true }) // already open here
+    expect(a.hasProjectOpen('proj_1')).toBe(true)
+    expect(b.openProject('proj_1')).toEqual({ ok: true })
+    expect(() => b.requireProject('proj_1')).not.toThrow()
+    expect(projectHolders(dataDir, 'proj_1').map((s) => s.hostInstanceId)).toEqual([A, B])
+    expect(a.othersIn('proj_1').map((s) => s.hostInstanceId)).toEqual([B])
+    expect(b.othersIn('proj_1').map((s) => [s.hostInstanceId, s.cwd])).toEqual([[A, '/work/a']])
+    expect(b.openProject('proj_2')).toEqual({ ok: true })
+    expect(a.othersIn('proj_2').map((s) => s.hostInstanceId)).toEqual([B])
+    expect(listSessions(dataDir).map((s) => s.record.projects)).toEqual([['proj_1'], ['proj_1', 'proj_2']])
   })
 
-  it('a claim is free again after releaseProject and after the session ends', () => {
+  it('a project is held alone only while nobody else has it open; a refusal names who does and changes nothing', () => {
+    const a = register(A, { cwd: '/work/a' })
+    const b = register(B)
+    a.requireProject('proj_1')
+    b.requireProject('proj_1')
+    const refused = b.exclusiveProject('proj_1')
+    expect(refused.ok).toBe(false)
+    expect(!refused.ok && refused.holders.map((s) => s.hostInstanceId)).toEqual([A])
+    // The refused session still has it open, and so does the other.
+    expect(b.hasProjectOpen('proj_1')).toBe(true)
+    expect(projectHolders(dataDir, 'proj_1').map((s) => s.hostInstanceId)).toEqual([A, B])
+    expect(new ProjectBusyError('proj_1', !refused.ok ? refused.holders[0] : undefined, 'The project Demo').message).toBe(
+      `The project Demo is open in another orgai session (/work/a, pid ${process.pid}). Quit it there first.`
+    )
+    expect(new ProjectBusyError('proj_1', undefined).code).toBe('session_busy')
+
+    a.closeProject('proj_1')
+    expect(a.hasProjectOpen('proj_1')).toBe(false)
+    const alone = b.exclusiveProject('proj_1')
+    expect(alone.ok).toBe(true)
+    // While it is held alone nobody opens it: it is being removed or moved.
+    expect(a.openProject('proj_1')).toEqual({ ok: false, holder: undefined })
+    expect(() => a.requireProject('proj_1', 'The project Demo')).toThrow('The project Demo is being removed or moved by another orgai session. Try again in a moment.')
+    expect(b.hasProjectOpen('proj_1')).toBe(false)
+    // Given back after a removal: nobody has it open. After a move: the session keeps it open.
+    if (alone.ok) alone.held.release(false)
+    expect(projectHolders(dataDir, 'proj_1')).toEqual([])
+    expect(a.openProject('proj_1')).toEqual({ ok: true })
+    a.closeProject('proj_1')
+    const again = b.exclusiveProject('proj_1')
+    if (again.ok) again.held.release(true)
+    expect(b.hasProjectOpen('proj_1')).toBe(true)
+    expect(a.openProject('proj_1')).toEqual({ ok: true })
+  })
+
+  it('two sessions that both have a project open and both want it alone: neither gets it, and both still have it open', () => {
     const a = register(A)
     const b = register(B)
     a.requireProject('proj_1')
-    a.releaseProject('proj_1')
-    expect(a.holdsProject('proj_1')).toBe(false)
-    expect(b.claimProject('proj_1')).toEqual({ ok: true })
-    b.release()
-    expect(a.claimProject('proj_1')).toEqual({ ok: true })
-    // The claim file stays for the next claimant; it is never deleted.
+    b.requireProject('proj_1')
+    // Each attempt steps aside for itself only: the other's hold is still there, and its own comes back.
+    expect(a.exclusiveProject('proj_1').ok).toBe(false)
+    expect(b.exclusiveProject('proj_1').ok).toBe(false)
+    expect(a.exclusiveProject('proj_1').ok).toBe(false)
+    expect([a.hasProjectOpen('proj_1'), b.hasProjectOpen('proj_1')]).toEqual([true, true])
+    expect(projectHolders(dataDir, 'proj_1').map((s) => s.hostInstanceId)).toEqual([A, B])
+  })
+
+  it('a project held alone is not opened by the same session meanwhile, and is given back when the session ends', () => {
+    const a = register(A)
+    const b = register(B)
+    const alone = a.exclusiveProject('proj_1')
+    expect(alone.ok).toBe(true)
+    expect(a.openProject('proj_1')).toEqual({ ok: false, holder: undefined })
+    expect(a.exclusiveProject('proj_1')).toEqual({ ok: false, holders: [] })
+    expect(b.openProject('proj_1').ok).toBe(false)
+    // The session ends in the middle of it (a quit during a removal): the lock goes with it.
+    a.release()
+    expect(b.openProject('proj_1')).toEqual({ ok: true })
+  })
+
+  it('a session that ends no longer has its projects open', () => {
+    const a = register(A)
+    const b = register(B)
+    a.requireProject('proj_1')
+    b.requireProject('proj_1')
+    expect(b.exclusiveProject('proj_1').ok).toBe(false)
+    a.release()
+    const alone = b.exclusiveProject('proj_1')
+    expect(alone.ok).toBe(true)
+    if (alone.ok) alone.held.release(true)
+    // The lock file stays for whoever opens the project next; it is never deleted.
     expect(existsSync(projectLockPath(dataDir, 'proj_1'))).toBe(true)
   })
 
-  it('ids that differ only in case, or hold path characters, get their own claim files', () => {
+  it('ids that differ only in case, or hold path characters, get their own lock files', () => {
     const a = register(A)
     const b = register(B)
     expect(projectLockPath(dataDir, 'Proj_1')).not.toBe(projectLockPath(dataDir, 'proj_1'))
     expect(projectLockPath(dataDir, '../../etc')).toMatch(/project-[0-9a-f]{32}\.lock$/)
     a.requireProject('Proj_1')
-    expect(b.claimProject('proj_1')).toEqual({ ok: true })
+    expect(b.exclusiveProject('proj_1').ok).toBe(true)
   })
 })
 
 describe('sweepDeadSessions and liveness', () => {
-  it('leaves live sessions and claim files alone and removes nothing of them', () => {
+  it('leaves live sessions and project lock files alone and removes nothing of them', () => {
     const a = register(A)
     a.requireProject('proj_1')
     expect(sweepDeadSessions(dataDir)).toBe(0)
@@ -168,11 +224,12 @@ describe('sweepDeadSessions and liveness', () => {
     writeFileSync(sessionLockPath(dataDir, 'cccccccccccc'), '')
     const b = register(B)
     expect(listSessions(dataDir).map((s) => [s.record.hostInstanceId, s.live])).toEqual([[A, false], [B, true]])
-    // A dead session's recorded claim holds nothing: the lock is what counts.
-    expect(projectHolder(dataDir, 'proj_1')).toBeUndefined()
-    expect(b.claimProject('proj_1')).toEqual({ ok: true })
+    // What a dead session's record says it had open counts for nothing: the lock is what counts.
+    expect(projectHolders(dataDir, 'proj_1')).toEqual([])
+    expect(b.exclusiveProject('proj_1').ok).toBe(true)
     expect(sweepDeadSessions(dataDir)).toBe(1)
-    expect(readdirSync(sessionsDirOf(dataDir)).filter((n) => !n.startsWith('project-')).sort()).toEqual([`${B}.json`, `${B}.lock`])
+    // (Project locks and the lock of the turn to take one alone stay: they are never deleted.)
+    expect(readdirSync(sessionsDirOf(dataDir)).filter((n) => /^[0-9a-f]{12}\./.test(n)).sort()).toEqual([`${B}.json`, `${B}.lock`])
   })
 
   it('sessionLiveness caches: a dead id stays dead, a live one is asked again after its window', () => {
@@ -215,7 +272,7 @@ function child(body: string, args: string[], onLine: (line: string, c: ChildProc
 }
 
 describe('sessions across processes', () => {
-  it('a session in another process is live, holds its project, and is dead the moment it is killed', async () => {
+  it('a session in another process is live, has its project open beside this one, and is dead the moment it is killed', async () => {
     let checked = false
     let killed: Promise<void> | undefined
     const exited = child(
@@ -229,10 +286,13 @@ setInterval(() => {}, 1000)`,
         const mine = register(A)
         expect(isSessionLive(dataDir, B)).toBe(true)
         expect(mine.others().map((s) => [s.hostInstanceId, s.cwd, s.projects])).toEqual([[B, '/elsewhere', ['proj_1']]])
-        const refused = mine.claimProject('proj_1')
+        // Both have it open; neither can take it alone while the other is in it.
+        expect(mine.openProject('proj_1')).toEqual({ ok: true })
+        expect(mine.othersIn('proj_1').map((s) => s.pid)).toEqual([c.pid])
+        const refused = mine.exclusiveProject('proj_1')
         expect(refused.ok).toBe(false)
-        expect(!refused.ok && refused.holder?.pid).toBe(c.pid)
-        expect(mine.claimProject('proj_2')).toEqual({ ok: true })
+        expect(!refused.ok && refused.holders.map((s) => s.pid)).toEqual([c.pid])
+        expect(mine.hasProjectOpen('proj_1')).toBe(true)
         checked = true
         killed = new Promise<void>((r) => {
           c.once('exit', () => r())
@@ -247,7 +307,10 @@ setInterval(() => {}, 1000)`,
     expect(listSessions(dataDir).map((s) => [s.record.hostInstanceId, s.live])).toEqual([[A, true], [B, false]])
     const mine = open[0] as SessionHandle
     expect(mine.others()).toEqual([])
-    expect(mine.claimProject('proj_1')).toEqual({ ok: true })
+    // The killed session's shared hold went with its process.
+    const alone = mine.exclusiveProject('proj_1')
+    expect(alone.ok).toBe(true)
+    if (alone.ok) alone.held.release(true)
     expect(sweepDeadSessions(dataDir)).toBe(1)
   }, 120_000)
 })

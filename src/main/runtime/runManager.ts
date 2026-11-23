@@ -154,7 +154,7 @@ import { clampText } from '../capabilities/sanitize'
 import { datum, type ConfigChange, type ConfigChangeResult } from './harnessTools'
 import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
-import { RunStore } from '../store/runs'
+import { RunStore, hasWorktreeAtWork, isWorkingRunStatus } from '../store/runs'
 import { isValidId } from '../windowScope'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -2056,6 +2056,7 @@ export class RunManager {
           if (e.autoResume === false) this.clearResume(summary.id)
           else this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
         }
+        this.saveWorktreesAtWork(active, true)
         this.store.upsert(summary)
         // Who ended it rides on the terminal status (and on 'stopping' after End session), never from an adapter.
         e = withEndFacts(e, summary)
@@ -2866,6 +2867,7 @@ export class RunManager {
         maxAutoContinues: runProject.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         onRootTurnEnded: (e: RootTurnEnd) => this.rootTurnEnded(active, e),
         noteActivity: () => this.bumpActivity(active),
+        otherRunsLive: () => this.otherRunsLive(summary.id, summary.projectId),
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
@@ -4496,6 +4498,26 @@ export class RunManager {
         return
     }
     if (!active.flushTimer) active.flushTimer = setTimeout(() => this.flush(active), FLUSH_INTERVAL_MS)
+    if (e.type === 'agent.upsert') this.saveWorktreesAtWork(active, false)
+  }
+
+  /** Runs whose saved record already says a report branch is at work (saveWorktreesAtWork). */
+  private atWorkSaved = new WeakSet<ActiveRun>()
+
+  /**
+   * Several orgai sessions on one data folder: another session learns from this run's SAVED record that an idle run
+   * still has a report branch at work (RunStore.workingElsewhereIn). The record is otherwise saved up to 1.5 s late,
+   * so it is saved at once in the two moments that matter: when the run stops counting as working by its status
+   * (`statusChanged`, called before the index gets that status), and when a branch comes to be at work while the run
+   * is already idle. A no-op with one process per data folder.
+   */
+  private saveWorktreesAtWork(active: ActiveRun, statusChanged: boolean): void {
+    if (!this.store.shared) return
+    const atWork = hasWorktreeAtWork(active.record.agents)
+    const was = this.atWorkSaved.has(active)
+    if (atWork) this.atWorkSaved.add(active)
+    else this.atWorkSaved.delete(active)
+    if (atWork && !isWorkingRunStatus(active.summary.status) && (statusChanged || !was)) this.flush(active)
   }
 
   private flush(active: ActiveRun): void {
@@ -4543,6 +4565,29 @@ export class RunManager {
   /** The post-run evolve pass of a run, resolved when it settles; undefined when the run had none (not started with evolve, stopped, still live, or the pass failed). */
   async awaitEvolvePass(runId: string): Promise<EvolvePostRunResult | undefined> {
     return this.evolvePasses.get(runId)
+  }
+
+  /**
+   * RuntimeContext.otherRunsLive: another work run of the same stored project with report branches at work right now,
+   * in this process or hosted by another orgai session (RunStore.workingElsewhereIn). That is a run that is starting,
+   * running or stopping, and also an idle one whose reports still work in the background or whose branch waits at a
+   * merge card (hasWorktreeAtWork). A few words for the log, or null. A run that only waits for its user does not
+   * count: the branches it left are leftovers like any other, as they always were for a second run in the project.
+   */
+  private otherRunsLive(runId: string, projectId: string): string | null {
+    if (isVirtualProjectId(projectId)) return null
+    for (const r of this.runs.values()) {
+      const s = r.summary
+      if (s.id === runId || s.projectId !== projectId || isSetupLikeRun(s.kind)) continue
+      if (!isWorkingRunStatus(s.status) && !hasWorktreeAtWork(r.record.agents)) continue
+      return 'another run of this project is working'
+    }
+    try {
+      if (this.store.workingElsewhereIn(projectId).length > 0) return 'a run of this project is working in another orgai session'
+    } catch {
+      // The index could not be read: this run keeps to its own branches either way.
+    }
+    return null
   }
 
   /** Runs whose session is still open. */

@@ -233,11 +233,11 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
  * more", what an undo would bring back, a folder's own config), ending with where approving is done and why.
  */
 /**
- * /sessions: several orgai processes can run on one data folder, one per project. This lists the others, so it is
- * clear why a project may be refused here ("open in another orgai session") and where it is open.
+ * /sessions: several orgai processes can run on one data folder, and in one project. This lists the others and the
+ * projects each has open, so it is clear where a run that shows here read-only is being steered.
  */
 export function sessionsText(others: readonly SessionPeer[], here?: string, now: number = Date.now(), projectNames: ReadonlyMap<string, string> = new Map()): string {
-  const lines = [here ? `This terminal holds ${cleanLine(here, 80)}.` : 'This terminal holds no project.', '']
+  const lines = [here ? `This terminal is in ${cleanLine(here, 80)}.` : 'This terminal has no project open.', '']
   if (!others.length) {
     lines.push('No other orgai session is running.')
   } else {
@@ -246,7 +246,7 @@ export function sessionsText(others: readonly SessionPeer[], here?: string, now:
       const up = Math.max(0, Math.round((now - s.startedAt) / 60_000))
       // The projects by name where this terminal knows them (it lists every project), else how many.
       const named = s.projects.map((id) => projectNames.get(id)).filter((n): n is string => !!n)
-      const holds = !s.projects.length ? 'holds no project' : named.length === s.projects.length ? `holds ${named.map((n) => cleanLine(n, 60)).join(', ')}` : `holds ${s.projects.length} ${s.projects.length === 1 ? 'project' : 'projects'}`
+      const holds = !s.projects.length ? 'no project open' : named.length === s.projects.length ? `in ${named.map((n) => cleanLine(n, 60)).join(', ')}` : `in ${s.projects.length} ${s.projects.length === 1 ? 'project' : 'projects'}`
       lines.push('', `  ${cleanLine(s.command || 'orgai', 24)} · pid ${s.pid} · ${up < 1 ? 'just started' : `up ${up} min`} · ${holds}`)
       // The folder on its own line: it is the long part, and the one to look for among the terminals.
       lines.push(`    ${cleanLine(s.cwd, 400)}`)
@@ -254,7 +254,7 @@ export function sessionsText(others: readonly SessionPeer[], here?: string, now:
   }
   lines.push(
     '',
-    ...wrapWords('Each session works in its own projects: a project open in one session is refused in another until that one quits. Chats without a project run in any number of sessions.', HELP_WIDTH),
+    ...wrapWords('Sessions can work in the same project. Each steers the runs it started; a run started in another session shows here read-only, as last saved, and can be continued here once it has ended there.', HELP_WIDTH),
     ...wrapWords('From outside the terminal UI, orgai status lists every session.', HELP_WIDTH)
   )
   return lines.join('\n')
@@ -329,7 +329,8 @@ export function runsTable(runs: readonly RunSummary[], projectId?: string): stri
     .sort((a, b) => (idx.get(a.id) ?? 0) - (idx.get(b.id) ?? 0))
     .map((r) => {
       const tag = runTag(idx.get(r.id))
-      const status = cleanLine(statusWordOfSummary(r), 40)
+      // A run another orgai session hosts: its status as last saved, and where it is live.
+      const status = cleanLine(r.liveElsewhere ? `${statusWordOfSummary(r)}, pid ${r.liveElsewhere.pid}` : statusWordOfSummary(r), 40)
       return `${tag.padEnd(6)} ${status.padEnd(24)} ${cleanLine(runName(r), 80)}`
     })
   return [`${'RUN'.padEnd(6)} ${'STATUS'.padEnd(24)} TITLE`, ...rows].join('\n')
@@ -470,7 +471,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     name: 'sessions',
-    summary: 'The other orgai sessions running now: their folder, what they run and the projects they hold',
+    summary: 'The other orgai sessions running now: their folder, what they run and the projects they have open',
     run: (ctx) =>
       guarded(ctx, async () => {
         const others = ctx.session.otherSessions?.() ?? []

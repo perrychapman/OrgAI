@@ -8,6 +8,7 @@ import { homedir } from 'node:os'
 import { isFreeCd, isFreeCdTarget, mcpServerOfRule, rulePrefix, shellRulesFor, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
 import { referenceTouchOf } from './referenceDirectories'
 import type { RuntimeContext } from './types'
+import { lockedForProcess } from '../store/shared/storeSync'
 
 /**
  * Saved "always allow in this project" rules. They live where Claude Code keeps per-user project
@@ -120,6 +121,11 @@ export function listIgnoredRules(target: RulesTarget): IgnoredPermissionRule[] {
  * Synchronous read-modify-write: no other write in this process can interleave.
  */
 export function addRulesReport(target: RulesTarget, rules: string[]): { rules: string[]; added: string[] } {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return lockedForProcess(() => addRulesReportUnlocked(target, rules))
+}
+
+function addRulesReportUnlocked(target: RulesTarget, rules: string[]): { rules: string[]; added: string[] } {
   const settings = readLocalSettings(target)
   const raw = allowOf(settings)
   const current = uniqueRules(raw)
@@ -145,6 +151,11 @@ export function addRules(target: RulesTarget, rules: string[]): string[] {
 
 /** Drop one rule from permissions.allow. Returns the remaining rules. */
 export function removeRule(target: RulesTarget, rule: string): string[] {
+  // One change of files that several orgai sessions may share: under the data folder's write lock (storeSync.ts).
+  return lockedForProcess(() => removeRuleUnlocked(target, rule))
+}
+
+function removeRuleUnlocked(target: RulesTarget, rule: string): string[] {
   const settings = readLocalSettings(target)
   const raw = allowOf(settings)
   const wanted = rule.trim()

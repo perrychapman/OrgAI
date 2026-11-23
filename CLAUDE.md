@@ -87,9 +87,11 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
   knowledge graph, retrieval and inferred links, Knowledge tab and graph view.
 - `docs/agent-notes/project-features.md`: agent import, run outputs (and Outputs 2, read_document), team files, practice kit,
   repository clone and From GitHub start, folder config trust, team evolution spend gate.
-- `docs/agent-notes/cli-host.md`: CLI and host. Several `orgai` processes share one data folder, one per project
+- `docs/agent-notes/cli-host.md`: CLI and host. Several `orgai` processes share one data folder and its projects
   (sessions, docs/design/cli-sessions.md: session locks, the write lock every shared store goes through, run owners,
-  project claims; a store that keeps a shared file in memory must use `storeSyncFor`). The `orgai` CLI and the desktop app share nothing
+  projects open in several sessions; a store that keeps a shared file in memory must use `storeSyncFor`, and code that
+  rewrites a project's own file must do it as one step under that lock: a locked wrapper, `oneChangePerCall`, or
+  `withNamedLock` across awaits). The `orgai` CLI and the desktop app share nothing
   (docs/design/cli-standalone-default.md): ownership, dispatcher, owner-only socket, self-control gate, exec, TUI, npm CLI,
   Install row, vault and custodians per product, shutdown, repository lock, doctor; older Wave notes are history.
 - `docs/agent-notes/renderer.md`: shell, layout, primitives, motion, canvas fold and themes, run view and chains,

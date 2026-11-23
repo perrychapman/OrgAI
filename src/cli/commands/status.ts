@@ -1,6 +1,6 @@
 /**
  * `orgai status [--all-projects]` (cli-spec 6.1; cli-standalone-default.md 4.3): the data folder, the orgai sessions
- * running on it (each with its folder, what it runs and the projects it holds), the current project and the newest run
+ * running on it (each with its folder, what it runs and the projects it has open), the current project and the newest run
  * per project in scope, read from the files (never a host). Exit 0; exit 2 only for a bad --project.
  */
 import { projectConnection } from '../../shared/defaults'
@@ -70,11 +70,11 @@ export const runStatus: CommandFn = async (ctx: CliContext, args: string[]): Pro
       {
         const mock = ctx.env.ORGAI_MOCK === '1' ? ' · mock' : ''
         if (sessions.length > 0) {
-          // One line per running orgai: what it runs, where, its pid and age, and the projects it holds.
+          // One line per running orgai: what it runs, where, its pid and age, and the projects it has open.
           lines.push(`${st.bold('orgai sessions running:')} ${sessions.length}${mock}`)
           for (const s of sessions) {
             const held = s.projects.map((id) => projectName.get(id) ?? id).map((n) => safeLine(n))
-            const facts = [s.cwd ? safeLine(s.cwd) : '', `pid ${s.pid}`, `up ${shortDuration(now - s.startedAt)}`, held.length ? `holds ${held.join(', ')}` : ''].filter(Boolean)
+            const facts = [s.cwd ? safeLine(s.cwd) : '', `pid ${s.pid}`, `up ${shortDuration(now - s.startedAt)}`, held.length ? `in ${held.join(', ')}` : ''].filter(Boolean)
             lines.push(`  ${safeLine(s.command || 'orgai')}  ${st.dim(facts.join(' · '))}`)
           }
         } else {

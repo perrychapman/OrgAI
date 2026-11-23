@@ -318,60 +318,72 @@ describe('sessions: several hosts on one data folder (docs/design/cli-sessions.m
     void third
   })
 
-  it('each host works in its own project; the other one\'s project and run are refused with session_busy', async () => {
+  it('two hosts work in the same project: each hosts its own run, reads the other\'s, and neither undoes the other\'s saves', async () => {
     const dirA = join(userDataDir, 'proj-a')
-    const dirB = join(userDataDir, 'proj-b')
     mkdirSync(dirA)
-    mkdirSync(dirB)
-    const first = await start(new Map(), { cwd: dirA })
-    const second = await start(new Map(), { cwd: dirB, hostInstanceId: SECOND })
+    const first = await start(new Map(), { cwd: '/term/one', command: 'tui' })
+    const second = await start(new Map(), { cwd: '/term/two', command: 'tui', hostInstanceId: SECOND })
     const a = await clientOf(first)
     const b = await clientOf(second)
     const projA = await a.call<Project>('projects:create', [{ name: 'Alpha', path: dirA, brief: '', mock: true }])
-    const projB = await b.call<Project>('projects:create', [{ name: 'Beta', path: dirB, brief: '', mock: true }])
-    // Both projects are in the one list, whichever host is asked.
-    expect((await a.call<Project[]>('projects:list', [])).map((p) => p.name).sort()).toEqual(['Alpha', 'Beta'])
-    expect((await b.call<Project[]>('projects:list', [])).map((p) => p.name).sort()).toEqual(['Alpha', 'Beta'])
+    // Each terminal opens the project and learns who else is in it.
+    expect(first.openProject!(projA.id)).toEqual({ ok: true, others: [] })
+    expect(second.openProject!(projA.id)).toMatchObject({ ok: true, others: [{ pid: process.pid, cwd: '/term/one' }] })
 
-    const runA = await a.call<RunSummary>('runs:start', [{ projectId: projA.id, prompt: 'alpha work', team: 'single' }])
-    const runB = await b.call<RunSummary>('runs:start', [{ projectId: projB.id, prompt: 'beta work', team: 'single' }])
-    await until('both runs to go idle', async () => (await a.call<RunRecord | null>('runs:get', [runA.id]))?.summary.status === 'idle' && (await b.call<RunRecord | null>('runs:get', [runB.id]))?.summary.status === 'idle')
-    expect(first.claimProject!(projA.id)).toEqual({ ok: true })
-    const refused = second.claimProject!(projA.id)
-    expect(refused).toMatchObject({ ok: false, holder: { pid: process.pid, cwd: dirA } })
+    // A run in each, in the one project.
+    const runA = await a.call<RunSummary>('runs:start', [{ projectId: projA.id, prompt: 'first terminal', team: 'single' }])
+    const runB = await b.call<RunSummary>('runs:start', [{ projectId: projA.id, prompt: 'second terminal', team: 'single' }])
+    const statusOf = async (c: HostClient, id: string): Promise<string | undefined> => (await c.call<RunRecord | null>('runs:get', [id]))?.summary.status
+    await until('both runs to go idle', async () => (await statusOf(a, runA.id)) === 'idle' && (await statusOf(b, runB.id)) === 'idle')
 
-    // The other host reads everything: the run is in its list at once, as live as its host says...
-    expect(await b.call<RunSummary[]>('runs:list', [projA.id])).toMatchObject([{ id: runA.id, status: 'idle' }])
-    // ...and its record as its host last saved it (a live record is written every 1.5 s, so it trails by that much).
+    // Each sees both runs; the other terminal's is marked with where it is live.
+    const seenByB = await b.call<RunSummary[]>('runs:list', [projA.id])
+    expect(seenByB.map((r) => r.id).sort()).toEqual([runA.id, runB.id].sort())
+    expect(seenByB.find((r) => r.id === runA.id)?.liveElsewhere).toEqual({ pid: process.pid, cwd: '/term/one', command: 'tui' })
+    expect(seenByB.find((r) => r.id === runB.id)?.liveElsewhere).toBeUndefined()
+    expect((await a.call<RunSummary[]>('runs:list', [projA.id])).find((r) => r.id === runB.id)?.liveElsewhere).toMatchObject({ cwd: '/term/two' })
+    // Its record can be read here as its host last saved it (a live record is written every 1.5 s), marked the same way.
     await until('the first host to save its run record', async () => (await b.call<RunRecord | null>('runs:get', [runA.id])) !== null)
-    expect((await b.call<RunRecord | null>('runs:get', [runA.id]))?.summary).toMatchObject({ id: runA.id, status: 'idle' })
-    // ...and changes nothing of it: the run, the project, a new run in it.
+    expect((await b.call<RunRecord | null>('runs:get', [runA.id]))?.summary).toMatchObject({ id: runA.id, status: 'idle', liveElsewhere: { cwd: '/term/one' } })
+
+    // A run is steered where it is hosted: the other terminal cannot send to it or stop it.
     for (const [channel, params] of [
-      ['runs:send', [{ runId: runA.id, text: 'from the other host' }]],
-      ['runs:stop', [runA.id]],
-      ['runs:start', [{ projectId: projA.id, prompt: 'second run in alpha', team: 'single' }]],
-      ['projects:save', [{ ...projA, brief: 'changed by the other host' }]]
+      ['runs:send', [{ runId: runA.id, text: 'from the other terminal' }]],
+      ['runs:stop', [runA.id]]
     ] as const) {
       await expect(b.call(channel, [...params])).rejects.toMatchObject({ data: { code: 'session_busy' } })
     }
-    await expect(b.call('runs:send', [{ runId: runA.id, text: 'x' }])).rejects.toThrow(/is live in another orgai session/)
-    expect((await a.call<Project>('projects:get', [projA.id])).brief).toBe('')
-    expect((await a.call<RunRecord | null>('runs:get', [runA.id]))?.summary.status).toBe('idle')
-    expect((await a.call<RunSummary[]>('runs:list', [projA.id])).length).toBe(1)
+    await expect(b.call('runs:send', [{ runId: runA.id, text: 'x' }])).rejects.toThrow(/is live in another orgai session \(\/term\/one, pid \d+\)/)
+    await b.call('runs:send', [{ runId: runB.id, text: 'more from the second terminal' }])
+    expect(await statusOf(a, runA.id)).toBe('idle')
 
-    // Its own project works as ever, and the run index holds both runs with their hosts.
-    await b.call('runs:send', [{ runId: runB.id, text: 'more beta work' }])
+    // Both save the project from copies read before the other's save: both changes are kept.
+    const copyA = await a.call<Project>('projects:get', [projA.id])
+    const copyB = await b.call<Project>('projects:get', [projA.id])
+    await a.call('projects:save', [{ ...copyA, brief: 'the brief, from terminal one' }])
+    await b.call('projects:save', [{ ...copyB, name: 'Alpha renamed in terminal two' }])
+    for (const c of [a, b]) {
+      expect(await c.call<Project>('projects:get', [projA.id])).toMatchObject({ brief: 'the brief, from terminal one', name: 'Alpha renamed in terminal two' })
+    }
+
+    // What needs the project alone is refused while the other terminal is in it: removing it, taking OrgAI out of it.
+    await expect(b.call('projects:remove', [{ projectId: projA.id }])).rejects.toMatchObject({ data: { code: 'session_busy' } })
+    await expect(b.call('projects:remove', [{ projectId: projA.id }])).rejects.toThrow(/is open in another orgai session \(\/term\/one, pid \d+\)\. Quit it there first\./)
+    await expect(b.call('maintenance:uninstallRepo', [projA.id])).rejects.toThrow(/is open in another orgai session/)
+    expect((await a.call<Project[]>('projects:list', [])).map((p) => p.id)).toEqual([projA.id])
+
     const index = JSON.parse(readFileSync(join(dataDir, 'runs.json'), 'utf8')) as { runs: RunSummary[]; owners: Record<string, string> }
-    expect(index.runs.map((r) => r.id).sort()).toEqual([runA.id, runB.id].sort())
     expect(index.owners).toEqual({ [runA.id]: first.hostInstanceId, [runB.id]: SECOND })
+    expect(JSON.stringify(index)).not.toContain('liveElsewhere')
 
-    // The first host quits with its run open: the second sees the run ended, and the project is free for it.
+    // The first terminal quits with its run open: the second sees that run ended, and now has the project to itself.
     a.close()
     await first.stop(true)
     expect((await b.call<RunRecord | null>('runs:get', [runA.id]))?.summary).toMatchObject({ status: 'finished', endedBy: 'app' })
-    expect(second.claimProject!(projA.id)).toEqual({ ok: true })
-    await b.call('projects:save', [{ ...(await b.call<Project>('projects:get', [projA.id])), brief: 'now mine' }])
-    expect((await b.call<Project>('projects:get', [projA.id])).brief).toBe('now mine')
+    expect((await b.call<RunSummary[]>('runs:list', [projA.id])).some((r) => r.liveElsewhere)).toBe(false)
+    expect(second.openProject!(projA.id)).toEqual({ ok: true, others: [] })
+    // Its own run was never touched by the other terminal's end.
+    await until('the second run to go idle again', async () => (await statusOf(b, runB.id)) === 'idle')
     b.close()
   }, 60_000)
 

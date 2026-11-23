@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
 import { renameSyncRetry } from '../host/fsRetry'
-import { RunBusyError } from '../host/sessions'
+import { RunBusyError, type SessionRecord } from '../host/sessions'
 import { storeSyncFor, type StoreSync } from './shared/storeSync'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
@@ -164,6 +164,34 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
 }
 
 /** Not ended: a run its host still has in memory (starting, running, idle, stopping) or holds paused. */
+/** A run that is working right now, not waiting for its user: its reports may be writing in their worktrees. */
+export function isWorkingRunStatus(status: RunSummary['status']): boolean {
+  return status === 'starting' || status === 'running' || status === 'stopping'
+}
+
+/** Worktree states in which the harness, or the user at a merge card, is at work on the branch whatever its agent does. */
+const WORKTREE_AT_WORK: ReadonlySet<string> = new Set(['merging', 'review'])
+/** Worktree states that mean work only while the agent itself is still going (an interrupted or failed report keeps the state). */
+const WORKTREE_AGENT_AT_WORK: ReadonlySet<string> = new Set(['active', 'waiting-children'])
+
+/**
+ * Whether any agent of a run has a worktree that is still at work (`agents` as in a RunRecord). A run can be idle
+ * while that is so: its orchestrator ended its turn and waits for reports that work in the background, or a finished
+ * report's branch waits at a merge review card.
+ */
+export function hasWorktreeAtWork(agents: unknown): boolean {
+  if (agents === null || typeof agents !== 'object') return false
+  for (const a of Object.values(agents as Record<string, unknown>)) {
+    const agent = a as { state?: unknown; worktree?: { status?: unknown } } | null
+    const status = agent?.worktree?.status
+    if (typeof status !== 'string') continue
+    if (WORKTREE_AT_WORK.has(status)) return true
+    // A report that was interrupted or failed is 'done' or 'error' with its worktree still 'active': nobody works there.
+    if (WORKTREE_AGENT_AT_WORK.has(status) && agent?.state !== 'done' && agent?.state !== 'error') return true
+  }
+  return false
+}
+
 export function isOpenRunStatus(status: RunSummary['status']): boolean {
   return status !== 'finished' && status !== 'error'
 }
@@ -256,6 +284,9 @@ export function runRecordFileName(runId: string): string {
  * `runs/<runId>/images/<sha256>.<ext>` (content-addressed bytes of images sent with user messages).
  * Records on disk carry `ImageAttachment.ref` with `data: ''`; getRecord rehydrates `data` and drops `ref`.
  */
+/** How long RunStore keeps its list of the other sessions (who they are, not whether they run: that is the lock). */
+const PEERS_FOR_MS = 250
+
 export class RunStore {
   private file: string
   private recordsDir: string
@@ -337,6 +368,11 @@ export class RunStore {
     renameSyncRetry(tmp, this.file)
   }
 
+  /** Several orgai sessions share this data folder (false for the desktop app and a lone-owner host). */
+  get shared(): boolean {
+    return this.sync.shared
+  }
+
   /**
    * The session id of another running orgai that hosts this run (it is not ended there), or null. Always null with one
    * process per data folder. Such a run can be read here but never changed: its host writes it.
@@ -355,6 +391,39 @@ export class RunStore {
     if (!this.sync.shared) return
     this.fresh()
     this.refuseElsewhere(runId)
+  }
+
+  /**
+   * The other running sessions that host a work run of `projectId` with report branches at work right now (their ids,
+   * no duplicates): what a session asks before it touches the project's report branches, and what tells a new run
+   * that those branches may be another run's work in progress. A run counts while it is starting, running or
+   * stopping, and also while it is idle with a report still working in the background or a branch waiting at a merge
+   * card (read from its record, which its host saves about every 1.5 s). A run that only waits for its user has no
+   * report at work, and a setup or assistant run makes no branches.
+   */
+  workingElsewhereIn(projectId: string): string[] {
+    if (!this.sync.shared) return []
+    this.fresh()
+    const out = new Set<string>()
+    for (const r of this.runs) {
+      // A paused run's session has ended (it waits for a usage window): nothing of it is running, whatever its record says.
+      if (r.projectId !== projectId || r.status === 'paused' || !isOpenRunStatus(r.status) || (r.kind !== undefined && r.kind !== 'work')) continue
+      const owner = this.elsewhere(r.id)
+      if (!owner || out.has(owner)) continue
+      if (isWorkingRunStatus(r.status) || this.recordHasWorktreeAtWork(r.id)) out.add(owner)
+    }
+    return [...out]
+  }
+
+  /** {@link hasWorktreeAtWork} for a run's saved record. A record that cannot be read counts as at work: nothing of it is touched. */
+  private recordHasWorktreeAtWork(runId: string): boolean {
+    const file = this.recordPath(runId)
+    if (!existsSync(file)) return false
+    try {
+      return hasWorktreeAtWork((JSON.parse(readFileSync(file, 'utf8')) as { agents?: unknown }).agents)
+    } catch {
+      return true
+    }
   }
 
   /** {@link hostedElsewhere} on the index as loaded (no refresh; used inside a change). */
@@ -381,9 +450,11 @@ export class RunStore {
         if (open) this.owners[run.id] = this.sync.sessionId
         else delete this.owners[run.id]
       }
+      // liveElsewhere is what a read adds for the caller, never part of the stored summary.
+      const { liveElsewhere: _seen, ...stored } = run
       const idx = this.runs.findIndex((r) => r.id === run.id)
-      if (idx === -1) this.runs.push({ ...run })
-      else this.runs[idx] = { ...run }
+      if (idx === -1) this.runs.push(stored)
+      else this.runs[idx] = stored
       this.persist()
     })
   }
@@ -411,13 +482,44 @@ export class RunStore {
 
   list(projectId: string): RunSummary[] {
     this.fresh()
-    return this.runs.filter((r) => r.projectId === projectId).sort((a, b) => b.startedAt - a.startedAt)
+    return this.runs
+      .filter((r) => r.projectId === projectId)
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .map((r) => this.asSeenHere(r))
+  }
+
+  /**
+   * A stored summary as this session hands it out: one that another running session hosts says so
+   * (RunSummary.liveElsewhere, never written back). `copy`: always a new object.
+   */
+  private asSeenHere(run: RunSummary, copy = false): RunSummary {
+    const owner = this.sync.shared ? this.elsewhere(run.id) : null
+    if (!owner) return copy ? { ...run } : run
+    let s = this.peers().find((o) => o.hostInstanceId === owner)
+    if (!s) {
+      // A session that started since the list was read: read it again rather than answer without its pid and folder.
+      this.peersAt = 0
+      s = this.peers().find((o) => o.hostInstanceId === owner)
+    }
+    return { ...run, liveElsewhere: { pid: s?.pid ?? 0, cwd: s?.cwd ?? '', command: s?.command ?? '' } }
+  }
+
+  /** The other running sessions, read at most once per PEERS_FOR_MS: a list of many runs asks for each of them. */
+  private peersAt = 0
+  private peersSeen: SessionRecord[] = []
+  private peers(): SessionRecord[] {
+    const now = Date.now()
+    if (now - this.peersAt >= PEERS_FOR_MS || now < this.peersAt) {
+      this.peersSeen = this.sync.session?.others() ?? []
+      this.peersAt = now
+    }
+    return this.peersSeen
   }
 
   get(runId: string): RunSummary | null {
     this.fresh()
     const run = this.runs.find((r) => r.id === runId)
-    return run ? { ...run } : null
+    return run ? this.asSeenHere(run, true) : null
   }
 
   allProjectIds(): string[] {
@@ -541,7 +643,7 @@ export class RunStore {
       // The index is the source of truth for status; a crash can leave a record marked live.
       this.fresh()
       const summary = this.runs.find((r) => r.id === runId)
-      return summary ? { ...record, summary } : record
+      return summary ? { ...record, summary: this.asSeenHere(summary, true) } : record
     } catch {
       return null
     }
@@ -633,7 +735,7 @@ export class RunStore {
   /** Every stored summary (copies), for the scratch-dir sweep. */
   all(): RunSummary[] {
     this.fresh()
-    return this.runs.map((r) => ({ ...r }))
+    return this.runs.map((r) => this.asSeenHere(r, true))
   }
 
   /** Delete record files and run directories (image stores) whose run is no longer in the index. */

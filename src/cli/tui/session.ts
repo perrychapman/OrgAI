@@ -70,6 +70,7 @@ import {
   upsertRunSummary
 } from './state'
 import { hintStore, type TuiConfigApi } from './configApi'
+import { sanitizeTty } from './sanitizeTty'
 import type {
   ComposeTarget,
   DecisionCall,
@@ -240,7 +241,22 @@ export async function connectTuiHost(ctx: CliContext, opts: ConnectTuiOptions = 
 // ---------- Session ----------
 
 /** Test seams (timers); the shell passes nothing. */
+/**
+ * How often a terminal UI re-reads what another orgai session hosts (docs/design/cli-sessions.md): the project's run
+ * list while the project is open in another session, and the followed run's record while that run is live there. No
+ * events arrive for those runs (events live in their host's memory), and a host saves a live run about every 1.5 s.
+ */
+export const TUI_WATCH_ELSEWHERE_MS = 1500
+
+/** The line shown when the followed run is live in another orgai session. */
+export function liveElsewhereNotice(where: { pid: number; cwd: string }): string {
+  const at = where.cwd ? `${where.cwd}, pid ${where.pid}` : `pid ${where.pid}`
+  return `This run is live in another orgai (${at}). It shows here as last saved, read-only; steer it there. /new starts a run here.`
+}
+
 export interface TuiSessionInternals {
+  /** How often runs hosted by another orgai session are re-read (default TUI_WATCH_ELSEWHERE_MS; 0 = never). */
+  watchElsewhereMs?: number
   /** Schedules a listener notification (default: setTimeout TUI_NOTIFY_MS, unref'd). */
   schedule?: (fn: () => void) => void
   timers?: RunStreamTimers
@@ -292,7 +308,8 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     hostInstanceId: conn.hello.hostInstanceId,
     hostKind: conn.hello.hostKind,
     ...(opts.project ? { project: opts.project } : {}),
-    ...(opts.readOnlyReason ? { readOnlyReason: opts.readOnlyReason } : {})
+    ...(opts.readOnlyReason ? { readOnlyReason: opts.readOnlyReason } : {}),
+    ...(opts.othersHere ? { othersHere: opts.othersHere } : {})
   }
 
   const fire = (): void => {
@@ -402,8 +419,9 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
 
   const pickDefault = (): string | undefined => {
     const pid = state.project?.id
+    // A run that is live in another orgai session is not this terminal's to open by default: it is read-only here.
     const live = Object.values(state.runs)
-      .filter((r) => (!pid || r.summary.projectId === pid) && isOpenStatus(r.summary.status))
+      .filter((r) => (!pid || r.summary.projectId === pid) && isOpenStatus(r.summary.status) && !r.summary.liveElsewhere)
       .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
     const waiting = live.find((r) => Object.values(r.cards).some((l) => l.length > 0))
     return (waiting ?? live[live.length - 1])?.summary.id
@@ -472,7 +490,56 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       throw hostError(e)
     })
     loadEarlier(chain)
+    const elsewhere = state.runs[chain[chain.length - 1]!]?.summary.liveElsewhere
+    if (elsewhere) {
+      set(addNotice(state, sanitizeTty(liveElsewhereNotice(elsewhere)), 'accent', now()))
+      void watchElsewhere()
+    }
   }
+
+  // ----- Runs another orgai session hosts -----
+  let watching = false
+  /**
+   * Re-read what another orgai session hosts: the project's runs (so one started or ended there shows up), and the
+   * followed run's record while it is live there. Does nothing while no other session has this project open and the
+   * followed run is this session's own.
+   */
+  const watchElsewhere = async (): Promise<void> => {
+    if (closed || watching) return
+    const pid = state.project?.id
+    const activeRun = state.activeRunId
+    const followed = activeRun ? state.runs[activeRun]?.summary : undefined
+    // Who else has this project open, kept current: a terminal may open or close it at any time.
+    const here = pid ? (conn.inproc?.otherSessions?.() ?? []).filter((s) => s.projects.includes(pid)).length : 0
+    if ((state.othersHere ?? 0) !== here) {
+      const { othersHere: _was, ...rest } = state
+      set(here > 0 ? { ...rest, othersHere: here } : rest)
+    }
+    // Nothing hosted elsewhere to look at: nobody else is in the project, and no run this terminal knows was live
+    // there the last time it looked (one that was is read once more, so that its end shows).
+    if (!followed?.liveElsewhere && here === 0 && !Object.values(state.runs).some((r) => r.summary.liveElsewhere)) return
+    watching = true
+    try {
+      const list = pid ? await runsOf(pid) : []
+      if (closed) return
+      if (list.length) {
+        let next = applyRunList(state, list)
+        // The summaries of runs hosted there, and of ones that were and have since ended.
+        for (const r of list) if (r.liveElsewhere || next.runs[r.id]?.summary.liveElsewhere) next = upsertRunSummary(next, r)
+        set(next)
+      }
+      if (!activeRun || state.activeRunId !== activeRun) return
+      if (!followed?.liveElsewhere && !list.find((r) => r.id === activeRun)?.liveElsewhere) return
+      const rec = await call<RunRecord | null>('runs:get', [activeRun]).catch(() => null)
+      if (closed || !rec || typeof rec !== 'object' || !rec.summary) return
+      set(applyRecord(state, recordWithoutImages(rec), { partials: tracker }))
+    } finally {
+      watching = false
+    }
+  }
+  const watchMs = internals.watchElsewhereMs ?? TUI_WATCH_ELSEWHERE_MS
+  const watchTimer = watchMs > 0 ? setInterval(() => void watchElsewhere().catch(() => undefined), watchMs) : undefined
+  ;(watchTimer as { unref?: () => void } | undefined)?.unref?.()
 
   if (opts.runId) loadEarlier(state.activeChain)
   else if (opts.project) {
@@ -484,6 +551,16 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   const activeId = (): string => {
     const id = state.activeRunId
     if (!id) throw new Error('No run is open.')
+    return id
+  }
+  /**
+   * The followed run, to change it (send, interrupt, stop). A run another orgai session hosts is steered there: the
+   * refusal says so here, before any request (the host would refuse it too).
+   */
+  const ownActiveId = (): string => {
+    const id = activeId()
+    const elsewhere = state.runs[id]?.summary.liveElsewhere
+    if (elsewhere) throw new Error(sanitizeTty(liveElsewhereNotice(elsewhere)))
     return id
   }
   const projectIdOf = (runId?: string): string => {
@@ -575,7 +652,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     selectedOrSelection: ProviderModel | { model: string; connection?: ConnectionId },
     opts?: { confirm(): Promise<boolean> }
   ): Promise<Awaited<ReturnType<typeof switchRunModel>> | SwitchRunModelResult> {
-    const runId = activeId()
+    const runId = ownActiveId()
     if (opts !== undefined) {
       const out = await switchRunModel(call, runId, selectedOrSelection as ProviderModel, opts)
       // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
@@ -619,7 +696,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
         case 'readOnly':
           throw new Error(safeLine(state.readOnlyReason) || 'This session is read-only.')
         case 'send':
-          await call('runs:send', [{ runId: activeId(), text }])
+          await call('runs:send', [{ runId: ownActiveId(), text }])
           return undefined
         case 'continue': {
           const from = activeId()
@@ -679,19 +756,19 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     switchModel: doSwitchModel,
     async resumeNow() {
-      const from = activeId()
+      const from = ownActiveId()
       const chain = [...state.activeChain]
       const next = await call<RunSummary>('runs:resumeNow', [from])
       return next && next.id !== from ? adopt(next, chain) : adopt(next)
     },
     async cancelAutoResume() {
-      await call('runs:cancelAutoResume', [activeId()])
+      await call('runs:cancelAutoResume', [ownActiveId()])
     },
     async interrupt() {
-      await call('runs:interrupt', [activeId()])
+      await call('runs:interrupt', [ownActiveId()])
     },
     async stop() {
-      await call('runs:stop', [activeId()])
+      await call('runs:stop', [ownActiveId()])
     },
     async decide(dc: DecisionCall) {
       const p = dc.payload ?? {}
@@ -735,7 +812,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       return Array.isArray(list) ? list : []
     },
     async setPermissionMode(mode: PermissionMode) {
-      const runId = activeId()
+      const runId = ownActiveId()
       const res = await call<SetRunPermissionModeResult>('runs:setPermissionMode', [{ runId, mode }])
       if (res?.run && res.run.id === runId) set(upsertRunSummary(state, { ...state.runs[runId]?.summary, ...res.run }))
       return res
@@ -772,6 +849,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       if (closed) return
       closed = true
       if (timer) clearTimeout(timer)
+      if (watchTimer) clearInterval(watchTimer)
       listeners.clear()
       stream?.close()
       c?.unfollow(own)

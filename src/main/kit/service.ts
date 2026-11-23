@@ -32,6 +32,7 @@ import {
 import { isValidMcpServerName } from '@shared/defaults'
 import { base64MaxChars, strictBase64, type FileData } from '../skills/files'
 import { dropPrivateFiles, skippedNote } from '../capabilities/localSkills'
+import { lockedForProcess } from '../store/shared/storeSync'
 import {
   fullTarget,
   parseKit,
@@ -350,7 +351,10 @@ export class KitService {
   }
 
   private exclusive<T>(fn: () => T | Promise<T>): Promise<T> {
-    const run = this.applyChain.then(fn, fn)
+    // One import at a time in this process, and its check-then-write as one step among orgai sessions that share
+    // the data folder (two sessions importing the same kit: the second sees what the first added).
+    const alone = (): T | Promise<T> => lockedForProcess(fn)
+    const run = this.applyChain.then(alone, alone)
     this.applyChain = run.catch(() => undefined)
     return run
   }

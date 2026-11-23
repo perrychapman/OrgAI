@@ -72,7 +72,7 @@ import { scheduledRunCap } from '../schedules/validate'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { createSessionGuard } from './sessionGuard'
-import { storeSyncFor } from '../store/shared/storeSync'
+import { oneChangePerCall, storeSyncFor } from '../store/shared/storeSync'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
 import type { HostRuntimeEnv } from './runtimeEnv'
@@ -315,7 +315,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
     : projectId === SKILLS_PROJECT_ID ? skillsProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
     : projects.get(projectId)
-  const mcp = new McpService({
+  const mcp = oneChangePerCall(dataDir, new McpService({
     projects,
     secrets,
     library: new McpLibraryStore(dataDir),
@@ -331,13 +331,18 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Wave 7 (round 6 item 9): only an authorization's final commit holds a mutation lease. `activityRef` is set below,
     // before any call can arrive.
     commitLease: (label) => (activityRef ? activityRef.acquire('inFlightRpcMutations', label) : () => {})
-  })
-  const skills = new SkillService({
+  }), { except: ['activeAuthorizationCount', 'refreshingCount', 'dispose'] })
+  // oneChangePerCall (here and below): with several orgai sessions on this data folder, each call into a service that
+  // rewrites a project's own files runs as one change under the write lock. One process per data folder: unchanged.
+  const skills = oneChangePerCall(
     dataDir,
-    projects,
-    onLibraryChanged: (entries) => events.emit(IPC.skillLibraryChanged, entries),
-    onProjectChanged: emitProject
-  })
+    new SkillService({
+      dataDir,
+      projects,
+      onLibraryChanged: (entries) => events.emit(IPC.skillLibraryChanged, entries),
+      onProjectChanged: emitProject
+    })
+  )
   // Team files: a code project's team as plain files under .orgai/ (the project cache stays what runs read). Every
   // ProjectStore.save passes through its hook; the folders are checked at boot (index.ts), on window focus and at project open / run start.
   const teamFiles = new TeamFilesService({
@@ -370,7 +375,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     withAdapter: (project) => connections.withAdapter(project),
     onProjectChanged: emitProject
   })
-  const setup = new SetupService(projects, {
+  const setup = oneChangePerCall(dataDir, new SetupService(projects, {
     dataDir,
     removeMcpSecrets: (projectId, serverId) => mcp.removeServerSecrets(projectId, serverId),
     mcp: {
@@ -380,7 +385,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     skills: { applyProposal: (projectId, payload, o) => skills.applyProposal(projectId, payload, o) },
     templates: () => templates.list()
-  })
+  }))
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
   const codexCompletion = (): RunConnection | undefined => {
@@ -459,10 +464,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
   // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
   // outputs:changed itself for the versions the watcher captures and the revision ends it settles.
-  const outputs = createOutputsService(dataDir, {
-    ...(opts.desktop?.trashItem ? { trash: opts.desktop.trashItem } : {}),
-    onChange: (projectId, ids, what) => events.emit(OUTPUTS_IPC.outputsChanged, { projectId, ids, what })
-  })
+  const outputs = oneChangePerCall(
+    dataDir,
+    createOutputsService(dataDir, {
+      ...(opts.desktop?.trashItem ? { trash: opts.desktop.trashItem } : {}),
+      onChange: (projectId, ids, what) => events.emit(OUTPUTS_IPC.outputsChanged, { projectId, ids, what })
+    })
+  )
   const outputWatcher = createOutputWatcher({
     service: outputs,
     scopeOf: (projectId) => {
@@ -704,14 +712,14 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   })
   // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
   runStore.onRunsRemoved = (removed: RunSummary[]) => quick.runsRemoved(removed)
-  const skillEvaluation = new SkillEvaluationService({
+  const skillEvaluation = oneChangePerCall(dataDir, new SkillEvaluationService({
     dataDir,
     project: (projectId) => projects.get(projectId),
     listRuns: (projectId) => rm.list(projectId),
     getRun: (runId) => rm.get(runId),
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
-  })
+  }), { except: ['inFlightCount', 'dispose'] })
   skillEvaluationService = skillEvaluation
   // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
   // completion runs on the connection of the project being analysed.
@@ -814,7 +822,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     afterRun: (i) => evolveProject.run(i.projectId, () => evolveEngine.afterRun(i))
   }
   if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
-  const caps = new CapabilityService({
+  const caps = oneChangePerCall(dataDir, new CapabilityService({
     projects,
     skills,
     mcp,
@@ -830,7 +838,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     env: mockAdapter ? {} : processEnv,
     platform,
     mock: mockAdapter
-  })
+  }), { except: ['inFlightCount', 'dispose'] })
   capabilities = caps
   const maintenance = new MaintenanceService(projects, teamFiles)
   const importer = new AgentImportService({
@@ -1014,7 +1022,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
             sync: storeSyncFor(dataDir),
             project: (id) => projects.get(id),
             run: (id) => rm.summary(id) ?? runStore.get(id),
-            hostedElsewhere: (id) => runStore.hostedElsewhere(id)
+            hostedElsewhere: (id) => runStore.hostedElsewhere(id),
+            workingElsewhereIn: (projectId) => runStore.workingElsewhereIn(projectId)
           })
         }
       : {})
