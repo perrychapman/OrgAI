@@ -485,3 +485,13 @@ describe('moveNotice (L1)', () => {
     expect(moveNotice(before, setReportsTo(before, 'x', 'm'), 'x')).toBeNull()
   })
 })
+
+describe('duplicateName', () => {
+  it('adds copy, then a free number', async () => {
+    const { duplicateName } = await import('./roleOps')
+    expect(duplicateName([{ name: 'Reviewer' }], 'Reviewer')).toBe('Reviewer copy')
+    expect(duplicateName([{ name: 'Reviewer' }, { name: 'reviewer COPY' }], 'Reviewer')).toBe('Reviewer copy 2')
+    expect(duplicateName([{ name: 'Reviewer copy' }, { name: 'Reviewer copy 2' }], 'Reviewer')).toBe('Reviewer copy 3')
+    expect(duplicateName([], '  ')).toBe('Role copy')
+  })
+})

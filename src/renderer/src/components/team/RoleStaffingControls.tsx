@@ -3,7 +3,54 @@ import type { Effort, ModelTier, Project, Role } from '@shared/types'
 import { adapterForProject, adapterOnConnection, modelFamily, roleConnection } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { connectionLabel } from '../../lib/connectionLabel'
-import { roleStaffingControls, roleStaffingLine, withMaxEffort, withMinTier, withStaffingMode, type StaffingModeChoice } from '../../lib/roleStaffing'
+import { CONCURRENCY_MAX, CONCURRENCY_MIN, concurrencyText, roleConcurrency, roleStaffingControls, roleStaffingLine, withConcurrency, withMaxEffort, withMinTier, withStaffingMode, type StaffingModeChoice } from '../../lib/roleStaffing'
+import { Minus, Plus } from 'lucide-react'
+import { Icon } from '../ui/Icon'
+
+/**
+ * "How many at once": a 1..8 stepper (the board's count control). Hidden by the inspector until Role carries the field
+ * (`ROLE_CONCURRENCY_SUPPORTED`). A real pair of buttons and a polite readout, so it works by keyboard and is announced.
+ */
+export function RoleConcurrency({ role, onChange }: { role: Role; onChange: (patch: Partial<Role>) => void }): ReactElement {
+  const n = roleConcurrency(role)
+  const labelId = `role-concurrency-${role.id}`
+  return (
+    <div className="ri-count" role="group" aria-labelledby={labelId} data-testid="role-concurrency">
+      <span className="ri-label" id={labelId}>
+        How many at once
+      </span>
+      <span className="ri-count-value" role="status" aria-live="polite" data-testid="role-concurrency-text">
+        {concurrencyText(n)}
+      </span>
+      <span className="ri-stepper">
+        {/* No cap of its own: Fewer starts a cap at the most, More is not offered (there is nothing above "no limit"). */}
+        <button
+          type="button"
+          className="ri-step"
+          aria-label="Fewer at once"
+          disabled={n !== undefined && n <= CONCURRENCY_MIN}
+          data-testid="role-concurrency-less"
+          onClick={() => onChange(withConcurrency(n === undefined ? CONCURRENCY_MAX : n - 1))}
+        >
+          <Icon icon={Minus} size="sm" />
+        </button>
+        <span className="ri-step-n" aria-hidden="true">
+          {n ?? '∞'}
+        </span>
+        <button
+          type="button"
+          className="ri-step"
+          aria-label={n !== undefined && n >= CONCURRENCY_MAX ? 'No limit of its own' : 'More at once'}
+          disabled={n === undefined}
+          data-testid="role-concurrency-more"
+          onClick={() => onChange(withConcurrency(n === undefined || n >= CONCURRENCY_MAX ? undefined : n + 1))}
+        >
+          <Icon icon={Plus} size="sm" />
+        </button>
+      </span>
+    </div>
+  )
+}
 
 /** The model a role effectively runs on: its own, or through its parents when it inherits. */
 function effectiveModel(project: Project, role: Role): string | undefined {

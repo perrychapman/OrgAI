@@ -63,6 +63,8 @@ export default function KitSection(): ReactElement | null {
 
   const openConnectors = (): void => {
     requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
+    // Project settings ignore app deep links: switch to app Settings first, then ask for the pane.
+    useAppStore.getState().setView('appSettings')
     window.dispatchEvent(new Event('orgai:settings-section'))
   }
 
@@ -150,7 +152,7 @@ function ImportNotice({ result, onOpenConnectors, onDismiss }: { result: KitAppl
       actions={
         result.needsSecrets.length > 0 ? (
           <Button size="sm" testId="kit-open-connectors" onClick={onOpenConnectors}>
-            Open Connectors
+            Open Tools and services
           </Button>
         ) : undefined
       }

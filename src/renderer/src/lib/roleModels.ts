@@ -4,10 +4,12 @@ import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { effortOptionsFor } from '@shared/defaults'
 import { groupByFamily, roleTier } from './remap'
 import { FAMILY_WORD } from './modelFamily'
+import { PLAIN_TIER_WORD } from './tierWords'
 
 type TierModels = Partial<Record<ModelTier, ModelRef>>
 
-export const TIER_LABEL = Object.fromEntries(MODEL_TIER_OPTIONS.map((o) => [o.value, o.label])) as Record<ModelTier, string>
+/** The Team editor's tier words: plain language (lib/tierWords.ts), not the shared Top / Deep / Everyday / Fast labels. */
+export const TIER_LABEL: Record<ModelTier, string> = { ...PLAIN_TIER_WORD }
 
 /** The Model select's value for a role: 'inherit', a tier word, or 'custom' (an exact model that is no tier's model). */
 export type RoleModelChoice = 'inherit' | ModelTier | 'custom'

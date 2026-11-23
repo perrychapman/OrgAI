@@ -301,15 +301,15 @@ try {
       await page.locator('.react-flow__node').first().click()
       // The Model and effort section is folded behind its sentence when the inspector is not roomy; open it first.
       await page.waitForSelector('[data-testid=role-section-model]', { timeout: 5000 })
-      await page.evaluate(() => { const d = document.querySelector('[data-testid=role-section-model]'); if (d) d.open = true })
+      await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-advanced]'); if (d) d.open = true })
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       const roleLabel = ((await page.locator('[data-testid=role-model]').evaluate((el) => (el.matches('select') ? el : el.querySelector('select'))?.selectedOptions[0]?.textContent ?? '')) || '').trim()
       // Spec 5: tier options read "Everyday (sonnet)" (tier word first); Inherit / the connection default otherwise.
       const connected = (await page.evaluate(() => window.orgai.connections.list())).some((c) => c.status.state === 'connected')
-      check(/^(top|deep|everyday|fast)\b/i.test(roleLabel) || /inherit|connection default/i.test(roleLabel) || (!connected && /^custom$/i.test(roleLabel)), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
+      check(/^(top|deep|everyday|fast|most capable|advanced|standard)\b/i.test(roleLabel) || /inherit|connection default/i.test(roleLabel) || (!connected && /^custom$/i.test(roleLabel)), `role model select shows a tier or Inherit at ${w}x${h} ${theme}`, roleLabel)
       // Spec 8.3: at rest (role Advanced closed) no option of the Model select is a bare concrete model id.
       const bareIds = await page.locator('[data-testid=role-model]').evaluate((el) =>
-        [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast)\b|inherit|connection default|custom/i.test(t))
+        [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast|most capable|advanced|standard)\b|inherit|connection default|custom/i.test(t))
       )
       check(bareIds.length === 0, `role Model select lists only tiers and Inherit at ${w}x${h} ${theme}`, bareIds.join(', '))
       // N4 (phase 2): the section is "Model and effort", one sentence says what the role runs on, and the select's own label
@@ -325,7 +325,7 @@ try {
         return { labels: labels.length, sentence: root.querySelector('[data-testid=role-model-sentence]')?.textContent ?? '', title: root.querySelector('h3')?.textContent ?? '' }
       })
       check(sectionText.labels === 1, `the select's label "Model" is visible once in Model and effort at ${w}x${h} ${theme}`, String(sectionText.labels))
-      check(sectionText.title === 'Model and effort', `the section is titled Model and effort at ${w}x${h} ${theme}`, sectionText.title)
+      check(sectionText.title === 'Model', `the section is titled Model at ${w}x${h} ${theme}`, sectionText.title)
       check(/^(Runs on|Always runs on|Uses the same model as|Uses the connection)/.test(sectionText.sentence), `the section opens with a sentence at ${w}x${h} ${theme}`, sectionText.sentence)
       const staffing = await page.locator('[data-testid=role-section-model]').evaluate((root) => root.textContent ?? '')
       check(!/Tier and effort|Follow the project|Lowest tier|Always as configured/.test(staffing), `no retired staffing wording in Model and effort at ${w}x${h} ${theme}`)
@@ -336,7 +336,7 @@ try {
         const roleSel = page.locator('[data-testid=role-model]')
         const exactSel = page.locator('[data-testid=role-exact-model]')
         const startChoice = await roleSel.inputValue()
-        await page.locator('[data-testid=role-model-advanced] > summary').click()
+        // "Choose an exact model" was opened above.
         await exactSel.waitFor({ timeout: 5000 }).catch(() => {})
         if (/^(top|deep|everyday|fast)$/.test(startChoice)) check((await exactSel.inputValue()) === '', `a ${startChoice} role's Exact model reads Not set`, await exactSel.inputValue())
         const ids = await exactSel.locator('option:not([disabled])').evaluateAll((os) => os.map((o) => o.value).filter(Boolean))

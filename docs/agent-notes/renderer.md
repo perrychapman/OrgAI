@@ -965,3 +965,16 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
   Not verified: screen-reader speech of the notice row and the mixed tool checkboxes, the zero-roles popover state, the `+N`
   waiting list contents, the dot-before-open state of Start from in e2e (import.mjs reaches Team after the import wrote its memory).
 - Security review fixes (M1, M2): M1 fixed: the debounced save applies main's `mcpServers` only when the store's list still equals what that save sent, so a quicker `mcp:upsert`/`mcp:remove` is never overwritten by a late answer (`store/projectSave.test.ts`, "keeps a newer server list"). M2 fixed: a new role's slug comes from `newRoleSlug` (`lib/roleOps.ts`: unique among roles and clear of every slug a server's `roles` names), so "QA!" beside "QA" gets `qa-2` and a role removed with Undo showing passes no connections to a same-named new one (`roleOps.test.ts`, "newRoleSlug"). Also: unnamed or off-catalog tools form the elevated "use other tools" group; notice text and scanned file names go through `showHidden`; the problems chip is out of the DOM until phase 4; Start from says "Imported" after an import this session (the scan cannot tell which agents the team holds).
+
+## Team tab, UI overhaul (2026-11-22)
+
+- As built, deviations, review fixes and open items: `docs/design/ui-overhaul/impl-team.md`. Plain tier words come from
+  `lib/tierWords.ts` (`TIER_LABEL` in `lib/roleModels.ts`): Fast, Standard, Advanced, Most capable; stored values unchanged.
+- New testids: `role-node-toolbar` (NodeToolbar on the selected role; buttons `role-node-add-report`, `-duplicate`, `-move`,
+  `-remove`; actions through `components/team/roleNodeActions.ts` context), `role-menu-duplicate`, `team-add-group`,
+  `team-import`, `team-theme` / `team-theme-menu` / `team-theme-org-chart`, `team-group-count`, `team-zoom-level`,
+  `team-tidy`, `team-provenance` (+ `-plan`, `-review`, engagements only), `import-hidden-chars`. `team-role-count` keeps
+  "N roles". The Team ReactFlow's Controls are custom ControlButtons (horizontal); `.react-flow__controls-fitview` stays.
+- A NodeToolbar is portalled but React bubbles its events to the node wrapper: the toolbar row stops them (else a toolbar
+  click re-selects the node). Checked by e2e/team.mjs sectionNodeMenu.
+- Engagement styling hangs off `.team-editor[data-kind=engagement]` (TeamView root).

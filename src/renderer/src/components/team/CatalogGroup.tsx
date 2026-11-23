@@ -31,7 +31,7 @@ export function CatalogGroup({
       <header className="catalog-group-head">
         <div className="catalog-group-heading">
           <h3 id={titleId} className="catalog-group-title">
-            {title}
+            {title === 'Connections' ? 'Tools and services' : title}
             {count !== undefined && <span className="muted"> {'·'} {count}</span>}
           </h3>
           {description && <p className="catalog-group-lead">{description}</p>}

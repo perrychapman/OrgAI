@@ -4,6 +4,10 @@ import {
   effectiveSetupChoice,
   elevatedLabels,
   foundLine,
+  foundSelectedLine,
+  importGroups,
+  importSourceSupport,
+  levelOptions,
   modeLine,
   importBannerVisible,
   importButtonLabel,
@@ -14,6 +18,8 @@ import {
   otherToolAgents,
   readBannerMemory,
   setupSubmitLabel,
+  teamSizeLine,
+  toolsDroppedLine,
   totalAgents,
   writeBannerMemory
 } from './agentImport'
@@ -79,8 +85,10 @@ describe('choices and counts', () => {
   })
   it('counts items that are not skipped', () => {
     expect(importCount({ items: [{ action: 'add' }, { action: 'skip' }, { action: 'replace' }] as never })).toBe(2)
-    expect(importButtonLabel(1)).toBe('Import 1 role')
-    expect(importButtonLabel(3)).toBe('Import 3 roles')
+    expect(importButtonLabel(1)).toBe('Add 1 role to the team')
+    expect(importButtonLabel(3)).toBe('Add 3 roles to the team')
+    expect(importButtonLabel(0)).toBe('Select at least one')
+    expect(importButtonLabel(0, 'replace')).toBe('Select at least one')
     expect(importButtonLabel(3, 'replace')).toBe('Replace team with 3 roles')
     expect(modeLine('merge', 3, 4)).toBe('Adds 3 roles next to the 4 you have.')
     expect(modeLine('replace', 3, 1)).toBe('Replaces your 1 role with these 3.')
@@ -108,5 +116,53 @@ describe('wording and banner memory', () => {
     expect(importBannerVisible(2, readBannerMemory(storage, 'p1'))).toBe(false)
     expect(importBannerVisible(2, readBannerMemory(storage, 'p2'))).toBe(true)
     expect(importBannerVisible(0, null)).toBe(false)
+  })
+})
+
+describe('import dialog wording and groups', () => {
+  it('words the list header, dropped tools and the team size', () => {
+    expect(foundSelectedLine(6, 4)).toBe('Found 6 agents. 4 selected.')
+    expect(foundSelectedLine(1, 1)).toBe('Found 1 agent. 1 selected.')
+    expect(toolsDroppedLine(['Teleport', 'Warp'])).toBe('Its file asks for a tool OrgAI does not have (Teleport, Warp). It will work without it.')
+    expect(teamSizeLine(12, 15)).toBe('The team goes from 12 to 15 roles.')
+    expect(teamSizeLine(1, 1)).toBe('The team stays at 1 role.')
+  })
+  it('names levels in plain words and keeps the exact model id', () => {
+    const opts = levelOptions({ top: 'big-1', deep: 'big-1', everyday: 'mid-1', fast: 'small-1' }, [{ id: 'mid-1' }, { id: 'extra-9' }])
+    expect(opts.map((o) => o.value)).toEqual(['inherit', 'small-1', 'mid-1', 'big-1', 'extra-9'])
+    expect(opts.find((o) => o.value === 'small-1')?.label).toBe('Fast · small-1')
+    expect(opts.find((o) => o.value === 'mid-1')?.label).toBe('Standard · mid-1')
+    expect(opts.find((o) => o.value === 'big-1')?.label).toBe('Advanced · big-1')
+    expect(levelOptions({}, undefined).map((o) => o.label)).toEqual(['Inherit from parent', 'Fast', 'Standard', 'Advanced', 'Most capable'])
+  })
+  it('turns the other sources on only when the bridge has the folder picker', () => {
+    const s = importSourceSupport()
+    expect(s.otherProject).toBe(false)
+    expect(s.chooseFolder).toBe(false)
+    expect(s.unavailable).toBe('Not available in this build')
+    const w = globalThis as unknown as { window?: unknown }
+    const had = 'window' in w
+    const prev = w.window
+    w.window = { orgai: { importSources: { pickAgentFolder: () => Promise.resolve(null) } } }
+    try {
+      expect(importSourceSupport()).toMatchObject({ otherProject: true, chooseFolder: true })
+    } finally {
+      if (had) w.window = prev
+      else delete w.window
+    }
+  })
+  it('groups the previewed chart by lead role and marks what is new', () => {
+    const role = (id: string, name: string, reportsTo: string | null) => ({ id, name, reportsTo, color: 'c' }) as never
+    const roles = [role('o', 'Orchestrator', null), role('l', 'Lead builder', 'o'), role('b', 'Builder', 'l'), role('n', 'Notes', 'o'), role('x', 'Imported', 'l')]
+    const items = [{ roleId: 'x', action: 'add' }, { roleId: 'n', action: 'replace' }, { action: 'skip' }] as never
+    const groups = importGroups({ roles, items })
+    expect(groups.map((g) => g.name)).toEqual(['Orchestrator', 'Lead builder'])
+    expect(groups[0].roles).toEqual([
+      { id: 'o', name: 'Orchestrator', state: 'existing' },
+      { id: 'n', name: 'Notes', state: 'replaces' }
+    ])
+    expect(groups[1].roles.map((r) => `${r.name}:${r.state}`)).toEqual(['Lead builder:existing', 'Builder:existing', 'Imported:new'])
+    expect(groups.map((g) => g.changed)).toEqual([1, 1])
+    expect(importGroups({ roles: [], items: [] })).toEqual([])
   })
 })

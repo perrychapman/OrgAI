@@ -13,8 +13,8 @@ import { expectInspectorSave, reportLiveRuns } from '../../store/liveChangeStore
 import { LiveChangeNote } from '../LiveChangeNote'
 import { cleanIpcError } from '../../lib/ipcError'
 import { inferAction, serverReach } from '../../lib/liveRunChange'
-import { grantServerRoles, grantedServers, revokePlan } from '../../lib/roleCapabilities'
-import { resolveGroups, summaryParts, summarySentence } from '../../lib/toolGroups'
+import { cannotEditFiles, grantServerRoles, grantedServers, revokePlan, roleSkillSplit, roleUseChips } from '../../lib/roleCapabilities'
+import { groupState, resolveGroups, summaryParts, summarySentence } from '../../lib/toolGroups'
 import { perProjectState } from '../mcp/mcpHelpers'
 import { CapabilityGroup, type CapabilityKind } from './CapabilityBlock'
 import { CapabilityChooser, type ChooserActions } from './CapabilityChooser'
@@ -170,14 +170,48 @@ export default function RoleCapabilities({
 
   const waitingForValues = grantedServers(servers ?? [], role).filter((s) => s.spec.libraryId && perProjectState(s).missingCount > 0)
 
+  const chips = roleUseChips({
+    toolGroupLabels: resolveGroups(TOOL_CATALOG, role.tools)
+      .filter((g) => groupState(g, role.tools) !== 'off')
+      .map((g) => g.label),
+    services: grantedServers(servers ?? [], role).map((s) => s.spec.name),
+    skills: roleSkillSplit(project.skills ?? [], role).granted.map((s) => s.name)
+  })
+
   // onAskAssistant stays in the props (RoleInspector passes it) but the phase 2 panel has no "Ask the Team assistant" links.
   void onAskAssistant
 
   return (
     <section ref={root} className="stack-3 role-capabilities" aria-labelledby="role-capabilities-title" data-testid="role-capabilities">
-      <h3 className="side-section-title role-capabilities-title" id="role-capabilities-title">
-        What it can use
-      </h3>
+      <div className="ri-head">
+        <h3 className="side-section-title role-capabilities-title" id="role-capabilities-title">
+          What it can use
+        </h3>
+        <button
+          type="button"
+          className="link-btn ri-edit"
+          data-testid="role-use-edit"
+          aria-label={`Edit what ${role.name || 'this role'} can use`}
+          onClick={() => {
+            setEditingTools(true)
+            window.requestAnimationFrame(() => root.current?.querySelector<HTMLElement>('[data-testid=role-tool-group-read]')?.focus())
+          }}
+        >
+          Edit
+        </button>
+      </div>
+      <ul className="ri-chips" aria-label="What it can use at a glance" data-testid="role-use-chips">
+        {chips.map((c, i) => (
+          <li key={`${c.kind}:${c.label}:${i}`} className="ri-chip" data-kind={c.kind}>
+            {c.label}
+          </li>
+        ))}
+        {cannotEditFiles(role.tools) && (
+          <li className="ri-chip ri-chip-dashed" data-testid="role-cannot-edit">
+            Cannot edit files
+          </li>
+        )}
+      </ul>
 
       <CapabilityGroup
         id="role-tools"
