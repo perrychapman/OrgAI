@@ -444,6 +444,7 @@ const api: OrgAIApi = {
   runInsights: {
     estimate: (query) => ipcRenderer.invoke(OVERHAUL_IPC.runsEstimate, query),
     scheduleCosts: () => ipcRenderer.invoke(OVERHAUL_IPC.schedulesCosts),
+    scheduleHistory: (scheduleId) => ipcRenderer.invoke(OVERHAUL_IPC.schedulesPeekHistory, scheduleId),
     projectSpend: (projectId) => ipcRenderer.invoke(OVERHAUL_IPC.projectsSpend, projectId)
   },
   runActions: {

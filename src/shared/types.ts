@@ -3176,6 +3176,13 @@ export interface MergeReview {
   createdAt: number
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
+  /**
+   * UI overhaul: what main already knows about this branch, never inferred from agent text. tests: the
+   * Project.requireTestsPass gate's result for this copy ('unknown' when the gate is off or did not run). review:
+   * 'reported' when a report of a role this agent must report to (Role.requiredReports) delivered a receipt for it in
+   * the delegation ledger, 'none' when the ledger has none, 'unknown' when no ledger exists. Absent on older cards.
+   */
+  checks?: { tests: 'passed' | 'failed' | 'unknown'; testDetail?: string; review: 'reported' | 'none' | 'unknown' }
 }
 
 export type MergeDecision = { behavior: 'merge' } | { behavior: 'discard' } | { behavior: 'hold' }
@@ -3876,6 +3883,13 @@ export interface PermissionRequest {
   workingFolderScratch?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
+  /** UI overhaul: when the card was raised (epoch ms), set by RunManager. Absent on cards from before it existed. */
+  requestedAt?: number
+  /**
+   * UI overhaul ("You have allowed this N times"): how many earlier allows of the same tool and command shape this
+   * project recorded (the prompt-fatigue counters, docs/agent-notes/permissions.md). Absent = unknown; never 0 by guess.
+   */
+  priorAllows?: number
 }
 
 /**
@@ -10426,6 +10440,7 @@ export interface SupportDetails {
 export const OVERHAUL_IPC = {
   runsEstimate: 'runs:estimate',
   schedulesCosts: 'schedules:costs',
+  schedulesPeekHistory: 'schedules:peekHistory',
   projectsSpend: 'projects:spend',
   runsHold: 'runs:hold',
   runsAddBudget: 'runs:addBudget',
@@ -10449,6 +10464,8 @@ export interface OrgAIApi {
     estimate(query: RunEstimateQuery): Promise<RunEstimate>
     /** Per-schedule and weekly cost from schedule run history. */
     scheduleCosts(): Promise<ScheduleCostReport>
+    /** A schedule's history, newest first (as schedules.history) WITHOUT clearing its unread count. */
+    scheduleHistory(scheduleId: string): Promise<ScheduleHistoryEntry[]>
     /** Today's and this month's spend of a project, with its caps. */
     projectSpend(projectId: string): Promise<ProjectSpend>
   }

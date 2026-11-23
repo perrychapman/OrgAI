@@ -16,6 +16,7 @@ import {
   type RunHold,
   type RunSummary,
   type ScheduleCostReport,
+  type ScheduleHistoryEntry,
   type SkipReviewInput,
   type StopAgentResult,
   type SupportDetails
@@ -102,6 +103,14 @@ export function registerOverhaulIpc(
     const s = services.schedules
     if (!s) return { schedules: [], weeklyTotalUsd: null, unknownCount: 0, generatedAt: Date.now() }
     return scheduleCosts(s.list(), (id) => s.history(id), Date.now())
+  })
+  handleRead(OVERHAUL_IPC.schedulesPeekHistory, (e, scheduleId: unknown): ScheduleHistoryEntry[] => {
+    requireWindow(e)
+    const s = services.schedules
+    if (!s) return []
+    const id = idArg(scheduleId, 'schedule id')
+    if (!s.get(id)) throw new Error('That schedule no longer exists.')
+    return s.peekHistory(id)
   })
   handleRead(OVERHAUL_IPC.projectsSpend, (e, projectId: unknown): ProjectSpend => {
     requireWindow(e)
