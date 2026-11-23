@@ -3,8 +3,9 @@
  * choices an edit offers. Pure: everything comes from projects:get (its roles) and mcp:list, plus mcpLibrary:list for
  * "add one from your library". The words are the `orgai mcp` commands' own.
  */
-import type { McpAuthState, McpLibraryInfo, McpServerInfo, Project } from '../../shared/types'
+import type { McpAuthState, McpLibraryInfo, McpServerInfo, McpServerSpec, Project } from '../../shared/types'
 import { clean, type PickOption } from './configUi'
+import { sanitizeTty } from './sanitizeTty'
 import type { Seg } from './panes/lines'
 import { textWidth, truncateEnd } from './panes/text'
 
@@ -164,6 +165,69 @@ export function rolesFromChecks(project: Project, checked: string[]): string[] |
 /** The roles to tick for a saved set: every slug when the server is open to every role. */
 export function checkedFromRoles(project: Project, roles: string[] | undefined): string[] {
   return roles === undefined ? project.roles.map((r) => r.slug) : knownSlugs(project, roles)
+}
+
+/** What a server's state lets runs reach: on or off, and the role slugs that may use it (undefined = every role). */
+export interface McpReach {
+  enabled: boolean
+  roles: string[] | undefined
+}
+
+/**
+ * Whether going from `before` to `after` gives MORE of the project's agents the server: it is turned on, or at least one
+ * role of this project gains it (going to every role counts when a role did not have it). Removing or turning off never
+ * widens. Pure.
+ */
+export function mcpWidens(project: Project, before: McpReach, after: McpReach): boolean {
+  if (!before.enabled && after.enabled) return true
+  const set = (r: McpReach): Set<string> => new Set(r.roles === undefined ? project.roles.map((x) => x.slug) : knownSlugs(project, r.roles))
+  const had = set(before)
+  for (const slug of set(after)) if (!had.has(slug)) return true
+  return false
+}
+
+/** Who may use a server with this role list, in words ("every role", "no role", role names). Names are cleaned. */
+export function mcpAvailableTo(project: Project, roles: string[] | undefined): string {
+  if (roles === undefined) return 'every role'
+  const known = project.roles.filter((r) => roles.includes(r.slug))
+  return known.length === 0 ? 'no role' : known.map((r) => clean(r.name, 80)).join(', ')
+}
+
+/** One untrusted value for the terminal, sanitized and whitespace-folded but never cut. */
+const whole = (s: unknown): string => sanitizeTty(typeof s === 'string' ? s : String(s ?? '')).replace(/\s+/g, ' ').trim()
+
+/** Names only, never values: a record's keys and a name list, de-duplicated. */
+const namesOf = (record: unknown, list: unknown): string[] => {
+  const keys = record && typeof record === 'object' && !Array.isArray(record) ? Object.keys(record as Record<string, unknown>) : []
+  return [...new Set([...keys, ...secretNames(list)])].map(whole).filter(Boolean)
+}
+
+/**
+ * The lines of the confirmation before a widening save: what the server IS, so `y` is not pressed on a name. The command
+ * and every argument (stdio) or the URL (http / sse) whole, the NAMES of env variables, headers and secret slots (never a
+ * value), the source and who gets it. Every string is sanitized; none is cut. `spec` is a project server or a library entry.
+ */
+export function mcpConfirmLines(spec: Pick<McpServerSpec, 'name' | 'transport' | 'command' | 'args' | 'env' | 'secretEnv' | 'url' | 'headers' | 'secretHeaders' | 'libraryId'> & { id?: string }, headline: string, availableTo: string, libraryId?: string): string[] {
+  const out: string[] = [whole(headline), '', `name: ${whole(spec.name)}`, `transport: ${whole(spec.transport)}`]
+  if (spec.transport === 'stdio') {
+    out.push(`command: ${whole(spec.command ?? '') || 'not set'}`)
+    const args = Array.isArray(spec.args) ? spec.args : []
+    out.push(args.length ? `arguments (${args.length}):` : 'arguments: none')
+    args.forEach((a, i) => out.push(`  ${i + 1}. ${whole(a)}`))
+  } else {
+    out.push(`url: ${whole(spec.url ?? '') || 'not set'}`)
+  }
+  const envNames = namesOf(spec.env, spec.secretEnv)
+  const headerNames = namesOf(spec.headers, spec.secretHeaders)
+  const secrets = [...secretNames(spec.secretEnv), ...secretNames(spec.secretHeaders)].map(whole)
+  out.push(`environment variable names (values not shown): ${envNames.length ? envNames.join(', ') : 'none'}`)
+  out.push(`header names (values not shown): ${headerNames.length ? headerNames.join(', ') : 'none'}`)
+  out.push(`secret slots: ${secrets.length ? secrets.join(', ') : 'none'}`)
+  const lib = libraryId ?? spec.libraryId
+  out.push(`source: ${lib ? `library entry ${whole(lib)}` : 'this project'}`)
+  out.push(`available to: ${whole(availableTo)}`)
+  out.push('', 'Press y to save. Any other key cancels and saves nothing.')
+  return out
 }
 
 /** The library entries this project does not link yet, by name. */

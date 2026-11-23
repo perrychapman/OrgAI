@@ -13,8 +13,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { McpMutationResult } from '../../shared/types'
 import { useFocusHandler } from './context'
-import { charOf, clean, ConfigFrame, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
-import { checkedFromRoles, libraryOptions, mcpDetailLines, mcpRoleOptions, mcpRowSegs, mcpRows, mcpSecretScope, mcpSecretSlots, rolesFromChecks, type McpData, type McpSecretSlot } from './mcpModel'
+import { charOf, clean, ConfigFrame, confirmFits, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
+import { checkedFromRoles, libraryOptions, mcpAvailableTo, mcpConfirmLines, mcpDetailLines, mcpWidens, mcpRoleOptions, mcpRowSegs, mcpRows, mcpSecretScope, mcpSecretSlots, rolesFromChecks, type McpData, type McpSecretSlot } from './mcpModel'
 import type { PaneLine } from './panes/lines'
 import { textWidth, truncateEnd } from './panes/text'
 import { glyphs, separatorFor } from './theme'
@@ -66,7 +66,9 @@ export function McpView(props: McpViewProps) {
   }, [load])
 
   const rows = data ? mcpRows(data) : []
-  const selected = rows[Math.min(sel, Math.max(0, rows.length - 1))]
+  // The one clamped index: the highlight and every action read the same row after the list shrinks.
+  const selIdx = Math.min(sel, Math.max(0, rows.length - 1))
+  const selected = rows[selIdx]
   const targetId = detail?.serverId ?? selected?.id
   const target = data?.servers.find((s) => s.spec.id === targetId)
 
@@ -111,13 +113,33 @@ export function McpView(props: McpViewProps) {
     return false
   }
 
-  /** Space: `orgai mcp enable` / `orgai mcp disable` for this server. */
+  /**
+   * A widening save asks first: what the server is, then y (any other key cancels, nothing is saved). The dialog does not
+   * scroll, so a definition that does not fit whole is refused instead of cut.
+   */
+  const confirmWidening = (lines: string[], run: () => void): void => {
+    const { width: cw, bodyRows: cr } = contentSize(props.width, props.height, env, dialogKeys({ kind: 'confirm', strict: true, title: '', lines: [], onYes: () => undefined }))
+    if (!confirmFits(lines, cw, cr)) {
+      setMessage({ text: 'This server is too long to show whole in this window, so it was not saved. Make the window larger, or use the orgai mcp command.', tone: 'warn' })
+      return
+    }
+    setMessage(undefined)
+    setDialog({ kind: 'confirm', strict: true, title: 'Confirm', lines, onYes: run })
+  }
+
+  /** Space: `orgai mcp enable` / `orgai mcp disable` for this server. Turning one on asks first. */
   const toggle = (): void => {
     const info = target!
     const on = !info.spec.enabled
     const name = clean(info.spec.name, 80)
     const secret = on && info.missingSecrets.length ? ' It cannot start until its secrets are set: orgai mcp set-secret' : ''
-    save(() => api.setMcp(projectId, info.spec.id, { enabled: on }), info.spec.id, `Turned ${name} ${on ? 'on' : 'off'}.${secret}`)
+    const run = (): void => save(() => api.setMcp(projectId, info.spec.id, { enabled: on }), info.spec.id, `Turned ${name} ${on ? 'on' : 'off'}.${secret}`)
+    const project = data!.project
+    if (mcpWidens(project, { enabled: info.spec.enabled, roles: info.spec.roles }, { enabled: on, roles: info.spec.roles })) {
+      confirmWidening(mcpConfirmLines(info.spec, `Turn ${name} on?`, mcpAvailableTo(project, info.spec.roles)), run)
+      return
+    }
+    run()
   }
 
   /** r: which roles may use this server (role slugs; every role = no list on the spec). */
@@ -140,7 +162,12 @@ export function McpView(props: McpViewProps) {
         }
         const next = rolesFromChecks(project, values)
         const to = next === undefined ? 'every role' : next.length === 0 ? 'no role' : `${next.length} role${next.length === 1 ? '' : 's'}`
-        save(() => api.setMcp(projectId, info.spec.id, { roles: next }), info.spec.id, `${clean(info.spec.name, 80)} is now available to ${to}.`)
+        const run = (): void => save(() => api.setMcp(projectId, info.spec.id, { roles: next }), info.spec.id, `${clean(info.spec.name, 80)} is now available to ${to}.`)
+        if (mcpWidens(project, { enabled: info.spec.enabled, roles: info.spec.roles }, { enabled: info.spec.enabled, roles: next })) {
+          confirmWidening(mcpConfirmLines(info.spec, `Let ${to === 'every role' ? 'every role' : to} use ${clean(info.spec.name, 80)}?`, mcpAvailableTo(project, next)), run)
+          return
+        }
+        run()
       }
     })
   }
@@ -245,7 +272,13 @@ export function McpView(props: McpViewProps) {
         sel: 0,
         onPick: (libraryId) => {
           const label = options.find((o) => o.value === libraryId)?.label ?? 'that server'
-          save(() => api.linkMcp(projectId, libraryId), (next) => next.servers.find((s) => s.spec.libraryId === libraryId)?.spec.id, `Added ${label} for every role.`)
+          const run = (): void => save(() => api.linkMcp(projectId, libraryId), (next) => next.servers.find((s) => s.spec.libraryId === libraryId)?.spec.id, `Added ${label} for every role.`)
+          const entry = (Array.isArray(library) ? library : []).find((i) => i.entry.id === libraryId)?.entry
+          if (!entry) {
+            setMessage({ text: 'That library entry could not be read, so it was not added.', tone: 'warn' })
+            return
+          }
+          confirmWidening(mcpConfirmLines(entry, `Add ${label} from your library, for every role?`, 'every role', libraryId), run)
         }
       })
     })
@@ -299,7 +332,7 @@ export function McpView(props: McpViewProps) {
         return true
       }
     } else {
-      const moved = moveSel(e, sel, rows.length, page)
+      const moved = moveSel(e, selIdx, rows.length, page)
       if (moved !== undefined) {
         setSel(moved)
         setMessage(undefined)
@@ -335,8 +368,8 @@ export function McpView(props: McpViewProps) {
     if (rows.length === 0) body = [{ key: 'none', segs: [{ text: truncateEnd('This project has no MCP servers. Press l to add one from your library, or run: orgai mcp add', w, glyphs(env).ellipsis), dim: true }] }]
     else {
       const nameWidth = Math.min(28, Math.max(...rows.map((r) => textWidth(r.name))))
-      const win = windowOf(rows, sel, bodyRows)
-      body = win.items.map((r, i) => ({ key: r.id, segs: mcpRowSegs(r, w, nameWidth, separatorFor(env), glyphs(env).ellipsis, win.start + i === sel) }))
+      const win = windowOf(rows, selIdx, bodyRows)
+      body = win.items.map((r, i) => ({ key: r.id, segs: mcpRowSegs(r, w, nameWidth, separatorFor(env), glyphs(env).ellipsis, win.start + i === selIdx) }))
     }
   }
   return <ConfigFrame width={props.width} height={props.height} env={env} title={title} body={body} {...(msg ? { message: msg } : {})} keys={keys} />

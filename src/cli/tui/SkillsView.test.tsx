@@ -275,6 +275,10 @@ describe('Skills view', () => {
     expect(v.api.updates).toEqual([{ skillId: 's3', patch: { enabled: false } }])
     expect(v.frame()).toContain('Turned Tracker off.')
     await v.keys(char(' '))
+    await tick(60)
+    expect(v.api.updates).toHaveLength(1)
+    expect(v.frame()).toContain('Turn Tracker on?')
+    await v.keys(char('y'))
     expect(v.api.updates[1].patch).toEqual({ enabled: true })
     expect(v.frame()).toContain('Turned Tracker on. No role holds it yet: press r.')
   })
@@ -291,6 +295,9 @@ describe('Skills view', () => {
     expect(v.api.updates).toHaveLength(0)
     // Tick Qa as well, then save.
     await v.keys(char('r'), key('down'), key('down'), char(' '), key('enter'))
+    await tick(60)
+    expect(v.api.updates).toEqual([])
+    await v.keys(char('y'))
     expect(v.api.updates).toEqual([{ skillId: 's1', patch: { roleIds: ['lead', 'dev', 'qa'] } }])
     const f = v.frame()
     expect(f).toContain('Docs is now granted to Lead, Dev, Qa.')
@@ -360,6 +367,8 @@ describe('Skills view', () => {
     expect(v.frame()).toContain('Roles that may load Notion')
     expect(v.frame()).toContain('[ ] Lead')
     await v.keys(key('down'), char(' '), key('enter'))
+    expect(v.api.links).toEqual([])
+    await v.keys(char('y'))
     expect(v.api.links).toEqual([{ libraryId: 'l1', roleIds: ['dev'] }])
     const f = v.frame()
     expect(f).toContain('Added Notion for 1 role.')
@@ -369,7 +378,7 @@ describe('Skills view', () => {
   it('l with nothing ticked adds the skill for no role', async () => {
     const v = skillsView(120)
     await tick(60)
-    await v.keys(char('l'), key('enter'), key('enter'))
+    await v.keys(char('l'), key('enter'), key('enter'), char('y'))
     expect(v.api.links).toEqual([{ libraryId: 'l1', roleIds: [] }])
     expect(v.frame()).toContain('Added Notion. No role holds it yet: press r.')
   })
@@ -393,7 +402,7 @@ describe('Skills view', () => {
     expect(v.frame()).toContain('Add a skill from your library')
     await v.keys(key('enter'))
     expect(v.frame()).toContain('Roles that may load Notion')
-    await v.keys(key('down'), char(' '), key('enter'))
+    await v.keys(key('down'), char(' '), key('enter'), char('y'))
     await tick(60)
     expect(v.api.links).toEqual([{ libraryId: 'l1', roleIds: ['dev'] }])
     expect(v.frame()).toContain('Added Notion for 1 role.')
@@ -416,6 +425,77 @@ describe('Skills view', () => {
     const f = unwrapped(v.frame())
     expect(f).toContain('Turned Docs off.')
     expect(f).toContain(SKILLS_LIVE_NOTE)
+  })
+
+  it('Space on an off skill shows what it is and the first lines of SKILL.md, and saves only after y', async () => {
+    const v = skillsView(120)
+    await tick(60)
+    await v.keys(key('down'), char(' '))
+    await tick(60)
+    const f = v.frame()
+    expect(f).toContain('Turn Search on?')
+    expect(f).toContain('Search the stored notes.')
+    expect(f).toContain('SKILL.md')
+    expect(f).toContain('source: this project')
+    expect(v.api.updates).toHaveLength(0)
+    await v.keys(char('y'))
+    expect(v.api.updates).toEqual([{ skillId: 's2', patch: { enabled: true } }])
+  })
+
+  it('any other key cancels and saves nothing', async () => {
+    const v = skillsView(120)
+    await tick(60)
+    await v.keys(key('down'), char(' '))
+    await tick(60)
+    await v.keys(key('enter'))
+    expect(v.frame()).not.toContain('Turn Search on?')
+    expect(v.api.updates).toHaveLength(0)
+  })
+
+  it('says so when SKILL.md cannot be read and still needs y', async () => {
+    const api = fakeTools()
+    api.failRead = 'nope'
+    const v = skillsView(120, {}, api)
+    await tick(60)
+    await v.keys(key('down'), char(' '))
+    await tick(60)
+    expect(v.frame()).toContain('could not be read')
+    expect(api.updates).toHaveLength(0)
+    await v.keys(char('y'))
+    expect(api.updates).toHaveLength(1)
+  })
+
+  it('a roles change that only removes saves at once; one that adds asks', async () => {
+    const v = skillsView(120)
+    await tick(60)
+    // Docs is held by Lead and Dev: untick Dev.
+    await v.keys(char('r'), key('down'), char(' '), key('enter'))
+    expect(v.api.updates).toEqual([{ skillId: 's1', patch: { roleIds: ['lead'] } }])
+    expect(v.frame()).not.toContain('load Docs?')
+  })
+
+  it('a library link names its source and says the text of a library entry cannot be read here', async () => {
+    const v = skillsView(120)
+    await tick(60)
+    await v.keys(char('l'), key('enter'), key('enter'))
+    const f = v.frame()
+    expect(f).toContain('Add Notion from your library?')
+    expect(f).toContain('source: library entry l1')
+    expect(f).toContain('cannot be read here')
+    await v.keys(char('q'))
+    expect(v.api.links).toHaveLength(0)
+  })
+
+  it('a hostile description never reaches the frame as an escape', async () => {
+    const api = fakeTools()
+    api.held[1].spec.description = 'x\u001b[2Jy\u001b]0;pwn\u0007z‮w'
+    const v = skillsView(120, {}, api)
+    await tick(60)
+    await v.keys(key('down'), char(' '))
+    await tick(60)
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u001b\u0007‮]/.test(v.frame())).toBe(false)
+    expect(v.frame()).toContain('Turn Search on?')
   })
 
   it('Ctrl+C closes the view', async () => {

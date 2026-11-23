@@ -23,7 +23,7 @@ export type Dialog =
   | { kind: 'checks'; title: string; options: PickOption[]; checked: string[]; sel: number; onDone(values: string[]): void }
   | { kind: 'input'; title: string; text: string; hint: string; /** The text is a secret: shown as dots, never as typed. */ secret?: boolean; onSubmit(text: string): void }
   /** `lines` are read before `y`; n or Esc cancels. */
-  | { kind: 'confirm'; title: string; lines: string[]; onYes(): void }
+  | { kind: 'confirm'; title: string; lines: string[]; onYes(): void; /** Any key but y cancels (a widening save), not only n / Esc. */ strict?: boolean }
 
 /** A message shown in place above the footer. */
 export interface Message {
@@ -100,6 +100,7 @@ export function dialogKey(d: Dialog, e: InputEvent, page: number): { next: Dialo
     case 'confirm': {
       if (ch === 'y' || ch === 'Y') return { next: undefined, then: d.onYes }
       if (ch === 'n' || ch === 'N') return { next: undefined }
+      if (d.strict && e.type === 'key') return { next: undefined }
       return { next: d }
     }
   }
@@ -115,7 +116,7 @@ export function dialogKeys(d: Dialog): string[] {
     case 'input':
       return ['type the value', 'Enter saves', 'Esc back']
     case 'confirm':
-      return ['y confirms', 'n or Esc cancels']
+      return d.strict ? ['y saves', 'any other key cancels'] : ['y confirms', 'n or Esc cancels']
   }
 }
 
@@ -137,6 +138,13 @@ function optionLine(key: string, o: PickOption, selected: boolean, width: number
   const room = width - segs[0].text.length - 2
   if (detail && room >= 6) segs.push({ text: `  ${truncateEnd(detail, room, ell)}`, dim: true })
   return { key, segs }
+}
+
+/** Whether a confirm's lines show whole (title row included) in `rows` rows of `width` columns: the dialog does not scroll. */
+export function confirmFits(lines: readonly string[], width: number, rows: number): boolean {
+  let n = 1
+  for (const raw of lines) n += raw === '' ? 1 : wrapText(sanitizeTty(raw), width).length
+  return n <= rows
 }
 
 /** The body lines of an open dialog within `width` x `height` (title first). */

@@ -12,10 +12,10 @@
  * adds SKILLS_LIVE_NOTE (`liveRun`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SkillContent, SkillMutationResult } from '../../shared/types'
+import type { SkillContent, SkillInfo, SkillMutationResult } from '../../shared/types'
 import { useFocusHandler } from './context'
-import { charOf, clean, ConfigFrame, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
-import { grantedInProject, skillDetailLines, skillLibraryOptions, skillRoleOptions, skillRowSegs, skillRows, type SkillsData } from './skillsModel'
+import { charOf, clean, ConfigFrame, confirmFits, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
+import { grantedInProject, skillConfirmLines, skillDetailLines, skillWidens, skillLibraryOptions, skillRoleOptions, skillRowSegs, skillRows, type SkillsData } from './skillsModel'
 import type { PaneLine } from './panes/lines'
 import { textWidth, truncateEnd } from './panes/text'
 import { glyphs, separatorFor } from './theme'
@@ -73,7 +73,9 @@ export function SkillsView(props: SkillsViewProps) {
   }, [load])
 
   const rows = data ? skillRows(data) : []
-  const selected = rows[Math.min(sel, Math.max(0, rows.length - 1))]
+  // The one clamped index: the highlight and every action read the same row after the list shrinks.
+  const selIdx = Math.min(sel, Math.max(0, rows.length - 1))
+  const selected = rows[selIdx]
   const targetId = detail?.skillId ?? selected?.id
   const target = data?.skills.find((s) => s.spec.id === targetId)
 
@@ -149,13 +151,58 @@ export function SkillsView(props: SkillsViewProps) {
     return false
   }
 
-  /** Space: this skill reaches runs or it does not. */
+  /** The names of the roles of `ids` in this project, or "no role". */
+  const roleNames = (ids: string[]): string => {
+    const names = data!.project.roles.filter((r) => ids.includes(r.id)).map((r) => clean(r.name, 80))
+    return names.length ? names.join(', ') : 'no role'
+  }
+
+  /**
+   * A widening save asks first: what the skill is, then y (any other key cancels, nothing is saved). The dialog does not
+   * scroll, so a text that does not fit whole is refused instead of cut.
+   */
+  const confirmWidening = (lines: string[], run: () => void): void => {
+    const { width: cw, bodyRows: cr } = contentSize(props.width, props.height, env, dialogKeys({ kind: 'confirm', strict: true, title: '', lines: [], onYes: () => undefined }))
+    if (!confirmFits(lines, cw, cr)) {
+      setMessage({ text: 'This skill is too long to show whole in this window, so it was not saved. Make the window larger, or use the orgai skills command.', tone: 'warn' })
+      return
+    }
+    setMessage(undefined)
+    setDialog({ kind: 'confirm', strict: true, title: 'Confirm', lines, onYes: run })
+  }
+
+  /** The confirmation for a skill of this project: reads SKILL.md first (the cached text, else a read), and says so when it cannot. */
+  const confirmProjectSkill = (info: SkillInfo, headline: string, grantedTo: string, run: () => void): void => {
+    const cached = texts[info.spec.id]
+    if (cached) {
+      confirmWidening(skillConfirmLines(info.spec, headline, grantedTo, cached), run)
+      return
+    }
+    act('Reading the skill', async () => {
+      let content: SkillContent | 'failed'
+      try {
+        content = (await api.readSkill(projectId, info.spec.id)) ?? 'failed'
+      } catch {
+        content = 'failed'
+      }
+      if (!alive.current) return
+      confirmWidening(skillConfirmLines(info.spec, headline, grantedTo, content), run)
+    })
+  }
+
+  /** Space: this skill reaches runs or it does not. Turning one on asks first. */
   const toggle = (): void => {
     const info = target!
     const on = !info.spec.enabled
     const name = clean(info.spec.name, 80)
-    const hint = on && !grantedInProject(data!.project, info.grantedTo).length ? ' No role holds it yet: press r.' : ''
-    save(() => api.updateSkill(projectId, info.spec.id, { enabled: on }), info.spec.id, `Turned ${name} ${on ? 'on' : 'off'}.${hint}`, info.spec.id)
+    const project = data!.project
+    const hint = on && !grantedInProject(project, info.grantedTo).length ? ' No role holds it yet: press r.' : ''
+    const run = (): void => save(() => api.updateSkill(projectId, info.spec.id, { enabled: on }), info.spec.id, `Turned ${name} ${on ? 'on' : 'off'}.${hint}`, info.spec.id)
+    if (skillWidens(project, { enabled: info.spec.enabled, roleIds: info.grantedTo }, { enabled: on, roleIds: info.grantedTo })) {
+      confirmProjectSkill(info, `Turn ${name} on?`, roleNames(info.grantedTo), run)
+      return
+    }
+    run()
   }
 
   /** r: which roles may load this skill (role ids; the set saved replaces the one the skill had). */
@@ -176,7 +223,12 @@ export function SkillsView(props: SkillsViewProps) {
           return
         }
         const names = project.roles.filter((r) => next.includes(r.id)).map((r) => clean(r.name, 80))
-        save(() => api.updateSkill(projectId, info.spec.id, { roleIds: next }), info.spec.id, `${clean(info.spec.name, 80)} is now granted to ${names.length ? names.join(', ') : 'no role'}.`, info.spec.id)
+        const run = (): void => save(() => api.updateSkill(projectId, info.spec.id, { roleIds: next }), info.spec.id, `${clean(info.spec.name, 80)} is now granted to ${names.length ? names.join(', ') : 'no role'}.`, info.spec.id)
+        if (skillWidens(project, { enabled: info.spec.enabled, roleIds: before }, { enabled: info.spec.enabled, roleIds: next })) {
+          confirmProjectSkill(info, `Let ${names.join(', ')} load ${clean(info.spec.name, 80)}?`, names.join(', '), run)
+          return
+        }
+        run()
       }
     })
   }
@@ -208,7 +260,14 @@ export function SkillsView(props: SkillsViewProps) {
             onDone: (values) => {
               const ids = grantedInProject(project, values)
               const done = ids.length ? `Added ${label} for ${ids.length} role${ids.length === 1 ? '' : 's'}.` : `Added ${label}. No role holds it yet: press r.`
-              save(() => api.linkSkill(projectId, libraryId, ids), (next) => next.skills.find((s) => s.spec.libraryId === libraryId)?.spec.id, done)
+              const run = (): void => save(() => api.linkSkill(projectId, libraryId, ids), (next) => next.skills.find((s) => s.spec.libraryId === libraryId)?.spec.id, done)
+              const entry = (Array.isArray(library) ? library : []).find((i) => i.entry.id === libraryId)?.entry
+              if (!entry) {
+                setMessage({ text: 'That library entry could not be read, so it was not added.', tone: 'warn' })
+                return
+              }
+              const names = project.roles.filter((r) => ids.includes(r.id)).map((r) => clean(r.name, 80))
+              confirmWidening(skillConfirmLines(entry, `Add ${label} from your library?`, names.length ? names.join(', ') : 'no role', 'unread', libraryId), run)
             }
           })
         }
@@ -266,7 +325,7 @@ export function SkillsView(props: SkillsViewProps) {
         return true
       }
     } else {
-      const moved = moveSel(e, sel, rows.length, page)
+      const moved = moveSel(e, selIdx, rows.length, page)
       if (moved !== undefined) {
         setSel(moved)
         setMessage(undefined)
@@ -303,8 +362,8 @@ export function SkillsView(props: SkillsViewProps) {
     if (rows.length === 0) body = [{ key: 'none', segs: [{ text: truncateEnd('This project has no skills. Press l to add one from your library, or run: orgai skills create', w, glyphs(env).ellipsis), dim: true }] }]
     else {
       const nameWidth = Math.min(28, Math.max(...rows.map((r) => textWidth(r.name))))
-      const win = windowOf(rows, sel, bodyRows)
-      body = win.items.map((r, i) => ({ key: r.id, segs: skillRowSegs(r, w, nameWidth, separatorFor(env), glyphs(env).ellipsis, win.start + i === sel) }))
+      const win = windowOf(rows, selIdx, bodyRows)
+      body = win.items.map((r, i) => ({ key: r.id, segs: skillRowSegs(r, w, nameWidth, separatorFor(env), glyphs(env).ellipsis, win.start + i === selIdx) }))
     }
   }
   return <ConfigFrame width={props.width} height={props.height} env={env} title={title} body={body} {...(msg ? { message: msg } : {})} keys={keys} />

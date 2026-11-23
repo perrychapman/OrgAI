@@ -228,6 +228,9 @@ describe('MCP view', () => {
     const v = mcpView(120)
     await tick(60)
     await v.keys(key('down'), key('down'), char(' '))
+    expect(v.frame()).toContain('Turn Tracker on?')
+    expect(v.api.sets).toHaveLength(0)
+    await v.keys(char('y'))
     const f = v.frame()
     expect(f).toContain('Turned Tracker on.')
     expect(f).toContain('It cannot start until its secrets are set: orgai mcp set-secret')
@@ -333,6 +336,8 @@ describe('MCP view', () => {
     expect(v.frame()).toContain('Add a server from your library')
     expect(v.frame()).toContain('Notion')
     await v.keys(key('enter'))
+    expect(v.api.links).toEqual([])
+    await v.keys(char('y'))
     expect(v.api.links).toEqual(['l1'])
     const f = v.frame()
     expect(f).toContain('Added Notion for every role.')
@@ -361,7 +366,7 @@ describe('MCP view', () => {
     await v.keys(char('l'))
     await tick(60)
     expect(v.frame()).toContain('Add a server from your library')
-    await v.keys(key('enter'))
+    await v.keys(key('enter'), char('y'))
     await tick(60)
     expect(v.api.links).toEqual(['l1'])
     expect(v.frame()).toContain('Added Notion for every role.')
@@ -557,5 +562,128 @@ describe('MCP view', () => {
     expect(v.frame()).toContain('Read-only: Another orgai owns this data folder.')
     expect(api.secrets).toHaveLength(0)
     expect(api.librarySecrets).toHaveLength(0)
+  })
+})
+
+describe('MCP view: a widening save asks first', () => {
+  it('Space on an off server shows what it is, saves nothing until y', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    await v.keys(key('down'), char(' '))
+    const f = v.frame()
+    expect(f).toContain('Turn Search on?')
+    expect(f).toContain('y saves')
+    expect(f).toContain('any other key cancels')
+    expect(v.api.sets).toHaveLength(0)
+    await v.keys(char('y'))
+    expect(v.api.sets).toEqual([{ serverId: 'm2', patch: { enabled: true } }])
+    expect(v.frame()).toContain('Turned Search on.')
+  })
+
+  it('any other key cancels and saves nothing', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    await v.keys(key('down'), char(' '), char('q'))
+    expect(v.frame()).not.toContain('Turn Search on?')
+    expect(v.api.sets).toHaveLength(0)
+    await v.keys(key('down'), char(' '), key('enter'))
+    expect(v.frame()).not.toContain('Turn Tracker on?')
+    expect(v.api.sets).toHaveLength(0)
+  })
+
+  it('Space on a server that is on saves at once (narrowing)', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    await v.keys(char(' '))
+    expect(v.api.sets).toEqual([{ serverId: 'm1', patch: { enabled: false } }])
+    expect(v.frame()).not.toContain('Turn Docs on?')
+  })
+
+  it('l asks before linking; another key cancels', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    await v.keys(char('l'), key('enter'))
+    expect(v.frame()).toContain('Add Notion from your library, for every role?')
+    expect(v.frame()).toContain('source: library entry l1')
+    await v.keys(char('n'))
+    expect(v.api.links).toHaveLength(0)
+    await v.keys(char('l'), key('enter'), char('y'))
+    expect(v.api.links).toEqual(['l1'])
+  })
+
+  it('a roles change that adds a role asks; one that only removes does not', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    // Search holds Lead and Dev: tick Qa as well.
+    await v.keys(key('down'), char('r'), key('down'), key('down'), char(' '), key('enter'))
+    expect(v.frame()).toContain('use Search?')
+    expect(v.api.sets).toHaveLength(0)
+    await v.keys(char('q'))
+    expect(v.api.sets).toHaveLength(0)
+    // Untick Dev: narrowing, saved at once.
+    await v.keys(char('r'), key('down'), char(' '), key('enter'))
+    expect(v.api.sets).toEqual([{ serverId: 'm2', patch: { roles: ['lead'] } }])
+  })
+
+  it('going to every role asks', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    await v.keys(key('down'), char('r'), key('down'), key('down'), char(' '), key('down'), char(' '), key('enter'))
+    expect(v.frame()).toContain('Let every role use Search?')
+    expect(v.api.sets).toHaveLength(0)
+  })
+
+  it('shows names of env variables, headers and secret slots, never their values, and the whole command', async () => {
+    const info = server({ id: 'x1', name: 'Zed', enabled: false, command: 'node', args: ['--flag', `${'alpha '.repeat(30)}ENDTOKEN`], secretEnv: ['ZED_TOKEN'] })
+    ;(info.spec as McpServerSpec).env = { PLAIN_VAR: 'plain-value-9' }
+    ;(info.spec as McpServerSpec).headers = { 'X-Team': 'header-value-7' }
+    const v = mcpView(120, {}, fakeTools({ servers: [info] }))
+    await tick(60)
+    await v.keys(char(' '))
+    const f = v.frame()
+    expect(f).toContain('PLAIN_VAR')
+    expect(f).toContain('ZED_TOKEN')
+    expect(f).toContain('X-Team')
+    expect(f).not.toContain('plain-value-9')
+    expect(f).not.toContain('header-value-7')
+    expect(f).toContain('ENDTOKEN')
+    expect(f).toContain('command: node')
+    expect(f).not.toContain('…')
+  })
+
+  it('a hostile argument never reaches the frame as an escape', async () => {
+    const info = server({ id: 'x1', name: 'Zed', enabled: false, command: 'node', args: ['a\u001b[2Jb\u001b]0;pwn\u0007c‮d'] })
+    const v = mcpView(120, {}, fakeTools({ servers: [info] }))
+    await tick(60)
+    await v.keys(char(' '))
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u001b\u0007‮]/.test(v.frame().replace(/\u001b\[[0-9;]*m/g, ''))).toBe(false)
+    expect(v.frame()).toContain('Turn Zed on?')
+  })
+
+  it('refuses instead of cutting when the definition does not fit the window', async () => {
+    const args = Array.from({ length: 60 }, (_, i) => `argument-number-${i}`)
+    const info = server({ id: 'x1', name: 'Zed', enabled: false, command: 'node', args })
+    const v = mcpView(120, {}, fakeTools({ servers: [info] }))
+    await tick(60)
+    await v.keys(char(' '))
+    expect(v.frame()).toContain('too long to show whole')
+    expect(v.frame()).not.toContain('Turn Zed on?')
+    expect(v.api.sets).toHaveLength(0)
+  })
+
+  it('the highlighted row is the one an action uses after the list shrinks', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const orig = api.setMcpLibrarySecret
+    api.setMcpLibrarySecret = async (...a) => {
+      await orig(...a)
+      api.servers = api.servers.slice(0, 1)
+    }
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    // Rows: Docs, Notion, Tracker. Select Notion and save its library secret; the reloaded list holds only Docs.
+    await v.keys(key('down'), char('s'), ...typed('tok'), key('enter'))
+    await tick(60)
+    expect(selectedRow(v.frame())).toContain('Docs')
   })
 })
