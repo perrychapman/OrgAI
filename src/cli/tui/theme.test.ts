@@ -24,7 +24,7 @@ describe('theme', () => {
   })
 
   it('pairs input text with its surface and disables fills for plain output', () => {
-    expect(composerSurface(env())).toEqual({ backgroundColor: '#181c27', color: '#e8ebf3' })
+    expect(composerSurface(env())).toEqual({ backgroundColor: '#1a1e2c', color: '#eef0f7' })
     expect(composerSurface(env({ terminalTheme: 'light' }))).toEqual({ backgroundColor: '#f4f5f9', color: '#12151f' })
     for (const mode of [{ color: false }, { screenReader: true }, { dumbTerminal: true }]) expect(composerSurface(env(mode))).toEqual({})
   })
@@ -32,14 +32,14 @@ describe('theme', () => {
   it('has no colour when colour is off or no tone is given', () => {
     expect(toneColor('danger', env({ color: false }))).toBeUndefined()
     expect(toneColor(undefined, env())).toBeUndefined()
-    expect(toneColor('danger', env())).toBe('#ff7b7b')
-    expect(toneColor('ok', env())).toBe('#34d399')
+    expect(toneColor('danger', env())).toBe('#ff8a80')
+    expect(toneColor('ok', env())).toBe('#52d6a0')
   })
 
   it('gives dim no foreground (dimColor alone) and keeps every colour off with colour off', () => {
     expect(toneColor('dim', env())).toBeUndefined()
-    expect(toneColor('running', env())).toBe('#4cb8ff')
-    expect(toneColor('warn', env())).toBe('#f5b73d')
+    expect(toneColor('running', env())).toBe('#6fd3f3')
+    expect(toneColor('warn', env())).toBe('#f5b260')
     for (const mode of [{ color: false }, { screenReader: true }, { dumbTerminal: true }]) {
       for (const t of [...AGENT_IDENTITY_TONES, 'ok', 'warn', 'danger', 'dim', 'accent', 'running', 'message', 'code', 'muted'] as const) expect(toneColor(t, env(mode))).toBeUndefined()
     }

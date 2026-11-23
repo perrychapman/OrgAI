@@ -12,13 +12,14 @@ import { RunLabel } from './RunLabel'
 
 export type DecisionKind = 'permission' | 'rules' | 'question' | 'proposal' | 'install' | 'merge'
 
+/** Every decision waits on the person, so every kind chip is amber (UI overhaul Components board); the word says which. */
 const KIND: Record<DecisionKind, { label: string; tone: BadgeTone }> = {
   permission: { label: 'Permission', tone: 'attention' },
   rules: { label: 'Rule', tone: 'attention' },
-  question: { label: 'Question', tone: 'info' },
-  proposal: { label: 'Proposal', tone: 'accent' },
-  install: { label: 'MCP install', tone: 'attention' },
-  merge: { label: 'Merge', tone: 'neutral' }
+  question: { label: 'Question', tone: 'attention' },
+  proposal: { label: 'Proposal', tone: 'attention' },
+  install: { label: 'New tool', tone: 'attention' },
+  merge: { label: 'Review and merge', tone: 'attention' }
 }
 
 interface Props {
