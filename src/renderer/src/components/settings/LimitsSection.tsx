@@ -13,6 +13,7 @@ import { ClampedNumber } from './ClampedNumber'
 import { SettingsAdvanced } from './SettingsAdvanced'
 import { SettingsCard } from './SettingsCard'
 import { StaffingSettings } from './StaffingSettings'
+import { MonthSpend } from '../limits/MonthSpend'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** planGuardOf modes: Automatic (unset) engages on a plan with a weekly window or a warning status. */
@@ -115,13 +116,51 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
 
   return (
     <>
-      <SettingsSection id="settings-section-limits" title="Limits">
+      <SettingsSection id="settings-section-limits" title="Spending limits">
+        <MonthSpend project={project} />
         {metered && <SettingsCard>{costRow()}</SettingsCard>}
         {metering === 'subscription' && (
           <p className="perm-plan-line" data-testid="plan-guard-line">
             {planGuardLine(planGuardOf(project), project.maxWindowShare)}
           </p>
         )}
+      </SettingsSection>
+
+      <SettingsSection id="settings-section-run-size" title="How big a run can get">
+        <SettingsCard>
+          <SettingRow
+            id={row('depth')}
+            title={copy.maxSubagentDepth.label}
+            description={copy.maxSubagentDepth.description}
+            width="select"
+            control={
+              <Select
+                id={`${uid}-depth`}
+                label={copy.maxSubagentDepth.label}
+                describedBy={desc('depth')}
+                value={limits.explicit.depth ? String(limits.depth) : 'auto'}
+                options={depthOptions}
+                onChange={(v) => patch({ maxSubagentDepth: v === 'auto' ? undefined : Number(v) })}
+              />
+            }
+          />
+          <SettingRow
+            id={row('conc')}
+            title={copy.maxConcurrentSubagents.label}
+            description={copy.maxConcurrentSubagents.description}
+            width="select"
+            control={
+              <Select
+                id={`${uid}-conc`}
+                label={copy.maxConcurrentSubagents.label}
+                describedBy={desc('conc')}
+                value={limits.explicit.concurrency ? String(limits.concurrency) : 'auto'}
+                options={concurrencyOptions}
+                onChange={(v) => patch({ maxConcurrentSubagents: v === 'auto' ? undefined : Number(v) })}
+              />
+            }
+          />
+        </SettingsCard>
       </SettingsSection>
 
       <SettingsAdvanced paneKey="project-limits">
@@ -143,38 +182,6 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
                   max={5000}
                   value={project.keepRuns ?? DEFAULT_KEEP_RUNS}
                   onCommit={(n) => patch({ keepRuns: n })}
-                />
-              }
-            />
-            <SettingRow
-              id={row('depth')}
-              title={copy.maxSubagentDepth.label}
-              description={copy.maxSubagentDepth.description}
-              width="select"
-              control={
-                <Select
-                  id={`${uid}-depth`}
-                  label={copy.maxSubagentDepth.label}
-                  describedBy={desc('depth')}
-                  value={limits.explicit.depth ? String(limits.depth) : 'auto'}
-                  options={depthOptions}
-                  onChange={(v) => patch({ maxSubagentDepth: v === 'auto' ? undefined : Number(v) })}
-                />
-              }
-            />
-            <SettingRow
-              id={row('conc')}
-              title={copy.maxConcurrentSubagents.label}
-              description={copy.maxConcurrentSubagents.description}
-              width="select"
-              control={
-                <Select
-                  id={`${uid}-conc`}
-                  label={copy.maxConcurrentSubagents.label}
-                  describedBy={desc('conc')}
-                  value={limits.explicit.concurrency ? String(limits.concurrency) : 'auto'}
-                  options={concurrencyOptions}
-                  onChange={(v) => patch({ maxConcurrentSubagents: v === 'auto' ? undefined : Number(v) })}
                 />
               }
             />

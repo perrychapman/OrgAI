@@ -67,8 +67,8 @@ export default function McpLibrarySection(): ReactElement {
   return (
     <SettingsSection
       id="appsettings-section-mcp-library"
-      title="Custom servers (advanced)"
-      description="For a service that is not in Connectors. Set a server up once here; any project can use it."
+      title="Your own tools (advanced)"
+      description="For a tool that is not in the list above. Set it up once here; any project can use it."
       testId="mcp-library-section"
       sectionRef={section}
       actions={
@@ -76,24 +76,24 @@ export default function McpLibrarySection(): ReactElement {
           <Button icon={Plus} testId="mcp-library-add-manual" onClick={() => setModal({ kind: 'form' })}>
             Add manually
           </Button>
-          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses your assistant model (${assistModel}); counts toward your usage`} onClick={() => void useAppStore.getState().openAssistant('harness', { fresh: true })}>
-            Configure with AI
+          <Button icon={Sparkles} testId="mcp-library-assist" title={`Uses the Tools helper model (${assistModel}); counts toward your usage`} onClick={() => void useAppStore.getState().openAssistant('harness', { fresh: true })}>
+            Ask the Tools helper
           </Button>
           <Button variant="ghost" icon={Package} testId="mcp-library-add-registry" onClick={() => setModal({ kind: 'registry' })}>
-            Browse community servers (unverified)
+            Browse community tools (unverified)
           </Button>
         </>
       }
     >
       <div className="mcp-body">
         <p className="muted" data-testid="mcp-library-assist-cost">
-          Configure with AI uses your assistant model ({assistModel}) and counts toward your usage.
+          The Tools helper sets a tool up with you. It uses its model ({assistModel}) and counts toward your usage.
         </p>
         {assistRun && (
           <p className="muted" data-testid="mcp-library-assist-banner">
-            An assistant run is configuring your library.{' '}
+            The Tools helper is setting up your tools.{' '}
             <button type="button" className="link-btn" onClick={() => void useAppStore.getState().openAssistant('harness')}>
-              Open the MCP assistant
+              Open the Tools helper
             </button>
           </p>
         )}

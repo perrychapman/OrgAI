@@ -109,14 +109,14 @@ describe('tier mapping lines', () => {
   it('lists every tier and says what a missing one does to its roles', () => {
     const lines = tierMappingLines({ everyday: 'model-e', deep: 'model-d' }, roles, 'Team gateway')
     expect(lines.map((l) => l.text)).toEqual([
-      'Top is not mapped on Team gateway. No role uses it; pick a model under Model tiers on its card in App settings > Connections if you want one.',
+      'Top is not mapped on Team gateway. No role uses it; pick a model under Model tiers on its card in Settings > AI providers if you want one.',
       'Deep: model-d',
       'Everyday: model-e',
-      'Fast is not mapped on Team gateway. No role uses it; pick a model under Model tiers on its card in App settings > Connections if you want one.'
+      'Fast is not mapped on Team gateway. No role uses it; pick a model under Model tiers on its card in Settings > AI providers if you want one.'
     ])
     const none = tierMappingLines({ everyday: 'model-e' }, roles, 'Team gateway')
     expect(none[1].text).toBe(
-      'Deep is not mapped on Team gateway, so the role on Deep keeps its current model. To change that, pick a Deep model under Model tiers on its card in App settings > Connections.'
+      'Deep is not mapped on Team gateway, so the role on Deep keeps its current model. To change that, pick a Deep model under Model tiers on its card in Settings > AI providers.'
     )
   })
   it('names the route per family from the catalog', () => {

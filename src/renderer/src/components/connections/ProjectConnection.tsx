@@ -25,7 +25,7 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestModelPrice } f
 /** More entries than this and the list scrolls inside its own region (styles/project-connection.css). */
 export const PCONN_LIST_ROWS = 5
 
-const NOT_CONNECTED_WHY = 'Not connected. Connect it in App settings > Connections.'
+const NOT_CONNECTED_WHY = 'Not connected. Connect it in Settings > AI providers.'
 
 function Mark({ id }: { id: ConnectionId }): ReactElement {
   if (brandMark(id)) return <BrandMark id={id} />
@@ -395,7 +395,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         onCancel={() => setPreview(false)}
         onConfirm={() => void apply()}
         confirmDisabled={!!pending && disconnected(pending)}
-        disabledReason={`${connectionLabel(pending ?? target)} is not connected, so its models cannot be checked. Connect it in App settings > Connections first.`}
+        disabledReason={`${connectionLabel(pending ?? target)} is not connected, so its models cannot be checked. Connect it in Settings > AI providers first.`}
       />
     </SettingsSection>
   )
