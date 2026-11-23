@@ -324,10 +324,10 @@ async function runSideChecks(label, wide) {
   const tabCount = page.locator('[data-testid=side-tab-outputs-count]')
   check((await tabCount.count()) === 1 && clean(await tabCount.innerText()) === '5', `${label}: the Outputs side tab shows its count (M1)`, (await tabCount.count()) ? clean(await tabCount.innerText()) : 'none')
 
-  // RunMeta chip: "5 outputs" (icon and count under 1100 px, the label in the title).
+  // RunMeta chip: "5 files" (icon and count under 1100 px, the label in the title).
   const chip = page.locator('[data-testid=run-meta-outputs]')
   const chipText = (await chip.count()) ? `${await chip.innerText()} ${(await chip.textContent()) ?? ''} ${(await chip.getAttribute('title')) ?? ''}` : ''
-  check(wide ? /5 outputs/.test(chipText) : /\b5\b/.test(chipText) && /output/.test(chipText), `${label}: the RunMeta chip counts the outputs`, clean(chipText))
+  check(wide ? /5 files/.test(chipText) : /\b5\b/.test(chipText) && /file/.test(chipText), `${label}: the RunMeta chip counts the files`, clean(chipText))
 
   // Document
   await showRunOutput('docx')
@@ -478,7 +478,7 @@ async function projectTabChecks(label) {
   check(roles.options === 5 && roles.tab0 === 1 && roles.headings >= 1, `${label}: one Tab stop, rows under a day heading`, JSON.stringify(roles))
   const group = clean(await page.locator('[data-testid=outputs-group-title]').first().innerText())
   check(/^Today/.test(group), `${label}: rows are grouped under Today`, group)
-  check(/5 outputs/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line says 5 outputs`)
+  check(/5 files/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line says 5 files`)
   const exts = await rows.evaluateAll((els) => els.map((e) => e.querySelector('[data-testid=output-ext]')?.textContent ?? ''))
   check(exts.join(',') === '.png,.md,.mmd,.xlsx,.docx', `${label}: every row carries its extension badge`, exts.join(','))
   const metas = await rows.evaluateAll((els) => els.map((e) => e.querySelector('.outputs-row-meta')?.textContent ?? ''))
@@ -517,7 +517,7 @@ async function filterChecks(label) {
   check(await until(async () => (await rows.count()) === 5), `${label}: Home and Enter reset to All kinds`)
   await page.locator('[data-testid=outputs-kind][data-kind=docx]').click()
   check((await rows.count()) === 1 && (await page.locator('[data-testid=outputs-kind][data-kind=docx]').getAttribute('aria-pressed')) === 'true', `${label}: a kind chip filters`)
-  check(/1 of 5 outputs/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line follows the filter`)
+  check(/1 of 5 files/.test(clean(await page.locator('[data-testid=outputs-count]').innerText())), `${label}: the count line follows the filter`)
   await page.locator('[data-testid=outputs-kind][data-kind=image]').click()
   check((await rows.count()) === 2, `${label}: kinds are OR`)
   await page.locator('[data-testid=outputs-kind-all]').click()
@@ -586,7 +586,7 @@ async function historyChecks(label) {
   await projectTab(page, 'History').click()
   const chip = page.locator('[data-testid=history-outputs]')
   await chip.first().waitFor({ timeout: 10_000 })
-  check((await chip.count()) === 1 && /^5 outputs$/.test(clean(await chip.first().innerText())), `${label}: History shows "5 outputs" on the row`, clean(await chip.first().innerText()))
+  check((await chip.count()) === 1 && /^5 files$/.test(clean(await chip.first().innerText())), `${label}: History shows "5 files" on the row`, clean(await chip.first().innerText()))
   await noScroll(`${label}: History with the outputs chip`)
   await snap(`${label}-history`)
   await chip.first().focus()
@@ -1111,7 +1111,7 @@ async function secondRunChecks(label) {
   await confirm.click()
   check(await until(async () => (await outputsOf()).length === n0 - 2, 10_000), `${label}: bulk delete removed two outputs`, `${n0} -> ${(await outputsOf()).length}`)
   const status = page.locator('[data-testid=outputs-bulk-result]')
-  check(await until(async () => /Deleted 2 outputs\./.test(clean(await status.innerText())), 5000), `${label}: the visible result says "Deleted 2 outputs."`, clean(await status.innerText()))
+  check(await until(async () => /Deleted 2 files\./.test(clean(await status.innerText())), 5000), `${label}: the visible result says "Deleted 2 files."`, clean(await status.innerText()))
   check(await until(async () => (await page.locator('[data-testid=outputs-bulk-bar]').count()) === 0), `${label}: select mode ends after a clean delete`)
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-row'), `${label}: focus lands on the next row`)
   await noScroll(`${label}: after bulk delete`)

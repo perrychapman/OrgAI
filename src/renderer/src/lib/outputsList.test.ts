@@ -139,13 +139,13 @@ describe('day groups', () => {
 
 describe('text', () => {
   it('count line', () => {
-    expect(countLine(12, 12)).toBe('12 outputs')
-    expect(countLine(5, 12)).toBe('5 of 12 outputs')
-    expect(countLine(1, 1)).toBe('1 output')
+    expect(countLine(12, 12)).toBe('12 files')
+    expect(countLine(5, 12)).toBe('5 of 12 files')
+    expect(countLine(1, 1)).toBe('1 file')
   })
   it('produced text', () => {
-    expect(producedText(2)).toBe('Agents produced 2 outputs')
-    expect(producedText(1)).toBe('Agents produced 1 output')
+    expect(producedText(2)).toBe('Agents produced 2 files')
+    expect(producedText(1)).toBe('Agents produced 1 file')
   })
 })
 

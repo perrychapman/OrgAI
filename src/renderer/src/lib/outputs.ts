@@ -138,9 +138,9 @@ export function outputsOfRuns(list: readonly RunOutput[] | undefined, runIds: Re
   return (list ?? []).filter((o) => ids.has(o.runId) || (o.current?.runId !== undefined && ids.has(o.current.runId)))
 }
 
-/** "5 outputs" / "1 output". */
+/** "5 files" / "1 file" (the UI calls outputs files since the overhaul). */
 export function outputsCountLabel(n: number): string {
-  return `${n} ${n === 1 ? 'output' : 'outputs'}`
+  return `${n} ${n === 1 ? 'file' : 'files'}`
 }
 
 /**
