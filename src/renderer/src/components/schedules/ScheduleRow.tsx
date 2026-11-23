@@ -60,7 +60,7 @@ export default function ScheduleRow({
     return (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true' ? btn : li.querySelector<HTMLElement>(`[id="${headingId}"]`)) ?? undefined
   }
   const why = busy ? 'Working on it' : undefined
-  const isOff = row.toggle !== 'Pause'
+  const isOff = row.toggle === 'Resume'
   const nextText = row.next.relative === 'Not scheduled while paused' ? 'Turned off' : row.next.relative
   const menuItems = (): MenuEntry[] => [
     { id: 'run-now', label: 'Run now', icon: Zap, onSelect: onRunNow, disabled: busy, disabledReason: why, testId: 'schedule-menu-run-now' },
@@ -124,7 +124,7 @@ export default function ScheduleRow({
         </span>
       </div>
       {row.toggle && (
-        <Switch checked={row.toggle === 'Pause'} onChange={() => !busy && onToggle()} label={`${row.name}, ${row.toggle === 'Pause' ? 'on' : 'off'}`}testId="schedule-toggle" />
+        <Switch checked={row.toggle === 'Pause'} onChange={() => !busy && onToggle()} disabled={busy} title={why} label={`${showHidden(row.name)}, ${row.toggle === 'Pause' ? 'on' : 'off'}`} testId="schedule-toggle" />
       )}
       {row.chip.reason && (
         <p className={`schedule-row-reason${row.chip.label === 'Needs attention' ? ' is-warning' : ''}`} data-testid="schedule-state-reason">

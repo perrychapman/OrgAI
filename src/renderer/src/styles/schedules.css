@@ -199,9 +199,9 @@
 .schedule-row.is-off::before {
   background: var(--border-strong);
 }
-.schedule-row.is-off .schedule-row-main,
+/* Off rows keep full-contrast text: the grey stripe and the secondary ink carry the state. */
 .schedule-row.is-off .schedule-row-side {
-  opacity: 0.7;
+  color: var(--text-secondary);
 }
 .schedule-row-main {
   flex: 1 1 240px;
