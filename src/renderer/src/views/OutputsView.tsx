@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, RunOutput } from '@shared/types'
 import { runName } from '@shared/view/runLabels'
 import { overlayOwnsEscape } from '../lib/outputToolbar'
-import type { OutputsFilter, OutputsViewMode, UpdatedVersion } from '../lib/outputsList'
+import type { OutputsFilter, OutputsSort, OutputsViewMode, UpdatedVersion } from '../lib/outputsList'
+import { OUTPUTS_SORT_OPTIONS, outputsSortKey, readSortMode, sortOutputs } from '../lib/outputsList'
+import { Select } from '../components/ui/Select'
 import { EMPTY_OUTPUTS_FILTER, OUTPUTS_COUNT_ANNOUNCE_MS, OUTPUTS_PRODUCED_ANNOUNCE_MS, countLine, deletedText, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, newOutputIds, outputsViewKey, producedText, readViewMode, resolveOutputFocus, runOptions, selectedText, updatedText, updatedVersions } from '../lib/outputsList'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { SidePanel } from '../components/layout/SidePanel'
@@ -72,7 +74,27 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   const changeFilter = useCallback((next: Partial<OutputsFilter>): void => setFilter((f) => ({ ...f, ...next })), [])
   const clearFilters = useCallback((): void => setFilter(EMPTY_OUTPUTS_FILTER), [])
   const filterActive = isOutputsFilterActive(filter)
-  const rows = useMemo(() => filterOutputs(all, filter), [all, filter])
+  // ---- sort (a view preference kept per project) ----
+  const [sort, setSort] = useState<OutputsSort>(() => {
+    try {
+      return readSortMode(localStorage.getItem(outputsSortKey(projectId)))
+    } catch {
+      return 'newest'
+    }
+  })
+  const changeSort = useCallback(
+    (next: string): void => {
+      const mode = readSortMode(next)
+      setSort(mode)
+      try {
+        localStorage.setItem(outputsSortKey(projectId), mode)
+      } catch {
+        /* storage unavailable: the choice lasts for this window */
+      }
+    },
+    [projectId]
+  )
+  const rows = useMemo(() => sortOutputs(filterOutputs(all, filter), sort), [all, filter, sort])
   const kinds = useMemo(() => kindCounts(all, filter), [all, filter])
   const runs = useMemo(() => runOptions(all, indexes, names), [all, indexes, names])
   const countText = countLine(rows.length, all.length)
@@ -349,7 +371,10 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
       <OutputsFilters filter={filter} kinds={kinds} runs={runs} countText={countText} onChange={changeFilter} />
       <div className="outputs-main" data-testid="outputs-main" data-view={view} onKeyDown={onMainKeyDown}>
         <div className="outputs-toolbar" data-testid="outputs-toolbar">
-          <h2 className="outputs-toolbar-title">Outputs</h2>
+          <h2 className="outputs-toolbar-title">Files</h2>
+          <span className="outputs-sort" data-testid="outputs-sort">
+            <Select label="Sort files" value={sort} options={[...OUTPUTS_SORT_OPTIONS]} onChange={changeSort} />
+          </span>
           <span data-testid="outputs-view-switch">
             <SegmentedControl<OutputsViewMode> label="View" value={view} options={VIEW_OPTIONS} onChange={changeView} />
           </span>
@@ -360,12 +385,12 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
         {!loaded ? (
           <p className="panel-note outputs-loading">Looking…</p>
         ) : empty ? (
-          <EmptyState compact testId="outputs-empty" title="No outputs yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
+          <EmptyState compact testId="outputs-empty" title="No files yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
         ) : noMatch ? (
           <EmptyState
             compact
             testId="outputs-empty-filter"
-            title="No outputs match."
+            title="No files match."
             actions={
               filterActive ? (
                 <Button size="sm" testId="outputs-clear-filters" onClick={clearFilters}>
@@ -377,7 +402,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
         ) : view === 'grid' ? (
           <OutputsGrid ref={listRef} {...listProps} />
         ) : (
-          <OutputsList ref={listRef} {...listProps} indexes={indexes} now={now} />
+          <OutputsList ref={listRef} {...listProps} indexes={indexes} now={now} sort={sort} />
         )}
         <div className="outputs-bulk-result" role="status" data-testid="outputs-bulk-result" data-problems={bulkResult?.problems ? 'true' : undefined}>
           {bulkResult?.lines.map((line, i) => (
@@ -401,7 +426,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
           </div>
         )}
       </div>
-      <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={OUTPUTS_PANE_COLLAPSE_BELOW_PX} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
+      <SidePanel label="file preview" persistKey="outputs" autoCollapseBelow={OUTPUTS_PANE_COLLAPSE_BELOW_PX} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
         <div className="outputs-detail-body" data-testid="outputs-detail-body" tabIndex={-1} onKeyDown={onPaneKeyDown}>
           {selected ? (
             <>
@@ -418,7 +443,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
               />
             </>
           ) : (
-            <p className="panel-note outputs-pick">Select an output to see its preview here.</p>
+            <p className="panel-note outputs-pick">Select a file to see its preview here.</p>
           )}
           <p className="outputs-notice" role="status" data-testid="output-notice">
             {notice}

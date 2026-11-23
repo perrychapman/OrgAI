@@ -32,22 +32,7 @@ import {
 } from '../../lib/usageCharts'
 import { alignPrevious, overlayFigure, overlayMax, visibleSegments, METRIC_WORD, type OverlayFigure, type SortValue } from '../../lib/usageDashboard'
 import { hiddenCount, overlayDisabledReason, previousCellText, previousSortValue, previousTipText, runsLine, tooltipPlacement, unpricedRuns, visibleTotals, spendSummary } from '../../lib/usageSpend'
-import {
-  areaPath,
-  crosshairModel,
-  edgePath,
-  kindRuns,
-  linePaths,
-  moveIndex,
-  nearestIndex,
-  pointStep,
-  pointXs,
-  runExtent,
-  seriesTotals,
-  stackAreas,
-  stackOrder,
-  type CrosshairModel
-} from '../../lib/usageAreas'
+import { crosshairModel, kindRuns, linePaths, moveIndex, runExtent, seriesTotals, stackAreas, stackOrder, type CrosshairModel } from '../../lib/usageAreas'
 import type { SpendInteractionProps, UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
 import { CostText } from './RankedBars'
@@ -61,6 +46,16 @@ const STUB_LANE = 14
 const STUB_H = 7
 const LABEL_ROW = 20
 const WIDE_PANEL_PX = 720
+/** A bar with anything in it is at least this tall, so a small day never reads as empty (micro-visualisation). */
+const MIN_BAR_PX = 2
+const BAR_RADIUS = 4
+
+/** A bar with rounded top corners (the top segment of a stack). */
+function topRounded(x: number, y: number, w: number, h: number): string {
+  const r = Math.max(0, Math.min(BAR_RADIUS, w / 2, h))
+  const f = (v: number): number => Math.round(v * 100) / 100
+  return `M${f(x)},${f(y + h)}V${f(y + r)}Q${f(x)},${f(y)} ${f(x + r)},${f(y)}H${f(x + w - r)}Q${f(x + w)},${f(y)} ${f(x + w)},${f(y + r)}V${f(y + h)}Z`
+}
 const SERIES_VAR = ['--chart-s1', '--chart-s2', '--chart-s3', '--chart-s4', '--chart-s5']
 const fillOf = (series: number): string => (series >= 0 ? `var(${SERIES_VAR[series]})` : 'var(--chart-other)')
 
@@ -78,7 +73,7 @@ type GapKind = 'unknown' | 'not-loaded'
 type LaneKind = 'unknown' | 'partial'
 
 /**
- * Spend over time: the chosen metric as stacked areas over the bucket slots (largest series at the bottom), with a
+ * Spend over time: the chosen metric as stacked bars, one per bucket slot (largest series at the bottom), with a
  * crosshair that follows the pointer or the arrow keys. The plot is one Tab stop and a slider by role: its value text
  * is the tooltip's sentence, updated only when the person moves (no live region; the page's one polite region is the
  * view's). Draw motion: the areas wipe in once on arrival and once per change the person made (`drawSeq`).
@@ -186,8 +181,11 @@ export default function SpendPanel({
   const n = bars.length
   const innerW = Math.max(40, rootW - GUTTER - RIGHT_PAD)
   const svgW = GUTTER + innerW + RIGHT_PAD
-  const xs = useMemo(() => pointXs(n, GUTTER, innerW), [n, innerW])
-  const step = pointStep(n, innerW)
+  // One bar per slot, centred in its cell: the cell is the pointer's target and the step the runs' extents use.
+  const cell = innerW / Math.max(1, n)
+  const xs = useMemo(() => Array.from({ length: n }, (_, i) => GUTTER + cell * (i + 0.5)), [n, cell])
+  const step = cell
+  const barW = Math.max(2, Math.min(40, cell - Math.max(2, cell * 0.28)))
   const baseY = TOP_PAD + plotH
   const scaleMax = Math.max(stackMax(bars.map((b) => b.segments)), overlayMax(bars.flatMap((b) => (b.prev ? [b.prev] : []))))
   const ticks = niceTicks(scaleMax, metric === 'runs')
@@ -222,8 +220,20 @@ export default function SpendPanel({
     return m
   }, [bars])
   const bands = useMemo(
-    () => stackAreas(order, bars.map((b) => new Map(b.segments.map((s) => [s.key, s.value]))), ticks.max, plotH, baseY),
+    () => stackAreas(order, bars.map((b) => new Map(b.segments.map((s) => [s.key, s.value]))), ticks.max, plotH, baseY, MIN_BAR_PX),
     [order, bars, ticks.max, plotH, baseY]
+  )
+  // The series on top of each slot's stack: only that segment gets rounded top corners.
+  const topKeys = useMemo(
+    () =>
+      bars.map((_, i) => {
+        for (let k = order.length - 1; k >= 0; k--) {
+          const band = bands.get(order[k]!)
+          if (band && band.bottom[i]! - band.top[i]! > 0) return order[k]!
+        }
+        return null
+      }),
+    [bars, order, bands]
   )
   // Slots with nothing to draw because there is no price (or no data loaded) are marked, never left to read as zero.
   const gapRuns = useMemo(() => kindRuns<GapKind>(bars.map((b) => (b.notLoaded ? 'not-loaded' : b.state === 'unknown' ? 'unknown' : null))), [bars])
@@ -236,7 +246,6 @@ export default function SpendPanel({
   )
   const prevYs = bars.map((b) => (b.prev && b.prev.state !== 'unknown' ? baseY - barHeight(b.prev.value, ticks.max, plotH, 0) : null))
   const prevLines = overlayOn ? linePaths(xs, prevYs) : []
-  const half = n === 1 ? innerW / 2 : 0
 
   const defaultRove = useMemo(() => {
     if (selectedIdx >= 0) return selectedIdx
@@ -305,7 +314,7 @@ export default function SpendPanel({
   useLayoutEffect(() => {
     const el = tipRef.current
     if (!tipOn || tipIdx === null || !el) return
-    const p = tooltipPlacement({ cx: xs[tipIdx] ?? 0, half: 4, width: el.offsetWidth, viewLeft: 0, viewRight: svgW })
+    const p = tooltipPlacement({ cx: xs[tipIdx] ?? 0, half: barW / 2 + 2, width: el.offsetWidth, viewLeft: 0, viewRight: svgW })
     el.style.left = `${p.left}px`
     el.dataset.side = p.side
   })
@@ -320,7 +329,11 @@ export default function SpendPanel({
   }
   const slotAt = (clientX: number): number | null => {
     const root = plotRootRef.current
-    return root ? nearestIndex(clientX - root.getBoundingClientRect().left, GUTTER, innerW, n) : null
+    if (!root || n <= 0) return null
+    const x = clientX - root.getBoundingClientRect().left - GUTTER
+    // Anywhere over the plot (and half a cell beyond its ends) picks the bar whose cell holds the pointer.
+    if (x < -cell / 2 || x > innerW + cell / 2) return null
+    return Math.max(0, Math.min(n - 1, Math.floor(x / cell)))
   }
   // pointermove writes --cx in a frame and sets React state only when the slot changes.
   const onPlotMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
@@ -456,7 +469,7 @@ export default function SpendPanel({
 
   const dimOf = (key: string): boolean => highlight !== null && highlight !== key
   const unitWord = bucket === 'day' ? 'day' : bucket === 'week' ? 'week' : 'month'
-  const groupLabel = `${METRIC_WORD[metric]} per ${unitWord}, stacked area chart.`
+  const groupLabel = `${METRIC_WORD[metric]} per ${unitWord}, stacked bar chart.`
   const hint = `Left and Right move between ${unitWord}s, Home and End jump to the first and last, Enter narrows the page to the ${unitWord}, Escape hides the details.`
   const hasPrevious = previousTrend !== null && previousSpan !== null
   const whyOverlay = overlayDisabledReason(hasPrevious)
@@ -464,7 +477,8 @@ export default function SpendPanel({
   const showPartialKey = metric === 'cost' && !unpriced && anyPartial
   const right = GUTTER + innerW
   const sel = selectedIdx >= 0 ? runExtent({ from: selectedIdx, to: selectedIdx }, xs, step, GUTTER, right) : null
-  const markerIdx = tip && tipIdx !== null ? tipIdx : null
+  // The readout under the legend: the bar the pointer or keyboard is on, else the one the keyboard would start from.
+  const readModel = n > 0 ? (tip ?? modelOf(bars[roving]!)) : null
 
   return (
     <section className="usage-panel uc-spend" aria-labelledby="usage-spend-h" data-testid="usage-spend" data-metric={metric}>
@@ -524,6 +538,7 @@ export default function SpendPanel({
         <p className="usage-panel-summary">{summary}</p>
       </div>
       <div ref={rootRef} className="uc-spend-body">
+        <div className="uc-spend-top">
         <ul className="uc-legend" data-testid="usage-spend-legend" aria-label="Chart legend. Press a project to hide or show it.">
           {legend.own.map((p) => {
             const idx = series.get(p.projectId)!
@@ -617,6 +632,15 @@ export default function SpendPanel({
             </li>
           )}
         </ul>
+        {readModel && (
+          // A plain readout of the day under the pointer or keyboard (not a live region: the page's one polite region speaks).
+          <p className="uc-readout" data-testid="usage-spend-readout" data-active={tipOn ? 'true' : undefined}>
+            <span className="uc-readout-day">{readModel.label}</span>
+            <span className="uc-readout-fig">{readModel.total ? `${readModel.total}${metric === 'tokens' ? ' tokens' : ''}` : (readModel.note ?? '')}</span>
+            <span className="uc-readout-runs">{readModel.runs ?? ' '}</span>
+          </p>
+        )}
+        </div>
         <div className="uc-spend-chart">
           <div
             ref={plotRootRef}
@@ -677,6 +701,9 @@ export default function SpendPanel({
                   ) : null
                 )}
               </g>
+              {tipOn && tipIdx !== null && (
+                <rect x={(xs[tipIdx] ?? 0) - cell / 2} y={TOP_PAD - 4} width={cell} height={plotH + 4} className="uc-hot" data-testid="usage-spend-hot" aria-hidden="true" />
+              )}
               {/* The drawn data wipes in left to right; keyed on the draw generation so a new one restarts it. */}
               <g key={drawGen} className={drawGen > 0 ? 'motion-draw-wipe' : undefined} data-testid="usage-spend-areas">
                 {gapRuns.map((r) => {
@@ -700,18 +727,29 @@ export default function SpendPanel({
                   if (!band) return null
                   const idx = seriesOf.get(key) ?? -1
                   return (
-                    <path
+                    <g
                       key={key}
-                      d={areaPath(xs, band, half)}
                       fill={fillOf(idx)}
                       className="uc-area"
                       data-testid="usage-spend-area"
                       data-project={key}
                       data-series={idx}
                       data-dim={dimOf(key) ? 'true' : undefined}
+                      data-hl={highlight === key ? 'true' : undefined}
                       onPointerEnter={() => onHighlight(key)}
                       onPointerLeave={() => onHighlight(null)}
-                    />
+                    >
+                      {bars.map((_, i) => {
+                        const h = band.bottom[i]! - band.top[i]!
+                        if (!(h > 0)) return null
+                        const x = xs[i]! - barW / 2
+                        return topKeys[i] === key ? (
+                          <path key={i} d={topRounded(x, band.top[i]!, barW, h)} className="uc-bar" />
+                        ) : (
+                          <rect key={i} x={x} y={band.top[i]} width={barW} height={h} className="uc-bar" />
+                        )
+                      })}
+                    </g>
                   )
                 })}
                 {laneRuns.map((r) => {
@@ -731,9 +769,6 @@ export default function SpendPanel({
                   )
                 })}
               </g>
-              {highlight !== null && bands.has(highlight) && (
-                <path d={edgePath(xs, bands.get(highlight)!, half)} className="uc-hl" data-testid="usage-spend-highlight" aria-hidden="true" />
-              )}
               {sel && (
                 <g aria-hidden="true" pointerEvents="none">
                   <rect x={GUTTER} y={TOP_PAD} width={Math.max(0, sel.x - GUTTER)} height={plotH} className="uc-veil" />
@@ -750,14 +785,6 @@ export default function SpendPanel({
                     <circle key={`pu${i}`} cx={xs[i]} cy={baseY - 4} r={3} className="uc-prev uc-prev-unknown" data-testid="usage-spend-overlay-mark" data-state="unknown" aria-hidden="true" />
                   ) : null
                 )}
-              {markerIdx !== null &&
-                order.map((key) => {
-                  const band = bands.get(key)
-                  const b = bars[markerIdx]
-                  const seg = b?.segments.find((s) => s.key === key)
-                  if (!band || !seg || !(seg.value > 0)) return null
-                  return <circle key={key} cx={xs[markerIdx]} cy={band.top[markerIdx]} r={3.5} fill={fillOf(seg.series)} className="uc-marker" />
-                })}
               <line x1={GUTTER} x2={right} y1={baseY} y2={baseY} className="uc-axis" />
             </svg>
           </div>

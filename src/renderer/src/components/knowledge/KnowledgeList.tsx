@@ -8,6 +8,7 @@ import { WINDOW_THRESHOLD, edgeRow, flattenGroups, isTypeAheadKey, nextTypeAhead
 import { useArrival } from '../../lib/useArrival'
 import { isMenuKey } from '../../lib/contextMenu'
 import { ContextMenu, nativeWins, useContextMenu, type MenuEntry, type OpenOptions } from '../ui/ContextMenu'
+import { KindMark } from './KindMark'
 import { KnowledgeRow } from './KnowledgeRow'
 
 export interface KnowledgeListHandle {
@@ -262,6 +263,7 @@ export function KnowledgeList({
           <li key={g.kind} role="presentation" className="knowledge-group" data-kind={g.kind} data-testid="knowledge-group">
             {g.withTitle && (
               <h2 id={g.titleId} className="knowledge-group-title" data-testid="knowledge-group-title">
+                <KindMark kind={g.kind} />
                 {g.label} <span className="knowledge-group-n">{g.count}</span>
               </h2>
             )}

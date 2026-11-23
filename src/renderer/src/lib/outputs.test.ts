@@ -104,8 +104,8 @@ describe('outputs helpers', () => {
     expect(outputsOfRuns(list, ['r1', 'r2']).map((o) => o.id)).toEqual(['a', 'b'])
     expect(outputsOfRuns(list, new Set(['r9'])).map((o) => o.id)).toEqual(['c'])
     expect(outputsOfRuns(undefined, ['r1'])).toEqual([])
-    expect(outputsCountLabel(1)).toBe('1 output')
-    expect(outputsCountLabel(5)).toBe('5 outputs')
+    expect(outputsCountLabel(1)).toBe('1 file')
+    expect(outputsCountLabel(5)).toBe('5 files')
   })
 
   it('lists an output under the run that wrote its current version', () => {

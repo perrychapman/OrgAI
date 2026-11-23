@@ -1,7 +1,9 @@
-/* Knowledge tab (docs/design/knowledge.md): list, filters and detail pane. Owned by views/KnowledgeView.tsx and components/knowledge/*.
-   Tokens only; both themes come from them. The grid is the same shape as .editor (layout.css): the side panel sets
-   --side-panel-w on it and the collapsed rail narrows the last column. Heights of group titles and rows are fixed so
-   lib/knowledgeList.ts can window the list (GROUP_TITLE_PX 32, ROW_PX 56, ROW_PLAIN_PX 44). */
+/* Knowledge tab (docs/design/knowledge.md, UI overhaul board "Knowledge"): list, filters and detail pane. Owned by
+   views/KnowledgeView.tsx and components/knowledge/*. Tokens only; both themes come from them. The engagement look:
+   glass panels over the ambient ground, the coral --eng accent for the tab's own marks, serif headings. The grid is the
+   same shape as .editor (layout.css): the side panel sets --side-panel-w on it and the collapsed rail narrows the last
+   column. Heights of group titles and rows are fixed so lib/knowledgeList.ts can window the list (GROUP_TITLE_PX 32,
+   ROW_PX 56, ROW_PLAIN_PX 44). */
 
 .knowledge {
   flex: 1;
@@ -13,31 +15,84 @@
   grid-template-areas:
     'toolbar toolbar toolbar'
     'filters main side';
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  box-sizing: border-box;
   container: knowledge / inline-size;
   overflow: hidden;
-  background: var(--surface-0);
+  background: transparent;
 }
 .knowledge:has(> .side-panel[data-collapsed='true']) {
   grid-template-columns: auto minmax(0, 1fr) 40px;
 }
 .knowledge > .side-panel {
   grid-area: side;
+  /* The detail pane is a glass panel, not a column with an edge. */
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
+}
+.knowledge > .side-panel[data-collapsed='true'] {
+  border-radius: var(--radius-lg);
 }
 
-/* ---------- Toolbar (40 px) ---------- */
+/* ---------- Toolbar ---------- */
 .knowledge-toolbar {
   grid-area: toolbar;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: var(--space-10);
-  padding: 0 var(--space-3);
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-default);
+  min-height: var(--space-10);
+  padding: 0;
   min-width: 0;
+}
+.knowledge-toolbar .seg {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
 }
 .knowledge-toolbar .spacer {
   flex: 1;
+}
+/* The team is working now: one breathing dot (coral, the engagement accent) and a plain line. The dot's cue is the
+   only loop on this tab; it stops under reduced motion and shows as a still dot. */
+.knowledge-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.knowledge-live-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.knowledge-live-dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: 50%;
+  background: var(--eng);
+  box-shadow: 0 0 0 3px var(--eng-soft);
+}
+.knowledge-live-dot[data-breathe] {
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .knowledge-live-dot[data-breathe] {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .knowledge-live-dot[data-breathe] {
+  animation: none;
 }
 .knowledge-quiet {
   color: var(--text-tertiary);
@@ -53,8 +108,12 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-3);
-  border-right: 1px solid var(--border-default);
-  background: var(--surface-1);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -67,7 +126,7 @@
 }
 .knowledge-filters:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 .knowledge-filters-title {
   margin: 0;
@@ -116,36 +175,18 @@
   flex-wrap: wrap;
   gap: var(--space-1h);
 }
+/* Filter chips: the shared .ui-chip look (ui.css) with the kind mark in front. The count sits in its pill. */
 .knowledge-chip {
-  padding: 0 var(--space-3);
-  height: var(--control-sm);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
-  background: var(--surface-1);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--text-small);
-  cursor: pointer;
-  white-space: nowrap;
   max-width: 100%;
+  cursor: pointer;
+}
+.knowledge-chip .ui-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.knowledge-chip:hover {
-  background: var(--surface-2);
-  color: var(--text-primary);
-}
-.knowledge-chip[aria-pressed='true'] {
-  background: var(--accent-soft);
-  border-color: var(--accent-soft-border);
-  color: var(--text-primary);
 }
 .knowledge-chip:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-}
-.knowledge-chip-n {
-  color: var(--text-tertiary);
 }
 .knowledge-switch-row {
   display: flex;
@@ -165,13 +206,8 @@
   color: var(--text-tertiary);
 }
 
-/* Chips carry the kind's 10 px mark (KindMark) in both layouts. */
-.knowledge-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1h);
-}
-.knowledge-note-dot {
+/* A context note's neutral dot (KindMark for the note kind). */
+.knowledge-kind-mark.knowledge-note-dot {
   background: var(--text-tertiary);
 }
 
@@ -196,8 +232,7 @@
   align-items: center;
   gap: var(--space-1h) var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-right: 0;
-  border-bottom: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
 }
 .knowledge-filters[data-layout='band'] .knowledge-search {
   flex: 0 0 200px;
@@ -253,7 +288,7 @@
 }
 .knowledge-main > .banner,
 .knowledge-main > .knowledge-notice-wrap > .banner {
-  margin: var(--space-3) var(--space-3) 0;
+  margin: 0 0 var(--space-2);
 }
 .knowledge-notice-wrap {
   flex: none;
@@ -271,10 +306,17 @@
   margin: 0;
   padding: 0 0 var(--space-4);
   list-style: none;
+  /* One glass panel for the whole list: the rows are windowed at fixed heights, so no per-group card padding. */
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
 }
 .knowledge-list:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 .knowledge-group,
 .knowledge-group-rows {
@@ -286,11 +328,14 @@
   box-sizing: border-box;
   height: 32px;
   margin: 0;
-  padding: var(--space-2) var(--space-3) 0;
+  padding: var(--space-2) var(--space-4) 0;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -309,16 +354,19 @@
   flex-direction: column;
   justify-content: center;
   gap: var(--space-0h);
-  padding: 0 var(--space-3) 0 var(--space-4);
+  padding: 0 var(--space-3) 0 var(--space-3);
+  margin: 0 var(--space-2);
+  border-radius: var(--radius-md);
   border-left: 3px solid transparent;
   cursor: pointer;
   min-width: 0;
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 .knowledge-row[data-excerpt='false'] {
   height: 44px;
 }
 .knowledge-row:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--text-primary) 7%, transparent);
 }
 .knowledge-row[aria-selected='true'] {
   background: var(--accent-soft);
@@ -418,11 +466,45 @@
   gap: var(--space-1h);
   min-width: 0;
 }
-.knowledge-detail-name {
+/* The head: the kind's mark glows beside a serif name (the engagement look), then the badges and who added it. */
+.knowledge-detail-titlerow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.knowledge-detail-mark {
+  flex: none;
+  display: inline-flex;
+  padding-top: var(--space-1h);
+}
+.knowledge-detail-mark .knowledge-kind-mark {
+  width: 20px;
+  height: 20px;
+  box-shadow: 0 0 22px -4px var(--kind-ink, var(--text-tertiary));
+}
+.knowledge-detail-mark .knowledge-kind-mark[data-mark='ring'],
+.knowledge-detail-mark .knowledge-kind-mark[data-mark='ring-dot'] {
+  border-width: 3px;
+}
+.knowledge-detail-prov {
   margin: 0;
-  font-size: var(--text-title);
-  line-height: var(--text-title-lh);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.knowledge-detail-titlerow > .knowledge-detail-name {
+  flex: 1 1 auto;
+}
+.knowledge-detail-name {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
   overflow-wrap: anywhere;
   border-radius: var(--radius-sm);
 }

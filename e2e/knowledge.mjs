@@ -149,6 +149,19 @@ try {
   const kindChips = await page.locator('[data-testid=knowledge-kind]').evaluateAll((els) => els.map((e) => e.textContent.replace(/\s+/g, ' ').trim()))
   check(JSON.stringify(kindChips) === JSON.stringify(['People 1', 'Organisations 1', 'Decisions 1', 'Risks 1', 'Notes 1']), 'kind chips carry counts', JSON.stringify(kindChips))
   check(/Agents 5/.test(clean(await page.locator('[data-testid=knowledge-origin][data-origin=agent]').innerText())), 'the Agents chip counts 5')
+  check((await page.locator('[data-testid=knowledge-row] [data-testid=knowledge-kind-mark]').count()) === 5 && (await page.locator('[data-testid=knowledge-group-title] [data-testid=knowledge-kind-mark]').count()) === 5, 'rows and group titles carry their kind mark')
+  check((await page.locator('[data-testid=knowledge-limit]').count()) === 0, 'a small graph shows no "most connected" note')
+  // The line is real data: it shows only while a run of this project is working, and its count is what that run recorded.
+  const liveLine = page.locator('[data-testid=knowledge-live]')
+  const liveText = (await liveLine.count()) ? clean(await liveLine.innerText()) : ''
+  check(liveText === '' || /^The team is working( · \d+ recorded in the current runs?)?$/.test(liveText), 'the "team is working" line is absent or reads from real run data', liveText)
+  if (liveText) {
+    const anim = () => page.locator('[data-testid=knowledge-live] [data-breathe]').evaluate((el) => getComputedStyle(el).animationName)
+    check((await anim()) === 'breathe', 'the working dot breathes with motion on', await anim())
+    await page.evaluate(() => document.documentElement.setAttribute('data-reduce-motion', 'on'))
+    check((await anim()) === 'none', 'and is still under reduced motion', await anim())
+    await page.evaluate(() => document.documentElement.removeAttribute('data-reduce-motion'))
+  }
   await fitsWindow('Knowledge list (1600x1000 dark)')
   await shot('list-1600-dark')
 

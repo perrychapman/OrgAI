@@ -56,9 +56,10 @@
 .output-scroll {
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
+  /* The board's "paper": a strong glass sheet the content sits on. */
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong, var(--surface-1));
   color: var(--text-primary);
 }
 .output-scroll:focus-visible {

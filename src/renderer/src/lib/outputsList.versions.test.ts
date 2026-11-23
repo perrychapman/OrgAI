@@ -28,7 +28,7 @@ describe('version helpers', () => {
     expect(up).toEqual([{ id: 'a', title: 'Plan', version: 3 }])
     expect(updatedText(up)).toBe('Updated Plan to version 3')
     expect(openNotesLabel(1)).toBe('1 open note')
-    expect(deletedText(3)).toBe('Deleted 3 outputs.')
+    expect(deletedText(3)).toBe('Deleted 3 files.')
   })
   it('groups by the current version time', () => {
     const day = 86_400_000

@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import type { KnowledgeItem, RunFacts } from '../../lib/knowledge'
 import { itemExcerpt, itemKind, itemName, itemOrigin, itemRetired, itemSource, kindLabel, provenanceLine } from '../../lib/knowledge'
 import { Badge } from '../ui/Badge'
+import { KindMark } from './KindMark'
 
 /**
  * One row of the Knowledge list (docs/design/knowledge.md section 2): name, kind badge, the "Agent" and "Retired"
@@ -49,6 +50,7 @@ export function KnowledgeRow({
       onClick={() => onOpen(item.id)}
     >
       <span className="knowledge-row-head">
+        <KindMark kind={kind} />
         <span className="knowledge-row-name" data-testid="knowledge-row-name" title={name}>
           {name}
         </span>
