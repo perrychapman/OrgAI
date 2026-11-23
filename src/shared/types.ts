@@ -603,6 +603,17 @@ export interface Role {
    * without a valid `mode` is dropped whole, an unknown `minTier` or `maxEffort` is dropped alone.
    */
   staffing?: RoleStaffing
+  /**
+   * UI overhaul ("How many at once"): most live agents of this role at a time, 1..ROLE_MAX_CONCURRENT_LIMIT. Missing =
+   * no per-role cap (the project's maxConcurrentSubagents still applies). Adapters refuse a spawn of the role beyond it.
+   * ProjectStore drops any other value on read and save.
+   */
+  maxConcurrent?: number
+  /**
+   * UI overhaul, engagements only: false = this role's agents get no engagement knowledge write tools (reads stay).
+   * Missing or true = today's behaviour. Ignored on code projects.
+   */
+  knowledgeWrite?: boolean
 }
 
 /**
@@ -787,6 +798,30 @@ export interface Project {
    * `reviewPolicyOf`. ProjectStore drops any other value on read and save.
    */
   reviewPolicy?: ReviewPolicy
+  /**
+   * UI overhaul, Limits: most estimated USD this project's runs (schedules included) may spend per local calendar day /
+   * calendar month. Missing = no cap. Finite > 0. Enforced by RunManager before start and while a run is live
+   * (`onSpendLimit`). Desktop projects:save only; team files never carry them.
+   */
+  maxDailyUsd?: number
+  maxMonthlyUsd?: number
+  /** What a live run does when a daily / monthly cap is reached. Missing = 'pause' (paused until the period resets; never auto-resumes). */
+  onSpendLimit?: 'pause' | 'stop'
+  /** Most agents one run may start in total (root excluded), 1..PROJECT_MAX_AGENTS_PER_RUN_LIMIT. Missing = no total cap. Adapters refuse spawns beyond it. */
+  maxAgentsPerRun?: number
+  /** Scheduled runs of this project may start while the plan window is at or above maxWindowShare. Missing = false (today: they are skipped as usage-limited). */
+  schedulesNearPlanLimit?: boolean
+  /** Code projects: the branch merges land on. Missing = the detected default branch (today's behaviour). Must name an existing local branch. */
+  mainBranch?: string
+  /**
+   * Code projects: run `testCommand` in the finished copy before an integration merges it; a failing command (non-zero
+   * exit or timeout) refuses the merge. Missing = false. Desktop projects:save only; team files never carry these.
+   */
+  requireTestsPass?: boolean
+  /** The shell command for requireTestsPass, at most PROJECT_TEST_COMMAND_MAX_CHARS, one line. */
+  testCommand?: string
+  /** Code projects: Maintenance removes finished copies (worktrees) that failed or were discarded after this many days (1..365). Missing = keep. */
+  keepFailedBranchesDays?: number
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -1313,7 +1348,7 @@ export interface McpTestResult {
   /** Tool names the server reported (without the mcp__<name>__ prefix). */
   tools?: string[]
   /** The same tools with their descriptions (first 300 characters), in the server's order. */
-  toolDetails?: { name: string; description?: string }[]
+  toolDetails?: { name: string; description?: string; readOnly?: boolean; destructive?: boolean }[]
   error?: string
   /** Last lines the stdio server wrote to stderr (secret values redacted), on failure. */
   stderr?: string
@@ -1929,6 +1964,16 @@ export interface AppearanceSettings {
   }
   /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
   reduceMotion: 'system' | 'on'
+  /** UI overhaul: true = no motion at all (stronger than reduceMotion 'on'). Missing = false. Renderer-applied; main only normalizes. */
+  noMotion?: boolean
+  /** See-through glass panels. Missing = true (the overhaul's look). */
+  glass?: boolean
+  /** Missing = 'default'. */
+  textSize?: 'small' | 'default' | 'large'
+  /** Missing = 'comfortable'. */
+  density?: 'comfortable' | 'compact'
+  /** Activity dots beside projects in the sidebar. Missing = true. */
+  sidebarActivityDots?: boolean
 }
 
 /** DEFAULT_APPEARANCE and normalizeAppearance guarantee the new fields; legacy input literals stay valid. */
@@ -2052,7 +2097,31 @@ export interface AppSettings {
    * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
    */
   modelPrices?: ModelPriceOverride[]
+  // ---- UI overhaul (General / Limits). All optional; store/settings.ts writes explicit values with these defaults. ----
+  /** Play a sound in the renderer when something needs the user. Default false. Main stores it only. */
+  playSound?: boolean
+  /**
+   * Warn at this percent (50..99) of a spending limit: RunManager emits one `run.spendWarning` per run and limit.
+   * null / missing = off (default: no new behaviour). The UI offers 80.
+   */
+  spendWarnPercent?: number | null
+  /** Start OrgAI at login (app.setLoginItemSettings). Default false. Applied on save; unsupported platforms ignore it. */
+  openAtLogin?: boolean
+  /** Closing the last window: 'quit' (default, today) or 'keepRunning' (hide it while runs or schedules are live; reopening the app shows it). */
+  closeBehavior?: 'quit' | 'keepRunning'
+  /** Keep the computer awake (powerSaveBlocker 'prevent-app-suspension') while any run is live. Default false. */
+  keepAwakeDuringRuns?: boolean
+  /** Per-event OS notifications under the master `notifications` switch. Missing = true. */
+  notifyNeedsMe?: boolean
+  notifyRunFinished?: boolean
+  notifyScheduleFindings?: boolean
+  /** Renderer date format. Missing = 'd MMM yyyy'. Main stores it only. */
+  dateFormat?: DateFormatSetting
 }
+
+/** AppSettings.dateFormat choices. */
+export type DateFormatSetting = 'd MMM yyyy' | 'MMM d, yyyy' | 'yyyy-MM-dd'
+export const DATE_FORMAT_SETTINGS: readonly DateFormatSetting[] = ['d MMM yyyy', 'MMM d, yyyy', 'yyyy-MM-dd']
 
 /**
  * What settings:get, settings:set and the settings:changed push return: the settings plus read-only facts
@@ -3028,6 +3097,11 @@ export interface AgentInstance {
    * child session get the bridged role's connection. Missing on older records (= the run's connection).
    */
   connection?: ConnectionId
+  /**
+   * UI overhaul (Agent view): the brief the parent gave this agent at spawn (the spawn tool's prompt), at most
+   * AGENT_BRIEF_MAX_CHARS. Set by the adapter; absent for the root and on older records. Untrusted model text.
+   */
+  brief?: string
 }
 
 /** One agent-to-agent message (SendMessage), as drawn on the live canvas. */
@@ -3488,6 +3562,16 @@ export interface RunSummary {
   buildWorkspace?: string
   /** Work runs of a real project started with StartRunInput.team 'single' (RunTeam). Kept by continuations and auto-resume. */
   team?: RunTeam
+  /**
+   * UI overhaul (RunHold): why the run stopped and is waiting on the user, when main knows (budget, spend limit,
+   * provider error, failed agent, blocked plan). A usage-limit pause also reads status 'paused' + pausedUntil. Main-owned,
+   * set when the run stops, cleared when it continues; `run.hold` events carry changes. Absent = no hold.
+   */
+  hold?: RunHold
+  /** UI overhaul: roles left out of this run by StartRunInput.excludeRoleIds (continuations keep it). Main-owned. */
+  excludedRoleIds?: string[]
+  /** UI overhaul: the run's own per-run cap from StartRunInput.maxBudgetUsd / runActions.addBudget (USD, already min'd with the project cap). Main-owned. */
+  runBudgetUsd?: number
 }
 
 /**
@@ -3980,6 +4064,10 @@ export interface UsageStatus {
 // ---------- Run events (main -> renderer) ----------
 
 export type RunEvent =
+  /** UI overhaul, RunManager only (an adapter's is dropped): RunSummary.hold changed; null = cleared. */
+  | { type: 'run.hold'; runId: string; hold: RunHold | null }
+  /** UI overhaul, RunManager only: spending reached AppSettings.spendWarnPercent of a limit. Once per run and limit scope. */
+  | { type: 'run.spendWarning'; runId: string; warning: SpendWarning }
   | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
   /**
    * RunManager only (an adapter's is dropped): the run's permission mode fields after any change on a live run
@@ -4391,6 +4479,13 @@ export interface AgentImportInput {
   choices?: AgentImportChoice[]
   /** Ignored by previewImport. applyImport takes AgentImportApplyInput, where it is required. */
   digest?: string
+  /**
+   * UI overhaul: read agent definitions from this folder instead of the project folder. Must be the path the same
+   * window last picked with importSources.pickAgentFolder (main refuses any other path).
+   */
+  sourcePath?: string
+  /** UI overhaul: import the roles of another stored OrgAI project (source 'orgai'). Exclusive with sourcePath. */
+  fromProjectId?: string
 }
 
 /** Most choices one preview or apply accepts; more are refused. */
@@ -4532,6 +4627,17 @@ export interface StartRunInput {
    * permissionModeChosen true.
    */
   permissionMode?: PermissionMode
+  /**
+   * UI overhaul, desktop only ("Who will work on it"): role ids left out of this run, each with every role below it.
+   * The root can never be excluded (refused). Unknown ids are refused. A required report left out shows as a delegation
+   * preflight warning, never silently waived. Recorded as RunSummary.excludedRoleIds.
+   */
+  excludeRoleIds?: string[]
+  /**
+   * UI overhaul, desktop only ("Spending limit for this run"): a per-run cap in USD (finite > 0). Only narrows: the run
+   * gets min(this, project.maxBudgetUsd). Recorded as RunSummary.runBudgetUsd.
+   */
+  maxBudgetUsd?: number
 }
 
 /**
@@ -5514,6 +5620,10 @@ export interface OrgTemplateInfo {
   /** Epoch ms. */
   createdAt: number
   updatedAt: number
+  /** UI overhaul: one of the app's own starting charts (the default code chart and the neutral engagement chart). Read-only: duplicate it to change it; remove refuses. Ids start 'builtin:'. */
+  builtIn?: true
+  /** UI overhaul: times this template was applied, counted from when counting started. Missing = unknown (never shown as 0). */
+  appliedCount?: number
 }
 
 /** Most role names kept on an OrgTemplateInfo. */
@@ -10079,4 +10189,298 @@ export interface OrgAIApi {
     linkRun(input: { scope: TodoScope; id: string; runId: string }): Promise<TodoItem>
   }
   onTodosChanged(cb: (event: TodosChangedEvent) => void): () => void
+}
+
+// ---------- UI overhaul runtime support (docs/design/ui-overhaul/impl-runtime.md) ----------
+//
+// Data and actions the overhaul boards draw that the app did not have. Every figure comes from recorded data (run
+// history, schedule history, the price book, git); "no basis" is an explicit null / 'none', never an invented number.
+// Every channel here is desktop-only (registered by main/overhaulIpc.ts with the app-window check, never on the host
+// dispatcher, the socket or the CLI). Run actions are explicit user actions and go through the existing enforcement in
+// RunManager (budget caps, permission modes, required delegation, merge review); nothing here widens a cap or waives a
+// gate silently. Everything is structured-clone safe.
+
+/** Largest Role.maxConcurrent. */
+export const ROLE_MAX_CONCURRENT_LIMIT = 8
+/** Largest Project.maxAgentsPerRun. */
+export const PROJECT_MAX_AGENTS_PER_RUN_LIMIT = 500
+/** Longest Project.testCommand. */
+export const PROJECT_TEST_COMMAND_MAX_CHARS = 500
+/** Longest AgentInstance.brief kept. */
+export const AGENT_BRIEF_MAX_CHARS = 8000
+/** Largest single runActions.addBudget amount (USD). */
+export const RUN_ADD_BUDGET_MAX_USD = 1000
+/** Longest runActions.messageAgent text. */
+export const AGENT_MESSAGE_MAX_CHARS = 8000
+
+// ---- Run holds (RunHold board) ----
+
+/**
+ * Why a run is waiting on the user. 'budget': the run's own cap (project.maxBudgetUsd, a per-run cap or the
+ * conversation budget) is spent. 'spend-limit': the project's daily or monthly cap. 'usage-limit': the provider plan
+ * window (status 'paused'). 'provider': the provider could not be reached or answered with an error. 'agent-failed':
+ * an agent failed and the plan is blocked on it. 'plan-blocked': the orchestrator marked the plan blocked on a decision.
+ */
+export type RunHoldKind = 'budget' | 'spend-limit' | 'usage-limit' | 'provider' | 'agent-failed' | 'plan-blocked'
+
+/**
+ * Actions main accepts for a hold right now. 'addBudget': runActions.addBudget. 'resume': runs.resumeNow (a paused
+ * run). 'retry': runActions.retry (continue the run with the harness's resume message). 'switchModel': runs.switchModel
+ * (on an ended run it is saved for the next continuation; then retry). 'skipReview': runActions.skipReview. 'end':
+ * runs.stop on a live run (an ended run is already ended; the UI only leaves).
+ */
+export type RunHoldAction = 'addBudget' | 'resume' | 'retry' | 'switchModel' | 'skipReview' | 'end'
+
+export interface RunHold {
+  kind: RunHoldKind
+  /** When the hold began, epoch ms. */
+  since: number
+  /** One plain OrgAI-written sentence (never a raw provider message). */
+  reason: string
+  /** 'budget' and 'spend-limit': which limit, what it is and what was spent (estimated USD). */
+  budget?: { scope: 'run' | 'conversation' | 'day' | 'month'; limitUsd: number; spentUsd: number; resetsAt?: number }
+  /** 'provider': the connection and the last error in OrgAI's words. */
+  provider?: { connection?: ConnectionId; error?: string; lastOkAt?: number }
+  /** 'agent-failed': the agent that failed. */
+  failed?: { agentId: string; roleId?: string | null; name?: string; costUsd?: number }
+  /** 'plan-blocked': what the orchestrator said must be decided, and the blocked steps. */
+  plan?: { blockedReason?: string; blockedStepIds?: string[] }
+  actions: RunHoldAction[]
+}
+
+/** run.spendWarning payload. */
+export interface SpendWarning {
+  scope: 'run' | 'conversation' | 'day' | 'month'
+  limitUsd: number
+  spentUsd: number
+  /** AppSettings.spendWarnPercent in force. */
+  percent: number
+  at: number
+}
+
+/**
+ * runActions.addBudget: continue an ended run held on 'budget' with `addUsd` more as the new run's own cap
+ * (0 < addUsd <= RUN_ADD_BUDGET_MAX_USD). It never exceeds the project's per-run cap (project.maxBudgetUsd) or the
+ * remaining daily / monthly cap: main refuses with a plain reason saying which limit to change in Settings instead.
+ * A conversation budget (model handoff) is raised by addUsd for this chain only. Returns the continuation.
+ */
+export interface AddRunBudgetInput {
+  runId: string
+  addUsd: number
+  /** The message the continuation starts with. Missing = the harness's resume message. */
+  text?: string
+}
+
+/** runActions.retry: continue an ended run (error / stopped / held) with `text` or the harness's resume message. */
+export interface RetryRunInput {
+  runId: string
+  text?: string
+}
+
+/**
+ * runActions.skipReview: the user tells a live run's orchestrator, in a fixed harness-written sentence plus the
+ * user's optional note, to go ahead without the review step for the current change. Delivered like the user's own
+ * message (runs.send), logged in the run log as the user's decision. It does not change the required-delegation
+ * ledger, the review policy or merge review: a strict run still records the missing review, and a merge still asks.
+ */
+export interface SkipReviewInput {
+  runId: string
+  note?: string
+}
+
+/**
+ * runActions.messageAgent: a message for one agent of a live run. Delivered to the run's orchestrator, addressed to
+ * the agent ("The Orchestrator is told too"); the orchestrator relays it. Same gates as runs.send.
+ */
+export interface MessageAgentInput {
+  runId: string
+  agentId: string
+  text: string
+}
+
+/** runActions.stopAgent result. stopped false: the adapter cannot stop one agent (reason says so) or it already ended. */
+export interface StopAgentResult {
+  stopped: boolean
+  reason?: string
+}
+
+// ---- Estimates and spend (NewRun, Schedules, Limits, ProjectHome) ----
+
+/** runInsights.estimate input. */
+export interface RunEstimateQuery {
+  projectId: string
+  /** 'single' = one assistant; missing = the team. Only runs started the same way are comparable. */
+  team?: RunTeam
+  /** Roles the user turned off (StartRunInput.excludeRoleIds). Recorded runs with the same exclusions are preferred. */
+  excludeRoleIds?: string[]
+}
+
+/** Low / middle / high of comparable recorded runs (25th, 50th, 75th percentile; min / max below 5 runs). */
+export interface EstimateRange {
+  low: number
+  median: number
+  high: number
+}
+
+/**
+ * runInsights.estimate result. basis 'history': at least RUN_ESTIMATE_MIN_SAMPLES comparable finished runs of this
+ * project (same kind and team mode, cost known, newest RUN_ESTIMATE_MAX_SAMPLES within RUN_ESTIMATE_WINDOW_DAYS).
+ * 'none': too few, and every figure is null. Never a guess.
+ */
+export interface RunEstimate {
+  basis: 'history' | 'none'
+  sampleRuns: number
+  costUsd: EstimateRange | null
+  minutes: EstimateRange | null
+  /** One plain sentence: what the figures come from, or why there are none. */
+  note: string
+}
+export const RUN_ESTIMATE_MIN_SAMPLES = 3
+export const RUN_ESTIMATE_MAX_SAMPLES = 20
+export const RUN_ESTIMATE_WINDOW_DAYS = 90
+
+/** One schedule's cost figures (runInsights.scheduleCosts). */
+export interface ScheduleCost {
+  scheduleId: string
+  /** Median known cost of its recent runs (newest up to SCHEDULE_COST_SAMPLES history entries with a cost); null = no basis. */
+  perRunUsd: number | null
+  sampleRuns: number
+  /** Slots in the next 7 days from its timing (0 when disabled or done); null when the timing cannot be counted. */
+  runsPerWeek: number | null
+  /** perRunUsd * runsPerWeek; null when either is unknown. */
+  weeklyUsd: number | null
+}
+export interface ScheduleCostReport {
+  schedules: ScheduleCost[]
+  /** Sum of the known weeklyUsd of enabled schedules; null when none is known. */
+  weeklyTotalUsd: number | null
+  /** Enabled schedules whose weekly figure is unknown (the total leaves them out; say so). */
+  unknownCount: number
+  generatedAt: number
+}
+export const SCHEDULE_COST_SAMPLES = 7
+
+/** A spend total over a period (projectSpend). unknownRuns: runs whose cost is unknown (not counted in spentUsd). */
+export interface ProjectSpendPeriod {
+  spentUsd: number
+  runs: number
+  unknownRuns: number
+  /** Period start and end (local calendar), epoch ms. */
+  from: number
+  until: number
+}
+
+/** runInsights.projectSpend result: this project's spend today and this month, its caps and a month projection. */
+export interface ProjectSpend {
+  projectId: string
+  day: ProjectSpendPeriod
+  month: ProjectSpendPeriod
+  maxDailyUsd?: number
+  maxMonthlyUsd?: number
+  /** month.spentUsd / elapsed days * days in month, once at least 3 days have passed and some spend is known; else null. */
+  monthProjectionUsd: number | null
+  generatedAt: number
+}
+
+// ---- Git (ProjectHome, Branches) ----
+
+export interface GitCommitInfo {
+  /** Short sha. */
+  sha: string
+  /** First line, at most 200 characters. Untrusted repository text. */
+  subject: string
+  /** Author time, epoch ms. */
+  at: number
+  additions?: number
+  deletions?: number
+}
+
+/** gitInfo.summary result for a stored code project (null when not a git repository or git is missing). Read-only git. */
+export interface GitSummary {
+  /** Checked-out branch; null when detached. */
+  branch: string | null
+  /** Project.mainBranch, else the detected default branch; null when none could be found. */
+  defaultBranch: string | null
+  /** Changed (modified, added, deleted, untracked) files in the working tree. */
+  dirtyFiles: number
+  /** Newest commits of the default branch, newest first, at most GIT_RECENT_COMMITS_MAX, with --shortstat counts. */
+  recentCommits: GitCommitInfo[]
+  /** Local branches not merged into the default branch, and the age of the oldest one's tip. */
+  unmergedBranches: { count: number; oldestAgeMs?: number }
+  /** Ahead / behind the upstream of the default branch, when it has one. */
+  upstream?: { ahead: number; behind: number }
+  generatedAt: number
+}
+export const GIT_RECENT_COMMITS_MAX = 10
+
+// ---- About ----
+
+/** about.supportDetails: version, platform and provider connection states, no project names, paths or content. */
+export interface SupportDetails {
+  text: string
+}
+
+// ---- Channels and API ----
+
+/** Channels of this section. Desktop-only: registered by main/overhaulIpc.ts, never on the host dispatcher. */
+export const OVERHAUL_IPC = {
+  runsEstimate: 'runs:estimate',
+  schedulesCosts: 'schedules:costs',
+  projectsSpend: 'projects:spend',
+  runsHold: 'runs:hold',
+  runsAddBudget: 'runs:addBudget',
+  runsRetry: 'runs:retry',
+  runsSkipReview: 'runs:skipReview',
+  runsMessageAgent: 'runs:messageAgent',
+  runsStopAgent: 'runs:stopAgent',
+  gitSummary: 'projects:gitSummary',
+  gitBranches: 'projects:gitBranches',
+  pickAgentFolder: 'projects:pickAgentFolder',
+  templatesDuplicate: 'templates:duplicate',
+  aboutSupportDetails: 'app:supportDetails',
+  aboutReportProblem: 'app:reportProblem',
+  aboutOpenLicences: 'app:openLicences'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  runInsights: {
+    /** Cost and time of a prospective run from this project's comparable recorded runs; basis 'none' = unknown. */
+    estimate(query: RunEstimateQuery): Promise<RunEstimate>
+    /** Per-schedule and weekly cost from schedule run history. */
+    scheduleCosts(): Promise<ScheduleCostReport>
+    /** Today's and this month's spend of a project, with its caps. */
+    projectSpend(projectId: string): Promise<ProjectSpend>
+  }
+  runActions: {
+    /** The run's hold (same as RunSummary.hold), or null. */
+    hold(runId: string): Promise<RunHold | null>
+    /** Continue a run held on its budget with more allowance (AddRunBudgetInput). Resolves to the continuation. */
+    addBudget(input: AddRunBudgetInput): Promise<RunSummary>
+    /** Continue an ended run (RetryRunInput). Resolves to the continuation. */
+    retry(input: RetryRunInput): Promise<RunSummary>
+    skipReview(input: SkipReviewInput): Promise<void>
+    messageAgent(input: MessageAgentInput): Promise<void>
+    stopAgent(input: { runId: string; agentId: string }): Promise<StopAgentResult>
+  }
+  gitInfo: {
+    summary(projectId: string): Promise<GitSummary | null>
+    /** Local branch names (for Project.mainBranch), default first; [] when not a git repository. */
+    branches(projectId: string): Promise<string[]>
+  }
+  importSources: {
+    /** Folder picker for AgentImportInput.sourcePath; null when cancelled. */
+    pickAgentFolder(): Promise<string | null>
+  }
+  templatesExtra: {
+    /** Copy a template (built-in included) as a new saved one named "<name> copy". */
+    duplicate(templateId: string): Promise<OrgTemplateInfo>
+  }
+  about: {
+    supportDetails(): Promise<SupportDetails>
+    /** Opens a prefilled GitHub issue page in the browser (version and platform only). Nothing is sent by OrgAI. */
+    reportProblem(): Promise<void>
+    /** Opens the bundled third-party licences file. Resolves to '' or an error sentence. */
+    openLicences(): Promise<string>
+  }
 }
