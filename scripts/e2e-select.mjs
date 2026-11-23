@@ -58,7 +58,7 @@ export const RULES = [
   { match: ['e2e/setup.mjs', 'e2e/history.mjs', 'e2e/worktree.mjs', 'e2e/shots/**'], kind: 'none', scripts: [], why: 'token-spending e2e or screenshots, not part of the free chain' },
 
   // ---- Schedules: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
-  { match: ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/**', `${C}schedules/**`, `${R}views/SchedulesView.tsx`, `${C}proposals/SchedulesProposalBody.tsx`, `${S}schedules.css`, `${L}scheduleProposal.ts`], scripts: ['schedules', 'proposals'], why: 'Schedules (page, proposal card, scheduler)' },
+  { match: ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/**', `${C}schedules/**`, `${R}views/SchedulesView.tsx`, `${C}proposals/SchedulesProposalBody.tsx`, `${S}schedules.css`, `${L}scheduleProposal.ts`, `${L}schedulesBoard.ts`], scripts: ['schedules', 'proposals'], why: 'Schedules (page, proposal card, scheduler)' },
 
   // ---- To-dos: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
   { match: ['src/shared/todos.ts', 'src/shared/view/todos.ts', 'src/main/todos/**', `${C}todos/**`, `${R}views/TodosView.tsx`, `${S}todos.css`, `${R}store/todosStore.ts`, `${L}todoStart.ts`], scripts: ['todos', 'todos-edge'], why: 'To-dos (list, start session, chat tool)' },
@@ -88,7 +88,7 @@ export const RULES = [
   { match: [`${C}settings/ModelPricesSection.tsx`], scripts: ['usage'], why: 'model prices' },
   { match: [`${C}settings/ContextNotesSection.tsx`, `${C}settings/EngagementPlanSection.tsx`, `${C}settings/ReferenceDirectoriesSection.tsx`], scripts: ['engagement', 'engagement2'], why: 'engagement settings' },
   { match: [`${C}settings/MaintenanceSection.tsx`], scripts: ['maintenance'], why: 'maintenance panel' },
-  { match: [`${C}settings/**`, `${R}views/SettingsView.tsx`, `${R}views/AppSettingsView.tsx`, `${S}settings.css`, `${S}model-prices.css`], scripts: ['connections', 'permissions', 'folder-trust', 'engagement', 'engagement2', 'canvas', 'install-row', 'usage', 'maintenance', 'self-help', 'updates'], why: 'settings pages (About holds Updates)' },
+  { match: [`${C}settings/**`, `${R}views/SettingsView.tsx`, `${R}views/AppSettingsView.tsx`, `${S}settings.css`, `${S}model-prices.css`, `${L}settingsMenu.ts`, `${L}settingsSearch.ts`], scripts: ['connections', 'permissions', 'folder-trust', 'engagement', 'engagement2', 'canvas', 'install-row', 'usage', 'maintenance', 'self-help', 'updates'], why: 'settings pages (About holds Updates)' },
 
   { match: [`${C}team/TeamFiles*`, `${C}team/useTeamFilesActions.ts`, `${L}teamFiles.ts`, `${L}teamFound.ts`, `${S}teamFiles.css`, `${S}teamFound.css`, `${C}dashboard/TeamFoundPanel.tsx`], scripts: ['team-files'], why: 'team files UI' },
   { match: [`${C}team/OrgChangePointer.tsx`, `${C}team/useOrgChange.ts`, `${L}orgChange.ts`], scripts: ['org-change'], why: 'org change sessions' },

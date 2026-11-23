@@ -209,9 +209,9 @@ try {
       return !!a && !!document.getElementById('main-content')?.contains(a) && /^H[1-4]$/.test(a.tagName)
     })
     check(focusOk, `focus lands on the destination heading, not on an action ${tag}`, await activeTestId())
-    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Appearance', null, { timeout: 3000 }).catch(() => {})
+    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Colour mode', null, { timeout: 3000 }).catch(() => {})
     const headingText = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? '')
-    check(headingText === 'Appearance', `focus lands on the Appearance section heading, not the pane title ${tag}`, headingText)
+    check(headingText === 'Colour mode', `focus lands on the Appearance pane's first section heading (Colour mode), not the pane title ${tag}`, headingText)
     // The asking run has a card open by now: the banner says so and Back reads "Back to chat to decide".
     await page.waitForFunction(() => /A change is waiting for you in the chat\./.test(document.querySelector('[data-testid=app-navigate-banner]')?.textContent ?? ''), null, { timeout: 15_000 }).catch(() => {})
     check(/A change is waiting for you in the chat\./.test(await text('[data-testid=app-navigate-banner]')), `the banner says a change is waiting ${tag}`, await text('[data-testid=app-navigate-banner]'))
