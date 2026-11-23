@@ -384,8 +384,10 @@ try {
       check(!!m.toolbar && !!m.strip && m.toolbar.t >= m.strip.b - 0.5 && Math.abs(m.toolbar.b - m.toolbar.t - 32) <= 1.5, `canvas toolbar is 32 px and sits under the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.toolbar]))
       check(!!m.tabs && !!m.strip && m.tabs.l >= m.strip.l - 0.5 && m.tabs.r <= m.strip.r + 0.5, `run tabs live inside the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.tabs]))
       check(!!m.stage && !!m.toolbar && m.stage.t >= m.toolbar.b - 0.5, `stage sits under the toolbar at ${w}x${h} ${theme}`, JSON.stringify([m.toolbar, m.stage]))
-      // A run in the conversation layout (an ended run opened under 1100 px) has no panel at all; on the canvas it starts collapsed.
-      check(m.layout === 'conversation' ? m.panels === 0 && m.flag === 'none' : w >= 1100 || m.side === 'true', `run panel starts collapsed below 1100 px of main width (none in the conversation layout) at ${w}x${h} ${theme}`, JSON.stringify([m.layout, m.panels, m.flag, m.side]))
+      // A run in the conversation layout has no panel at all. On the canvas the conversation dock is open when the run
+      // view has room (900 px) and folds to the rail otherwise; either way the composer stays on screen (checked above,
+      // and in e2e/run-start.mjs section 11). Only the user's own Hide hides it.
+      check(m.layout === 'conversation' ? m.panels === 0 && m.flag === 'none' : inside(m.composer), `no run panel in the conversation layout; on the canvas the composer is on screen whatever the dock does at ${w}x${h} ${theme}`, JSON.stringify([m.layout, m.panels, m.flag, m.side]))
       check((await page.locator('.react-flow__controls').count()) === 0, `React Flow controls are gone from the canvas at ${w}x${h} ${theme}`)
       check((await page.locator('[data-testid=run-strip] .btn:visible').first().evaluate((el) => el.getBoundingClientRect().height).catch(() => 28)) <= 36, `strip buttons fit the 40 px strip at ${w}x${h} ${theme}`)
       log(`chrome above canvas at ${w}x${h} ${theme}:`, m.stage ? Math.round(m.stage.t) : '?', 'px; stage', m.stage ? `${Math.round(m.stage.r - m.stage.l)}x${Math.round(m.stage.b - m.stage.t)}` : '?')
