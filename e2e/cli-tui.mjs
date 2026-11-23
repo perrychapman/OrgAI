@@ -37,7 +37,8 @@
 //    Then /mcp turns a server off with Space (the live run says it uses the change now) and sets another server's
 //    secret with s (the typed value never reaches the terminal), and /skills opens on a project without skills.
 // j. A team change an agent proposes mid-run (`[mock:org-change]`): the card says what changes compared with this run's
-//    team, v shows the diff, y asks before it changes the live run, and after the second y the new role works in it.
+//    team and shows the values (from -> to), v shows the diff, y waits until the card was read and then asks before it
+//    changes the live run, and after the second y the new role works in it.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
 //
 // Not covered here (unit tests only): merge review cards (the mock has no worktrees), the pager, TERM=dumb Enter
@@ -684,8 +685,8 @@ try {
       const summary = await t.waitFor((s) => s.includes("1 added, 1 changed (compared with this run's team)"), 10_000).then(() => true, () => false)
       check(summary, "j: the org chart card says what changes, compared with this run's team", esc(t.screen()))
       check(t.screen().includes('Takes effect now.'), 'j: ... and that it takes effect in this run', esc(t.screen()))
-      // The card names the roles before any key is pressed: a count alone is not enough to approve a live change.
-      check(t.screen().includes('+ Roster Tester') && /~ Orchestrator: [^\n]*spawns/.test(t.screen()), 'j: the card names the added role and the changed role with the field that changes', esc(t.screen()))
+      // The card shows the values before any key is pressed: a count or a field name alone is not enough to approve a live change.
+      check(t.screen().includes('+ Roster Tester') && /~ Orchestrator[\s\S]{0,300}spawns: [^\n]*->/.test(t.screen()), 'j: the card shows the added role and the changed role with the value that changes (from -> to)', esc(t.screen()))
       // v: the whole diff, in the app's own text view. (A card ignores keys for a moment after it arrives.)
       await sleep(1200)
       t.key('f2')

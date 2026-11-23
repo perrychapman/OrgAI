@@ -149,11 +149,15 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     live roster, 2026-11-18) because the TUI decided org chart cards without a diff against runBaseline; the note here
     said what turning it on needs: "a TUI org chart diff against runBaseline with every field that can move, then the
     option in the inproc bootstrap". Both are done. The card (`src/cli/tui/orgChartCard.ts`, used by `decisions.ts`)
-    renders the desktop's own diff (`src/shared/view/orgDiff.ts` `diffOrgChart` over `orgDiffBase`): the summary and
-    "compared with this run's team" on the card, every added, changed (`label: from -> to`) and removed role in the
-    detail, prompts and responsibilities in the `v` view. Approve is a two-step key when the card changes a live run
-    (`orgChartAppliesNow`: effect 'now' / 'after-turn' and a runBaseline): "Change this run's team now (1 added, 1
-    changed)?". bootstrap.ts sets `liveRosterCards` for hostKind 'inproc' as well: the TUI tray is the only approving
+    renders the desktop's own diff (`src/shared/view/orgDiff.ts` `diffOrgChart` over `orgDiffBase`). A card that changes
+    this live run (`orgChartAppliesNow`: effect 'now' / 'after-turn' and a runBaseline) shows, in its scrollable
+    compact body, the `from -> to` of every changed field and, for an added role, its model, tools, tier, effort,
+    connection, staffing, skills, spawn rights, responsibilities and prompt (PR 68 review H1). `y` is refused with a
+    one-line reason until that body was scrolled to its end or `v` opened the full view, the mechanism the permission
+    cards use (`readAll`); a body or full view cut at 64 KB never unlocks `y` (decline it). Then Approve is a two-step
+    key: "Change this run's team now (1 added, 1 changed)?". A card that applies from the next run keeps the short
+    preview. Checked by `DecisionTray.orgGate.test.tsx` and `decisions.test.ts`; e2e section j is not runnable on
+    Windows (no pty). bootstrap.ts sets `liveRosterCards` for hostKind 'inproc' as well: the TUI tray is the only approving
     path there (exec's policy declines, fails or waits; no other process reaches a card). A `run.roster` event shows
     as one status notice (`rosterNotice`). A card without a runBaseline (setup, /evolve, a single-assistant run) is
     compared with the saved team and applies from the next run as before. Checked by orgChartCard.test.ts,
@@ -592,6 +596,15 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   mcpLibrary:setSecret when the values live in the linked library entry (`McpServerInfo.secretScope`); the value is
   never read back and never in a message; e2e checks the raw pty output never carries it. A live run is not told
   about a new secret (mcp:setSecret has no live path on any host). Not in the views: adding a new server or skill by
-  hand, and sign-in (the `orgai mcp` / `orgai skills` commands). Checked by
+  hand, and sign-in (the `orgai mcp` / `orgai skills` commands). A WIDENING save asks first (PR 68 review, M1): turning
+  an item on, linking one from the library, or a roles / grants change that adds at least one role (including "every
+  role") opens a `confirm` dialog (`strict`: `y` saves, any other key cancels, nothing is saved). The MCP dialog shows
+  the name, transport, the command and every argument (one per line) or the URL, the NAMES of env variables, headers
+  and secret slots (never a value), the source and who gets it; the skill dialog the name, source, files, who holds it
+  and the first 12 lines of SKILL.md (read in the background; when it cannot be read it says so and still needs `y`; a
+  library entry's text has no read path here, so that dialog says so). Text is sanitized and never cut: a definition
+  that does not fit the window is refused with a message instead of being cut. Narrowing keeps saving at once. The
+  predicates and line builders are pure (`mcpWidens`, `mcpConfirmLines`, `skillWidens`, `skillConfirmLines`), checked by
+  `widening.test.ts` and the view tests; the selected row is one clamped index for highlight and action (L5). Checked by
   the four view and model test files and e2e `cli-tui.mjs` section i (mock adapter); no live provider. The views were
   written by a local model from a design brief and reviewed line by line.

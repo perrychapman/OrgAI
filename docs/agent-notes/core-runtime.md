@@ -321,9 +321,11 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   gate, role lookup and restart sees it; review M1).
   - Org changes in the same run (owner request 2026-11-18; ARCHITECTURE.md "Org changes in the same run"): on a team
     work run whose session sets `RuntimeSession.liveRoster` (`runRoster.ts` `liveRosterApplies`), an approved
-    propose_org_change also changes `ctx.roles` in place, on the DESKTOP host only (fourth review, owner decision:
-    `RunManagerOptions.liveRosterCards`, set by bootstrap.ts with `desktop`, checked inside `liveRosterApplies`; the CLI
-    / TUI / exec host keeps the pre-feature behaviour, runManagerRoster.test.ts "fourth review"), under one invariant
+    propose_org_change also changes `ctx.roles` in place, on the desktop host and, since 2026-11-23, the orgai
+    command's own host (`RunManagerOptions.liveRosterCards`, set by bootstrap.ts with `desktop` or hostKind 'inproc',
+    checked inside `liveRosterApplies`; its TUI card shows every value that moves and `y` waits until it was read, see
+    docs/agent-notes/cli-host.md "Mid-run org changes in the terminal"; a socket or exec host keeps the pre-feature
+    behaviour, runManagerRoster.test.ts "fourth review"), under one invariant
     (third review): RunManager sets
     `OrgChartProposalPayload.runBaseline` (the run's roles plus waiting ones, `runBaselineOf`; an incoming value is
     dropped, never saved), the card diffs against it, and a field moves only if the card differs from the baseline
