@@ -76,6 +76,22 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
     if (focusToken && focusToken !== mountToken.current) ref.current?.focus()
   }, [focusToken])
   useEffect(() => setNotice(null), [draftKey])
+  // An Enter pressed elsewhere and still held when this box takes focus must not send; it is armed again after key up.
+  const enterBeforeFocus = useRef(false)
+  useEffect(() => {
+    const down = (e: KeyboardEvent): void => {
+      if (e.key === 'Enter' && e.target !== ref.current) enterBeforeFocus.current = true
+    }
+    const up = (e: KeyboardEvent): void => {
+      if (e.key === 'Enter') enterBeforeFocus.current = false
+    }
+    window.addEventListener('keydown', down, true)
+    window.addEventListener('keyup', up, true)
+    return () => {
+      window.removeEventListener('keydown', down, true)
+      window.removeEventListener('keyup', up, true)
+    }
+  }, [])
   // Button takes no aria-describedby; point the Send button at the reason it is disabled.
   useEffect(() => {
     const btn = sendRef.current?.querySelector('button')
@@ -186,6 +202,9 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
+                // Never send on an auto-repeat, nor on an Enter that was pressed before this box had focus.
+                if (!e.repeat) enterBeforeFocus.current = false // a fresh press made here (a missed key up cannot lock the box)
+                if (e.repeat || enterBeforeFocus.current) return
                 void submit()
               }
             }}
