@@ -40,7 +40,7 @@ import { BRIDGE_HARNESS_TOOLS, LIVE_RUN_CHANGE_WAIT_MS, READ_DOCUMENT_TOOL, TODO
 import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
-import { recordStaffing } from './staffing'
+import { decideWithStrongerGate, recordStaffing } from './staffing'
 import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
@@ -147,6 +147,9 @@ import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
  * spending limit (errorSubtype 'error_max_budget_usd'); [mock:provider-error] ends the run with a provider error (run.status
  * 'error' with MOCK_PROVIDER_ERROR_MESSAGE, session open); see BUDGET_STOP_TOKEN. Spawn caps (Role.maxConcurrent,
  * Project.maxAgentsPerRun), AgentInstance.brief and stopAgent behave as on the real adapters.
+ * Provider retry marker (work runs, default script, first session only): [mock:provider-retry] (providerRetrySteps) emits two
+ * `provider.retry` events (attempt 1 then 2, nextTryAt 1.5 s ahead, the run waits 1.5 s after each) and then one with
+ * `ok: true`, then a closing text; no provider text is in the events.
  * Host change answer markers (hostConfigChanged, read from the first prompt; add [mock:model-switch] so the run idles):
  * [mock:host-after-idle] answers 'after-idle' (notice never in line, it waits for the next message); [mock:host-slow]
  * answers after MOCK_HOST_SLOW_MS (LIVE_RUN_CHANGE_WAIT_MS + 1.5 s), so the host reports 'pending' first; combined with
@@ -267,6 +270,8 @@ export type MockStep =
   | { type: 'planComplete'; summary: string }
   /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
   | { type: 'retry'; agent?: string }
+  /** The provider is retrying a failed API call (`provider.retry`: 1-based attempt, nextTryAt `delayMs` ahead), or with `ok` has answered. */
+  | { type: 'providerRetry'; attempt: number; delayMs?: number; ok?: true }
   /** The provider compacted an agent's conversation (agent.compacted; the continuation's thrash guard hears of it). */
   | { type: 'compact'; agent?: string; before?: number; after?: number }
   /** Wait `ms` more before the next step (cut short by interrupt and stop). */
@@ -881,6 +886,25 @@ export function budgetStopSteps(): MockStep[] {
 /** [mock:provider-error]: one text; the session then throws MOCK_PROVIDER_ERROR_MESSAGE (see the session loop). */
 export function providerErrorSteps(): MockStep[] {
   return [{ type: 'text', text: 'Starting on the request.' }]
+}
+
+/**
+ * [mock:provider-retry] (work runs, default script, first session only): one text, two `provider.retry` events (attempts 1
+ * and 2, each with nextTryAt MOCK_PROVIDER_RETRY_DELAY_MS ahead and a wait of that long after it, so a UI sees "Trying
+ * again"), then one `ok: true` and a closing text. No provider text is ever in the events.
+ */
+export const PROVIDER_RETRY_TOKEN = '[mock:provider-retry]'
+export const MOCK_PROVIDER_RETRY_DELAY_MS = 1500
+export function providerRetrySteps(): MockStep[] {
+  return [
+    { type: 'text', text: 'Starting on the request.' },
+    { type: 'providerRetry', attempt: 1, delayMs: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'wait', ms: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'providerRetry', attempt: 2, delayMs: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'wait', ms: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'providerRetry', attempt: 2, ok: true },
+    { type: 'text', text: 'The provider answered after two retries.' }
+  ]
 }
 
 /** [mock:rate-limit]: one text, then the plan's usage limit (reset in 1.5 s) and the session ends. */
@@ -2466,6 +2490,7 @@ export class MockSession implements RuntimeSession {
     if (!this.ctx.resumeSessionId) {
       if (prompt.includes(BUDGET_STOP_TOKEN)) return budgetStopSteps()
       if (prompt.includes(PROVIDER_ERROR_TOKEN)) return providerErrorSteps()
+      if (prompt.includes(PROVIDER_RETRY_TOKEN)) return providerRetrySteps()
     }
     if (prompt.includes(COMPACT_TOKEN)) return compactSteps()
     if (prompt.includes(RATE_LIMIT_TOKEN)) return rateLimitSteps()
@@ -2655,6 +2680,14 @@ export class MockSession implements RuntimeSession {
         this.upsert(a)
         return
       }
+      case 'providerRetry':
+        this.emit({
+          type: 'provider.retry',
+          runId: this.ctx.run.id,
+          attempt: step.attempt,
+          ...(step.ok ? { ok: true as const } : step.delayMs !== undefined ? { nextTryAt: Date.now() + step.delayMs } : {})
+        })
+        return
       case 'plan':
         await this.harnessStep({
           type: 'harness',
@@ -3123,7 +3156,22 @@ export class MockSession implements RuntimeSession {
     const role = this.roleBySlug(slug)
     // Run staffing: bind to the plan step and resolve before the report exists; apply only an override.
     const onCall = step.tier || step.effort ? { ...(step.tier ? { tier: step.tier } : {}), ...(step.effort ? { effort: step.effort } : {}) } : undefined
-    const decision = role ? this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(onCall ? { onCall } : {}) }) : undefined
+    // Project.askBeforeStrongerModel, like the real adapters: a stronger-than-the-role result waits for the answer; "keep" re-decides on the role's tier.
+    const parentTier = parentId !== ROOT_AGENT_ID ? this.staffing.tierOf(parentId) : (this.root.tier ?? settingTier(this.root.model))
+    const decision = role
+      ? await decideWithStrongerGate({
+          role,
+          project: this.ctx.project,
+          ...(parentTier ? { parentTier } : {}),
+          decide: (keepTier) => {
+            const call = keepTier ? { ...onCall, tier: keepTier } : onCall
+            return this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(call ? { onCall: call } : {}) })
+          },
+          cancel: () => this.staffing.cancel(step.id),
+          ask: (card) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }),
+          log: (level, text) => this.log(level, text)
+        })
+      : undefined
     const staffedModel = decision?.resolved.tierChanged && decision.resolved.model && decision.resolved.model !== 'inherit' ? decision.resolved.model : undefined
     if (decision?.resolved.overrides) this.staffed.set(step.id, { ...(staffedModel ? { model: staffedModel } : {}), ...(decision.resolved.effortChanged && decision.resolved.effort ? { effort: decision.resolved.effort } : {}) })
     else this.staffed.delete(step.id)

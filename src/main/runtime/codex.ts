@@ -68,7 +68,7 @@ import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSp
 import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
 import { StaffingBook } from './staffingBook'
-import { recordStaffing } from './staffing'
+import { decideWithStrongerGate, recordStaffing } from './staffing'
 import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
@@ -407,6 +407,8 @@ class CodexSession implements RuntimeSession {
   private contextWindows = new Map<string, number>()
   /** Agent id -> compactions of its thread in this session (log wording only; RunManager keeps the run's count). */
   private compactionCounts = new Map<string, number>()
+  /** Consecutive `error` notifications with willRetry the app-server sent without output since (0 = not retrying). */
+  private providerRetryAttempt = 0
   /** Messages the user sent before the root thread existed. */
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
@@ -1596,6 +1598,12 @@ class CodexSession implements RuntimeSession {
       return
     }
     const agent = this.agents.get(agentId)
+    // Output after a retried error is the next successful answer: one `ok` ends the streak.
+    if (this.providerRetryAttempt > 0 && (u.type === 'text' || u.type === 'partial' || u.type === 'thinking' || u.type === 'toolUse' || (u.type === 'turnCompleted' && u.status === 'completed'))) {
+      const attempt = this.providerRetryAttempt
+      this.providerRetryAttempt = 0
+      this.emit({ type: 'provider.retry', runId: this.ctx.run.id, attempt, ok: true })
+    }
     switch (u.type) {
       case 'text':
         if (agent) {
@@ -1701,6 +1709,11 @@ class CodexSession implements RuntimeSession {
           countUsage(agent, 'retries')
           this.upsert(agent)
         }
+        if (u.willRetry) {
+          // The app-server reports neither an attempt number nor a delay: count the retried errors, send no nextTryAt, never the message.
+          this.providerRetryAttempt += 1
+          this.emit({ type: 'provider.retry', runId: this.ctx.run.id, attempt: this.providerRetryAttempt })
+        } else this.providerRetryAttempt = 0
         if (u.usageLimit && !u.willRetry) void this.onUsageLimit()
         return
     }
@@ -2581,11 +2594,25 @@ class CodexSession implements RuntimeSession {
     const parent = this.agents.get(req.parentId)
     const parentRole = this.net.roleOf(req.parentId) ?? this.root
     // Run staffing: bind to the plan step and resolve tier / effort before anything is created (cancelled below on failure).
-    const decision = this.staffing.decide({
-      key: req.id,
+    // Project.askBeforeStrongerModel: a result on a stronger model than the role's own waits for the user's answer
+    // (spawn_report is an async tool call); "keep" re-decides on the role's tier. Off: one decide, as before.
+    const parentTier = req.parentId !== ROOT_AGENT_ID ? this.staffing.tierOf(req.parentId) : codexRootTier(this.root, this.rootModelOverride, this.ctx.connection?.tierModels)
+    const decision = await decideWithStrongerGate({
       role: req.role,
-      ...(req.parentId !== ROOT_AGENT_ID ? { parentAgentId: req.parentId } : {}),
-      ...(req.onCall ? { onCall: req.onCall } : {})
+      project: this.ctx.project,
+      ...(parentTier ? { parentTier } : {}),
+      decide: (keepTier) => {
+        const call = keepTier ? { ...req.onCall, tier: keepTier } : req.onCall
+        return this.staffing.decide({
+          key: req.id,
+          role: req.role,
+          ...(req.parentId !== ROOT_AGENT_ID ? { parentAgentId: req.parentId } : {}),
+          ...(call ? { onCall: call } : {})
+        })
+      },
+      cancel: () => this.staffing.cancel(req.id),
+      ask: (card) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }),
+      log: (level, text) => this.log(level, text)
     })
     // The model only when the tier changed, the effort only when the effort changed: an effort-only pick keeps the
     // model the role would run on anyway (its own, or its parent's when it inherits).
