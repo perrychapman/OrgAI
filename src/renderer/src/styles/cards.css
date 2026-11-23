@@ -585,6 +585,7 @@
 /* The deny is quiet (board: a ghost button) so the one primary action leads; red text keeps its meaning. */
 .decision-deny .btn.danger:not(:disabled):not([aria-disabled='true']) {
   background: transparent;
+  border: 1px solid var(--danger-border);
 }
 .decision-deny .btn.danger:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--danger-soft);

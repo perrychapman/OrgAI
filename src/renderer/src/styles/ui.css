@@ -701,6 +701,16 @@ ul.maint-list {
   border-color: var(--accent-text);
   color: var(--text-primary);
 }
+@media (forced-colors: active) {
+  .ui-chip.is-selected {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border-color: HighlightText;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+}
 .ui-chip:disabled {
   color: var(--text-disabled);
   cursor: not-allowed;
