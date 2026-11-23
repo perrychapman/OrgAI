@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { compareEffort, compareTier, effortOptionsFor, RUN_STAFFING_ASSIGNMENTS_MAX, settingTier, STAFFING_NOTE_MAX_CHARS } from '@shared/defaults'
 import { EFFORTS, MODEL_TIERS, type Effort, type ModelTier, type PlanStep, type Role, type RunPlan, type RunStaffing, type StaffingAssignment } from '@shared/types'
 import {
   appendStaffing,
   CLAUDE_TIER_ALIAS,
+  decideWithStrongerGate,
   enforcedStaffingFloor,
   isDeepOrTopModelRef,
   recordStaffing,
@@ -12,8 +13,14 @@ import {
   staffingAssignment,
   staffingLabel,
   staffRequestForSpawn,
+  STRONGER_MODEL_KEEP,
+  STRONGER_MODEL_USE,
+  strongerModelCard,
+  strongerModelChoice,
+  strongerModelCheck,
   type ResolveStaffingInput,
-  type StaffingRequest
+  type StaffingRequest,
+  type StrongerModelCard
 } from './staffing'
 
 type R = Pick<Role, 'model' | 'tier' | 'effort' | 'staffing'>
@@ -747,5 +754,126 @@ describe('enforcedStaffingFloor (the floor resolveStaffing enforces; shared with
     const fast = (role: Partial<Role>) => resolveStaffing({ role: { slug: 'r', ...role } as Role, project: {}, tierModels: TM, adapterEfforts: CLAUDE, requested: { tier: 'fast' } }).tier
     expect(fast({ model: 'deep', tier: 'deep', staffing: { mode: 'auto', minTier: 'everyday' } })).toBe('everyday')
     expect(fast({ model: 'sonnet', tier: 'deep', staffing: { mode: 'auto', minTier: 'deep' } })).toBe('fast')
+  })
+})
+
+describe('strongerModelCheck (Project.askBeforeStrongerModel)', () => {
+  const ON = { askBeforeStrongerModel: true as const }
+  const resolved = (over: Record<string, unknown>) => ({ mode: 'auto' as const, tier: 'everyday' as ModelTier, source: 'role' as const, ...over }) as Parameters<typeof strongerModelCheck>[0]['resolved']
+
+  it('never asks with the option off or unset', () => {
+    const esc = run({ role: { ...EVERYDAY, effort: 'high' }, escalatedFrom: { tier: 'fast', effort: 'high' } })
+    expect(esc.note).toMatch(/escalated tier from fast to everyday/i)
+    expect(strongerModelCheck({ role: EVERYDAY, project: {}, resolved: esc })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: EVERYDAY, project: { askBeforeStrongerModel: false }, resolved: esc })).toEqual({ ask: false })
+  })
+
+  it('asks for a retry escalation that raised the tier, and keeps on the tier the failed attempt ran on', () => {
+    const esc = run({ role: { ...EVERYDAY, effort: 'high' }, escalatedFrom: { tier: 'fast', effort: 'high' } })
+    expect(esc).toMatchObject({ source: 'escalated', tier: 'everyday' })
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: esc })).toEqual({ ask: true, keepTier: 'fast', to: 'everyday' })
+  })
+
+  it('does not ask when the escalation only raised the effort', () => {
+    const esc = run({ role: { ...EVERYDAY, effort: 'high' }, escalatedFrom: { tier: 'everyday', effort: 'low' } })
+    expect(esc.source).toBe('escalated')
+    expect(esc.tier).toBe('everyday')
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: esc })).toEqual({ ask: false })
+  })
+
+  it("asks when the resolved tier is above the role's own tier, and keeps on the role's own", () => {
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: resolved({ tier: 'deep' }) })).toEqual({ ask: true, keepTier: 'everyday', to: 'deep' })
+    // An inherit role's own tier is its tier, else the parent's.
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, parentTier: 'everyday', resolved: resolved({ tier: 'top' }) })).toEqual({ ask: true, keepTier: 'everyday', to: 'top' })
+  })
+
+  it("never asks when the tier is not above the role's own, for a fixed result, the plan guard, or an unknown tier", () => {
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: resolved({ tier: 'everyday' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: DEEP, project: ON, resolved: resolved({ tier: 'everyday' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: resolved({ tier: 'deep', mode: 'fixed' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: resolved({ tier: 'deep', source: 'plan-guard' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: { model: 'inherit' }, project: ON, resolved: resolved({ tier: 'deep' }) })).toEqual({ ask: false })
+    expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: { mode: 'auto', source: 'role' } as never })).toEqual({ ask: false })
+  })
+
+  it("resolveStaffing alone never lands above the role's own tier, so a plain pick never asks", () => {
+    for (const requested of MODEL_TIERS) {
+      const r = run({ role: EVERYDAY, requested: { tier: requested } })
+      expect(strongerModelCheck({ role: EVERYDAY, project: ON, resolved: r })).toEqual({ ask: false })
+    }
+  })
+})
+
+describe('strongerModelChoice and the card', () => {
+  it('uses the stronger model only for exactly the "Use it" label', () => {
+    expect(strongerModelChoice({ selected: [STRONGER_MODEL_USE] })).toBe('use')
+    expect(strongerModelChoice({ selected: [STRONGER_MODEL_KEEP] })).toBe('keep')
+    expect(strongerModelChoice({ selected: [] })).toBe('keep')
+    expect(strongerModelChoice({ selected: [STRONGER_MODEL_USE, STRONGER_MODEL_KEEP] })).toBe('keep')
+    expect(strongerModelChoice({ selected: ['use it'] })).toBe('keep')
+    expect(strongerModelChoice(undefined)).toBe('keep')
+  })
+  it('words the question and the two options', () => {
+    expect(strongerModelCard('Engineer')).toEqual({
+      question: 'Use a stronger model for Engineer? It may cost more.',
+      options: [{ label: 'Use it' }, { label: "Keep the role's model" }],
+      allowMultiple: false,
+      allowFreeText: false
+    })
+  })
+})
+
+describe('decideWithStrongerGate', () => {
+  const ON = { askBeforeStrongerModel: true as const }
+  const NAMED = { name: 'Engineer', ...EVERYDAY }
+  /** A decide() whose first call is an escalation to everyday from fast; a call with keepTier resolves on that tier. */
+  function harness(answer?: { selected: string[] } | Error) {
+    const calls: Array<ModelTier | undefined> = []
+    let cancelled = 0
+    const logs: string[] = []
+    const decide = (keepTier?: ModelTier) => {
+      calls.push(keepTier)
+      return { resolved: keepTier ? run({ role: EVERYDAY, requested: { tier: keepTier } }) : run({ role: { ...EVERYDAY, effort: 'high' }, escalatedFrom: { tier: 'fast', effort: 'high' } }) }
+    }
+    const ask = vi.fn(async (_card: StrongerModelCard) => {
+      if (answer instanceof Error) throw answer
+      return answer ?? { selected: [] }
+    })
+    return { calls, logs, ask, cancelled: () => cancelled, opts: { role: NAMED, decide, cancel: () => void cancelled++, log: (_l: string, t: string) => void logs.push(t) } }
+  }
+
+  it('off: one decide, no question', async () => {
+    const h = harness({ selected: ['Use it'] })
+    const d = await decideWithStrongerGate({ ...h.opts, project: {}, ask: h.ask })
+    expect(d.resolved.tier).toBe('everyday')
+    expect(h.calls).toEqual([undefined])
+    expect(h.ask).not.toHaveBeenCalled()
+  })
+  it('on, "Use it": asks once, keeps the stronger decision, cancels nothing', async () => {
+    const h = harness({ selected: ['Use it'] })
+    const d = await decideWithStrongerGate({ ...h.opts, project: ON, ask: h.ask })
+    expect(h.ask).toHaveBeenCalledTimes(1)
+    expect(h.ask.mock.calls[0]![0].question).toBe('Use a stronger model for Engineer? It may cost more.')
+    expect(d.resolved.source).toBe('escalated')
+    expect(h.calls).toEqual([undefined])
+    expect(h.cancelled()).toBe(0)
+  })
+  it('on, "Keep": cancels and re-decides on the kept tier', async () => {
+    const h = harness({ selected: ["Keep the role's model"] })
+    const d = await decideWithStrongerGate({ ...h.opts, project: ON, ask: h.ask })
+    expect(h.calls).toEqual([undefined, 'fast'])
+    expect(h.cancelled()).toBe(1)
+    expect(d.resolved.tier).toBe('fast')
+    expect(h.logs).toEqual(['Kept Engineer on the fast tier: the stronger model was not approved.'])
+  })
+  it('on, a failing or empty question keeps; no way to ask keeps and says it needs approval', async () => {
+    for (const answer of [new Error('closed'), { selected: [] }]) {
+      const h = harness(answer)
+      expect((await decideWithStrongerGate({ ...h.opts, project: ON, ask: h.ask })).resolved.tier).toBe('fast')
+    }
+    const h = harness()
+    const d = await decideWithStrongerGate({ ...h.opts, project: ON })
+    expect(d.resolved.tier).toBe('fast')
+    expect(h.logs[0]).toContain("needs the user's approval")
   })
 })
