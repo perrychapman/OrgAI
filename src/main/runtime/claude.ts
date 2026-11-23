@@ -78,6 +78,7 @@ import { WorktreeIntegrator } from './integration'
 import { CLAUDE_HOOK_CONTEXT_INLINE_MAX, ReadTextStore, briefFiles, buildContextPackFromTexts, completeReadText, contextPackBlock, contextPackRefusal, contextPackResultLine, contextPackRoots, type ContextPack } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { resolveParent } from './agentTree'
+import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
 import {
   mapRateLimitEvent,
   mapUsageResponse,
@@ -1690,7 +1691,7 @@ export class ClaudeSession implements RuntimeSession {
    * `caller` is the agent whose Agent call it is. A spawn cut before task_started without an error result (review L4)
    * goes at a query restart (dropSpawnsAtRestart) or after an interrupt (sweepCutSpawns).
    */
-  private spawnModes = new Map<string, { modes: PermissionMode[]; caller: string }>()
+  private spawnModes = new Map<string, { modes: PermissionMode[]; caller: string; /** The spawned role's id (spawn caps count unstarted spawns by it). */ roleId?: string; /** The brief the caller wrote, cut (AgentInstance.brief at task_started). */ brief?: string }>()
   /** Approved, unstarted spawns that existed when interrupt() was called: swept once their caller's turn is over. */
   private spawnsCutByInterrupt = new Set<string>()
   /**
@@ -1894,6 +1895,46 @@ export class ClaudeSession implements RuntimeSession {
     // interrupt kills them (sdk.d.ts, not checked live), and stopTask makes sure. They are settled here, not integrated.
     this.stopBackgroundReports('Interrupted', true)
     this.stopHarnessBackgroundedShells()
+  }
+
+  /**
+   * UI overhaul runs:stopAgent: stop one running report and the reports under it with the SDK's per-task stop
+   * (Query.stopTask(taskId); an agent's task id is its agent id, sdk-facts). Never the root; false for an unknown or
+   * ended agent, when the query has no stopTask, or when the CLI refuses it (already gone). Each stopped agent is settled
+   * as an interrupted background report is (done, "Stopped by you", ledger entry and staffing row closed, branch neither
+   * merged nor held), so the task_notification or SubagentStop that follows changes nothing. Whether the CLI stops a
+   * foreground report mid-call and what its parent's Agent call then returns is not verified live.
+   */
+  async stopAgent(agentId: string): Promise<boolean> {
+    if (typeof agentId !== 'string' || agentId === ROOT_ID) return false
+    const target = this.agents.get(agentId)
+    if (!target || target.state === 'done' || target.state === 'error') return false
+    const q = this.q as Partial<Query> | undefined
+    if (typeof q?.stopTask !== 'function') return false
+    // Deepest first: a child is stopped before the report that spawned it.
+    const tree: string[] = []
+    const visit = (id: string, depth: number): void => {
+      if (depth > 50) return
+      for (const a of this.agents.values()) if (a.parentId === id && a.id !== ROOT_ID && !tree.includes(a.id)) visit(a.id, depth + 1)
+      if (!tree.includes(id)) tree.push(id)
+    }
+    visit(agentId, 0)
+    for (const id of tree) {
+      const a = this.agents.get(id)
+      if (!a || a.state === 'done' || a.state === 'error') continue
+      try {
+        await q.stopTask.call(this.q, id)
+      } catch (e) {
+        // The target itself refusing means nothing was stopped; a descendant that is already gone is expected.
+        if (id === agentId) {
+          this.log('warn', `Could not stop ${a.handle ?? a.name ?? id}: ${(e as Error).message}`)
+          return false
+        }
+      }
+      this.settleBackground(id, 'Stopped by you')
+    }
+    this.log('info', `${target.handle ?? target.name ?? agentId} was stopped${tree.length > 1 ? ` with ${tree.length - 1} report${tree.length === 2 ? '' : 's'} under it` : ''}.`)
+    return true
   }
 
   /**
@@ -3437,9 +3478,25 @@ export class ClaudeSession implements RuntimeSession {
           this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (its org chart change reaches the session at the next restart)`)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: pendingDenial } }
         }
+        // UI overhaul spawn caps (Role.maxConcurrent, Project.maxAgentsPerRun), read live from ctx; approved spawns that have
+        // no agent yet (spawnModes) count, so parallel calls in one message cannot all slip under a cap.
+        const capRole = this.liveRoleBySlug(requested)
+        const capDenial = capRole
+          ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values(), pending: [...this.spawnModes.values()].map((e) => e.roleId) })
+          : undefined
+        if (capDenial) {
+          this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (spawn cap)`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: capDenial } }
+        }
         // The spawn is approved: what it may run under is fixed now, its caller's modes included (review M1a/b). A live
         // switch before task_started counts it; task_started moves this onto the report.
-        this.spawnModes.set(input.tool_use_id, { modes: [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])], caller: agentId })
+        const spawnBrief = agentBriefOf(toolInput.prompt)
+        this.spawnModes.set(input.tool_use_id, {
+          modes: [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])],
+          caller: agentId,
+          ...(capRole ? { roleId: capRole.id } : {}),
+          ...(spawnBrief ? { brief: spawnBrief } : {})
+        })
         this.setState(agentId, 'delegating', describe(input.tool_name, toolInput))
         // Writing reports get their own worktree when their parent is the orchestrator or is itself
         // isolated (nested isolation). A nested spawn runs from the parent's worktree, so Claude Code
@@ -5492,8 +5549,12 @@ export class ClaudeSession implements RuntimeSession {
                     : { mergeTarget: 'main' as const })
                 })
               : undefined)
+          // AgentInstance.brief: what the parent wrote on the Agent call, set once on the call's own task_started.
+          const spawnBrief = msg.tool_use_id ? this.spawnModes.get(msg.tool_use_id)?.brief : undefined
           this.upsert({
-            ...(existing ?? this.ensureAgent(msg.task_id, { roleSlug: slug, parentId })),
+            // The brief goes into the creation too, so the agent.upsert that first creates the agent already carries it.
+            ...(existing ?? this.ensureAgent(msg.task_id, { roleSlug: slug, parentId, ...(spawnBrief ? { brief: spawnBrief } : {}) })),
+            ...(spawnBrief && !existing?.brief ? { brief: spawnBrief } : {}),
             roleId: role?.id ?? null,
             roleSlug: slug,
             name: role?.name ?? slug,
