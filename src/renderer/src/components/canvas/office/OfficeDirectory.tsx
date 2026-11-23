@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactElement } from 'react'
+import { useEffect, useRef, type KeyboardEvent, type ReactElement } from 'react'
 import { Search } from 'lucide-react'
 import { Icon } from '../../ui/Icon'
 import type { OfficeAgent } from './officeArt'
@@ -21,6 +21,16 @@ export interface OfficeDirectoryProps {
 
 export function OfficeDirectory({ agents, rooms, selectedId, onPick, onRemove, filteredOut = 0 }: OfficeDirectoryProps): ReactElement {
   const details = useRef<HTMLDetailsElement>(null)
+  // The list drops over the stage: pressing on the stage (to pan or pick someone there) closes it.
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent): void => {
+      const el = details.current
+      if (!el?.open || el.contains(event.target as Node)) return
+      if ((event.target as Element | null)?.closest?.('.office-stage')) el.open = false
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
   const onKeyDown = (event: KeyboardEvent<HTMLDetailsElement>): void => {
     if (event.key !== 'Escape' || !details.current?.open) return
     event.preventDefault()
@@ -29,7 +39,7 @@ export function OfficeDirectory({ agents, rooms, selectedId, onPick, onRemove, f
     details.current.querySelector('summary')?.focus()
   }
   return <details className="office-directory" ref={details} onKeyDown={onKeyDown}>
-    <summary className="office-chip"><Icon icon={Search} size="sm" /><span className="office-chip-label">Find a person</span> <span className="office-chip-count">{agents.length}</span></summary>
+    <summary className="office-chip"><Icon icon={Search} size="sm" /><span className="office-chip-label">Find a person</span> <span className="office-chip-count">{agents.length}<span className="sr-only"> {agents.length === 1 ? 'person' : 'people'}</span></span></summary>
     <div className="office-roster glass-strong" aria-label="All people, including earlier sessions" role="region">
       {filteredOut > 0 && (agents.length
         ? <p className="office-roster-note">{filteredOut} more not shown: Show is not set to All.</p>

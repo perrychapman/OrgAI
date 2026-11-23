@@ -135,9 +135,9 @@
   white-space: nowrap;
 }
 .factory-legend-swatch {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-xs);
 }
 .factory-legend-item[data-lamp='failed'] .factory-legend-swatch {
   background: var(--danger);

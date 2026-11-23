@@ -116,9 +116,8 @@
 .office-person[data-office-exchange='true'] .office-person-label { color: var(--office-surface); background: var(--office-ink); border-color: var(--office-surface); }
 /* Needs you (Office board): the plate turns amber; the ? mark over the desk and the word "Needs you" carry it too. */
 .office-person[data-office-state='waiting'] .office-person-label { background: color-mix(in srgb, var(--warning) 30%, var(--office-surface)); border-color: var(--warning); font-weight: var(--weight-semibold); }
-/* Show filter: people outside it are dimmed (no transition; they stay focusable and keep their names). */
+/* Show filter: people outside it are dimmed (no transition). Only the art dims: they stay focusable and their nameplates keep full contrast. */
 .office-person-art[data-office-dimmed='true'], .office-mark[data-office-dimmed='true'] { opacity: 0.3; }
-.office-person[data-office-dimmed='true']:not(:focus-visible):not([aria-pressed='true']) .office-person-label { opacity: 0.55; }
 
 .office-empty { align-self: center; max-width: 30em; margin: 0; padding: var(--space-3); border: 1px solid var(--glass-line); border-radius: var(--radius-lg); background: var(--glass-strong); color: var(--text-secondary); }
 .office-inspector { border-inline-start: 2px solid var(--office-border); }
