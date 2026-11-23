@@ -57,17 +57,19 @@ export function OfficeSample({ palette }: { palette: CanvasScenePalette }): Reac
   </div>
 }
 
-export function CanvasPresentationChoices({ canvas, onPresentation, onPalette }: {
+export function CanvasPresentationChoices({ canvas, onPresentation, onPalette, hidePresentation }: {
   canvas: CanvasSettings
   onPresentation: (value: CanvasPresentation) => void
   onPalette: (value: CanvasScenePalette) => void
+  /** Leave out the Presentation group (the canvas toolbar's Theme menu is the chooser there); the palette still follows the current presentation. */
+  hidePresentation?: boolean
 }): ReactElement {
   const presentationName = useId()
   const paletteName = useId()
   const presentation = canvas.presentation ?? 'graph'
   const palette = canvas.scenePalette ?? 'color'
   return <div className="canvas-choice-groups">
-    <fieldset className="canvas-choice-group" data-testid="canvas-presentation">
+    {!hidePresentation && <fieldset className="canvas-choice-group" data-testid="canvas-presentation">
       <legend>Presentation</legend>
       <div className="canvas-choices">
         {PRESENTATION_OPTIONS.map(option => <label className="canvas-choice" key={option.value} data-testid="canvas-presentation-choice" data-presentation={option.value}>
@@ -77,7 +79,7 @@ export function CanvasPresentationChoices({ canvas, onPresentation, onPalette }:
           {presentation === option.value && <span className="canvas-choice-check" aria-hidden="true"><Icon icon={Check} size="sm" /></span>}
         </label>)}
       </div>
-    </fieldset>
+    </fieldset>}
     {usesScenePalette(presentation) && <fieldset className="canvas-choice-group" data-testid="canvas-scene-palette">
       <legend>Office palette</legend>
       <div className="canvas-choices canvas-palette-choices">

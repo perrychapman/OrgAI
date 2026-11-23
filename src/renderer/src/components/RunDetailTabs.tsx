@@ -5,7 +5,7 @@
  * `sideTabByRun` in the store either way, so Plan buttons, navigation targets and the Usage return land in both.
  */
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Circle, CircleDot, MinusCircle, type LucideIcon } from 'lucide-react'
 import type { AgentInstance, PlanStep, RunPlan, RunStaffing } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
@@ -19,7 +19,9 @@ import { stepRanLabel } from '../lib/runStaffing'
 import { autoContinueLine } from '../lib/transcriptRows'
 import { useTranscriptFollow } from '../lib/useTranscriptFollow'
 import { useReducedMotion } from '../lib/canvas'
-import { countReplies, replyArrived, resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab, type ReplyMark } from '../lib/runTabs'
+import { countReplies, replyArrived, resolveRunTab, runTabIds, showsAgentsTab, showsKnowledgeTab, showsOutputsTab, showsPlanTab, type ReplyMark } from '../lib/runTabs'
+import { waitingAgentIds } from '../lib/canvasAgents'
+import { AgentList } from './canvas/AgentList'
 import RunKnowledge from './knowledge/RunKnowledge'
 import RunOutputs from './outputs/RunOutputs'
 import UsagePanel from './UsagePanel'
@@ -43,6 +45,48 @@ const STEP_LABELS: Record<PlanStep['status'], string> = {
   done: 'Done',
   blocked: 'Blocked',
   skipped: 'Skipped'
+}
+
+/**
+ * "Find an agent": the run view's toolbar button calls `openAgentFinder()`. It selects the Agents tab of the shown run
+ * and asks its search field to take focus. The request outlives the tab switch (the panel mounts a moment later) but
+ * not a long wait, so a request nobody could show (no side panel) never steals focus later.
+ */
+const FINDER_TTL_MS = 1500
+let finderAt = 0
+let finderSeq = 0
+const finderListeners = new Set<() => void>()
+export function openAgentFinder(): void {
+  finderAt = Date.now()
+  finderSeq++
+  useAppStore.getState().setSideTab('agents')
+  for (const l of [...finderListeners]) l()
+}
+function subscribeFinder(l: () => void): () => void {
+  finderListeners.add(l)
+  return () => finderListeners.delete(l)
+}
+
+/** The Agents tab's body: the flat agent list over the run's agents, wired to the store (selection is the canvas selection). */
+function AgentsPanel({ runId }: { runId: string }): ReactElement {
+  const byId = useAppStore((s) => s.runs[runId]?.agents)
+  const permissions = useAppStore((s) => s.runs[runId]?.permissions)
+  const questions = useAppStore((s) => s.runs[runId]?.questions)
+  const ruleRequests = useAppStore((s) => s.runs[runId]?.ruleRequests)
+  const mergeReviews = useAppStore((s) => s.runs[runId]?.mergeReviews)
+  const mcpInstalls = useAppStore((s) => s.runs[runId]?.mcpInstalls)
+  const selectedId = useAppStore((s) => s.selectedAgentId)
+  const selectAgent = useAppStore((s) => s.selectAgent)
+  const agents = useMemo(() => Object.values(byId ?? {}), [byId])
+  const waitingIds = useMemo(
+    () => waitingAgentIds({ permissions, questions, ruleRequests, mergeReviews, mcpInstalls }),
+    [permissions, questions, ruleRequests, mergeReviews, mcpInstalls]
+  )
+  // A find request made just before this mounted, or while it is open, focuses the search field.
+  const [focusKey, setFocusKey] = useState<number | undefined>(() => (Date.now() - finderAt < FINDER_TTL_MS ? finderSeq : undefined))
+  useEffect(() => subscribeFinder(() => setFocusKey(finderSeq)), [])
+  const onSelect = useCallback((id: string) => selectAgent(id), [selectAgent])
+  return <AgentList agents={agents} waitingIds={waitingIds} selectedId={selectedId} onSelect={onSelect} focusSearchKey={focusKey} />
 }
 
 /** The orchestrator's plan: goal, steps with status, and how the automatic continuation stands. */
@@ -135,6 +179,11 @@ export function useRunTabs(
     const run = s.runs[runId]
     return !!run && showsPlanTab({ kind: run.summary.kind, hasPlan: !!run.plan, stage, quick: run.summary.quick, team: run.summary.team })
   })
+  const agentCount = useAppStore((s) => {
+    const agents = s.runs[runId]?.agents
+    return agents ? Object.keys(agents).length : 0
+  })
+  const showAgents = useAppStore((s) => showsAgentsTab(s.runs[runId]?.summary, agentCount))
   const showOutputs = useAppStore((s) => showsOutputsTab(s.runs[runId]?.summary))
   const showKnowledge = useAppStore((s) => {
     const run = s.runs[runId]?.summary
@@ -146,19 +195,20 @@ export function useRunTabs(
   const chainSummaries = useProjectSummaries()
   const outputsCount = useMemo(() => outputsOfRuns(outputsAll, chainOf(chainSummaries, runId).map((m) => m.id)).length, [outputsAll, chainSummaries, runId])
   const errorCount = logs.filter((l) => l.level === 'error').length
-  const ids = runTabIds({ plan: showPlan, outputs: showOutputs, knowledge: showKnowledge })
+  const ids = runTabIds({ plan: showPlan, outputs: showOutputs, knowledge: showKnowledge, agents: showAgents })
   const item: Record<SideTab, TabItem> = {
     transcript: { id: 'transcript', label: first.label, testId: first.testId, dot: newReply, dotLabel: newReply ? 'new reply' : undefined },
+    agents: { id: 'agents', label: 'Agents', count: agentCount, countLabel: `${agentCount} agents`, countTestId: 'side-tab-agents-count', testId: 'side-tab-agents' },
     plan: { id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' },
     usage: { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
-    outputs: { id: 'outputs', label: 'Outputs', count: outputsCount, countLabel: outputsCountLabel(outputsCount), countTestId: 'side-tab-outputs-count', testId: 'side-tab-outputs' },
+    outputs: { id: 'outputs', label: 'Files', count: outputsCount, countLabel: outputsCountLabel(outputsCount), countTestId: 'side-tab-outputs-count', testId: 'side-tab-outputs' },
     knowledge: { id: 'knowledge', label: 'Knowledge', testId: 'side-tab-knowledge' },
     logs: { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   }
   return { tabs: ids.map((id) => item[id]), tab: resolveRunTab(selected, ids), setTab }
 }
 
-/** The body of every tab but the first: Plan, Usage, Outputs, Knowledge and Logs. Renders nothing for 'transcript'. */
+/** The body of every tab but the first: Agents, Plan, Usage, Outputs (labelled Files), Knowledge and Logs. Renders nothing for 'transcript'. */
 export function RunTabBody({ runId, tab, idPrefix, agent, logs, className }: { runId: string; tab: SideTab; idPrefix: string; agent: AgentInstance | undefined; logs: readonly LogLine[]; className?: string }): ReactElement | null {
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
   const plan = useAppStore((s) => s.runs[runId]?.plan)
@@ -176,6 +226,12 @@ export function RunTabBody({ runId, tab, idPrefix, agent, logs, className }: { r
   })
   const cls = (own?: string): string | undefined => [own, className].filter(Boolean).join(' ') || undefined
   switch (tab) {
+    case 'agents':
+      return (
+        <TabPanel idPrefix={idPrefix} id="agents" value={tab} className={cls('run-agents-panel')}>
+          <AgentsPanel runId={runId} />
+        </TabPanel>
+      )
     case 'plan':
       return (
         <TabPanel idPrefix={idPrefix} id="plan" value={tab} className={cls()}>

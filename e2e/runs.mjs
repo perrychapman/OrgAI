@@ -178,8 +178,10 @@ try {
       await tTab.focus()
       await page.keyboard.press('ArrowRight')
       await sleep(200)
-      const sel = await page.locator('[data-testid=side-tab-plan]').getAttribute('aria-selected')
-      check(sel === 'true', 'ArrowRight on the Transcript tab selects Plan', String(sel))
+      // The tab after Transcript is Agents on a team run with more than one agent, else Plan.
+      const nextTab = (await page.locator('[data-testid=side-tab-agents]').count()) > 0 ? 'side-tab-agents' : 'side-tab-plan'
+      const sel = await page.locator(`[data-testid=${nextTab}]`).getAttribute('aria-selected')
+      check(sel === 'true', `ArrowRight on the Transcript tab selects ${nextTab === 'side-tab-agents' ? 'Agents' : 'Plan'}`, String(sel))
       await tTab.click()
       await sleep(200)
       // The side header stays pinned: overflow the transcript body, scroll it, and the tab must not move.
