@@ -36,6 +36,8 @@ the live view; `@dagrejs/dagre` for tree layout; zustand for renderer state.
   `RUN_MESSAGE_RECEIVE_TIMEOUT_MS` (30 s): on timeout both runs get a warning, the chain moves on and a direct sender
   gets refusal `timeout`. Caps: 40 per sender per target, 100 inbound per run. A direct `RuntimeSession.receive()`
   call is ungated, so always deliver through RunManager.
+- UI overhaul runtime (`docs/design/ui-overhaul/impl-runtime.md`, `docs/agent-notes/core-runtime.md` "UI overhaul runtime"): the 22 `OVERHAUL_IPC` channels are desktop-only (`overhaulIpc.ts`, app-window check, never on the dispatcher, socket, CLI or agents); a new one is added to the type, `DESKTOP_CHANNEL_MUTATES` in `ipc.ts` and the register call together (`overhaulIpc.test.ts` fails otherwise). Daily and monthly caps (`spendGuard.ts`), per-run cap, test gate (merges the reviewed commit; an empty test command refuses the merge), spawn caps and `askBeforeStrongerModel` only narrow from a non-desktop surface (`host/projectSaveGuard.ts`). Unknown cost is never shown as zero. Checked by unit tests with fake adapters; live providers unverified.
+- UI overhaul renderer (`docs/design/ui-overhaul/STATUS.md`, `impl-*.md`, `docs/agent-notes/renderer.md`): glass tokens and the `data-glass` / `data-text-size` / `data-density` / `data-activity-dots` switches; user-facing pane and tab names are plain words (Files, Spending limits, Branches, AI providers, Tools and services) while ids stay; an action that spends or weakens a gate opens New run or asks, with key-repeat guards (Inbox `KeyGuard`, Composer, History, Delete branch); untrusted text (commit subjects, branch names, imported agent and skill text) is plain text; e2e makes projects through `pickSetup` in `e2e/lib.mjs`. The Live run view is being reassembled (`impl-run.md`).
 - Windows run with `sandbox: true`: the preload is CommonJS (`out/preload/index.cjs`, cli-spec Wave 6) and may require
   only 'electron' (shared code is bundled in). Navigation guards
   (`shouldBlockNavigation` in `windowScope.ts`) cover will-navigate, will-redirect and will-frame-navigate and fail closed.
@@ -79,7 +81,8 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
 
 - `docs/agent-notes/core-runtime.md`: application menu (main), run end and decision cards, required delegation, settings, run titles,
   projects, usage and pricing, work-run configuration changes, self-configuration (effective default connection,
-  plan guard, subagent limits), concurrent runs, setup sessions.
+  plan guard, subagent limits), concurrent runs, setup sessions, UI overhaul runtime (holds, spend caps, test gate,
+  spawn caps, app behaviours, desktop-only channels).
 - `docs/agent-notes/permissions.md`: prompt fatigue (#14), allowed folders, rule matching, suggestions, permission card UI.
 - `docs/agent-notes/assistants-skills.md`: skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks,
   trust-restricted runs, self-knowledge and self-help (main and renderer).
@@ -91,7 +94,7 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
   (docs/design/cli-standalone-default.md): ownership, dispatcher, owner-only socket, self-control gate, exec, TUI, npm CLI,
   Install row, vault and custodians per product, shutdown, repository lock, doctor; older Wave notes are history.
 - `docs/agent-notes/renderer.md`: shell, layout, primitives, motion, canvas fold and themes, run view and chains,
-  dashboard, settings pages, application menu (renderer), cost UI and the Usage page, proxy and multi-provider UI, proposal cards, org
+  Home, the UI overhaul (shell, Inbox, one Settings view, Team, data views, scenes), settings pages, application menu (renderer), cost UI and the Usage page, proxy and multi-provider UI, proposal cards, org
   change sessions, walkthrough pointers.
 - `docs/agent-notes/connections-mcp.md`: tiers and model discovery, connections vs adapters, multi-provider, proxies,
   child env isolation, Anthropic status and auth failures, Codex, LiteLLM, MCP, MCP library and OAuth, connectors.

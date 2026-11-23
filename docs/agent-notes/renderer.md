@@ -17,9 +17,9 @@ As built, deviations and open items: `docs/design/dashboard-usage-redesign/imple
   - `lib/usageDefinitions.ts`, used by the `DefinedTerm` toggletips.
 
   Checked by unit tests (pageArrival, countUp, gauge, dashboardLayout).
-- **Dashboard layout and storage:** `orgai.dashboardLayout` is now version 2. It holds the order and hidden sections (week, pickup, upnext, projects, engagements, commits, todos), pins, the `focus` lead figure and `motionPaused`, and a version-1 value migrates. Needs you and Right now are fixed: `DashSection` id `'now'` has no customise controls.
-- **Page regions:** the Briefing hero (`Briefing.tsx`), then Needs you and Right now, then the arrangeable sections. The work area is two columns from an 880 px `dash` container, and Pick up and Up next pair from 1280 px. Gutters sit on `.dash-inner` because a container query cannot change its own padding.
-- **Page-wide breathing budget:** 12. Right now reports its count through the context, and Team pulse gets the rest (`pulseBreathBudget`).
+- **Dashboard layout and storage:** `orgai.dashboardLayout` is now version 2. It holds the order and hidden sections (week, pickup, upnext, projects, engagements, commits, todos), pins, the `focus` lead figure and `motionPaused`, and a version-1 value migrates. Working now and Waiting on you are fixed regions: they have no customise controls and are not in the layout.
+- **Page regions (as built by the UI overhaul, see "UI overhaul: shell, Home and Inbox" below; this replaces the redesign's Needs you left / Right now right order):** `HomeHero` (the task box; none on first launch), the Briefing hero (`Briefing.tsx`), then Working now (`RightNowBand`, left) and Waiting on you (`NeedsYouRegion`, right), then the arrangeable sections. The work area is two columns from an 880 px `dash` container, and Pick up and Up next pair from 1280 px. Gutters sit on `.dash-inner` because a container query cannot change its own padding.
+- **Page-wide breathing budget:** 12. Working now reports its count through the context, and Team pulse gets the rest (`pulseBreathBudget`).
 - **Pause motion** (`dash-pause-motion`, constant name, `aria-pressed`) does four things:
   - sets `data-motion-paused`;
   - stops the breathing and signal loops;
@@ -56,7 +56,7 @@ As built, deviations and open items: `docs/design/dashboard-usage-redesign/imple
     - ResumeSection;
     - TodaySection and `scheduleRail`.
   - Usage:
-    - the stacked bars and their morph;
+    - the old stacked bars' metric morph (the UI overhaul brought stacked bars back as the plot shape, without the morph);
     - the hidden chart readout;
     - More signals and the team timing disclosure;
     - the Definitions section.
@@ -64,7 +64,7 @@ As built, deviations and open items: `docs/design/dashboard-usage-redesign/imple
   - **Pacing** (`lib/usagePacing.ts`): it uses the usage.md projection rules for calendar periods, and none for rolling periods.
   - **KPI band:** four Tab stops.
   - **Spend over time:**
-    - stacked areas (`lib/usageAreas.ts`);
+    - stacked bars, one per bucket slot with rounded tops and a 2 px minimum (the UI overhaul, `impl-data.md`, redrew the redesign's stacked areas as bars; the stacking, crosshair and extent maths stay in `lib/usageAreas.ts` and the wrapper keeps `data-testid="usage-spend-areas"`);
     - the plot is one `role="slider"` Tab stop, and keyboard moves show the crosshair and tooltip;
     - unpriced usage is shown by `usage-spend-gap` and `usage-spend-lane`.
   - **Where it went:** the ribbon (`lib/usageRibbon.ts`) is `aria-hidden`, and the rows are the keyboard path.
@@ -86,6 +86,83 @@ As built, deviations and open items: `docs/design/dashboard-usage-redesign/imple
   - forced colours;
   - plan gauges, setup popover rows and real decision counts in the app;
   - macOS.
+
+## UI overhaul: shell, Home and Inbox (2026-11-22)
+
+Design: `docs/design/ui-overhaul/` (status per board in `STATUS.md`). Notes: `impl-foundation.md` (tokens, primitives,
+cards), `impl-shell.md`, `impl-project-home.md`, `impl-data.md`. Where a note and the code disagreed, the code wins and
+this section says what the code does (checked by reading it on dev 2026-11-23). The Live run view is being reassembled:
+see `impl-run.md` when it lands; nothing here describes it.
+
+- **Foundation.** Glass tokens, the new palette, bundled Space Grotesk and the `data-glass` / `data-text-size` /
+  `data-density` / `data-activity-dots` switches are in `.orgai/ARCHITECTURE.md` "Theme layer". Shared pieces: `ui/Chip`
+  (native `aria-pressed` button, class `ui-chip`), `Banner live`, `SettingsGallery`, `.kbd-hint`, motion classes
+  `.motion-pulse / -breathe / -flow-v / -flow-h / -sheen / -lift / -rise`. Known limit: the tray's breathing dot stops
+  only under reduced motion, because only the Home page sets `[data-motion-paused]`. `--panel` is still `--surface-1`;
+  the boards' `--panel` means `--surface-2`. Decision cards: one look, amber kind chip, "Review and merge" / "New tool".
+- **Shell.** Sidebar order: Search (`sidebar-search`, Ctrl/Cmd+K), Home (`nav-home`), Inbox (`nav-inbox`, amber
+  `nav-inbox-count`; the Needs-you popover stays as a bell beside it), Chat, a "Helpers" group (Tools helper, Skills
+  helper), Projects with `+` (`nav-new-project`), footer Usage, Schedules, Settings (`app-settings-button`) and the plan
+  account row (`auth-pill`). `layout/CommandPalette.tsx` + pure `lib/commandPalette.ts`: groups This project, Open runs,
+  Go to, Projects, Create; it calls the store paths the sidebar rows call. Ctrl+K is in the shortcuts table
+  (`src/shared/view/shortcuts.ts`, so the impl-shell open item is closed). `layout/AppBanners.tsx`: offline, sign-in
+  needed, update ready. Project header: a kind chip and `project-settings-button`; `<main data-kind="engagement">`.
+  Tab ids and test ids are kept (`tab-outputs` reads "Files"); a project opens on Live, not Home, because every area's
+  e2e expects the composer after `nav-project`.
+- **Sound.** `lib/sound.ts` (pure `chimeDecision`), `lib/useAttentionSound.ts` mounted once in `App.tsx`: a two-note
+  WebAudio chime when a new decision key appears, never for decisions already waiting at start or when the switch turns
+  on, at most once per 4 s; `<html data-chime-count>` mirrors the count for e2e. Every window that renders App chimes for
+  its own runs (a run window too). Checked by `sound.test.ts` and `e2e/connections.mjs` (off by default, no chime).
+- **First launch.** `components/dashboard/FirstLaunch.tsx` + `lib/welcome.ts`: three steps (`welcome-setup`,
+  `data-stage` 1 to 3), Back / Skip setup / focus to the step heading, then the start choice. Step 1 lists the real
+  connections with their real status (a connected pick becomes the default through `setDefaultConnection`); step 3 saves
+  one of three real modes through `settings:set`. No API-key or gateway cards, no "Recommended" badge. `e2e/lib.mjs`
+  `launch()` marks setup done unless `welcome: true`; `layout.mjs` W1 to W4 walk the steps.
+- **Home** (`views/DashboardView.tsx`, view id `projects`, h1 "Home"; replaces the redesign's Needs you left / Right now
+  right order): `HomeHero` task box (target chip: a stored project or Chat; scope and permission chips; the one primary
+  "Start run"; "Try" starters that only fill the box; never sends: it opens the project's New run page with the task as
+  the draft, or a new Chat with it as the seeded instruction), `Briefing`, then Working now (`RightNowBand`, left) beside
+  Waiting on you (`NeedsYouRegion`, right), then the arrangeable sections (Your week, Pick up, Up next, Projects,
+  Engagements, Commits this week, To-dos). The two columns are fixed, show an EmptyState when idle and are not in
+  Customise. Layout storage and Pause motion are as in the redesign section above.
+- **Inbox** (`views/InboxView.tsx`, `components/inbox/`, `lib/inbox.ts`, store view `inbox`, e2e checks at the end of
+  `dashboard.mjs`): rows from the same `waitingItems` the badge and popover count, plus team-files items and runs finished
+  since the last visit; filter chips per kind present (Permissions, Questions, Reviews, Proposals, Other, Finished); the
+  selected row shows the run view's own decision card. **Key guard** (`KeyGuard`, `guardPress / guardRelease /
+  guardArrive / guardSwallows`): Enter on a row only moves focus; Enter and Space are swallowed in the detail pane until
+  the key that was down at arrival is released plus a short dwell; a repeating keydown never presses a card button;
+  after an answer focus goes to the next row. `scripts/e2e-select.mjs` now maps Inbox, project Home, palette and banner
+  files to `dashboard` / `runs` / `proposals`, `per-project` / `engagement` / `engagement2` and `layout` / `updates`.
+- **Project Home tab** (`views/ProjectHomeView.tsx`, `components/home/`, `lib/projectHome*.ts`, `styles/home.css`,
+  `e2e/home-checks.mjs` called from `per-project.mjs`, `engagement.mjs`, `engagement2.mjs`): `CodeHome` and
+  `EngagementHome`. Data comes from `gitInfo.summary` (repo strip, health, merged lately; feature-detected, so a build
+  without it leaves those lines out), `runInsights.scheduleHistory` (the schedule outcome bar without clearing unread),
+  `runInsights.projectSpend` ("spend this month", "of $X a month" from the monthly cap only, a projection and a typical run once 3
+  priced runs exist), the run store, schedules, to-dos, outputs, knowledge and `mcp.list`. Corrections to
+  `impl-project-home.md` (written before those contracts landed): the git calls are `window.orgai.gitInfo.*`, not
+  `projects.gitSummary`; the nightly bar and the spend section exist; "Spend this month" now has a limit line from the
+  project's monthly cap (no bar), because `maxMonthlyUsd` exists. Still not built: "tests passing" and "Dependencies up to date" (not recorded).
+  Start boxes never start a run (`mergeDraftText` adds to the draft). A connection is never called "Connected".
+- **Files / Knowledge / Usage / History / Schedules / To-dos** (`impl-data.md`): glass tiles; Files sort select
+  (`outputs-sort`, `localStorage['orgai.outputsSort.<projectId>']`); Knowledge graph limit above 75 items (the 60 most
+  connected, "Show all" kept per project) and the toolbar line "The team is working" with a recorded count while a run of
+  the project is working (`lib/knowledgeRecording.ts`, rendered in `KnowledgeView.tsx`; impl-data first said it was not
+  built, it is); Usage "Spend over time" stacked bars (see the redesign section) and `RunStatusMark`; History agent strip
+  (`useAgentStrip.ts`, lazy, three at a time), merge words, "What it left" and "Try again" (inline confirmation naming the
+  project and request, acts on key-up, ref guard, `runActions.retry`; `runs.retryRun` is real in main now, impl-data wrote
+  it was a stub); Schedules week strip (`lib/schedulesBoard.ts`), per-row `Switch` named "<name>, on/off" and a read-only
+  detail. Not drawn because not recorded: per-file +/- counts, step durations; "Undo the merge" is not built (owner
+  decision).
+- **New run page** (`components/NewRunPage.tsx`, `components/newRun/`, `styles/new-run.css`): settings tiles (Model,
+  Effort, Permission, Goal, Spending limit), `WhoWorksPanel` (a checkbox per group leaves it and everyone below it out
+  via `StartRunInput.excludeRoleIds`; the estimate for that team from `runInsights.estimate`, hook `useRunEstimate`),
+  `PickUpList`, the one Start and "save as a schedule". `SpendLimitControl` sends `maxBudgetUsd` and refuses a figure above
+  the project cap with the reason. A wider permission mode at Start asks first (`wideningConfirmOptions`).
+- **Checked by:** unit tests beside each lib; e2e `layout` (W1 to W4), `dashboard`, `per-project`, `engagement*`,
+  `assistants`, `updates`, `folder-trust`, `connections` and the area scripts named in each impl note, all on the mock
+  adapter. **Unverified:** screen-reader speech anywhere in the overhaul; macOS and Linux; both themes and both sizes by
+  eye for every screen (screenshots were taken per area, not per board); the Home git strip against a real repository;
+  live providers.
 
 ## Factory Floor, slice 1 (2026-11-19)
 
@@ -622,36 +699,9 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
 - Usage page (app-wide; spec `docs/design/usage-app.md`, contract ARCHITECTURE.md "App-wide usage overview"): store View 'usage' (not project-scoped), `usageFilters` / `setUsageFilters` (only period and bucket persist, localStorage `orgai.usage.v1`), `openUsage({ projectIds?, period?, day?, section? })`, `usageFocus`, `openUsageRun` (focusRun, side tab 'usage', `usageReturn`, so `SidePanel` `arrival` opens it at least 480 px wide under 1100 px for that visit, never saved). Entry points: sidebar `nav-usage` (rail too), View > Usage (`show-usage`, 'main', no accelerator, announces the scope), Dashboard `dash-strip-usage-link` (30 days; Enter on a strip day adds the Day chip), Trends `trends-see-all`, run Usage tab `run-usage-all`; atlas `usage`, `usage-efficiency`, `usage-runs` (`SURFACE_TARGETS` kind 'usage'). `lib/usageOverview.ts` (pure): periods, bucket rules, `overviewQuery` (period, kinds, projects only; limit 2000), `usageKindOf` (Chat wins over Ask), `needsClientFold` / `usageData` (server rollups unless a model, role, bucket, connection, no-price or Ask/Chat-within-work narrowing applies, then `foldRows` over the rows, `lowerBound` when truncated; a model chip shows the model's own cost and roles with unknown cost "Model cost per role is not recorded"), chips. `lib/usagePage.ts` (copy, deltas from a second query over the prior span, live refetch decisions), `lib/usageCharts.ts` (ticks, bucket fill, series, folding), `lib/usageEfficiency.ts` / `lib/usageRuns.ts`. Components `components/usage/*` on `panelProps.ts`; inline SVG only; `--chart-*` tokens in every theme block with measured ratios in tokens.css (`--chart-hatch` is `--surface-1`); every figure `Cost precision="page"` (`shared/view/cost.ts` `formatUsdPage`: 2 decimals from $1, 3 from $0.01, 4 above, "< $0.0001"; Dashboard and Trends not migrated yet). The run tab's old `.usage-panel` class is now `.run-usage-panel`. `scrollWithin` now honours the scroller's `scroll-padding-top`. Checked: unit tests for every lib above plus cost, appMenu, atlas, menuActions, scrollWithin, panelWidth; `e2e/usage-app.mjs` (in e2e:free; mock, two code projects, an engagement and a Chat with `[mock:no-price]` / `[mock:computed-cost]`, 1024x640 and 1600x1000, both themes: entry points, no $0 for unknown, coverage line, drilldowns and chips, focus never on body, keyboard on the plot / rows / efficiency grid, filtered-empty and first-launch empty, panels three across vs stacked, no page scroll, no layout shift from a live run) plus usage, dashboard, menu and self-help e2e; two screenshots looked at by eye (1600 dark, 1024 light). Reviewer: no Critical or High; M1-M7 and L2, L3, L4, L7, L8 fixed. Open: L1 (bars nest role=button segments inside a focusable group), L5 (several status regions, `aria-busy` on the root), L6 (test ids `usage-scope`, `usage-roles`, `usage-empty`, `usage-no-result-tag` exist on both the page and the run Usage tab), "Other" legend row does not open the Projects popover, the CSV ignores client-side narrowings (the status line says so), Efficiency uses the returned rows when truncated (it says so). Not driven: truncated, error / refresh-failed, legacy and all-unknown states (the mock cannot produce them), Months selects, More filters under 880 px, CSV contents, Day chip from the strip, screen readers, contrast by measurement in the app, macOS; no UX walk of the built page yet.
 - (History: superseded by "Dashboard and Usage redesign (2026-11-21)"; the stacked bars, hidden readout, More signals, team timing disclosure and Definitions section described here are gone.) Usage page dashboard rework (2026-11-17; option D of `docs/design/usage-dashboard-options.md` plus `docs/design/usage-dashboard-motion.md`; as built in `docs/design/usage-app.md` section 20). Layout: one opaque sticky block (`.usage-sticky`: filter bar in one row, then an always-present line with the date, run count and chips, no Period chip, a hairline once the page scrolls); a four-tile KPI band (`UsageSummary`: Estimated cost, Tokens, Runs, Wall time; Cost/Tokens/Runs are aria-pressed toggles that set the chart metric, a sliding `usage-kpi-indicator`, one-line delta chips, an "N of M priced" chip that is the no-price link, sparklines with pointer scrub that moves the chart crosshair); the hero row (`.usage-hero`, equal heights) of `SpendPanel` (Group by rendered by the view into its header, Cost/Tokens/Runs, Compare with previous period, a Table button driving `ChartTable` in controlled mode, legend toggle chips above a full-width plot, crosshair plus `usage-chart-tooltip`, a hidden `usage-spend-readout`) and `BreakdownCard` (Project/Model/Role/Connection tabs, only the active panel mounted, sliding `usage-where-indicator`, top-5 one-line ranked rows); Efficiency as a four-measure strip with "More signals"; Runs worth a look (3 rows, expandable `usage-run-toggle` / `usage-run-detail`) and Cost by tier stacked (side by side only from a 1500 px container); All runs and definitions closed. Interaction state lives in `UsageView`: `chosenMetric`, `hidden` series (reset when the period or projects change), `overlay` (off), `highlight` (both ways between legend, segments and project rows; a hidden series is never highlighted), `scrub`, `tweenKey` (bumped by user filter changes only; a bump arms the tween for 5 s). A row, segment or bar narrowing neither opens All runs nor scrolls (only the priced link opens it). `previousQuery` now uses the chart's bucket so the Compare overlay lines up. Motion only on user changes: KPI bar and tab underline slide (`--dur-slow`), metric morph and legend toggle via WAAPI with a 120-segment cap, bucket-set change `.motion-fade`, compare fade, highlight dim 0.35, tab body `.motion-view` and row rise (6), FLIP reorder (8, armed 5 s after a filter change), number tween (rAF, skip under 1%, never from unknown), run detail `.motion-collapse`; every CSS rule has both reduced-motion selectors and every script reads `useReducedMotion()`; no sliding pill on segmented controls (motion.md 3.16 kept, owner). Checked: unit tests (`usageDashboard`, `usageSpend`, `tween`, `rankFlip`, `usagePage`, `usageCharts`), `e2e/usage-app.mjs` (tabs, metric switch, legend toggle, overlay, highlight, sort, crosshair/tooltip, Table button, scrub, run rows, one-row bar, hero heights, KPI tile heights, plot width, page height), `e2e/motion.mjs` (indicator durations, morph start, nothing under Reduce motion), `usage.mjs`, `layout.mjs`; looked at by eye on backdated mock data at both sizes and themes; UX walk `docs/design/ux-review-usage-dashboard-post.md`; Reviewer approve (no Critical/High; Mediums fixed). Open and unverified: see section 20.
 - Usage, team timing and staffing (orchestration-efficiency 4.7; `lib/usageStaffing.ts`, pure, with tests): EfficiencyPanel shows Time to first spawn, Overlap (reportSumMs / reportBusyMs, "1.8x") and Tail (tailMs / wallMs) as medians over runs with `usage.efficiency.reports > 0` (`usage-timing`, `usage-timing-item`); `StaffingPanel` shows Cost by tier (`usage-staffing`, `usage-tier-row`, `usage-tier-table`) and Lead alone vs With reports (`usage-lead-row`; team work runs; lead alone = no efficiency record and one agent). `RunStaffing` and per-agent usage do NOT reach the renderer (UsageOverviewRow carries RunUsage only), so a tier is read from each model entry: the run connection's `tierModels` (store `connections`), else `tierForModel`; the remainder ("Not tied to a tier") = total - tiers, so parts add to the total (rows-only total when main truncated). Unverified in the app: no e2e run, no screenshot.
-- Settings overhaul part 2 (2026-11-22, `impl-settings.md` "Part 2"): one Settings view. `AppSettingsView` holds both
-  menu groups and renders project panes in place (`components/settings/ProjectSettingsPanes.tsx`); `views/SettingsView`
-  (the project Settings tab) embeds it with `project`, opening on the stored project pane, without its own topbar, and
-  it ignores App deep links there (`requestAppSettingsSection` callers must also `setView('appSettings')`).
-  `SettingsNav` takes `groups` (two native tablists, testids `settings-tab-<app|project>-<pane>`, tab ids
-  `<idBase>-tab-<group>-<pane>`); the `settings-nav-link-*` buttons are gone. Shared `components/settings/SettingsGallery.tsx`
-  (tiles as aria-pressed buttons in one roving tab stop, sections, search and chips with a polite count, a sticky glass
-  aside; Detail* parts) drives AI providers (`provider-tile[data-provider|data-kind|data-name|data-default]`, the
-  selected `ConnectionCard`/`ProxyCard` with `embedded`, `provider-tiers` with plain tier names Most capable / Deep
-  thinking / Standard / Fast plus the app tier word and exact model), Skills (`skill-gallery`, `skill-library-row`
-  tiles, `skill-library-detail` with a plain-text preview) and Templates (`template-gallery`, `template-row` tiles,
-  `template-detail`). Tools and services keeps its tiles and dialogs and adds `connector-detail` beside them
-  (`toolCapabilities.ts`: can / could / cannot from the preset, never an OrgAI-enforced limit). Permission mode cards:
-  arrows preview (`permission-mode-pending`, `-use`, `-keep`), Enter / Space / click save. Worktree isolation and merge
-  review moved to Branches (`work-copies-section`). Checked by e2e connections, connectors, presets, skills,
-  engagement2, permissions, maintenance; Reviewer approve.
-- Settings overhaul (2026-11-22, `docs/design/ui-overhaul/impl-settings.md`; supersedes the pane names below): one
-  shared settings menu (`SettingsNav`: a glass `nav` "Settings menu"; part 2 above replaced its plain-button links
-  with a second tablist). App panes, in `lib/settingsMenu.ts`:
-  General, Appearance (renderer-only pane id `appearance`; `appSettingsPaneFor` maps the atlas appearance / canvas
-  sections and Motion there), AI providers (`connections`), Tools and services (`mcp-library`), Skills
-  (`skill-library`), Templates (`kit`), About and updates (`about`). Project panes: Basics (`general`), Permissions,
-  Spending limits (`limits`), Branches (`maintenance`; "Maintenance" on engagements). Atlas pane ids are unchanged, so
-  deep links keep working; atlas path text is stale until the shared owner updates it. Page h1 "Settings", a search
-  (`settings-search-input`, `settings-search-hit`, `lib/settingsSearch.ts` over the atlas surfaces), pane header with
-  scope caption, h2 and one line. Permissions: `PermissionModeCards` (radio cards `permission-mode-card[data-mode]`,
-  `permission-mode-more`, effects table `permission-mode-effects`, Bypass asks through `permission-bypass-confirm`),
-  wording checked against claude.ts and codexProtocol.ts `policyFor`. Spending limits: `limits-month-spend` from
-  `runs.usageOverview` (this month, unknown cost never $0), run size selects visible. Checked by e2e (connections,
-  permissions, maintenance, canvas, layout and the renamed tabs) and screenshots; see the notes file for open items.
+- Settings overhaul (2026-11-22): one Settings view, plain-language pane names, galleries and the runtime-backed rows.
+  Merged into "Settings, UI overhaul" at the end of this file; the older "Settings pages" bullet below is history for the
+  pane names and the Advanced disclosures (the disclosure rules still hold).
 - Settings pages (2026-11-03, `docs/design/config-review.md` + Implementation notes; ARCHITECTURE.md "Settings
   pages"): App panes General (Appearance, Notifications, New projects; Advanced: Motion and canvas, Assistant models,
   New projects (advanced)), Connections (cards; Advanced: Costs, Model prices), Connectors, Skill library, About; the
@@ -994,6 +1044,11 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
 - A NodeToolbar is portalled but React bubbles its events to the node wrapper: the toolbar row stops them (else a toolbar
   click re-selects the node). Checked by e2e/team.mjs sectionNodeMenu.
 - Engagement styling hangs off `.team-editor[data-kind=engagement]` (TeamView root).
+- The first-time-user walk `docs/design/ux-review-team-overhaul.md` (build 26e2fb41, mock data) found one High and eight
+  Mediums; the code on dev 2026-11-23 still shows M3 (the Theme dropdown has one item) and M4 (Add group opens a popover
+  titled "Add a role"); the rest (the clipped confirm sentence H1, toolbar clipping M1, labels lost at 1024 wide M2,
+  keyboard route to the toolbar M5, truncated panel header M7, small chart at 1024x640 M8) were not re-checked. Import's
+  "Another OrgAI project" and "Choose another" (M6) are wired to `importSources` now. See `impl-team.md` "UX walk".
 
 ## Scenes, UI overhaul (2026-11-22)
 
@@ -1004,3 +1059,56 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
 - Testids kept: `office-pause` moved into the Message log card; Find a worker moved out of `factory-controls` (the
   toolbar now holds Zoom out, Zoom in, Fit, Pause motion). New: `office-log`, `office-show-filter`,
   `factory-show-filter`, `factory-legend`.
+- Deviations and open items are in `impl-scenes.md` (the 3D stations outside a Show filter are not dimmed, only their
+  nameplates go; no Factory zoom percentage; the full-size live 3D floor in both themes was not looked at by eye).
+
+## Settings, UI overhaul (2026-11-22)
+
+One section for what two leads wrote in parts (`docs/design/ui-overhaul/impl-settings.md`, corrected against the code).
+
+- **One view.** `AppSettingsView` shows both menu groups as native tablists (`SettingsNav` `groups`, testids
+  `settings-tab-<app|project>-<pane>`, tab ids `<idBase>-tab-<group>-<pane>`; the `settings-nav-link-*` buttons are gone)
+  and renders the project's panes in place (`ProjectSettingsPanes.tsx`). `views/SettingsView` (the project Settings tab)
+  embeds it with `project`, opening on the stored project pane, without its own topbar; there App deep links are ignored,
+  so a caller of `requestAppSettingsSection` must also `setView('appSettings')` (`KitSection` does).
+- **Panes** (`lib/settingsMenu.ts`; atlas pane ids unchanged, so deep links land). App: General, Appearance (renderer-only
+  id `appearance`, `appSettingsPaneFor` maps the atlas appearance / canvas sections and Motion to it), AI providers
+  (`connections`), Tools and services (`mcp-library`), Skills (`skill-library`), Templates (`kit`), About and updates
+  (`about`). Project: Basics (`general`), Permissions, Spending limits (`limits`), Branches (`maintenance`; "Maintenance"
+  on engagements). Page h1 "Settings", Search settings (`settings-search-input`, `settings-search-hit`,
+  `lib/settingsSearch.ts` over the atlas surfaces). The atlas path text (`src/shared/view/atlas.ts`) still names the old
+  panes and `e2e/self-help.mjs` asserts it.
+- **Galleries** (`SettingsGallery.tsx`): AI providers (`provider-tile[data-provider|data-kind|data-name|data-default]`,
+  the selected `ConnectionCard` / `ProxyCard` `embedded`, `provider-tiers` with Most capable / Deep thinking / Standard /
+  Fast, the plan window closest to its limit and its reset time per plan sign-in); Tools and services (keeps its tiles and
+  dialogs, adds `connector-detail` from `toolCapabilities.ts`: can / could / cannot come from the preset and the server's
+  own declaration, never an OrgAI-enforced limit; a test result marks tools "Reads only" / "Can change or delete" from MCP
+  annotations when the server gives them); Skills (`skill-gallery`, `skill-library-row`, `skill-library-detail` with a
+  plain-text preview of the first 1,200 characters, bidi controls shown as a mark; Edit, Duplicate, Export, Remove);
+  Templates (`template-gallery`, `template-row`, `template-detail`; "Comes with OrgAI" built-ins `template-builtin` read
+  only, "Used N times", Duplicate on every template).
+- **Permissions.** `PermissionModeCards`: arrows preview a mode (`permission-mode-pending`, `-use`, `-keep`, effects table
+  captioned "(not saved)"); Enter, Space, click or "Use <mode>" saves; Bypass asks first on every save path
+  (`permission-bypass-confirm`). Unattended is the "Recommended" card (the app's own default), not the board's middle one.
+  Worktree isolation and merge review moved to Branches (`work-copies-section`).
+- **Runtime-backed rows (all live).** General: Notifications with "When a team needs me", "When a run finishes", "When a
+  schedule finds something" (under the master switch) and "Play a sound"; "While OrgAI runs": open at sign-in, close
+  behaviour, keep awake. Appearance "Panels and text": See-through panels, Text size, Spacing, Activity dots (attributes in
+  ARCHITECTURE.md "Theme layer"); Motion keeps two choices because `noMotion` would equal "Always reduce". Spending limits:
+  this month's spend (`runs.usageOverview`; "Cost unknown" / "At least"), per-run cap, "Per day and per month" caps with
+  "When a limit is reached" (`onSpendLimit`) and "Warn me at" (`spendWarnPercent`) (`PERIOD_CAPS_LIVE` is true; metered
+  projects show them at rest, plan sign-ins in Advanced to keep the at-rest tab-stop budget), "Most agents in one run"
+  (`maxAgentsPerRun`, copy says it counts per run session) and "Ask before using a more capable model". Branches (code
+  projects): Main branch (`gitInfo.branches`, detected default first), Tests must pass and Test command (main refuses
+  every merge when tests are required and the command is empty), Keep branches of failed runs for, Finished copies size
+  (`maintenanceExtra.finishedCopiesSize`) and Delete branch (`MaintenanceSection.tsx`: a confirm naming the branch and the
+  commits lost, a ref guard against a double activation; not offered for the current, default or main branch). About:
+  Report a problem, Details for support (copied), Licences.
+- **Not offered (no behaviour in main, or an owner decision):** Language, Download updates by themselves, Name new branches
+  (`branchNamePattern` is validated but no live run applies it), "Let schedules run when I am near the limit"
+  (`schedulesNearPlanLimit`), "Dates look like" (`dateFormat` is stored; no renderer date formatting reads it), the welcome
+  tour again, and Motion "Off".
+- **Checked by:** `toolCapabilities.test.ts`, `sound.test.ts`, `theme.test.ts`, `planLimit.test.ts`, the tokens tests; e2e
+  `connections`, `connectors`, `presets`, `skills`, `permissions`, `maintenance`, `engagement2`, `multi-provider`,
+  `project-connection`; Reviewer approve with fixes. **Unverified:** a screen reader on any pane; macOS; narrow
+  (1024x640) screenshots of Skills and Templates; the packaged login item and power blocker; live providers.

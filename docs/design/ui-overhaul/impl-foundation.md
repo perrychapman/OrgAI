@@ -133,6 +133,12 @@ Deviations from the board:
 
 ## Needs runtime
 
+Corrected 2026-11-23 (the list below is the first draft; checked in the code): the permission card now shows its age
+(`PermissionRequest.requestedAt`, `waitingSince`) and "You have allowed this N times" (`priorAllows`, `lib/decisionCard.ts`),
+and the merge card shows Tests and Review facts from `MergeReview.checks` (`mergeFacts`, "not known" never reads as
+passed). Still true: no age on the other card kinds, no "After you answer" Undo for an answered decision (main has no
+undo; only a saved "Always allow" rule can be removed), no test-count or reviewer-name detail beyond `checks`.
+
 - Per-decision age ("2 min ago") on each card: the renderer has no request timestamp on every pending decision kind.
 - "After you answer" receipts with Undo (allow once / denied): no undo for an answered permission exists in main.
 - Rule request count ("You have allowed this 6 times in this run") on the rule card.

@@ -2,8 +2,10 @@
 
 Lead: ov-shell. Boards: Main, ProjectHome, EngagementHome, Empty, Inbox, Welcome, NewProject, Trust.
 Status 2026-11-22: shell, sidebar, palette, banners, Welcome, NewProject and Trust are built; Home (sh-home), the project
-Home tab (sh-projhome) and Inbox (sh-inbox) were still being built by engineers when this file was written. Their own
-reports carry their sections; merge them in here once they land.
+Home tab (sh-projhome) and Inbox (sh-inbox) were still being built by engineers when this file was written.
+Update 2026-11-23: all three have landed. Home is described in `docs/agent-notes/renderer.md` "UI overhaul: shell, Home
+and Inbox" and `.orgai/ARCHITECTURE.md` "UI overhaul", the project Home tab in `impl-project-home.md`, and the Inbox in
+`views/InboxView.tsx` (key guard in `lib/inbox.ts`). Corrections to the text below are marked "Corrected".
 
 ## Built per board
 
@@ -74,6 +76,9 @@ ov-runtime was asked for:
 
 sh-projhome builds against whatever contract lands, and omits a section when its data is missing.
 
+Corrected: the first three landed as `gitInfo.summary`, `runInsights.scheduleHistory` and `runInsights.projectSpend`
+(`impl-runtime.md`) and the project Home reads them. Test and dependency health are not recorded, so they are not drawn.
+
 ## Before and after, for the UX walk
 
 - **Welcome:**
@@ -98,6 +103,10 @@ sh-projhome builds against whatever contract lands, and omits a section when its
 
 ## Open
 
-- Merge the Home, project Home and Inbox engineer results, then run `dashboard`, `per-project`, `engagement`, `engagement2`, `clone-start`, `secrets-notices`, `runs`, `proposals` and `team-files`. Take screenshots in both themes and both sizes, and get a Reviewer pass.
-- `scripts/e2e-select.mjs` has no mapping for the new files (`views/InboxView.tsx`, `views/ProjectHomeView.tsx`, `components/home/*`, `components/inbox/*`, `styles/onboarding.css`, `palette.css`, `banners.css`). Unmapped paths run everything.
-- Ctrl+K is missing from the shortcuts table in `src/shared/view/shortcuts.ts`.
+- Still open: screenshots of Welcome, Home and Inbox in both themes and both sizes, and a mock UX walkthrough of the
+  shell (Inbox row, palette, banners); screen-reader speech; macOS. Reviewer verdicts for Home and Inbox are not recorded
+  in this folder; the Welcome and palette changes were checked by the e2e scripts named under "Verified" only.
+- Corrected: `scripts/e2e-select.mjs` maps the new files now (Inbox files to `dashboard`, `runs`, `proposals`; project
+  Home files to `per-project`, `engagement`, `engagement2`; the palette and banner files to `layout`, `updates`;
+  `onboarding.css` and `FirstLaunch.tsx` to `dashboard`, `assistants`, `folder-trust` and the project-form scripts).
+- Corrected: Ctrl+K is in the shortcuts table now (`src/shared/view/shortcuts.ts`: "Search or jump to", Mod+K).

@@ -100,6 +100,23 @@ Prompt fatigue (#14): allowed folders, rule matching, suggestions, and the permi
     background, drop; `stop()` logs "Spawns: N, rewritten by the harness: M (<reason> <count>, ...)". The stub cannot
     show the difference: without a server verdict (`server_no_result`) the CLI classifies every call locally.
 
+- UI overhaul facts on the permission request (`docs/design/ui-overhaul/impl-runtime.md`; unit-tested, live providers
+  unverified):
+  - `PermissionRequest.requestedAt` (when it was raised; the card shows "Raised <date>" / how long it has waited) and
+    `priorAllows` (`runtime/allowCounter.ts`): the number of times the user answered "Allow once" for the same rule on the
+    desktop, keyed by the allow rules of the card's own suggestions (falling back to `permissionRules.ts` keying). Stored
+    in `<data>/projects/<id>/allow-counts.json` as version 2 (SHA-256 of each key, at most 500 keys, counts capped at 9999;
+    a version 1 file is hashed and rewritten on first read). Absent when unknown; the card then shows nothing, never
+    "0 times". Session grants and "Always allow" answers do not count. Tests: `allowCounter.test.ts`.
+  - There is no undo of an answered permission, question, proposal or merge (agents act on it at once). Only a saved
+    "Always allow" rule can be removed, through `permissions.remove`; session grants live inside the adapter session and
+    have no revoke path.
+  - The permission mode cards in Settings preview a mode on arrow keys and save only on Enter, Space, click or "Use <mode>";
+    Bypass asks first on every save path. Their effects table wording is checked against `claude.ts claudePermissionMode`
+    and `codexProtocol.ts policyFor` (one Reviewer High, "dontAsk overstated safety on Codex", was fixed).
+  - The test gate and its command are not permission rules: `requireTestsPass` / `testCommand` can only be changed from the
+    desktop window (`host/projectSaveGuard.ts`).
+
 ## Renderer
 
 - Permissions UI (#14; `docs/design/permissions.md`, walk `docs/design/ux-review-permissions.md`): PermissionCard

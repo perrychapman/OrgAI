@@ -963,3 +963,67 @@ script (set `ORGAI_MOCK_SCRIPT` to `{"delayMs": 50}` only; a custom `work` array
   (keeps a station at its machine so the ambient loop is observable), `worktree` merging -> merged (`mergeTarget: 'main'`)
   and conflict, `agentState` done / error / tool / thinking (`agentState` does not block, so many stations can run at
   once). A burst script uses `delayMs: 25`. Written against the slice 4 contract; not run before the UI Lead integrated it.
+
+## UI overhaul runtime (2026-11-22)
+
+Contract and rules: `.orgai/ARCHITECTURE.md` "Shared contracts" and "Runtime core"; full notes with the reviewer rounds in
+`docs/design/ui-overhaul/impl-runtime.md` (checked against the code 2026-11-23). Everything below is checked by unit tests
+with fake adapters and real temporary git repositories; none spends tokens. **No live Claude or Codex run confirmed any of
+it** (the budget stop, `stopTask` on a foreground report, `turn/interrupt`, `api_retry`, Codex `willRetry`), and the
+packaged login item, the power blocker, the POSIX shell and process-group kill of the test gate and macOS are unverified.
+
+- **Rule of the section:** every figure comes from recorded data; no basis is `null` / basis 'none', never 0. A run's cost
+  is known only when `usage.costSource` is `provider` or `computed` (`estimate.ts knownRunCostUsd`). Tests: `estimate.test.ts`,
+  `projectSpend.test.ts`, `schedules/scheduleCost.test.ts`.
+- **Desktop-only channels** (`overhaulIpc.ts`): 22 `OVERHAUL_IPC` channels, app-window check on every handler, classified in
+  `DESKTOP_CHANNEL_MUTATES` (`ipc.ts`). A channel missing from the map, or registered through the wrong helper, fails
+  `overhaulIpc.test.ts`. None is on the dispatcher, so socket / CLI / agents cannot reach them.
+- **Holds** (`runHold.ts`, `runHold.test.ts`): six kinds; `actions` recomputed on each read; the `provider` hold's reason
+  is fixed OrgAI text. Codex reads no budget, so a Codex run with only the project cap gets no `budget` hold.
+  RunManager owns `run.hold`, `run.spendWarning` and `provider.retry` (an adapter's copy is dropped or rebuilt). Provider
+  retries: Claude maps `api_retry` (`claudeProviderRetry.test.ts`), Codex `error` with `willRetry` (no delay known;
+  `codex.test.ts`), the mock `[mock:provider-retry]` (`mockProviderRetry.test.ts`).
+- **Add budget / retry / skip review / message / stop / retryAgent:** `addBudget` only on an ended run held on `budget`;
+  refused above `project.maxBudgetUsd` or what is left of a day or month cap; the predecessor's hold is cleared and the log
+  says "You added $X to this run's budget." `skipReview` sends a fixed sentence plus the user's note through `send()`;
+  ledger, review policy and merge review unchanged. `messageAgent` and `retryAgent` go through the orchestrator
+  (`retryAgent` fences the brief as agent-written data). `stopAgent` never stops the root and returns `stopped: false` where
+  unsupported. `runs.retryRun` is real (continue with the harness's resume message and every check of `continueRun`).
+- **Spend guard** (`spendGuard.ts`, `spendGuard.test.ts`): day and month caps checked before every start of a stored
+  project and live on `agent.upsert` / `run.cost`; runs overlapping the period count. At a cap `pause` (default,
+  `autoResume: false`, `pausedUntil` = reset) or `stop` (ends like a budget stop); exec always stops. A model with no known
+  price refuses a start under a cap and refuses `runs:switchModel` (live and staged); a live run warns once when its cost
+  turns unknown. `spendWarnPercent` raises one warning per run and scope.
+- **Per-run cap and left-out roles:** `StartRunInput.maxBudgetUsd` narrows only, `excludeRoleIds` drops a role with its
+  subtree (not the root, not on single or setup runs); desktop only, continuations carry them.
+- **Spawn caps** (`spawnCaps.ts` and the claude / codex / mock / bridge `*SpawnCaps.test.ts`): `Role.maxConcurrent`,
+  `Project.maxAgentsPerRun`, read live, approved but unstarted spawns count; a bridged child gets what is left. Known gaps: a
+  native Claude spawn does not see bridged children; the count is per session, so a continuation starts a fresh one.
+- **Test gate** (`testGate.ts`, `testGate.test.ts`, `integration.test.ts`): the user's command runs in the finished copy
+  before the merge; allowlisted environment with secret-looking and cloud variables scrubbed; stdin closed; 10 minutes then
+  the tree is killed; the last 4,000 characters kept and scrubbed, shown only in the run log and the maintenance result. The
+  gate records `branchTip`, merges that commit and refuses if the branch moved; with merge review on the user is asked again
+  once about a new tip. A failure is `conflict` with `refused: 'tests'`. `requireTestsPass` with an empty command refuses the
+  merge. An agent that runs `git merge` itself is not blocked (open Low).
+- **mainBranch / retention:** merges land on `mainBranch` when it exists (the checkout is switched only when tracked files are
+  clean; the branch is never created). `keepFailedBranchesDays` is a desktop-host boot sweep over old conflict / removed /
+  errored copies of stored runs, never while a run of the project is live and never one with uncommitted work.
+- **deleteBranch / finishedCopiesSize / gitInfo** (`maintenance.ts`, `projects/gitInfo.ts`; `gitInfo.test.ts`): see the
+  rules in ARCHITECTURE.md. `deleteBranch` asks its refusal questions again under the repository lock and compares names
+  case-insensitively on Windows and macOS. `branchNamePattern` is validated and `runtime/branchNames.ts branchNameFor` builds a name, but nothing outside
+  its tests calls it, so no live run applies the pattern (checked by grep; Claude's SDK names its worktree branches).
+- **Who may set the fields** (`host/projectSaveGuard.ts`, `projectSaveGuard.test.ts`; `teamFiles/overhaulBoundary.test.ts`,
+  `setup/settingsProposalBoundary.test.ts`): a non-desktop save can only narrow; `settings:set` from those surfaces cannot
+  change `openAtLogin`, `closeBehavior`, `keepAwakeDuringRuns` or `spendWarnPercent`.
+- **askBeforeStrongerModel** (`staffing.ts`, used by the Claude, Codex and mock spawn paths): asks "Use a stronger model for
+  <role>?"; only "Use it" keeps the stronger tier; the Claude hook wait ends after 580 s with keep and the question then
+  stays pending (Codex and the mock have no timeout). Today it fires only on a retry escalation because `resolveStaffing`
+  clamps to the role's tier.
+- **Knowledge write:** a role with `knowledgeWrite: false` is refused `upsert_node`, `link` and `retire` at call time (the
+  tool stays listed); an unresolved caller fails closed.
+- **App behaviour** (`appBehaviour.ts`, `appBehaviour.test.ts`), **About** (`about.ts`, `about.test.ts`): see ARCHITECTURE.md
+  "Main shell". Support details carry no project names, paths, accounts, model names or secrets.
+- **Open Lows (report only):** a live org change may re-add left-out roles; the test gate and the retention sweep take no
+  activity lease; a `mainBranch` switch is not named in the merge message; a loose `branchNamePattern` can make a user's
+  branch count as a report branch for delete. **Needs owner decision, not built:** update auto-download (the updater never
+  downloads on its own, `docs/agent-notes/updates.md`), undo merge, locale, `schedulesNearPlanLimit` behaviour.

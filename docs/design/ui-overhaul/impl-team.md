@@ -119,6 +119,17 @@ strip Keep both / Replace mine / Skip mapped to `AgentImportChoice.action`, drop
   contrast not measured by a test), L3 (the toolbar comes late in Tab order; Shift+F10 on the node opens the same
   actions), L8 (the Ask bar's raw input).
 
+## UX walk (`docs/design/ux-review-team-overhaul.md`, status checked in the code 2026-11-23)
+
+The walk was first-time-user, mock data, build 26e2fb41: verdict "mostly working, one High". Fixed since (by the review
+fixes above or the runtime merge): M6 in part (Another OrgAI project and Choose another are wired through `importSources`,
+see "Runtime contract"). Confirmed still true in the code: M3 (Theme dropdown has one item, "Org chart") and M4 (Add group
+opens the same popover titled "Add a role"). Not re-checked, so treat as open: H1 (the "Review with the Architect" confirm
+clipped its cost sentence; the body text is built in `ArchitectDialog.tsx`), M1 (toolbar clipped at the canvas edge, no
+pan-into-view), M2 (header loses labels and Theme at 1024), M5 (the toolbar is a late Tab stop; Esc on a node loses focus),
+M7 (panel header truncated and see-through), M8 (chart small at 1024x640 because the assistant tray is tall), and the Lows
+(L1 to L7). Nothing here was re-walked after the fixes.
+
 ## Open
 
 - Screen-reader speech of the node toolbar, tier radios and chips; the zoom readout is not announced (aria-live off).
