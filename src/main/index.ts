@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, nativeTheme, safeStorage, screen, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, nativeTheme, powerSaveBlocker, safeStorage, screen, shell, type MenuItemConstructorOptions } from 'electron'
 import { buildTextContextMenu } from './textContextMenu'
 import { parseLargerThanScreen, parseWindowHidden, parseWindowInactive, windowPlacement } from './windowPlacement'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
@@ -16,6 +16,7 @@ import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
 import { installAppMenu, menuActionSender, navigateSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
+import { AppBehaviour, closeActionFor } from './appBehaviour'
 import { APP_USER_MODEL_ID, appDetailsFor, registerWindowsAppIdentity, resolveIconPath, shouldRegisterIdentity, stableIconPath } from './appIdentity'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
 import { installElectronLogHooks } from './electronLogHooks'
@@ -86,6 +87,8 @@ function canonicalUserData(dir: string): string {
 /** The booted host (stores, services, runs, the event bus; host/bootstrap.ts); set once whenReady has built it. */
 let host: OrgAIHost | undefined
 let notifier: Notifier | undefined
+/** Open at login, keep awake during runs and the close behaviour setting (appBehaviour.ts), once booted. */
+let appBehaviour: AppBehaviour | undefined
 /** Schedules' timer (schedules/scheduler.ts): the desktop shell only; stopped as soon as a quit drains the host. */
 let scheduler: Scheduler | undefined
 /** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released by the shutdown and on process exit. */
@@ -530,6 +533,7 @@ app.whenReady().then(async () => {
       if (!win.isDestroyed()) win.webContents.send(channel, payload)
     }
     if (channel !== IPC.runEvent) return
+    appBehaviour?.runEvent()
     try {
       notifier?.handle(payload as RunEvent)
     } catch (e) {
@@ -547,8 +551,26 @@ app.whenReady().then(async () => {
     windows: liveWindowScopes,
     // AppSettings.notifications is the single source of truth, read fresh at every decision.
     enabled: () => settings.get().notifications !== false,
+    categoryEnabled: (category) => {
+      const s = settings.get()
+      return category === 'needsMe' ? s.notifyNeedsMe !== false : category === 'runFinished' ? s.notifyRunFinished !== false : s.notifyScheduleFindings !== false
+    },
     iconPath: () => (process.platform === 'linux' ? appIconPath() : undefined)
   })
+  // Open at login and keep awake while runs work (appBehaviour.ts); the close behaviour is read in window-all-closed.
+  appBehaviour = new AppBehaviour({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE?.trim()),
+    settings: () => settings.get(),
+    liveRuns: () => h.runs.workingRunCount(),
+    loginItem: { get: () => app.getLoginItemSettings().openAtLogin, set: (openAtLogin) => app.setLoginItemSettings({ openAtLogin }) },
+    powerBlocker: powerSaveBlocker,
+    log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
+  })
+  settings.onChange(() => appBehaviour?.settingsChanged())
+  appBehaviour.start()
+  app.once('will-quit', () => appBehaviour?.dispose())
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
   // Schedules (docs/design/schedules.md 4): one timer, in this process only (the single-instance lock is the "one
@@ -742,9 +764,14 @@ app.on('window-all-closed', () => {
   if (!booted) return
   const workingRuns = host ? host.runs.workingRunCount() : 0
   const pendingSchedules = host?.settings.get().schedulesPaused ? 0 : (host?.services.schedules?.pendingCount() ?? 0)
-  const action = windowAllClosedAction({ platform: process.platform, quitting, workingRuns, pendingSchedules })
+  const action = closeActionFor(windowAllClosedAction({ platform: process.platform, quitting, workingRuns, pendingSchedules }), host?.settings.get().closeBehavior)
   if (action === 'quit') {
     quitReason = 'window-closed'
     app.quit()
   } else if (action === 'ask') void askClose(workingRuns, pendingSchedules)
+  else if (action === 'background') {
+    // closeBehavior 'keepRunning': the user already chose, so no prompt. A second launch or the Dock icon brings a window back.
+    log.info(`The last window closed with "keep running" chosen (${workingRuns} working run(s), ${pendingSchedules} schedule(s) due).`)
+    goBackground()
+  }
 })

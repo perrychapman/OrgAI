@@ -13,7 +13,7 @@ import type {
   ProviderConnections,
   ProxyConnection
 } from '@shared/types'
-import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CANVAS_PRESENTATIONS, CANVAS_SCENE_PALETTES, PROXIES_MAX, PROXY_KINDS, THEME_MODES, isModelTier, isPermissionMode, isProxyConnectionId } from '@shared/types'
+import { DATE_FORMAT_SETTINGS, CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CANVAS_PRESENTATIONS, CANVAS_SCENE_PALETTES, PROXIES_MAX, PROXY_KINDS, THEME_MODES, isModelTier, isPermissionMode, isProxyConnectionId } from '@shared/types'
 import { cleanDisplayName } from '@shared/displayName'
 import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId, isKnownConnection } from '@shared/defaults'
 import { normalizeProxyUrl, readableProxyName } from '../connections/proxy'
@@ -51,8 +51,19 @@ export function normalizeAppearance(raw: unknown): NormalizedAppearanceSettings 
       nodeStyle: oneOf(CANVAS_NODE_STYLES, c.nodeStyle, d.canvas.nodeStyle),
       minimap: typeof c.minimap === 'boolean' ? c.minimap : d.canvas.minimap
     },
-    reduceMotion: oneOf(['system', 'on'] as const, r.reduceMotion, d.reduceMotion)
+    reduceMotion: oneOf(['system', 'on'] as const, r.reduceMotion, d.reduceMotion),
+    // UI overhaul fields: explicit values, so a reader never has to know the default.
+    noMotion: typeof r.noMotion === 'boolean' ? r.noMotion : (d.noMotion ?? false),
+    glass: typeof r.glass === 'boolean' ? r.glass : (d.glass ?? true),
+    textSize: oneOf(['small', 'default', 'large'] as const, r.textSize, d.textSize ?? 'default'),
+    density: oneOf(['comfortable', 'compact'] as const, r.density, d.density ?? 'comfortable'),
+    sidebarActivityDots: typeof r.sidebarActivityDots === 'boolean' ? r.sidebarActivityDots : (d.sidebarActivityDots ?? true)
   }
+}
+
+/** AppSettings.spendWarnPercent: an integer 50..99 stays; anything else (including a fraction or a string) is off (null). */
+export function normalizeSpendWarnPercent(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 50 && v <= 99 ? v : null
 }
 
 /**
@@ -339,9 +350,32 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultMaxAutoContinues:
       r.defaultMaxAutoContinues != null && Number.isFinite(maxContinues) && maxContinues >= 0
         ? Math.min(MAX_AUTO_CONTINUES_LIMIT, Math.floor(maxContinues))
-        : d.defaultMaxAutoContinues
+        : d.defaultMaxAutoContinues,
+    // UI overhaul (General / Limits): explicit values with the contract's defaults; invalid values fall back to them.
+    playSound: r.playSound === true,
+    spendWarnPercent: normalizeSpendWarnPercent(r.spendWarnPercent),
+    openAtLogin: r.openAtLogin === true,
+    closeBehavior: r.closeBehavior === 'keepRunning' ? 'keepRunning' : 'quit',
+    keepAwakeDuringRuns: r.keepAwakeDuringRuns === true,
+    notifyNeedsMe: r.notifyNeedsMe !== false,
+    notifyRunFinished: r.notifyRunFinished !== false,
+    notifyScheduleFindings: r.notifyScheduleFindings !== false,
+    dateFormat: oneOf(DATE_FORMAT_SETTINGS, r.dateFormat, 'd MMM yyyy')
   }
 }
+
+/** The optional AppSettings fields of the UI overhaul (General / Limits). */
+const OVERHAUL_KEYS = [
+  'playSound',
+  'spendWarnPercent',
+  'openAtLogin',
+  'closeBehavior',
+  'keepAwakeDuringRuns',
+  'notifyNeedsMe',
+  'notifyRunFinished',
+  'notifyScheduleFindings',
+  'dateFormat'
+] as const satisfies readonly (keyof AppSettings)[]
 
 /** Global app settings, stored as settings.json next to projects.json. */
 export class SettingsStore {
@@ -394,7 +428,10 @@ export class SettingsStore {
     // modelPrices left out (an older renderer) keeps the stored overrides; an array (even empty) replaces them.
     const modelPrices = next.modelPrices !== undefined ? next.modelPrices : this.settings.modelPrices
     const proxies = this.settings.proxies
-    const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices, proxies })))
+    // The UI overhaul fields left out (an older renderer, a partial save) keep their stored value, like modelPrices.
+    const overhaul: Partial<AppSettings> = {}
+    for (const key of OVERHAUL_KEYS) if (next[key] === undefined) Object.assign(overhaul, { [key]: this.settings[key] })
+    const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, ...overhaul, appearance, modelPrices, proxies })))
     this.settings = normalized
     this.persist()
     return this.notify()
