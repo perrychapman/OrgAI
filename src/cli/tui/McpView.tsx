@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { McpMutationResult } from '../../shared/types'
 import { useFocusHandler } from './context'
-import { charOf, clean, ConfigFrame, confirmFits, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
+import { charOf, clean, ConfigFrame, confirmFits, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, strictConfirmCut, windowOf, type Dialog, type Message } from './configUi'
 import { checkedFromRoles, libraryOptions, mcpAvailableTo, mcpConfirmLines, mcpDetailLines, mcpWidens, mcpRoleOptions, mcpRowSegs, mcpRows, mcpSecretScope, mcpSecretSlots, rolesFromChecks, type McpData, type McpSecretSlot } from './mcpModel'
 import type { PaneLine } from './panes/lines'
 import { textWidth, truncateEnd } from './panes/text'
@@ -35,6 +35,8 @@ export interface McpViewProps {
 }
 
 export const MCP_LIVE_NOTE = 'A live run without a team, or in another terminal, keeps the servers it started with; this applies from its next run.'
+
+const MCP_TOO_LONG: Message = { text: 'This server is too long to show whole in this window, so it was not saved. Make the window larger, or use the orgai mcp command.', tone: 'warn' }
 
 export const MCP_LIST_KEYS = ['Up/Down select', 'Enter details', 'Space on/off', 'r roles', 's secret', 'l add from library', 'x remove', 'Esc back']
 export const MCP_DETAIL_KEYS = ['Up/Down scroll', 'Space on/off', 'r roles', 's secret', 'x remove', 'Esc back']
@@ -120,7 +122,7 @@ export function McpView(props: McpViewProps) {
   const confirmWidening = (lines: string[], run: () => void): void => {
     const { width: cw, bodyRows: cr } = contentSize(props.width, props.height, env, dialogKeys({ kind: 'confirm', strict: true, title: '', lines: [], onYes: () => undefined }))
     if (!confirmFits(lines, cw, cr)) {
-      setMessage({ text: 'This server is too long to show whole in this window, so it was not saved. Make the window larger, or use the orgai mcp command.', tone: 'warn' })
+      setMessage(MCP_TOO_LONG)
       return
     }
     setMessage(undefined)
@@ -310,6 +312,12 @@ export function McpView(props: McpViewProps) {
       return true
     }
     if (dialog) {
+      // A strict confirmation that fit when it opened can be cut by a smaller window now: it saves nothing then.
+      if (strictConfirmCut(dialog, props.width, props.height, env, message)) {
+        setDialog(undefined)
+        setMessage(MCP_TOO_LONG)
+        return true
+      }
       const { next, then } = dialogKey(dialog, e, page)
       setDialog(next)
       then?.()

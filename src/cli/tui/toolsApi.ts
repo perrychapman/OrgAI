@@ -37,6 +37,8 @@ export interface TuiToolsApi {
   skillLibrary(): Promise<SkillLibraryInfo[]>
   /** skills:read (read): the skill's text and files. */
   readSkill(projectId: string, skillId: string): Promise<SkillContent>
+  /** skillLibrary:read (read): the text and files of one library entry, before it is linked into a project. */
+  readLibrarySkill(libraryId: string): Promise<SkillContent>
   /** skills:update (configure) with one field. */
   updateSkill(projectId: string, skillId: string, patch: SkillPatch): Promise<SkillMutationResult>
   /** skills:linkLibrary (configure): add a library skill to the project, granted to these roles. */

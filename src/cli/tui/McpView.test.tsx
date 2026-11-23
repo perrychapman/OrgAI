@@ -5,6 +5,7 @@
  * project's own or the library entry's), and deleting a stored value only after a confirm asks, and Esc.
  * The host is an in-memory fake of TuiToolsApi that keeps a server list and records every call.
  */
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpAuthState, McpLibraryInfo, McpMutationResult, McpServerInfo, McpServerSpec, Project } from '../../shared/types'
 import { fixtureProject, mountView, tick } from './configTestUtil'
@@ -150,6 +151,7 @@ function fakeTools(over: Partial<Pick<FakeTools, 'servers' | 'library'>> = {}): 
     skills: async () => [],
     skillLibrary: async () => [],
     readSkill: async () => undefined as never,
+    readLibrarySkill: async () => undefined as never,
     updateSkill: async () => undefined as never,
     linkSkill: async () => undefined as never,
     removeSkill: async () => undefined as never
@@ -670,6 +672,32 @@ describe('MCP view: a widening save asks first', () => {
     expect(v.frame()).toContain('too long to show whole')
     expect(v.frame()).not.toContain('Turn Zed on?')
     expect(v.api.sets).toHaveLength(0)
+  })
+
+  it('a confirmation that fit when it opened is closed, not accepted, after the window shrinks', async () => {
+    const args = Array.from({ length: 20 }, (_, i) => `argument-number-${i}`)
+    const info = server({ id: 'x1', name: 'Zed', enabled: false, command: 'node', args })
+    const api = fakeTools({ servers: [info] })
+    let resize: (rows: number) => void = () => undefined
+    function Resizable() {
+      const [rows, setRows] = useState(60)
+      resize = setRows
+      return <McpView width={120} height={rows} env={ENV} projectId="p1" api={api} onClose={() => undefined} />
+    }
+    const v = mountView(() => <Resizable />, ENV)
+    mounted.push(v.r)
+    await tick(60)
+    await v.keys(char(' '))
+    expect(v.frame()).toContain('Turn Zed on?')
+    resize(14)
+    await tick(60)
+    await v.keys(char('y'))
+    expect(api.sets).toHaveLength(0)
+    expect(v.frame()).toContain('too long to show whole')
+    expect(v.frame()).not.toContain('Turn Zed on?')
+    // The dialog is gone: a second y does nothing either.
+    await v.keys(char('y'))
+    expect(api.sets).toHaveLength(0)
   })
 
   it('the highlighted row is the one an action uses after the list shrinks', async () => {

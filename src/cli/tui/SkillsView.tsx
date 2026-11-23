@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SkillContent, SkillInfo, SkillMutationResult } from '../../shared/types'
 import { useFocusHandler } from './context'
-import { charOf, clean, ConfigFrame, confirmFits, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
+import { charOf, clean, ConfigFrame, confirmFits, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, strictConfirmCut, windowOf, type Dialog, type Message } from './configUi'
 import { grantedInProject, skillConfirmLines, skillDetailLines, skillWidens, skillLibraryOptions, skillRoleOptions, skillRowSegs, skillRows, type SkillsData } from './skillsModel'
 import type { PaneLine } from './panes/lines'
 import { textWidth, truncateEnd } from './panes/text'
@@ -36,6 +36,8 @@ export interface SkillsViewProps {
 }
 
 export const SKILLS_LIVE_NOTE = 'A live run without a team, or in another terminal, keeps the skills it started with; this applies from its next run.'
+
+const SKILL_TOO_LONG: Message = { text: 'This skill is too long to show whole in this window, so it was not saved. Make the window larger, or use the orgai skills command.', tone: 'warn' }
 
 export const SKILLS_LIST_KEYS = ['Up/Down select', 'Enter details', 'Space on/off', 'r roles', 'l add from library', 'x remove', 'Esc back']
 export const SKILLS_DETAIL_KEYS = ['Up/Down scroll', 'Space on/off', 'r roles', 'x remove', 'Esc back']
@@ -164,28 +166,31 @@ export function SkillsView(props: SkillsViewProps) {
   const confirmWidening = (lines: string[], run: () => void): void => {
     const { width: cw, bodyRows: cr } = contentSize(props.width, props.height, env, dialogKeys({ kind: 'confirm', strict: true, title: '', lines: [], onYes: () => undefined }))
     if (!confirmFits(lines, cw, cr)) {
-      setMessage({ text: 'This skill is too long to show whole in this window, so it was not saved. Make the window larger, or use the orgai skills command.', tone: 'warn' })
+      setMessage(SKILL_TOO_LONG)
       return
     }
     setMessage(undefined)
     setDialog({ kind: 'confirm', strict: true, title: 'Confirm', lines, onYes: run })
   }
 
-  /** The confirmation for a skill of this project: reads SKILL.md first (the cached text, else a read), and says so when it cannot. */
+  /**
+   * The confirmation for a skill of this project. SKILL.md is read afresh now (never the text cached for the details: it
+   * may have changed since), and a read that fails refuses the widening save with a pointer to the command line, so
+   * `y` never saves a skill whose text was not shown.
+   */
   const confirmProjectSkill = (info: SkillInfo, headline: string, grantedTo: string, run: () => void): void => {
-    const cached = texts[info.spec.id]
-    if (cached) {
-      confirmWidening(skillConfirmLines(info.spec, headline, grantedTo, cached), run)
-      return
-    }
     act('Reading the skill', async () => {
-      let content: SkillContent | 'failed'
+      let content: SkillContent | undefined
       try {
-        content = (await api.readSkill(projectId, info.spec.id)) ?? 'failed'
+        content = await api.readSkill(projectId, info.spec.id)
       } catch {
-        content = 'failed'
+        content = undefined
       }
       if (!alive.current) return
+      if (!content) {
+        setMessage({ text: 'The text of this skill could not be read, so it was not saved. Use the orgai skills command.', tone: 'warn' })
+        return
+      }
       confirmWidening(skillConfirmLines(info.spec, headline, grantedTo, content), run)
     })
   }
@@ -262,12 +267,28 @@ export function SkillsView(props: SkillsViewProps) {
               const done = ids.length ? `Added ${label} for ${ids.length} role${ids.length === 1 ? '' : 's'}.` : `Added ${label}. No role holds it yet: press r.`
               const run = (): void => save(() => api.linkSkill(projectId, libraryId, ids), (next) => next.skills.find((s) => s.spec.libraryId === libraryId)?.spec.id, done)
               const entry = (Array.isArray(library) ? library : []).find((i) => i.entry.id === libraryId)?.entry
+              const unreadable = { text: 'The text of that library skill could not be read, so it was not added. Use the orgai skills command.', tone: 'warn' as const }
               if (!entry) {
-                setMessage({ text: 'That library entry could not be read, so it was not added.', tone: 'warn' })
+                setMessage(unreadable)
                 return
               }
               const names = project.roles.filter((r) => ids.includes(r.id)).map((r) => clean(r.name, 80))
-              confirmWidening(skillConfirmLines(entry, `Add ${label} from your library?`, names.length ? names.join(', ') : 'no role', 'unread', libraryId), run)
+              // The entry's own SKILL.md is read now (skillLibrary:read), so the confirmation shows what is being linked;
+              // a failed read opens no confirmation.
+              act('Reading the library skill', async () => {
+                let content: SkillContent | undefined
+                try {
+                  content = await api.readLibrarySkill(libraryId)
+                } catch {
+                  content = undefined
+                }
+                if (!alive.current) return
+                if (!content) {
+                  setMessage(unreadable)
+                  return
+                }
+                confirmWidening(skillConfirmLines(entry, `Add ${label} from your library?`, names.length ? names.join(', ') : 'no role', content, libraryId), run)
+              })
             }
           })
         }
@@ -303,6 +324,12 @@ export function SkillsView(props: SkillsViewProps) {
       return true
     }
     if (dialog) {
+      // A strict confirmation that fit when it opened can be cut by a smaller window now: it saves nothing then.
+      if (strictConfirmCut(dialog, props.width, props.height, env, message)) {
+        setDialog(undefined)
+        setMessage(SKILL_TOO_LONG)
+        return true
+      }
       const { next, then } = dialogKey(dialog, e, page)
       setDialog(next)
       then?.()

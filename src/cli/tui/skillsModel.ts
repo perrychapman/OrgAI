@@ -162,14 +162,14 @@ export const SKILL_CONFIRM_BODY_LINES = 12
 
 /**
  * The lines of the confirmation before a widening save: name, source, the files, who gets it and the first lines of
- * SKILL.md. `content` is the text as read, 'failed' when the read failed, or 'unread' when this view cannot read it (a
- * library entry); the last two say so and still ask for `y`. Sanitized; the file list is the skill's own, counted.
+ * SKILL.md. `content` is the text as read (skills:read, or skillLibrary:read for a library entry); a caller whose read
+ * failed opens no confirmation at all (fail closed). Sanitized; the file list is the skill's own, counted.
  */
 export function skillConfirmLines(
   spec: { name: string; description?: string; files?: readonly { path: string }[]; libraryId?: string },
   headline: string,
   grantedTo: string,
-  content: SkillContent | 'failed' | 'unread',
+  content: SkillContent,
   source?: string
 ): string[] {
   const files = Array.isArray(spec.files) ? spec.files : []
@@ -179,15 +179,11 @@ export function skillConfirmLines(
   for (const f of files.slice(0, 20)) out.push(`  ${whole(f.path)}`)
   if (files.length > 20) out.push(`  and ${files.length - 20} more`)
   if (spec.description) out.push(`description: ${whole(spec.description)}`)
-  if (content === 'failed') out.push('', 'SKILL.md could not be read, so its text is not shown here.')
-  else if (content === 'unread') out.push('', 'The text of SKILL.md of a library entry cannot be read here, so it is not shown.')
-  else {
-    const body = typeof content.body === 'string' ? content.body : ''
-    const lines = body.split(/\r?\n/)
-    out.push('', 'SKILL.md (first lines):')
-    for (const l of lines.slice(0, SKILL_CONFIRM_BODY_LINES)) out.push(`  ${whole(l)}`)
-    if (lines.length > SKILL_CONFIRM_BODY_LINES) out.push(`  and ${lines.length - SKILL_CONFIRM_BODY_LINES} more lines`)
-  }
+  const body = typeof content.body === 'string' ? content.body : ''
+  const lines = body.split(/\r?\n/)
+  out.push('', 'SKILL.md (first lines):')
+  for (const l of lines.slice(0, SKILL_CONFIRM_BODY_LINES)) out.push(`  ${whole(l)}`)
+  if (lines.length > SKILL_CONFIRM_BODY_LINES) out.push(`  and ${lines.length - SKILL_CONFIRM_BODY_LINES} more lines`)
   out.push('', 'Press y to save. Any other key cancels and saves nothing.')
   return out
 }

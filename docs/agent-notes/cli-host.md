@@ -601,9 +601,12 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   role") opens a `confirm` dialog (`strict`: `y` saves, any other key cancels, nothing is saved). The MCP dialog shows
   the name, transport, the command and every argument (one per line) or the URL, the NAMES of env variables, headers
   and secret slots (never a value), the source and who gets it; the skill dialog the name, source, files, who holds it
-  and the first 12 lines of SKILL.md (read in the background; when it cannot be read it says so and still needs `y`; a
-  library entry's text has no read path here, so that dialog says so). Text is sanitized and never cut: a definition
-  that does not fit the window is refused with a message instead of being cut. Narrowing keeps saving at once. The
+  and the first 12 lines of SKILL.md. The text is read afresh when the dialog opens (`skills:read` for a project
+  skill, never the text cached for the details; `skillLibrary:read` through `TuiToolsApi.readLibrarySkill` for a
+  library entry). Fail closed (PR 68 recheck, N2 / N3): when that read fails no dialog opens, nothing is saved and
+  the one-line message points to the `orgai skills` command. Text is sanitized and never cut: a definition that does
+  not fit the window is refused with a message instead of being cut, and a strict dialog that a resize has since
+  made too small is closed on the next key instead of accepting `y` (`strictConfirmCut`, N4). Narrowing keeps saving at once. The
   predicates and line builders are pure (`mcpWidens`, `mcpConfirmLines`, `skillWidens`, `skillConfirmLines`), checked by
   `widening.test.ts` and the view tests; the selected row is one clamped index for highlight and action (L5). Checked by
   the four view and model test files and e2e `cli-tui.mjs` section i (mock adapter); no live provider. The views were

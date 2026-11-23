@@ -147,6 +147,17 @@ export function confirmFits(lines: readonly string[], width: number, rows: numbe
   return n <= rows
 }
 
+/**
+ * Whether `d` is a strict confirmation that the window as it is NOW would cut (the terminal was resized after it
+ * opened): `dialogLines` slices to the body rows, so the rest of what `y` would save could not be seen. The views close
+ * such a dialog and refuse instead of accepting `y`. Same size rule as the render (`contentSize` with the dialog's keys).
+ */
+export function strictConfirmCut(d: Dialog, width: number, height: number, env: TuiEnv, message?: Message): boolean {
+  if (d.kind !== 'confirm' || !d.strict) return false
+  const { width: cw, bodyRows } = contentSize(width, height, env, dialogKeys(d), message)
+  return !confirmFits(d.lines, cw, bodyRows)
+}
+
 /** The body lines of an open dialog within `width` x `height` (title first). */
 export function dialogLines(d: Dialog, width: number, height: number, env: TuiEnv): PaneLine[] {
   const ell = glyphs(env).ellipsis

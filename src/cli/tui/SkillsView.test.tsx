@@ -5,6 +5,7 @@
  * refusals, the live-run note, and Esc.
  * The host is an in-memory fake of TuiToolsApi that keeps a skill list and records every call.
  */
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Project, SkillContent, SkillFileInfo, SkillInfo, SkillLibraryInfo, SkillSpec } from '../../shared/types'
 import { fixtureProject, mountView, tick } from './configTestUtil'
@@ -70,6 +71,12 @@ export interface FakeTools extends TuiToolsApi {
   gate?: Promise<void>
   /** Set to make skills:read fail with this message. */
   failRead?: string
+  /** The text skillLibrary:read gives, by library id. */
+  libTexts: Record<string, SkillContent>
+  /** Every skillLibrary:read the view made. */
+  libReads: string[]
+  /** Set to make skillLibrary:read fail with this message. */
+  failLibRead?: string
 }
 
 function fakeTools(over: Partial<Pick<FakeTools, 'held' | 'library'>> = {}): FakeTools {
@@ -83,6 +90,8 @@ function fakeTools(over: Partial<Pick<FakeTools, 'held' | 'library'>> = {}): Fak
     links: [],
     removes: [],
     reads: [],
+    libTexts: { l1: text('Write the Notion page the user names.') },
+    libReads: [],
     ...over,
     project: async () => structuredClone(api.stored),
     skills: async () => structuredClone(api.held),
@@ -93,6 +102,13 @@ function fakeTools(over: Partial<Pick<FakeTools, 'held' | 'library'>> = {}): Fak
       if (api.failRead) throw new Error(api.failRead)
       const found = api.texts[skillId]
       if (!found) throw new Error('That skill has no text to read.')
+      return structuredClone(found)
+    },
+    async readLibrarySkill(libraryId) {
+      api.libReads.push(libraryId)
+      if (api.failLibRead) throw new Error(api.failLibRead)
+      const found = api.libTexts[libraryId]
+      if (!found) throw new Error('That library skill has no text to read.')
       return structuredClone(found)
     },
     async updateSkill(_projectId, skillId, patch) {
@@ -452,17 +468,76 @@ describe('Skills view', () => {
     expect(v.api.updates).toHaveLength(0)
   })
 
-  it('says so when SKILL.md cannot be read and still needs y', async () => {
+  it('refuses the widening save when SKILL.md cannot be read: no confirmation, nothing saved, the command named', async () => {
     const api = fakeTools()
     api.failRead = 'nope'
     const v = skillsView(120, {}, api)
     await tick(60)
     await v.keys(key('down'), char(' '))
     await tick(60)
-    expect(v.frame()).toContain('could not be read')
-    expect(api.updates).toHaveLength(0)
+    const f = unwrapped(v.frame())
+    expect(f).toContain('could not be read, so it was not saved')
+    expect(f).toContain('orgai skills command')
+    expect(f).not.toContain('Turn Search on?')
     await v.keys(char('y'))
-    expect(api.updates).toHaveLength(1)
+    expect(api.updates).toHaveLength(0)
+  })
+
+  it('reads SKILL.md again at confirm time instead of using the text cached for the details', async () => {
+    const api = fakeTools()
+    const v = skillsView(120, {}, api)
+    await tick(60)
+    await v.keys(key('down'), key('enter'))
+    await tick(60)
+    expect(v.frame()).toContain('Search the stored notes.')
+    // The text changes on disk after the details cached it.
+    api.texts.s2 = text('Search the NEW notes.')
+    await v.keys(char(' '))
+    await tick(60)
+    const f = v.frame()
+    expect(f).toContain('Turn Search on?')
+    expect(f).toContain('Search the NEW notes.')
+    expect(api.reads).toEqual(['s2', 's2'])
+  })
+
+  it('a read that fails at confirm time refuses even when the details cached the text before', async () => {
+    const api = fakeTools()
+    const v = skillsView(120, {}, api)
+    await tick(60)
+    await v.keys(key('down'), key('enter'))
+    await tick(60)
+    api.failRead = 'gone'
+    await v.keys(char(' '))
+    await tick(60)
+    expect(unwrapped(v.frame())).toContain('was not saved')
+    expect(v.frame()).not.toContain('Turn Search on?')
+    await v.keys(char('y'))
+    expect(api.updates).toHaveLength(0)
+  })
+
+  it('a confirmation that fit when it opened is closed, not accepted, after the window shrinks', async () => {
+    const api = fakeTools()
+    api.texts.s2 = text(Array.from({ length: 12 }, (_, i) => `rule number ${i}`).join('\n'))
+    let resize: (rows: number) => void = () => undefined
+    function Resizable() {
+      const [rows, setRows] = useState(60)
+      resize = setRows
+      return <SkillsView width={120} height={rows} env={ENV} projectId="p1" api={api} onClose={() => undefined} />
+    }
+    const v = mountView(() => <Resizable />, ENV)
+    mounted.push(v.r)
+    await tick(60)
+    await v.keys(key('down'), char(' '))
+    await tick(60)
+    expect(v.frame()).toContain('Turn Search on?')
+    resize(14)
+    await tick(60)
+    await v.keys(char('y'))
+    expect(api.updates).toHaveLength(0)
+    expect(unwrapped(v.frame())).toContain('too long to show whole')
+    expect(v.frame()).not.toContain('Turn Search on?')
+    await v.keys(char('y'))
+    expect(api.updates).toHaveLength(0)
   })
 
   it('a roles change that only removes saves at once; one that adds asks', async () => {
@@ -474,16 +549,34 @@ describe('Skills view', () => {
     expect(v.frame()).not.toContain('load Docs?')
   })
 
-  it('a library link names its source and says the text of a library entry cannot be read here', async () => {
+  it('a library link names its source and shows the first lines of the entry\'s SKILL.md, read with skillLibrary:read', async () => {
     const v = skillsView(120)
     await tick(60)
     await v.keys(char('l'), key('enter'), key('enter'))
+    await tick(60)
     const f = v.frame()
     expect(f).toContain('Add Notion from your library?')
     expect(f).toContain('source: library entry l1')
-    expect(f).toContain('cannot be read here')
+    expect(f).toContain('Write the Notion page the user names.')
+    expect(f).not.toContain('cannot be read here')
+    expect(v.api.libReads).toEqual(['l1'])
     await v.keys(char('q'))
     expect(v.api.links).toHaveLength(0)
+  })
+
+  it('a library link whose text cannot be read opens no confirmation and names the command', async () => {
+    const api = fakeTools()
+    api.failLibRead = 'no access'
+    const v = skillsView(120, {}, api)
+    await tick(60)
+    await v.keys(char('l'), key('enter'), key('enter'))
+    await tick(60)
+    const f = unwrapped(v.frame())
+    expect(f).toContain('could not be read, so it was not added')
+    expect(f).toContain('orgai skills command')
+    expect(f).not.toContain('Add Notion from your library?')
+    await v.keys(char('y'))
+    expect(api.links).toHaveLength(0)
   })
 
   it('a hostile description never reaches the frame as an escape', async () => {

@@ -686,6 +686,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       return Array.isArray(list) ? list : []
     },
     readSkill: (projectId, skillId) => call<SkillContent>('skills:read', [{ projectId, skillId }]),
+    readLibrarySkill: (libraryId) => call<SkillContent>('skillLibrary:read', [{ libraryId }]),
     updateSkill: async (projectId, skillId, patch) => followProject(await write<SkillMutationResult>('skills:update', [{ projectId, skillId, ...patch }])),
     linkSkill: async (projectId, libraryId, roleIds) => followProject(await write<SkillMutationResult>('skills:linkLibrary', [{ projectId, libraryId, roleIds }])),
     removeSkill: async (projectId, skillId) => followProject(await write<SkillMutationResult>('skills:remove', [{ projectId, skillId }]))

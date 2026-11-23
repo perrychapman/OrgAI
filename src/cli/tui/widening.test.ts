@@ -92,9 +92,10 @@ describe('skillConfirmLines', () => {
     // eslint-disable-next-line no-control-regex
     expect(/\u001b/.test(out)).toBe(false)
   })
-  it('says so when the text could not be read, and still asks for y', () => {
-    const out = skillConfirmLines(spec, 'Turn Docs on?', 'Lead', 'failed').join('\n')
-    expect(out).toContain('could not be read')
+  it('names a library entry as the source and shows its text', () => {
+    const out = skillConfirmLines(spec, 'Add Docs?', 'Lead', { skillMd: 'Lib body', body: 'Lib body', files: [] }, 'lib_1').join('\n')
+    expect(out).toContain('source: library entry lib_1')
+    expect(out).toContain('Lib body')
     expect(out).toContain('Press y to save')
   })
 })
