@@ -78,9 +78,10 @@ message count, dock count, plan counts).
 
 ## Open
 
-- The settings sample pictures (`assets/factory/sample-*.png`) still show the old green Running lamps and cyan capsules
-  unless the hand-back says they were regenerated (`scripts/render-factory-sample.mjs`).
-- 3D screenshots of the new lamp colours were not looked at by eye in both themes at full size.
+- The settings sample pictures (`assets/factory/sample-*.png`) were regenerated on the real GPU scene with
+  `scripts/render-factory-sample.mjs` (which now also hides `.factory-top` and `.factory-bottom`); the dark one was
+  looked at (cyan Running lamps, amber Needs you). The full-size live 3D floor in both themes was not looked at by eye;
+  the 3D e2e run passed.
 - Not walked with a screen reader; no mock UX walkthrough beyond the e2e runs.
 - Reviewer lows left: the log's `h3` level depends on the run view's heading outline (ov-run); the inert Pause motion
   keeps its existing title-only reason.
