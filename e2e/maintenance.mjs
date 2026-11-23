@@ -5,6 +5,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, cleanup, createProject, finish, git, gitSafe, launch, log, makeFixtureRepo, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
+import { engagementEmptyChecks, limitsChecks } from './limits-checks.mjs'
 
 const NAME = 'E2E maintenance (orgai test)'
 const MARKER = '<!-- orgai:architecture -->'
@@ -214,6 +215,10 @@ try {
   const removed = await waitNotice(/^Removed /)
   check(/ARCHITECTURE\.md/.test(removed) && /CLAUDE\.md \(OrgAI section\)/.test(removed) && /exclude/.test(removed), 'uninstall removes doc, CLAUDE.md section and exclude line', removed)
   await shot('after')
+
+  // Spending limits at rest and the empty engagement Home (UI overhaul H2, M12; e2e/limits-checks.mjs).
+  await limitsChecks({ app, page, shot, name: NAME })
+  await engagementEmptyChecks({ app, page, shot, name: 'E2E empty engagement (orgai test)', dir: makeFixtureRepo('maint-eng', { initGit: false }) })
 } catch (e) {
   check(false, 'maintenance flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})

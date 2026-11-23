@@ -61,6 +61,10 @@ export default function EngagementHome({ project }: { project: Project }): React
   const folders = folderRows(project)
   const team = useMemo(() => teamSummary(project.roles), [project.roles])
   const editDescription = (): void => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.engagementPlan)
+  // First use: nothing running, nothing finished, no files. The main column then holds the first steps, so the page has
+  // no empty left side; once there is any run or file the normal sections return.
+  const firstUse = waiting.length === 0 && recent.length === 0 && files.length === 0
+  const focusStart = (): void => globalThis.document.querySelector<HTMLTextAreaElement>('[data-testid=eng-start-text]')?.focus()
 
   return (
     <div className="home-page eng-home" data-testid="engagement-home" data-kind="engagement">
@@ -101,6 +105,7 @@ export default function EngagementHome({ project }: { project: Project }): React
 
           <div className="eng-columns">
             <div className="eng-col-main">
+              {firstUse && <FirstSteps onStart={focusStart} onNotes={() => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.contextNotes)} onFolders={() => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.allowedFolders)} onKnowledge={() => setView('knowledge')} />}
               {waiting.length > 0 && (
                 <HomeSection title="Waiting on you" className="eng-waiting" testId="eng-waiting" tone="waiting" enter={0} action={<HomeLink onClick={() => setView('inbox')} testId="eng-inbox">Inbox</HomeLink>}>
                   <ul className="eng-rows" aria-label="Decisions waiting">
@@ -265,6 +270,35 @@ export default function EngagementHome({ project }: { project: Project }): React
         </div>
       </div>
     </div>
+  )
+}
+
+// ---------- First steps (an engagement with no work yet) ----------
+
+function FirstSteps({ onStart, onNotes, onFolders, onKnowledge }: { onStart: () => void; onNotes: () => void; onFolders: () => void; onKnowledge: () => void }): ReactElement {
+  const steps: Array<{ id: string; title: string; text: string; action: string; onClick: () => void }> = [
+    { id: 'start', title: 'Start a piece of work', text: 'Describe what you need in the box above. The team plans it and checks in when it needs you.', action: 'Go to the box', onClick: onStart },
+    { id: 'notes', title: 'Add notes', text: 'Background the team should always have: how you like things done, names, dates, constraints.', action: 'Add notes', onClick: onNotes },
+    { id: 'folders', title: 'Add reference folders', text: 'Folders of material the team may read but never change.', action: 'Add folders', onClick: onFolders },
+    { id: 'knowledge', title: 'See what the team knows', text: 'Knowledge collects what the team learns as it works, and what you tell it.', action: 'Open Knowledge', onClick: onKnowledge }
+  ]
+  return (
+    <HomeSection title="How to begin" className="eng-first" testId="eng-first-steps" enter={0}>
+      <p className="eng-first-lead">An engagement is an ongoing piece of work with its own team, notes, files and knowledge. Everything the team does here stays together.</p>
+      <ol className="eng-first-list" aria-label="First steps">
+        {steps.map((st) => (
+          <li key={st.id} className="eng-first-step">
+            <span className="eng-first-text">
+              <span className="eng-first-title">{st.title}</span>
+              <span className="eng-first-note">{st.text}</span>
+            </span>
+            <button type="button" className="eng-pill-btn" onClick={st.onClick} aria-label={`${st.action}: ${st.title}`} data-testid={`eng-first-${st.id}`}>
+              {st.action}
+            </button>
+          </li>
+        ))}
+      </ol>
+    </HomeSection>
   )
 }
 

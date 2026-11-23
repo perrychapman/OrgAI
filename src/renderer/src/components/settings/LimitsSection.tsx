@@ -1,8 +1,7 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useState } from 'react'
-import type { Project, ProjectSpend, ProjectSpendPeriod } from '@shared/types'
+import type { Project, ProjectSpend } from '@shared/types'
 import { DEFAULT_KEEP_RUNS, PROJECT_MAX_AGENTS_PER_RUN_LIMIT } from '@shared/types'
-import { formatUsd } from '../../lib/cost'
 import { Switch } from '../ui/Switch'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { MAX_SUBAGENT_DEPTH_LIMIT, effectiveSubagentLimits, planGuardOf } from '@shared/defaults'
@@ -17,6 +16,7 @@ import { SettingsAdvanced } from './SettingsAdvanced'
 import { SettingsCard } from './SettingsCard'
 import { StaffingSettings } from './StaffingSettings'
 import { MonthSpend } from '../limits/MonthSpend'
+import { reachedText, spentText } from '../limits/limitCopy'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** planGuardOf modes: Automatic (unset) engages on a plan with a weekly window or a warning status. */
@@ -60,21 +60,6 @@ function UsdInput({ id, label, describedBy, testId, value, onCommit }: { id: str
       }}
     />
   )
-}
-
-/**
- * Day / month caps and the spend warning. Main measures project spend (runInsights.projectSpend) and enforces the caps
- * (runtime/spendGuard.ts: no start at a cap, a live run pauses or stops per onSpendLimit), so the rows are live.
- */
-const PERIOD_CAPS_LIVE = true
-
-/** "Spent so far: $1.20" for a period; runs without a known price are said, never counted as $0. */
-function spentText(p: ProjectSpendPeriod | undefined, failed: boolean): string {
-  if (failed) return 'Spend so far is not available.'
-  if (!p) return 'Measuring spend so far…'
-  const unknown = p.unknownRuns > 0 ? ` ${p.unknownRuns} ${p.unknownRuns === 1 ? 'run has' : 'runs have'} no known price and ${p.unknownRuns === 1 ? 'is' : 'are'} not counted.` : ''
-  if (p.spentUsd <= 0 && p.unknownRuns > 0) return `Spend so far is unknown.${unknown}`
-  return `Spent so far: ${p.unknownRuns > 0 ? 'at least ' : ''}${formatUsd(p.spentUsd)}.${unknown}`
 }
 
 /**
@@ -217,25 +202,13 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
     }
   }, [project.id, project.maxDailyUsd, project.maxMonthlyUsd])
 
-  const costRow = (): ReactElement => (
+  const costRow = (
     <SettingRow
       id={row('cost')}
       title={copy.costCap.label}
-      description={copy.costCap.description}
+      description="Stops one run session when its estimated cost reaches this, at API prices (on a plan it is a safety cap, not money billed). A run whose price is unknown is stopped too, since the cap cannot be checked. Counted per run session. Blank or 0: no cap."
       width="number"
-      control={
-        <Input
-          id={`${uid}-cost`}
-          aria-label={copy.costCap.label}
-          aria-describedby={desc('cost')}
-          type="number"
-          min={0}
-          step={0.5}
-          value={project.maxBudgetUsd ?? ''}
-          placeholder="No cap"
-          onChange={(v) => patch({ maxBudgetUsd: v ? Number(v) : undefined })}
-        />
-      }
+      control={<UsdInput id={`${uid}-cost`} label={copy.costCap.label} describedBy={desc('cost')} testId="limit-run-input" value={project.maxBudgetUsd} onCommit={(v) => patch({ maxBudgetUsd: v })} />}
     />
   )
 
@@ -282,14 +255,15 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           />
         }
       />
-      {costRow()}
     </>
   )
 
-  // Day and month caps, what a live run does at a cap, and the app-wide warning: at rest for metered projects, in
-  // Advanced on a plan sign-in (where spend is an estimate, not a bill). RunManager enforces them (spendGuard.ts).
-  const periodCard = (
+  // The limits a person sets, all at rest (Limits board): per run, per day and month, what happens at a cap and the
+  // app-wide warning. RunManager enforces them (spendGuard.ts); on a plan sign-in the spend is an estimate, not a bill.
+  const mode = project.onSpendLimit === 'stop' ? 'stop' : 'pause'
+  const limitsCard = (
     <SettingsCard>
+      {costRow}
       {(
         [
           ['maxDailyUsd', 'One day', 'day'],
@@ -300,7 +274,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
           key={key}
           id={row(key)}
           title={title}
-          description={`Runs do not start, and live runs ${project.onSpendLimit === 'stop' ? 'stop' : 'pause'}, once this ${word}'s estimated spend reaches it. Counts runs and schedules. ${spentText(spend?.[word], spendFailed)}`}
+          description={`Counts every run and schedule in this project, at estimated API prices. New runs do not start once it is reached, and a live run will ${mode}. Blank or 0: no limit. ${spentText(spend?.[word], spendFailed)} ${reachedText(spend?.[word], project[key], word, mode)}`.trim()}
           width="number"
           control={
             <UsdInput
@@ -338,7 +312,6 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
     <>
       <SettingsSection id="settings-section-limits" title="Spending limits">
         <MonthSpend project={project} />
-        {metered && <SettingsCard>{costRow()}</SettingsCard>}
         {metering === 'subscription' && (
           <p className="perm-plan-line" data-testid="plan-guard-line">
             {planGuardLine(planGuardOf(project), project.maxWindowShare)}
@@ -346,13 +319,16 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
         )}
       </SettingsSection>
 
-      {PERIOD_CAPS_LIVE && metered && (
-        <SettingsSection id="settings-section-period-limits" title="Per day and per month" description="Counts every run and schedule in this project." testId="period-limits-section">
-          {periodCard}
-        </SettingsSection>
-      )}
+      <SettingsSection
+        id="settings-section-period-limits"
+        title="Limits"
+        description="Main checks these before a run starts and while it works. A run whose model has no known price cannot be checked, so it does not start while a day or month limit is set."
+        testId="period-limits-section"
+      >
+        {limitsCard}
+      </SettingsSection>
 
-      <SettingsSection id="settings-section-run-size" title="How big a run can get">
+      <SettingsSection id="settings-section-run-size" title="How big a run can get" description="Caps on how many agents a run starts and which model it may reach for.">
         <SettingsCard>
           <SettingRow
             id={row('depth')}
@@ -386,30 +362,29 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
               />
             }
           />
+          <AgentsPerRunRow project={project} patch={patch} rowId={row('agents')} />
+          <SettingRow
+            id={row('stronger')}
+            title="Ask before using a more capable model"
+            description="Today this only applies when you retry a failed agent and the retry would run it on a stronger model than its role normally uses. You are asked first, and if you say no it keeps the usual one."
+            control={
+              <Switch
+                checked={project.askBeforeStrongerModel === true}
+                label="Ask before using a more capable model"
+                testId="ask-stronger-switch"
+                describedBy={desc('stronger')}
+                onChange={(v) => patch({ askBeforeStrongerModel: v ? true : undefined })}
+              />
+            }
+          />
         </SettingsCard>
       </SettingsSection>
 
       <SettingsAdvanced paneKey="project-limits">
-        {PERIOD_CAPS_LIVE && !metered && <SettingsGroup title="Per day and per month">{periodCard}</SettingsGroup>}
         <StaffingSettings project={project} patch={patch} />
-        <SettingsGroup title="Runs and agents">
+        <SettingsGroup title="Plan guard and cleanup">
           <SettingsCard>
             {planRows}
-            <AgentsPerRunRow project={project} patch={patch} rowId={row('agents')} />
-            <SettingRow
-              id={row('stronger')}
-              title="Ask before using a more capable model"
-              description="Today this only applies when you retry a failed agent and the retry would run it on a stronger model than its role normally uses. You are asked first, and if you say no it keeps the usual one."
-              control={
-                <Switch
-                  checked={project.askBeforeStrongerModel === true}
-                  label="Ask before using a more capable model"
-                  testId="ask-stronger-switch"
-                  describedBy={desc('stronger')}
-                  onChange={(v) => patch({ askBeforeStrongerModel: v ? true : undefined })}
-                />
-              }
-            />
             <SettingRow
               id={row('keep')}
               title={copy.keepRuns.label}
