@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, MergeDecision, WorktreeInfo, WorktreeStatus } from '@shared/types'
 import { WorktreeIntegrator } from './integration'
 import { fakeCtx, project } from './testHelpers'
-import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo } from './worktrees'
+import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision } from './worktrees'
+import { runTestGate } from './testGate'
+import type { Project } from '@shared/types'
+
+vi.mock('./testGate', async () => {
+  const actual = await vi.importActual<typeof import('./testGate')>('./testGate')
+  return { ...actual, runTestGate: vi.fn() }
+})
 
 vi.mock('./worktrees', () => ({
   prepareRepo: vi.fn(async () => {}),
@@ -38,16 +45,17 @@ function integrateTo(status: WorktreeStatus, message = `${status} message`, chan
   vi.mocked(integrateWorktree).mockImplementation(async (_root, info, _msg, review) => {
     let final = status
     if (review) {
-      const d: MergeDecision = await review(changedFiles)
+      const d: GateDecision = await review(changedFiles)
+      if (d.behavior === 'refuse') return { info: { ...info, status: 'conflict', changedFiles }, message: d.message, refused: d.reason }
       final = d.behavior === 'discard' ? 'removed' : d.behavior === 'hold' ? 'held' : status
     }
     return { info: { ...info, status: final, changedFiles }, message }
   })
 }
 
-function setup(reviewMerges = false, decision: MergeDecision = { behavior: 'merge' }) {
+function setup(reviewMerges = false, decision: MergeDecision = { behavior: 'merge' }, projectOver: Partial<Project> = {}) {
   const ctx = fakeCtx({
-    project: project({ reviewMerges }),
+    project: project({ reviewMerges, ...projectOver }),
     requestMergeReview: vi.fn(async () => decision)
   })
   const agents = new Map<string, AgentInstance>([['a1', agent('a1', 'Engineer')]])
@@ -505,5 +513,129 @@ describe('WorktreeIntegrator exec settlement (cli-spec 6.2(2))', () => {
     await Promise.resolve()
     expect(integrator.hasPendingWork()).toBe(false)
     expect(integrator.unmergedConflictBranches()).toEqual(['worktree-agent-a1'])
+  })
+})
+
+describe('test gate (requireTestsPass)', () => {
+  const GATED = { requireTestsPass: true, testCommand: 'npm test' }
+  const passed = { outcome: 'passed' as const, exitCode: 0, detail: 'Tests passed (exit code 0, 1.0 s).\n3 passed', durationMs: 1000 }
+  const failed = { outcome: 'failed' as const, exitCode: 1, detail: 'The tests failed (exit code 1, 1.0 s).\n1 failed', durationMs: 1000 }
+  const timedOut = { outcome: 'timeout' as const, exitCode: null, detail: 'The tests did not finish within 600 s and were stopped.', durationMs: 600000 }
+
+  beforeEach(() => {
+    vi.mocked(runTestGate).mockReset()
+  })
+
+  it('runs the command in the copy before merging and lets the merge proceed on a pass', async () => {
+    vi.mocked(runTestGate).mockResolvedValue(passed)
+    integrateTo('merged')
+    const { integrator, notes } = setup(false, { behavior: 'merge' }, GATED)
+    integrator.track('a1', WT)
+    await integrator.onSubagentFinished('a1')
+    expect(runTestGate).toHaveBeenCalledWith('npm test', WT.path)
+    expect(integrator.worktreeOf('a1')?.status).toBe('merged')
+    expect(notes[0]).toMatch(/was merged into the main checkout/)
+  })
+
+  it('refuses the merge when the command fails: the copy is kept, the orchestrator is told, a warn line is logged', async () => {
+    vi.mocked(runTestGate).mockResolvedValue(failed)
+    integrateTo('merged')
+    const { integrator, notes, logs } = setup(false, { behavior: 'merge' }, GATED)
+    integrator.track('a1', WT)
+    await integrator.onSubagentFinished('a1')
+    expect(integrator.worktreeOf('a1')?.status).toBe('conflict')
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain("Harness: Engineer's report was NOT merged.")
+    expect(notes[0]).toContain('the tests failed (exit code 1)')
+    expect(notes[0]).toContain('do not merge branch worktree-agent-a1 yourself')
+    expect(notes[0]).not.toContain('git worktree remove')
+    expect(logs().some((l) => l.startsWith('warn: Engineer: Not merged: the tests failed (exit code 1)'))).toBe(true)
+    expect(logs().some((l) => l.includes('1 failed'))).toBe(true)
+  })
+
+  it('refuses on a timeout', async () => {
+    vi.mocked(runTestGate).mockResolvedValue(timedOut)
+    integrateTo('merged')
+    const { integrator, notes } = setup(false, { behavior: 'merge' }, GATED)
+    integrator.track('a1', WT)
+    await integrator.onSubagentFinished('a1')
+    expect(integrator.worktreeOf('a1')?.status).toBe('conflict')
+    expect(notes[0]).toContain('the tests timed out')
+  })
+
+  it('does nothing when the gate is off, has no command, or the project is an engagement', async () => {
+    for (const over of [{}, { requireTestsPass: false, testCommand: 'npm test' }, { requireTestsPass: true, testCommand: '   ' }, { ...GATED, kind: 'engagement' as const }]) {
+      vi.mocked(runTestGate).mockReset()
+      integrateTo('merged')
+      const { integrator, ctx } = setup(false, { behavior: 'merge' }, over)
+      integrator.track('a1', WT)
+      expect(integrator.reviewGate('a1', WT)).toBeUndefined()
+      await integrator.onSubagentFinished('a1')
+      expect(runTestGate).not.toHaveBeenCalled()
+      expect(vi.mocked(integrateWorktree).mock.calls.at(-1)?.[3]).toBeUndefined()
+      expect(integrator.worktreeOf('a1')?.status).toBe('merged')
+      expect(ctx.requestMergeReview).not.toHaveBeenCalled()
+    }
+  })
+
+  it('puts the result on the merge review card, and no card is shown when the tests fail', async () => {
+    vi.mocked(runTestGate).mockResolvedValue(passed)
+    integrateTo('merged')
+    const ok = setup(true, { behavior: 'merge' }, GATED)
+    ok.integrator.track('a1', WT)
+    await ok.integrator.onSubagentFinished('a1')
+    expect(ok.ctx.requestMergeReview).toHaveBeenCalledWith(
+      expect.objectContaining({ checks: { tests: 'passed', testDetail: passed.detail, review: 'unknown' } })
+    )
+
+    vi.mocked(runTestGate).mockResolvedValue(failed)
+    const bad = setup(true, { behavior: 'merge' }, GATED)
+    bad.integrator.track('a1', WT)
+    await bad.integrator.onSubagentFinished('a1')
+    expect(bad.ctx.requestMergeReview).not.toHaveBeenCalled()
+    expect(bad.integrator.worktreeOf('a1')?.status).toBe('conflict')
+  })
+
+  it('marks tests unknown on the card when the gate is off', async () => {
+    integrateTo('merged')
+    const { integrator, ctx } = setup(true, { behavior: 'merge' })
+    integrator.track('a1', WT)
+    await integrator.onSubagentFinished('a1')
+    expect(ctx.requestMergeReview).toHaveBeenCalledWith(expect.objectContaining({ checks: { tests: 'unknown', review: 'unknown' } }))
+  })
+
+  it('also gates a retry from the integrate tool, and says why in its answer', async () => {
+    vi.mocked(runTestGate).mockResolvedValue(failed)
+    integrateTo('merged')
+    const { integrator } = setup(false, { behavior: 'merge' }, GATED)
+    const answer = await integrator.integratePending({ path: WT.path, branch: WT.branch })
+    expect(answer).toMatch(/^worktree-agent-a1: Not merged: the tests failed/)
+  })
+
+  it('passes mainBranch only for merges into the main checkout', async () => {
+    integrateTo('merged')
+    const main = setup(false, { behavior: 'merge' }, { mainBranch: 'trunk' })
+    main.integrator.track('a1', WT)
+    await main.integrator.onSubagentFinished('a1')
+    expect(vi.mocked(integrateWorktree).mock.calls[0][4]).toEqual({ mainBranch: 'trunk' })
+
+    vi.mocked(integrateWorktree).mockClear()
+    integrateTo('merged')
+    const none = setup(false, { behavior: 'merge' })
+    none.integrator.track('a1', WT)
+    await none.integrator.onSubagentFinished('a1')
+    expect(vi.mocked(integrateWorktree).mock.calls[0][4]).toEqual({})
+
+    // A child merging into its parent's worktree never gets it.
+    vi.mocked(integrateWorktree).mockClear()
+    integrateTo('merged')
+    const nested = setup(false, { behavior: 'merge' }, { mainBranch: 'trunk' })
+    nested.agents.set('c1', agent('c1', 'Child'))
+    nested.integrator.track('a1', WT)
+    nested.integrator.track('c1', { path: '/repo/.claude/worktrees/agent-c1', branch: 'worktree-agent-c1', status: 'active', mergeTarget: 'parent', parentAgentId: 'a1', parentBranch: WT.branch })
+    await nested.integrator.onSubagentFinished('a1')
+    await nested.integrator.onSubagentFinished('c1')
+    const childCall = vi.mocked(integrateWorktree).mock.calls.find((c) => c[1].branch === 'worktree-agent-c1')
+    expect(childCall?.[4]).toEqual({})
   })
 })

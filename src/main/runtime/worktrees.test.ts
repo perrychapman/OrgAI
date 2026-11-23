@@ -292,6 +292,86 @@ describe('integrateWorktree', () => {
     const res = await integrateWorktree(root, { path: join(root, '.claude/worktrees/agent-ghost'), branch: 'worktree-agent-ghost', status: 'merging' }, 'x')
     expect(res.info.status).toBe('removed')
   })
+
+  describe('Project.mainBranch', () => {
+    it('lands the merge on the named local branch, switching a clean checkout to it', async () => {
+      await prepareRepo(root)
+      git(root, 'branch release')
+      const wt = addWorktree('mb1')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', undefined, { mainBranch: 'release' })
+      expect(res.info.status, res.message).toBe('merged')
+      expect(git(root, 'branch --show-current')).toBe('release')
+      expect(git(root, 'log -1 --format=%s release')).toBe('Merge worktree-agent-mb1: Impl: feature')
+      expect(git(root, 'log -1 --format=%s main')).toBe('initial')
+    })
+
+    it('does not switch when the checkout is already on it', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('mb2')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merged' as never }, 'Impl: feature', undefined, { mainBranch: 'main' })
+      expect(res.info.status, res.message).toBe('merged')
+      expect(git(root, 'branch --show-current')).toBe('main')
+    })
+
+    it('falls back to the checkout\'s current branch when the named branch does not exist, and never creates it', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('mb3')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', undefined, { mainBranch: 'no-such-branch' })
+      expect(res.info.status, res.message).toBe('merged')
+      expect(git(root, 'branch --show-current')).toBe('main')
+      expect(branches()).toEqual(['main'])
+    })
+
+    it('refuses, changing nothing, when the checkout is on another branch with uncommitted tracked changes', async () => {
+      await prepareRepo(root)
+      git(root, 'branch release')
+      const wt = addWorktree('mb4')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      put(root, 'src/app.js', 'export const a = "uncommitted"\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', undefined, { mainBranch: 'release' })
+      expect(res.info.status).toBe('conflict')
+      expect(res.message).toMatch(/main branch is release but the main checkout is on main with uncommitted changes/)
+      expect(git(root, 'branch --show-current')).toBe('main')
+      expect(readFileSync(join(root, 'src/app.js'), 'utf8')).toContain('uncommitted')
+      expect(existsSync(wt.path)).toBe(true)
+      expect(branches()).toContain(wt.branch)
+    })
+
+    it('ignores a name that looks like an option', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('mb5')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', undefined, { mainBranch: '--orphan' })
+      expect(res.info.status, res.message).toBe('merged')
+    })
+  })
+
+  describe('a refusing gate', () => {
+    it('keeps the copy untouched and merges nothing', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('gate1')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', async () => ({ behavior: 'refuse', reason: 'tests', message: 'tests failed' }))
+      expect(res.info.status).toBe('conflict')
+      expect(res.refused).toBe('tests')
+      expect(res.message).toBe('tests failed')
+      expect(existsSync(wt.path)).toBe(true)
+      expect(branches()).toContain(wt.branch)
+      expect(git(root, 'log -1 --format=%s')).toBe('initial')
+    })
+
+    it('a passing gate (merge) proceeds to the merge', async () => {
+      await prepareRepo(root)
+      const wt = addWorktree('gate2')
+      put(wt.path, 'src/feature.js', 'export const f = true\n')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Impl: feature', async () => ({ behavior: 'merge' }))
+      expect(res.info.status, res.message).toBe('merged')
+      expect(res.refused).toBeUndefined()
+    })
+  })
 })
 
 describe('inspectPending', () => {
