@@ -489,7 +489,7 @@ try {
   const pop = page.locator('[data-testid=canvas-style-popover]')
   await pop.waitFor({ timeout: 5000 })
   await sleep(300)
-  check(await page.evaluate(() => document.activeElement?.matches('[data-testid="canvas-presentation"] input[value="graph"]')), 'opening the popover focuses the current presentation (Graph)')
+  check((await pop.locator('[data-testid=canvas-presentation]').count()) === 0, 'the style popover no longer holds the presentation chooser (the Theme menu does)')
   check((await pop.locator('[data-preset=default]').count()) === 1 && (await pop.locator('[data-preset]').first().getAttribute('data-preset')) === 'default', 'the popover lists Default first')
   const popBox = await pop.boundingBox()
   check(!intersects(miniBox, popBox), 'the style popover does not land on the minimap', JSON.stringify({ miniBox, popBox }))
@@ -506,9 +506,7 @@ try {
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'canvas-style-button'), 'Escape closes the popover and returns focus to the button')
   // ---------- The toolbar "Theme" menu (canvas chrome): the presentation chooser ----------
   const themeTrigger = page.locator('.run-body [data-testid=canvas-theme-trigger]')
-  if ((await themeTrigger.count()) === 0) {
-    log('skipped the Theme menu checks: LiveRunView does not mount CanvasThemeMenu yet')
-  } else {
+  {
     const menu = page.locator('[data-testid=canvas-theme-menu]')
     check((await themeTrigger.getAttribute('aria-haspopup')) === 'menu' && (await themeTrigger.getAttribute('aria-expanded')) === 'false', 'the Theme button is a menu button, closed')
     check(/Theme\s*Org chart/.test(await themeTrigger.innerText()), 'the Theme button names the current theme (Org chart)')
