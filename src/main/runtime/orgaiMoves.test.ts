@@ -59,6 +59,18 @@ describe('the ledger of OrgAI\'s own HEAD moves', () => {
     expect(movedOnlyByOrgAi(ROOT, at(`h${ORGAI_MOVES_KEPT}`), ORGAI_MOVES_KEPT, at0)).toBe(true)
   })
 
+  // With several orgai sessions on one data folder the ledger is per process: a merge another session made into the
+  // same checkout is not in it. That must read as someone else's change (the merge gate then refuses), never as OrgAI's.
+  it('a move another session made is not in this process\'s ledger, so it reads as a change by someone else', () => {
+    // This session pinned HEAD at a; another session merged a -> b; nothing here was recorded.
+    expect(movedOnlyByOrgAi(ROOT, at('a'), 0, at('b'))).toBe(false)
+    // This session then makes its own move from where the other left HEAD: the chain does not start at the pin.
+    recordOrgAiMove(ROOT, at('b'), at('c'))
+    expect(movedOnlyByOrgAi(ROOT, at('a'), 0, at('c'))).toBe(false)
+    // Another session's later move after this one's is not explained either.
+    expect(movedOnlyByOrgAi(ROOT, at('b'), 0, at('d'))).toBe(false)
+  })
+
   it('checkouts are separate ledgers', () => {
     recordOrgAiMove(ROOT, at('a'), at('b'))
     expect(movedOnlyByOrgAi('/repo/other', at('a'), 0, at('b'))).toBe(false)

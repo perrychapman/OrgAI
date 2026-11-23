@@ -624,6 +624,51 @@ is `true` in the renderer; `runs.retryRun` is real; the merge gate refuses an em
 `RunManager` drops adapter-sent `run.hold` / `run.spendWarning` and rebuilds `provider.retry`. Not changed by this check:
 every "Unverified" line below.
 
+## With several sessions on one data folder
+
+The overhaul's main-process code was written before the CLI sessions work (`docs/design/cli-sessions.md`: several `orgai`
+processes on one data folder, one write lock, `storeSyncFor(dataDir).locked`, re-read before change). The merge of the two
+was audited writer by writer (the labels are in `writePathInventory.allowlist.ts`). The desktop app keeps one process per
+data folder, so none of this applies to it.
+
+| Writer or reader | Result |
+| --- | --- |
+| `ProjectStore` (new fields, `cleanProjectLimits`, `cleanRoleLimits`) | Correct as is: pure cleaning inside the existing `change` / `load`; a load that cleans something persists inside `migrateAll`'s change. |
+| `SettingsStore.set` and `OVERHAUL_KEYS` | Correct as is: with a newer file the merge is `{ ...stored, ...changedFields(base, given) }`, so a field the caller did not change keeps the other session's value, and a key the caller left out (an older renderer) is filled from the stored one. Test: `sharedStores.test.ts` "the UI overhaul fields merge like the others" and "a save that leaves the overhaul fields out". |
+| `allowCounter.ts` (`allow-counts.json`) | Fixed. The write was atomic (unique temp name, rename) but the read-change-write of `bumpAllowCount`, and the version 1 migration inside a read, ran without the lock. Both now run under the write lock (a busy lock means "not counted", never a throw). Bumps come from the desktop decide path only. Test: `allowCounter.test.ts` "counter file on a data folder several sessions share". |
+| `TemplateService.countApplied` (built-in and saved apply counts) | Fixed: it read the index and rewrote it without the lock (every other index change already had it). It now runs under the lock. `duplicate` now holds the lock from reading the source to saving the copy. Test: `templatesBuiltIn.test.ts`. |
+| The widening check of `projects:save`, `projects:applyImport`, `templates:apply` (`projectSaveGuard.ts`) | Fixed: the check read the stored project and the save followed it outside one hold, so a cap another session lowered in between could be raised again by a save that had passed the check. Check and save are now one step under the write lock (`ProjectStore.locked`, the store's own sync, not the process registry: a test that hosts two sessions in one process has two syncs on one folder). A caller whose copy is older than a cap another session lowered is still refused when its copy carries the higher value (fails closed). Test: `projectSaveGuard.test.ts` "the widening check and the save are one step". |
+| `SkillService.duplicate` | Correct as is: the whole service is wrapped in `oneChangePerCall` (bootstrap), so a call is one step under the lock. |
+| `SkillService.exportTo` | Correct as is: it writes a new folder in a destination the user picked (`mkdir` fails with `EEXIST`, files with `wx`), never overwrites, and reads the skill under the wrapper's lock. Two sessions exporting to one place get two folders. |
+| Daily and monthly spend (`spendGuard`, `projectSpend`, `RunManager.spendRuns`) | Correct as is: the totals are pure and are built from `RunStore.list`, which re-reads the index when another session changed it, with live runs of this process replacing their stored copy. A session's usage reaches the index when it publishes usage (throttled), so another session sees it with that delay. Gap: a start check is not atomic across sessions, so two sessions starting at the same moment can both pass a cap that only one of them fits; the overshoot is bounded by one usage publish. |
+| Run store fields (`hold`, `runBudgetUsd`, `excludedRoleIds`, `providerRetry`) | Correct as is: validated in `normalizeCrashedRunSummary`, a pure function; `providerRetry` is kept only with `opts.live` (the session that hosts the run is still running) and dropped for a run whose host is gone. No new file. |
+| `orgaiMoves.ts` (merge ledger, `rootPin.ts`) | Correct as is, now tested: the ledger is per process, so another session's merge into the same checkout is not in it. A pin read before that merge finds no unbroken chain from the pinned HEAD, so the gate reads it as someone else's change and refuses (fails closed). Test: `orgaiMoves.test.ts` "a move another session made". |
+| Finished-copies sweep at boot (`startFinishedCopiesSweep`) | Correct as is: only `hostKind === 'desktop'` runs it (`bootstrap.test.ts`); the `orgai` host never does, so a second session cannot sweep copies another one uses. `deleteBranch` rechecks under the repository lock (cross-process). |
+| `appBehaviour.ts`, `overhaulIpc.ts` | Correct as is: desktop only, no file of their own. |
+
+### A rename that overlaps another process's read (Windows)
+
+`src/main/store/sameProject.test.ts` ("each adds 60 notes ... 60 roles at the same moment") failed on the merged tree with
+`EPERM: rename 'projects.json.tmp' -> 'projects.json'`. It was not caused by the overhaul: unmodified `origin/dev` failed
+4 runs in 8 on the same machine at the time (merged tree before the fix: 3 in 11). A store replaces its file by renaming a temp file over
+it, and Windows refuses that rename for as long as another process has the target open, even for a read of one
+millisecond. A second process re-reading the file in a loop made 445 of 647 renames fail; the same loop without the
+reader made 0 of 3593 fail. The readers were the stores' own `refresh` re-reads (`ProjectStore.get`, phase 4 of the test:
+both children save in a tight loop, each save makes the other's next `get` re-read), which ran outside the lock.
+
+Fix (`store/shared/storeSync.ts`): a re-read of a file another session changed (and the first load) now runs under the
+write lock, taken only when the stamp differs (so an unchanged file still costs one `stat`). The wait is bounded
+(`READ_LOCK_WAIT_MS`, 2 s); if the lock stays held that long the read goes ahead unprotected, as before, rather than fail.
+`ReentrantSyncLock.acquireWithin(ms)` is the new bounded acquire. Tests: `shared/storeSyncReads.test.ts`,
+`shared/syncLock.test.ts`; the real-process test is `sameProject.test.ts` itself (10 of 10 passes after the fix; 3 failures in 11 runs
+before it on this tree, 4 in 8 on `origin/dev`).
+
+Still open: a read that is not a re-read of a synced store file (a plain `readFileSync` of a notes, graph, template or
+counter file in a list call) can still overlap another session's rename of that file and make that session's write fail
+with EPERM on Windows; the window is a millisecond. The only complete cure is a retry on the rename
+(`host/fsRetry.ts renameSyncRetry`, which `runs.ts`, `sessions.ts` and the repository lock already use and the
+`projects.json` / `settings.json` / project-data writers do not). That was not added here.
+
 ## Verification
 
 See the Runtime Lead report for the commands and results.

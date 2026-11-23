@@ -739,6 +739,15 @@ export class ProjectStore {
     return stored && stored.updatedAt === project.updatedAt ? structuredClone(stored) : null
   }
 
+  /**
+   * Run `fn` (synchronous) holding this store's write lock, so that what it reads from the store and the save it makes
+   * are one step: no other orgai session saves in between. Nests with the store's own holds. Just `fn()` with one process
+   * per data folder. For a check that depends on the stored project (the widening check of a non-desktop save).
+   */
+  locked<T>(fn: () => T): T {
+    return this.sync.locked(fn)
+  }
+
   /** Before a read: pick up what another session saved. Nothing to do with one process per data folder. */
   private fresh(): void {
     this.sync.refresh(this.file, () => this.load(false))

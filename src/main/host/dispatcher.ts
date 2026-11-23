@@ -515,6 +515,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   }
   const { projects, runs, setup, maintenance, settings, connections, mcp, adapterIds, harnessProject, importer, skills, skillEvaluation, capabilities, quick, templates, kit, teamFiles, usage, desktop, host } = services
   const mock = adapterIds.includes('mock')
+  const projectStep = <R>(fn: () => R): R => projectStepOf(projects, fn)
   // Always served: without a usage monitor the answer is null (nothing to refresh).
   handle(IPC.usageRefresh, () => usage?.refresh() ?? Promise.resolve(null))
   // app:reference (read scope): the user and terminal clients may see the secret-free status snapshot.
@@ -627,7 +628,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   // sourcePath / fromProjectId are honoured on the desktop surface only, and a folder only when this window picked it.
   handle(IPC.projectsPreviewImport, (ctx, input: AgentImportInput): AgentImportPreview => importer.preview(input, importAccess(ctx)))
   // The digest of the reviewed preview is required; apply refuses without it or when the folder changed since.
-  handle(IPC.projectsApplyImport, (ctx, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input, importAccess(ctx), widenGuard(ctx)))
+  // The widening check reads the stored project and the save follows it: one step under the write lock (see projects:save).
+  handle(IPC.projectsApplyImport, (ctx, input: AgentImportApplyInput): AgentImportApplyResult => projectStep(() => importer.apply(input, importAccess(ctx), widenGuard(ctx))))
   handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
   handle(IPC.projectsSave, (ctx, project: Project): Project | Promise<Project> => {
@@ -641,12 +643,17 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const base = ctx.surface === 'inproc' && typeof projects.baseOf === 'function' ? projects.baseOf(project) : null
     const before = stored ? structuredClone(stored) : base
     // Spend and command settings (daily / monthly caps, test gate, schedules near the plan limit) are widened in the window only.
-    if (ctx.surface !== 'desktop' && typeof project?.id === 'string') {
-      const current = projects.get(project.id)
-      const refused = current ? desktopOnlyProjectChanges(current, project) : []
-      if (refused.length) throw new HostRpcFailure('scope_denied', desktopOnlyProjectMessage(refused))
-    }
-    const saved = projects.saveFromRenderer(project)
+    // The check and the save are ONE step under the data folder's write lock (re-entrant with the store's own hold; plain
+    // calls with one process per data folder): with several orgai sessions on the folder, another one could otherwise
+    // lower a cap between the two, and the save would then raise it again from what the check had passed.
+    const saved = projectStep(() => {
+      if (ctx.surface !== 'desktop' && typeof project?.id === 'string') {
+        const current = projects.get(project.id)
+        const refused = current ? desktopOnlyProjectChanges(current, project) : []
+        if (refused.length) throw new HostRpcFailure('scope_denied', desktopOnlyProjectMessage(refused))
+      }
+      return projects.saveFromRenderer(project)
+    })
     // Sync for any other surface (and when there is nothing to compare against), exactly as before.
     if (!before) return saved
     return liveRunsOf(ctx, runs, saved.id, saved, { kind: 'projectSave', before, request: project }).then(() => saved)
@@ -1075,7 +1082,16 @@ function registerKnowledgeIpc(handle: Register, { projects, dataDir, events }: {
   })
 }
 
+/**
+ * A check that reads the stored project plus the save that follows it, as ONE step under the project store's write lock
+ * (ProjectStore.locked: just the call with one process per data folder, or for a store without it, e.g. a test double).
+ */
+function projectStepOf<R>(projects: ProjectStore, fn: () => R): R {
+  return typeof projects.locked === 'function' ? projects.locked(fn) : fn()
+}
+
 function registerTemplateEngagementIpc(handle: Register, { projects, templates, dataDir, events }: { projects: ProjectStore; templates: TemplateService; dataDir: string; events: HostEventBus }): void {
+  const projectStep = <R,>(fn: () => R): R => projectStepOf(projects, fn)
   const stored = (id: string): Project => {
     const p = projects.get(id)
     if (!p) throw new Error('Project not found')
@@ -1088,7 +1104,8 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
     templates.remove(templateEngagementArgs.templateId(id))
     return templates.listWithBuiltIns()
   })
-  handle(IPC.templatesApply, (ctx, input: unknown): AgentImportApplyResult => templates.apply(templateEngagementArgs.applyTemplate(input), widenGuard(ctx)))
+  // Same as projects:applyImport: the check, the save and the apply count are one step under the write lock.
+  handle(IPC.templatesApply, (ctx, input: unknown): AgentImportApplyResult => projectStep(() => templates.apply(templateEngagementArgs.applyTemplate(input), widenGuard(ctx))))
 
   handle(IPC.projectsEngagementDocument, (_e, id: unknown): EngagementDocumentInfo => {
     const project = stored(templateEngagementArgs.projectId(id))

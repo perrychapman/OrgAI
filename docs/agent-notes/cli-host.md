@@ -23,7 +23,12 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     retained run projects, models and price caches, the outputs index; the skill library's folder changes run under the
     lock. A re-read that cannot parse keeps memory and never writes an emptied copy. Checked by `runsShared.test.ts`,
     `sharedStores.test.ts` (two sessions in one process), two real processes x 100 runs, and the unchanged store suites
-    (798 tests) for the `SOLO` path.
+    (798 tests) for the `SOLO` path. A re-read of a changed file (and the first load) also runs under the write lock
+    (waiting at most `READ_LOCK_WAIT_MS`, 2 s, then reading unprotected): on Windows a rename over a file another process
+    has open for a read fails with EPERM (a looping reader made 69 % of renames fail, measured), and the unlocked
+    re-reads were what made `sameProject.test.ts` fail intermittently, on `origin/dev` too (`storeSyncReads.test.ts`).
+    Plain reads outside `refresh` (list calls over notes, graph, templates) can still collide; see
+    `docs/design/ui-overhaul/impl-runtime.md` "With several sessions on one data folder".
   - Runs: `runs.json` gained `owners` (run id to session id, open runs only; an older `orgai` and the app ignore and
     drop it). A run whose owner's lock is held keeps its status elsewhere and `RunStore.upsert` / `moveToProject` refuse
     it (`RunBusyError`); otherwise an open run is normalized as crashed on read, and a read re-checks the owners every

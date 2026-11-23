@@ -8,6 +8,9 @@ import { ORG_TEMPLATES_MAX } from '@shared/types'
 import { templateEngagementArgs } from '../host/args'
 import type { ModelContext } from './import/model'
 import { TemplateService } from './templates'
+import { registerSession, writeLockPath } from '../host/sessions'
+import { createSharedStoreSync, enableStoreSync } from '../store/shared/storeSync'
+import { trySyncLock } from '../store/shared/syncLock'
 
 let dataDir: string
 let stored: Project[]
@@ -232,5 +235,53 @@ describe('TemplateService appliedCount', () => {
     const list = service().listWithBuiltIns()
     expect(list.find((t) => t.id === id)?.appliedCount).toBeUndefined()
     expect(list.filter((t) => t.builtIn).every((t) => t.appliedCount === undefined)).toBe(true)
+  })
+
+  // Several orgai sessions on one data folder (docs/design/cli-sessions.md): the count is read, changed and rewritten
+  // under the data folder's write lock, like every other change to the index.
+  it('counts an apply under the write lock: it waits for a session that is writing, and never breaks the apply', () => {
+    const target = make('Target')
+    stored.push(target)
+    const handle = registerSession(dataDir, { hostInstanceId: 'aaaaaaaaaaaa', pid: process.pid, startedAt: Date.now(), appVersion: 't', cwd: '/work/a', command: 'tui' })
+    const sync = createSharedStoreSync(handle, { checkMs: 0, liveForMs: 0, waitMs: 80 })
+    const off = enableStoreSync(dataDir, sync)
+    try {
+      const svc = service()
+      const other = trySyncLock(writeLockPath(dataDir))
+      try {
+        // The apply itself is saved; its count is skipped with a warning rather than written without the lock.
+        vi.spyOn(console, 'warn').mockImplementation(() => {})
+        expect(svc.apply({ projectId: target.id, templateId: 'builtin:code', mode: 'replace' }).project.id).toBe(target.id)
+        expect(svc.listWithBuiltIns()[0].appliedCount).toBeUndefined()
+      } finally {
+        other?.release()
+      }
+      svc.apply({ projectId: target.id, templateId: 'builtin:code', mode: 'replace' })
+      expect(svc.listWithBuiltIns()[0].appliedCount).toBe(1)
+    } finally {
+      off()
+      sync.close()
+      handle.release()
+    }
+  })
+
+  it('duplicates under the write lock too (the source cannot go between its read and the copy)', () => {
+    const handle = registerSession(dataDir, { hostInstanceId: 'bbbbbbbbbbbb', pid: process.pid, startedAt: Date.now(), appVersion: 't', cwd: '/work/b', command: 'tui' })
+    const sync = createSharedStoreSync(handle, { checkMs: 0, liveForMs: 0, waitMs: 80 })
+    const off = enableStoreSync(dataDir, sync)
+    try {
+      const svc = service()
+      const other = trySyncLock(writeLockPath(dataDir))
+      try {
+        expect(() => svc.duplicate('builtin:code')).toThrow(/stayed held/)
+      } finally {
+        other?.release()
+      }
+      expect(svc.duplicate('builtin:code').name).toBe('Code team copy')
+    } finally {
+      off()
+      sync.close()
+      handle.release()
+    }
   })
 })

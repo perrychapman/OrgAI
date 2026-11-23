@@ -537,3 +537,55 @@ describe('templates:apply and projects:applyImport from a non-desktop surface (t
     expect(importerApply.mock.calls[0]![2]).toBeUndefined()
   })
 })
+
+// Several orgai sessions on one data folder: the widening check reads the stored project, so the save that follows it must
+// run in the same hold of the write lock, or another session could lower a cap between the two and the save would raise
+// it again from a check that had passed.
+describe('the widening check and the save are one step under the write lock', () => {
+  it('projects:save, projects:applyImport and templates:apply run their save with the data folder\'s write lock held', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { registerSession, writeLockPath } = await import('./sessions')
+    const { createSharedStoreSync, enableStoreSync } = await import('../store/shared/storeSync')
+    const { probeSyncLock } = await import('../store/shared/syncLock')
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-save-guard-'))
+    const handle = registerSession(dir, { hostInstanceId: 'aaaaaaaaaaaa', pid: process.pid, startedAt: Date.now(), appVersion: 't', cwd: '/work/a', command: 'tui' })
+    const sync = createSharedStoreSync(handle, { checkMs: 0, liveForMs: 0, waitMs: 200 })
+    const off = enableStoreSync(dir, sync)
+    try {
+      const stored = withLimits({ maxDailyUsd: 10 })
+      const held: string[] = []
+      const seen = (): string => probeSyncLock(writeLockPath(dir))
+      const settings = { get: () => DEFAULT_APP_SETTINGS, dataDir: dir, set: vi.fn() }
+      const d = new HostDispatcher({
+        // `locked` is ProjectStore.locked: the store's own sync (a real store is built on the same one).
+        projects: { get: () => stored, list: () => [stored], locked: <T,>(fn: () => T): T => sync.locked(fn), saveFromRenderer: (p: Project) => (held.push(`save:${seen()}`), p) } as never,
+        runs: { list: () => [] } as never,
+        setup: {} as never,
+        maintenance: {} as never,
+        settings: settings as never,
+        connections: { effectiveSettings: () => settings.get(), effectiveDefault: () => 'anthropic' } as never,
+        mcp: {} as never,
+        adapterIds: ['mock'],
+        harnessProject: () => makeProject({ id: 'harness', roles: [] }),
+        importer: { apply: () => (held.push(`import:${seen()}`), { project: stored, previousRoles: [] }) } as never,
+        skills: {} as never,
+        skillEvaluation: {} as never,
+        capabilities: {} as never,
+        quick: {} as never,
+        templates: { list: () => [], apply: () => (held.push(`template:${seen()}`), { project: stored, previousRoles: [] }) } as never
+      })
+      await d.invokeRpc(IPC.projectsSave, [{ ...stored, maxDailyUsd: 5 }], CONFIGURE)
+      await d.invokeRpc(IPC.projectsApplyImport, [{ projectId: 'proj_a', mode: 'replace', digest: 'd' }], CONFIGURE)
+      await d.invokeRpc(IPC.templatesApply, [{ projectId: 'proj_a', templateId: 'tpl_x', mode: 'replace' }], CONFIGURE)
+      expect(held).toEqual(['save:held', 'import:held', 'template:held'])
+      expect(seen()).toBe('free')
+    } finally {
+      off()
+      sync.close()
+      handle.release()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    }
+  })
+})

@@ -107,6 +107,24 @@ describe('ReentrantSyncLock', () => {
     lock.close()
   })
 
+  it('acquireWithin answers false after its own budget (never longer than the wait budget) and true once free', () => {
+    const holder = trySyncLock(lockPath)
+    let clock = 0
+    const lock = new ReentrantSyncLock(lockPath, { waitMs: 100, now: () => clock, sleep: (ms) => void (clock += ms), random: () => 0.5 })
+    expect(lock.acquireWithin(30)).toBe(false)
+    expect(clock).toBe(30)
+    expect(lock.acquireWithin(5000)).toBe(false)
+    expect(clock).toBe(30 + 100)
+    expect(lock.held).toBe(0)
+    holder?.release()
+    expect(lock.acquireWithin(30)).toBe(true)
+    expect(lock.acquireWithin(0)).toBe(true) // nested: always
+    expect(lock.held).toBe(2)
+    lock.release()
+    lock.release()
+    lock.close()
+  })
+
   it('takes the lock as soon as the holder lets go while it waits', () => {
     const holder = trySyncLock(lockPath)
     let tries = 0
