@@ -15,7 +15,8 @@ import ScheduleRow from '../components/schedules/ScheduleRow'
 import ScheduleEditor from '../components/schedules/ScheduleEditor'
 import ScheduleDetail from '../components/schedules/ScheduleDetail'
 import WeekStrip from '../components/schedules/WeekStrip'
-import { boardSummary, lastTone, scheduleColour, summaryText } from '../lib/schedulesBoard'
+import { boardSummary, lastTone, scheduleColour, scheduleCostFigure, summaryText, totalCostFigure, type CostFigure } from '../lib/schedulesBoard'
+import { useScheduleInsights } from '../components/schedules/useScheduleInsights'
 import { saveSchedulesPaused, useSchedules } from '../components/schedules/useSchedules'
 import { cleanIpcError } from '../lib/ipcError'
 import { folderName } from '../lib/paths'
@@ -77,6 +78,13 @@ export default function SchedulesView(): ReactElement {
   const selectedId = pickedId && byId.has(pickedId) ? pickedId : (rows[0]?.id ?? null)
   const selectedRow = rows.find((r) => r.id === selectedId) ?? null
   const selectedSchedule = selectedId ? (byId.get(selectedId) ?? null) : null
+  const insights = useScheduleInsights(data.list)
+  const totalFigure = useMemo(() => totalCostFigure(insights.costs.report), [insights.costs.report])
+  const costFor = (id: string): CostFigure => {
+    if (insights.costs.status === 'loading') return { text: 'Weekly cost…', basis: 'Loading the cost figure.', known: false }
+    if (insights.costs.status === 'failed') return { text: 'Weekly cost unavailable', basis: 'The cost figures could not be loaded.', known: false }
+    return scheduleCostFigure(insights.costs.report?.schedules.find((c) => c.scheduleId === id))
+  }
   const summary = useMemo(() => boardSummary(data.list ?? [], !!data.paused), [data.list, data.paused])
 
   // Land on the page heading, or on one schedule's row (the run meta's "Scheduled:" label).
@@ -189,6 +197,14 @@ export default function SchedulesView(): ReactElement {
             {summaryText(summary, now, !!data.paused)}
           </span>
         )}
+        {data.list && data.list.length > 0 && (
+          <span className={`schedules-cost${totalFigure.known ? '' : ' is-unknown'}`} data-testid="schedules-cost" data-known={totalFigure.known} aria-describedby="schedules-cost-basis">
+            {insights.costs.status === 'loading' ? 'Weekly cost…' : insights.costs.status === 'failed' ? 'Weekly cost could not be loaded' : totalFigure.text}
+            <span id="schedules-cost-basis" className="sr-only">
+              . {insights.costs.status === 'ok' ? totalFigure.basis : ''}
+            </span>
+          </span>
+        )}
         <div className="spacer" />
         <div className="schedules-pause-all">
           <Switch
@@ -282,6 +298,8 @@ export default function SchedulesView(): ReactElement {
                       selected={row.id === selectedId}
                       colour={scheduleColour(data.list ?? [], row.id)}
                       tone={lastTone(s)}
+                      cost={costFor(row.id)}
+                      history={insights.histories[row.id]}
                       onSelect={() => setSelectedId(row.id)}
                       onRunNow={() => runNow(s)}
                       onToggle={() => toggle(s, row.toggle === 'Resume')}
@@ -296,7 +314,7 @@ export default function SchedulesView(): ReactElement {
                   )
                 })}
               </ul>
-              {selectedRow && selectedSchedule && <ScheduleDetail schedule={selectedSchedule} row={selectedRow} />}
+              {selectedRow && selectedSchedule && <ScheduleDetail schedule={selectedSchedule} row={selectedRow} cost={costFor(selectedRow.id)} history={insights.histories[selectedRow.id]} />}
               </div>
             </>
           )}

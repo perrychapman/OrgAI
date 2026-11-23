@@ -8,6 +8,9 @@ import { Icon } from '../ui/Icon'
 import { Switch } from '../ui/Switch'
 import { ContextMenu, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
 import ScheduleHistory from './ScheduleHistory'
+import RunBars from './RunBars'
+import type { HistoryState } from './useScheduleInsights'
+import type { CostFigure } from '../../lib/schedulesBoard'
 import { showHidden } from '../../lib/hiddenChars'
 
 /**
@@ -21,6 +24,8 @@ export default function ScheduleRow({
   selected,
   colour,
   tone,
+  cost,
+  history,
   onSelect,
   onRunNow,
   onToggle,
@@ -40,6 +45,10 @@ export default function ScheduleRow({
   colour: string
   /** Last outcome dot: ok, bad or none. */
   tone: 'ok' | 'bad' | 'none'
+  /** Weekly cost figure from runInsights.scheduleCosts (unknown when main has no basis). */
+  cost: CostFigure
+  /** Peeked history (does not clear unread) for the last-runs bars. */
+  history: HistoryState | undefined
   onSelect: () => void
   onRunNow: () => void
   onToggle: () => void
@@ -117,6 +126,13 @@ export default function ScheduleRow({
             {row.next.absolute && <span className="schedule-row-abs"> · {row.next.absolute}</span>}
           </span>
         </span>
+        <span className={`schedule-row-cost${cost.known ? '' : ' is-unknown'}`} data-testid="schedule-cost" data-known={cost.known} aria-describedby={`${uid}-cost-basis`}>
+          {cost.text}
+          <span id={`${uid}-cost-basis`} className="sr-only">
+            . {cost.basis}
+          </span>
+        </span>
+        <RunBars state={history} testId="schedule-runbars" />
         <span className={`schedule-row-last tone-${tone}`}>
           <span className="schedule-row-dot" aria-hidden="true" />
           <span className="schedule-row-key">Last result </span>

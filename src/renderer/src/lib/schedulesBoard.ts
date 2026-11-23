@@ -3,7 +3,7 @@
  * Everything is derived from the Schedule contract and its timing rules; nothing here is sample data. Times are the
  * computer's local time, like the rest of the page.
  */
-import type { PermissionMode, Schedule } from '@shared/types'
+import type { PermissionMode, Schedule, ScheduleCost, ScheduleCostReport, ScheduleHistoryEntry } from '@shared/types'
 import { nextScheduleRun } from '@shared/schedule'
 import { permissionModeName } from './runSettings'
 
@@ -193,4 +193,77 @@ export function scheduleColour(list: readonly Pick<Schedule, 'id' | 'createdAt'>
   const order = [...list].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
   const i = order.findIndex((s) => s.id === id)
   return SCHEDULE_COLOURS[(i < 0 ? 0 : i) % SCHEDULE_COLOURS.length]
+}
+
+// ---- Cost and last-runs figures (runInsights.scheduleCosts / scheduleHistory). Unknown is never $0. ----
+
+/** "$0.42", "$12", "<$0.01": the money words used on rows and in the header. */
+export function usdText(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return 'unknown'
+  if (n > 0 && n < 0.01) return '<$0.01'
+  return `$${n < 10 ? n.toFixed(2) : Number(n.toFixed(n < 100 ? 1 : 0)).toString()}`
+}
+
+export interface CostFigure {
+  /** Visible text: "$1.40 a week" or "Weekly cost unknown". */
+  text: string
+  /** Accessible description of the basis. */
+  basis: string
+  known: boolean
+}
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/** One schedule's weekly figure; absent or null fields are unknown, never $0. */
+export function scheduleCostFigure(c: Partial<Pick<ScheduleCost, 'perRunUsd' | 'sampleRuns' | 'runsPerWeek' | 'weeklyUsd'>> | undefined): CostFigure {
+  if (!c) return { text: 'Weekly cost unknown', basis: 'No cost figure is available for this schedule yet.', known: false }
+  const n = isNum(c.sampleRuns) ? c.sampleRuns : 0
+  if (isNum(c.weeklyUsd)) {
+    const per = isNum(c.perRunUsd) ? ` at about ${usdText(c.perRunUsd)} a run` : ''
+    const w = isNum(c.runsPerWeek) ? `, ${c.runsPerWeek} ${c.runsPerWeek === 1 ? 'run' : 'runs'} in the next 7 days` : ''
+    return { text: `${usdText(c.weeklyUsd)} a week`, basis: `Estimated from the last ${n} ${n === 1 ? 'run' : 'runs'}${per}${w}.`, known: true }
+  }
+  if (!isNum(c.perRunUsd)) return { text: 'Weekly cost unknown', basis: 'It has no finished run with a known cost yet.', known: false }
+  return { text: 'Weekly cost unknown', basis: 'Its timing cannot be counted into runs for the next 7 days.', known: false }
+}
+
+/** The header total; says how many schedules it leaves out. */
+export function totalCostFigure(r: Partial<Pick<ScheduleCostReport, 'weeklyTotalUsd' | 'unknownCount'>> | undefined): CostFigure {
+  if (!r || !isNum(r.weeklyTotalUsd)) return { text: 'Weekly cost unknown', basis: 'No schedule has a cost basis yet.', known: false }
+  const k = isNum(r.unknownCount) ? r.unknownCount : 0
+  const u = k > 0 ? ` The total excludes ${k} ${k === 1 ? 'schedule' : 'schedules'} with no history.` : ''
+  return { text: `About ${usdText(r.weeklyTotalUsd)} a week${k > 0 ? ` (excl. ${k})` : ''}`, basis: `Sum of the schedules that are on, from their past runs.${u}`, known: true }
+}
+
+export type RunBarKind = 'finished' | 'error' | 'stopped' | 'needs-you' | 'running'
+export interface RunBar {
+  id: string
+  at: number
+  kind: RunBarKind
+  costUsd: number | null
+  /** Plain sentence for the text alternative and the readout. */
+  label: string
+}
+export const RUN_BAR_COUNT = 7
+const KIND_WORDS: Record<RunBarKind, string> = { finished: 'finished', error: 'failed', stopped: 'stopped', 'needs-you': 'needed you', running: 'still running' }
+
+/** The newest RUN_BAR_COUNT started or failed entries, oldest first. Skipped slots are not runs. */
+export function runBars(entries: readonly ScheduleHistoryEntry[] | undefined): RunBar[] {
+  const runs = (entries ?? [])
+    .filter((e) => e.result !== 'skipped')
+    .sort((a, b) => b.at - a.at)
+    .slice(0, RUN_BAR_COUNT)
+    .reverse()
+  return runs.map((e) => {
+    const kind: RunBarKind = e.result === 'failed' ? 'error' : (e.outcome ?? 'running')
+    const cost = isNum(e.costUsd) ? e.costUsd : null
+    const when = new Date(e.at).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    return { id: e.id, at: e.at, kind, costUsd: cost, label: `${when}: ${KIND_WORDS[kind]}, ${cost === null ? 'cost unknown' : usdText(cost)}` }
+  })
+}
+
+export function runBarsSummary(bars: readonly RunBar[]): string {
+  if (bars.length === 0) return 'No runs yet.'
+  const failed = bars.filter((b) => b.kind === 'error').length
+  return `Last ${bars.length} ${bars.length === 1 ? 'run' : 'runs'}${failed ? `, ${failed} failed` : ''}.`
 }
