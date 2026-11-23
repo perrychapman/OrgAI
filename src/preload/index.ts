@@ -30,6 +30,7 @@ import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_F
 import type { SchedulesChangedEvent } from '../shared/types'
 import { TODOS_IPC, type TodosChangedEvent } from '../shared/types'
 import { UPDATES_IPC, type UpdateState } from '../shared/types'
+import { OVERHAUL_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -438,6 +439,36 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, state: UpdateState): void => cb(state)
     ipcRenderer.on(UPDATES_IPC.updatesChanged, listener)
     return () => ipcRenderer.removeListener(UPDATES_IPC.updatesChanged, listener)
+  },
+  // ---- UI overhaul (desktop-only channels, main/overhaulIpc.ts) ----
+  runInsights: {
+    estimate: (query) => ipcRenderer.invoke(OVERHAUL_IPC.runsEstimate, query),
+    scheduleCosts: () => ipcRenderer.invoke(OVERHAUL_IPC.schedulesCosts),
+    scheduleHistory: (scheduleId) => ipcRenderer.invoke(OVERHAUL_IPC.schedulesPeekHistory, scheduleId),
+    projectSpend: (projectId) => ipcRenderer.invoke(OVERHAUL_IPC.projectsSpend, projectId)
+  },
+  runActions: {
+    hold: (runId) => ipcRenderer.invoke(OVERHAUL_IPC.runsHold, runId),
+    addBudget: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsAddBudget, input),
+    retry: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsRetry, input),
+    skipReview: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsSkipReview, input),
+    messageAgent: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsMessageAgent, input),
+    stopAgent: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsStopAgent, { runId: input?.runId, agentId: input?.agentId })
+  },
+  gitInfo: {
+    summary: (projectId) => ipcRenderer.invoke(OVERHAUL_IPC.gitSummary, projectId),
+    branches: (projectId) => ipcRenderer.invoke(OVERHAUL_IPC.gitBranches, projectId)
+  },
+  importSources: {
+    pickAgentFolder: () => ipcRenderer.invoke(OVERHAUL_IPC.pickAgentFolder)
+  },
+  templatesExtra: {
+    duplicate: (templateId) => ipcRenderer.invoke(OVERHAUL_IPC.templatesDuplicate, templateId)
+  },
+  about: {
+    supportDetails: () => ipcRenderer.invoke(OVERHAUL_IPC.aboutSupportDetails),
+    reportProblem: () => ipcRenderer.invoke(OVERHAUL_IPC.aboutReportProblem),
+    openLicences: () => ipcRenderer.invoke(OVERHAUL_IPC.aboutOpenLicences)
   }
 }
 
