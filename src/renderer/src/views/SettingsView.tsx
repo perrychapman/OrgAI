@@ -11,6 +11,7 @@ import RemapNotices from '../components/RemapNotices'
 import { GeneralSection } from '../components/settings/GeneralSection'
 import { LimitsSection } from '../components/settings/LimitsSection'
 import { MaintenanceSection } from '../components/settings/MaintenanceSection'
+import { WorkCopiesSection } from '../components/settings/WorkCopiesSection'
 import { PermissionsSection } from '../components/settings/PermissionsSection'
 import { SettingsPage } from '../components/settings/SettingsPage'
 import type { SettingsNavLink } from '../components/settings/SettingsNav'
@@ -100,7 +101,12 @@ export default function SettingsView({ project }: { project: Project }): ReactEl
         )}
         {pane === 'permissions' && <PermissionsSection project={project} patch={patch} />}
         {pane === 'limits' && <LimitsSection project={project} patch={patch} />}
-        {pane === 'maintenance' && <MaintenanceSection project={project} />}
+        {pane === 'maintenance' && (
+          <>
+            <WorkCopiesSection project={project} patch={patch} />
+            <MaintenanceSection project={project} />
+          </>
+        )}
       </SettingsPage>
     </div>
   )

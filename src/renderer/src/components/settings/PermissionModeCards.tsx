@@ -5,6 +5,7 @@ import type { PermissionMode } from '@shared/types'
 import { PERMISSION_MODE_SHORT } from '../../lib/settingsCopy'
 import { PERMISSION_MODE_TRADEOFF, rulesApplyInMode } from '../../lib/permissionCopy'
 import { useConfirm } from '../ui/ConfirmDialog'
+import { Button } from '../ui/Button'
 
 /** The three modes shown as cards; the rest sit under "More options". Order: most prompts first, like the board. */
 export const PRIMARY_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'auto']
@@ -62,21 +63,50 @@ const MODE_FOOT: Partial<Record<PermissionMode, string>> = {
   auto: 'The safety check approves routine calls and asks you when it is unsure.'
 }
 
-function ModeCard({ mode, current, name, recommended, onPick }: { mode: PermissionMode; current: PermissionMode; name: string; recommended?: boolean; onPick: (m: PermissionMode) => void }): ReactElement {
+function ModeCard({
+  mode,
+  current,
+  chosen,
+  name,
+  recommended,
+  onPick,
+  onFocusMode
+}: {
+  mode: PermissionMode
+  /** The saved mode ("Current"). */
+  current: PermissionMode
+  /** The checked radio: the saved mode, or the one arrowed to and not yet saved. */
+  chosen: PermissionMode
+  name: string
+  recommended?: boolean
+  onPick: (m: PermissionMode) => void
+  onFocusMode: (m: PermissionMode) => void
+}): ReactElement {
   const on = mode === current
   const danger = mode === 'bypassPermissions'
   const id = useId()
   return (
-    <label className={`perm-card${on ? ' is-on' : ''}${danger ? ' is-danger' : ''}`} data-testid="permission-mode-card" data-mode={mode}>
+    <label className={`perm-card${on ? ' is-on' : ''}${mode === chosen && !on ? ' is-pending' : ''}${danger ? ' is-danger' : ''}`} data-testid="permission-mode-card" data-mode={mode}>
       <input
         type="radio"
         className="perm-card-input"
         name={name}
         value={mode}
-        checked={on}
+        checked={mode === chosen}
         aria-labelledby={`${id}-t ${id}-m`}
         aria-describedby={`${id}-d`}
-        onChange={() => onPick(mode)}
+        // Arrow keys move the checked radio (native radio group behaviour) without saving: the pick waits for Enter,
+        // Space or "Use this mode". A pointer click (detail > 0) saves at once, as before.
+        onChange={() => onFocusMode(mode)}
+        onClick={(e) => {
+          if (e.detail > 0) onPick(mode)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onPick(mode)
+          }
+        }}
       />
       <span className="perm-card-top">
         <span className="perm-card-bars" aria-hidden="true">
@@ -118,10 +148,21 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
   const inMore = MORE_MODES.includes(mode)
   const [moreOpen, setMoreOpen] = useState(inMore)
   const { confirm, dialog } = useConfirm()
+  // A mode arrowed to but not saved yet; cleared when it is saved, cancelled or the saved mode changes.
+  const [pending, setPending] = useState<PermissionMode | null>(null)
+  const [seenMode, setSeenMode] = useState(mode)
+  if (seenMode !== mode) {
+    setSeenMode(mode)
+    setPending(null)
+  }
+  const chosen = pending ?? mode
   const showMore = moreOpen || inMore
-  const effects = MODE_EFFECTS[mode]
+  const effects = MODE_EFFECTS[chosen]
   const pick = async (m: PermissionMode): Promise<void> => {
-    if (m === mode) return
+    if (m === mode) {
+      setPending(null)
+      return
+    }
     if (m === 'bypassPermissions') {
       const ok = await confirm({
         title: 'Skip all checks for this project?',
@@ -131,18 +172,36 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
         danger: true,
         confirmTestId: 'permission-bypass-confirm'
       })
-      if (!ok) return
+      if (!ok) {
+        setPending(null)
+        return
+      }
     }
+    setPending(null)
     onChange(m)
   }
+  const onFocusMode = (m: PermissionMode): void => setPending(m === mode ? null : m)
   return (
     <div className="perm-cards-block">
       <div id={groupId} className="perm-cards" role="radiogroup" aria-label={label} data-testid="permission-mode-cards">
         {PRIMARY_MODES.map((m) => (
-          <ModeCard key={m} mode={m} current={mode} name={name} recommended={m === 'auto'} onPick={(x) => void pick(x)} />
+          <ModeCard key={m} mode={m} current={mode} chosen={chosen} name={name} recommended={m === 'auto'} onPick={(x) => void pick(x)} onFocusMode={onFocusMode} />
         ))}
-        {showMore && MORE_MODES.map((m) => <ModeCard key={m} mode={m} current={mode} name={name} onPick={(x) => void pick(x)} />)}
+        {showMore && MORE_MODES.map((m) => <ModeCard key={m} mode={m} current={mode} chosen={chosen} name={name} onPick={(x) => void pick(x)} onFocusMode={onFocusMode} />)}
       </div>
+      {pending && (
+        <div className="perm-pending" data-testid="permission-mode-pending">
+          <span className="perm-pending-text">
+            {MODE_TITLE[pending]} is not saved yet. Press Enter, or:
+          </span>
+          <Button variant="primary" size="sm" testId="permission-mode-use" onClick={() => void pick(pending)}>
+            Use {PERMISSION_MODE_SHORT[pending]}
+          </Button>
+          <Button variant="ghost" size="sm" testId="permission-mode-keep" onClick={() => setPending(null)}>
+            Keep {PERMISSION_MODE_SHORT[mode]}
+          </Button>
+        </div>
+      )}
       {!inMore && (
         <button type="button" className="perm-more-toggle" aria-expanded={showMore} aria-controls={groupId} data-testid="permission-mode-more" onClick={() => setMoreOpen((o) => !o)}>
           <ChevronRight className="perm-more-chevron" size={14} aria-hidden="true" />
@@ -151,7 +210,9 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
       )}
       <div className="perm-effects" data-testid="permission-mode-effects">
         <table>
-          <caption className="sr-only">What happens with {PERMISSION_MODE_SHORT[mode]}</caption>
+          <caption className={pending ? 'perm-effects-caption' : 'sr-only'}>
+            {pending ? `What would happen with ${PERMISSION_MODE_SHORT[chosen]} (not saved)` : `What happens with ${PERMISSION_MODE_SHORT[chosen]}`}
+          </caption>
           <tbody>
             {MODE_ACTIONS.map((a, i) => (
               <tr key={a}>
@@ -163,11 +224,11 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
             ))}
           </tbody>
         </table>
-        {MODE_FOOT[mode] && <p className="perm-effects-note">{MODE_FOOT[mode]}</p>}
-        {rulesApplyInMode(mode) && <p className="perm-effects-note">A saved rule or an allowed folder below lets specific calls through.</p>}
+        {MODE_FOOT[chosen] && <p className="perm-effects-note">{MODE_FOOT[chosen]}</p>}
+        {rulesApplyInMode(chosen) && <p className="perm-effects-note">A saved rule or an allowed folder below lets specific calls through.</p>}
       </div>
       <p className="sr-only" role="status" aria-live="polite">
-        {`${PERMISSION_MODE_SHORT[mode]}: ${MODE_ACTIONS.map((a, i) => `${a.toLowerCase()}, ${OUTCOME_LABEL[effects[i]].toLowerCase()}`).join('; ')}.`}
+        {`${PERMISSION_MODE_SHORT[chosen]}${pending ? ', not saved, press Enter to use it' : ''}: ${MODE_ACTIONS.map((a, i) => `${a.toLowerCase()}, ${OUTCOME_LABEL[effects[i]].toLowerCase()}`).join('; ')}.`}
       </p>
       {dialog}
     </div>
