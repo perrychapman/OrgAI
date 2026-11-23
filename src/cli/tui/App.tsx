@@ -153,7 +153,7 @@ export const ESC_AGAIN = 'Press Esc again to interrupt the run.'
 export const NOTHING_RUNNING = 'Nothing is running.'
 export const READ_ONLY_ESC = 'This session is read-only: there is nothing to interrupt.'
 export const PANES_NEED_FULLSCREEN = 'Panes need a full-screen terminal 70 columns wide; /agent <name> shows an agent.'
-export const PAGER_HINT = 'Set $PAGER (for example PAGER=less) to page long text.'
+export const PAGER_HINT = 'Set $PAGER (for example PAGER=less) to view a diff with colour and search.'
 
 /** The composer's placeholder: in send / continue modes it names the followed run (issue #29 M3). */
 export function placeholderFor(mode: ComposerMode, s: TuiState, width: number, env?: TuiEnv): string {
@@ -777,23 +777,27 @@ export function App(props: AppProps) {
   // ---------- Text views ----------
 
   const openText = useCallback(
-    async (title: string, text: string): Promise<void> => {
+    async (title: string, text: string, opts?: { pager?: boolean }): Promise<void> => {
+      // Text opens in the app's own view: q or Esc closes it and the keys scroll. Only a diff is handed to the system
+      // pager (colour and search), where Esc does nothing and the user has to know q.
       let shown: 'shown' | 'no-pager' = 'no-pager'
-      try {
-        shown = await showInPager(text, {
-          env: processEnv,
-          // The pager shares our process group: hold Ctrl+C / Ctrl+Z handling while it owns the terminal.
-          suspend: () => (terminal.suspendForChild ? terminal.suspendForChild() : terminal.suspend()),
-          resume: () => (terminal.resumeFromChild ? terminal.resumeFromChild() : terminal.resume())
-        })
-      } catch (e) {
-        notify(`Could not open the pager: ${errText(e)}`, 'warn')
+      if (opts?.pager) {
+        try {
+          shown = await showInPager(text, {
+            env: processEnv,
+            // The pager shares our process group: hold Ctrl+C / Ctrl+Z handling while it owns the terminal.
+            suspend: () => (terminal.suspendForChild ? terminal.suspendForChild() : terminal.suspend()),
+            resume: () => (terminal.resumeFromChild ? terminal.resumeFromChild() : terminal.resume())
+          })
+        } catch (e) {
+          notify(`Could not open the pager: ${errText(e)}`, 'warn')
+        }
       }
       if (shown === 'no-pager') {
         // The overlay has its own title row: a text that opens with the same title and a blank line (a card's full view) does not repeat it (R2-L3).
         const lead = `${title}\n\n`
         const body = text.startsWith(lead) ? text.slice(lead.length) : text
-        setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(body).split('\n'), '', PAGER_HINT], offset: 0 })
+        setOverlay({ kind: 'text', title: sanitizeTty(title), lines: [...sanitizeTty(body).split('\n'), ...(opts?.pager ? ['', PAGER_HINT] : [])], offset: 0 })
       }
     },
     [processEnv, terminal, notify]
@@ -1028,7 +1032,7 @@ export function App(props: AppProps) {
     }
     session
       .worktreeDiff(branch)
-      .then((d) => openText(`Changes on ${sanitizeTty(branch)}`, `${d.stat}\n\n${d.patch}`))
+      .then((d) => openText(`Changes on ${sanitizeTty(branch)}`, `${d.stat}\n\n${d.patch}`, { pager: true }))
       .catch((err: unknown) => notify(`Could not read the diff: ${errText(err)}`, 'danger'))
   }
   const openKeys = (scope: 'composer' | 'tray'): void => {
@@ -1607,7 +1611,7 @@ export function App(props: AppProps) {
             onViewDiff={(row) => {
               session
                 .worktreeDiff(row.branch)
-                .then((d) => openText(`Changes on ${row.branch}`, `${d.stat}\n\n${d.patch}`))
+                .then((d) => openText(`Changes on ${row.branch}`, `${d.stat}\n\n${d.patch}`, { pager: true }))
                 .catch((err: unknown) => notify(`Could not read the diff: ${errText(err)}`, 'danger'))
             }}
           />
