@@ -20,6 +20,51 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+/* Legend on the left, the day readout on the right (wraps under it in a narrow card). */
+.uc-spend-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.uc-spend-top > .uc-legend {
+  flex: 1 1 14rem;
+}
+/* The readout: day, figure and runs of the bar the pointer or keyboard is on. A fixed three-line height so it never shifts the plot. */
+.uc-readout {
+  flex: 0 0 auto;
+  margin: 0;
+  min-width: 9.5rem;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1h) var(--space-3);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  font-variant-numeric: tabular-nums;
+}
+.uc-readout[data-active='true'] {
+  border-color: var(--working);
+}
+.uc-readout-day,
+.uc-readout-runs {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  white-space: nowrap;
+}
+.uc-readout-runs {
+  color: var(--text-secondary);
+}
+.uc-readout-fig {
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
 .uc-head-controls {
   display: flex;
   flex-wrap: wrap;
@@ -85,13 +130,20 @@
   stroke: var(--border-default);
   stroke-width: 1;
 }
-/* One series' area: a 1 px --chart-hatch (the card's own surface) edge separates it from its neighbours. */
+/* One series' segments (a bar per slot): a 1 px --chart-hatch (the card's own surface) edge separates stacked segments. */
 .uc-area {
+  cursor: pointer;
+}
+.uc-bar {
   stroke: var(--chart-hatch);
   stroke-width: 1;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
-  cursor: pointer;
+}
+/* The bar column the pointer or keyboard is on: a soft working-cyan wash behind it (the readout names the day). */
+.uc-hot {
+  fill: var(--working-soft);
+  pointer-events: none;
 }
 /* Unpriced usage: a hatched band the height of the plot (never an empty dip that reads as zero). */
 .uc-gap {
@@ -118,16 +170,10 @@
   fill: var(--surface-1);
   opacity: calc(1 - var(--dim-opacity));
 }
-/* Where the crosshair crosses each series' top edge. */
-.uc-marker {
-  stroke: var(--surface-1);
-  stroke-width: 1.5;
-  pointer-events: none;
-}
 /*
- * Linked highlight (M7): while a legend chip, an area or a "Where it went" row is pointed at or focused, every other
+ * Linked highlight (M7): while a legend chip, a bar or a "Where it went" row is pointed at or focused, every other
  * series dims to 0.35 over --dur-fast (restore uses the same transition, so it sits on the resting rule). The
- * highlighted area also gets a 2 px edge (.uc-hl), so it never rests on the dim alone. 0.35 is stronger than
+ * highlighted series' bars also get a 1.5 px outline, so it never rests on the dim alone. 0.35 is stronger than
  * --dim-opacity (0.5 to 0.55, used for the day pick) on purpose: the pick keeps its figures readable, this one points.
  */
 .uc-area,
@@ -138,12 +184,9 @@
 .uc-spend .uc-legend-row[data-dim='true'] {
   opacity: 0.35;
 }
-.uc-hl {
-  fill: none;
+.uc-area[data-hl='true'] .uc-bar {
   stroke: var(--text-primary);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  pointer-events: none;
+  stroke-width: 1.5;
 }
 /* Compare turned on by the user: the previous-period outline fades in; SpendPanel sets data-anim-overlay for one --dur-base. */
 .uc-spend-plot[data-anim-overlay='in'] .uc-prev {
@@ -180,13 +223,14 @@
 
 /* ---------- crosshair and tooltip (2.1, M6): both move with no transition; the tooltip's first show fades over --dur-fade ---------- */
 
-/* A 1 px rule at --cx (written by SpendPanel through the pointer's frame or the layout effect), over the areas. */
+/* A 1 px rule at --cx (written by SpendPanel through the pointer's frame or the layout effect), over the bars. */
 .uc-crosshair {
   position: absolute;
   z-index: 2;
   left: 0;
   width: 1px;
-  background: var(--border-strong);
+  background: var(--working);
+  opacity: 0.45;
   transform: translateX(calc(var(--cx, 0px) - 0.5px));
   pointer-events: none;
 }
@@ -199,9 +243,11 @@
   width: max-content;
   max-width: 260px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--text-primary);
   box-shadow: var(--elev-2);
   font-size: var(--text-small);
@@ -580,16 +626,18 @@ button.uc-legend-btn:focus-visible {
   .uc-spend-plot:focus-visible {
     outline-color: Highlight;
   }
-  .uc-area {
+  .uc-bar {
     stroke: Canvas;
   }
+  .uc-area[data-hl='true'] .uc-bar,
   .uc-gap,
   .uc-stub,
   .uc-lane {
     stroke: CanvasText;
   }
-  .uc-hl {
-    stroke: CanvasText;
+  .uc-hot {
+    fill: none;
+    stroke: Highlight;
   }
   .uc-crosshair::after {
     background: CanvasText;

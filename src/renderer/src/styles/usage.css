@@ -8,14 +8,14 @@
   max-width: var(--space-16);
   height: 4px;
   border-radius: var(--radius-full);
-  background: var(--surface-3);
+  background: var(--field-bg);
   overflow: hidden;
 }
 .usage-mini i {
   display: block;
   height: 100%;
   border-radius: var(--radius-full);
-  background: var(--gradient-ui);
+  background: var(--accent);
   transition: width var(--dur-slow) var(--ease-out);
 }
 .usage-mini.warn i {
@@ -126,14 +126,14 @@
 .usage-bar {
   height: 4px;
   border-radius: var(--radius-full);
-  background: var(--surface-3);
+  background: var(--field-bg);
   overflow: hidden;
 }
 .usage-bar i {
   display: block;
   height: 100%;
   border-radius: var(--radius-full);
-  background: var(--gradient-ui);
+  background: var(--accent);
   transition: width var(--dur-slow) var(--ease-out);
 }
 .usage-row.warn .usage-bar i {
@@ -240,6 +240,10 @@
 .usage-page > * {
   min-width: 0;
 }
+.usage-view .topbar h1 {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
 .usage-topbar-note,
 .usage-updated {
   color: var(--text-tertiary);
@@ -292,7 +296,13 @@
   top: 0;
   z-index: var(--z-sticky);
   margin-inline: calc(-1 * var(--usage-pad));
-  background: var(--surface-0);
+}
+/* Open on the ambient ground at the top of the page; once the page has scrolled it is glass, so a card scrolling under it
+   is blurred and never reads through the controls. */
+.usage-sticky[data-scrolled='true'] {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 /* The hairline under the bar appears only once the page has scrolled (motion plan M12; opacity only). */
 .usage-sticky::after {
@@ -331,7 +341,7 @@
 }
 .usage-filters {
   padding: var(--space-2) var(--usage-pad);
-  background: var(--surface-0);
+  background: transparent;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -570,28 +580,24 @@
  * open on the page under a hairline, so nothing is box-in-box. `isolation` keeps each panel's sticky heads and marks
  * inside its own stacking context, under the sticky filter bar.
  */
+/* UI overhaul (Usage board): every panel is a glass card over the ambient ground (--glass, --glass-line, --glass-blur). */
 .usage-view .usage-panel {
   container: none;
   isolation: isolate;
   overflow: visible;
-  padding: var(--space-4) 0 0;
+  padding: var(--space-4) var(--space-5);
   gap: var(--space-3);
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: transparent;
-  border: 0;
-  border-top: 1px solid var(--border-subtle);
-  border-radius: 0;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-1);
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
-  --usage-tbl-bg: var(--surface-0);
-}
-.usage-view .usage-hero > .usage-panel {
-  padding: var(--space-4);
-  background: var(--surface-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
   --usage-tbl-bg: var(--surface-1);
 }
 
@@ -626,7 +632,7 @@
 .usage-pair {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0 var(--space-6);
+  gap: var(--space-4);
   align-items: start;
 }
 @container usage (min-width: 900px) {
@@ -643,9 +649,11 @@
 }
 .usage-panel-head h2 {
   margin: 0;
-  font-size: var(--text-body);
-  line-height: var(--text-body-lh);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
 }
 .usage-panel-summary {
   flex: 1 1 100%;
