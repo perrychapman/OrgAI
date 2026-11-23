@@ -155,7 +155,7 @@ try {
     content: `
       #root { visibility: hidden !important; }
       .factory-scene { visibility: visible !important; position: fixed !important; left: 0 !important; top: 0 !important; width: ${W}px !important; height: ${H}px !important; z-index: 2147483000 !important; }
-      .factory-scene [data-testid=factory-controls], .factory-scene [data-testid=factory-log], .factory-scene [data-testid=factory-notice] { display: none !important; }
+      .factory-scene [data-testid=factory-controls], .factory-scene [data-testid=factory-log], .factory-scene [data-testid=factory-notice], .factory-scene .factory-top, .factory-scene .factory-bottom { display: none !important; }
       /* The mirror stays focusable (the camera keys act on a focused worker) but is invisible and has no focus ring. */
       .factory-scene .factory-mirror, .factory-scene .factory-mirror * { opacity: 0 !important; outline: none !important; box-shadow: none !important; pointer-events: none !important; }
       ${LABELS ? '' : '.factory-scene .factory-labels, .factory-scene [data-testid=factory-nameplate], .factory-scene [data-testid=factory-line-sign], .factory-scene [data-testid=factory-dock], .factory-scene [data-testid=factory-board-label] { display: none !important; }'}

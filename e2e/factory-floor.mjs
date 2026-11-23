@@ -1039,7 +1039,7 @@ try {
   await sleep(300)
   const stLog = await state()
   const summaryText = ((await logEl.locator('summary').textContent()) ?? '').replace(/\s+/g, ' ').trim()
-  chk4(summaryText === `Floor log (${stLog.logEntries})`, 'the summary says "Floor log (n)" with n = logEntries', { summaryText, logEntries: stLog.logEntries })
+  chk4(summaryText === `Floor log ${stLog.logEntries}`, 'the summary says "Floor log n" with n = logEntries', { summaryText, logEntries: stLog.logEntries })
   const entries = await page.locator('[data-testid=factory-log-entry]').evaluateAll((els) => els.map((e) => ({ text: (e.textContent ?? '').replace(/\s+/g, ' ').trim(), at: e.querySelector('time')?.getAttribute('datetime') ?? null })))
   chk4(entries.length === stLog.logEntries && entries.length <= 50, 'one factory-log-entry per entry (at most 50)', { rendered: entries.length, logEntries: stLog.logEntries })
   const idx = (re) => entries.findIndex((e) => re.test(e.text))

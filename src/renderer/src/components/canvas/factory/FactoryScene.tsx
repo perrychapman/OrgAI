@@ -6,7 +6,7 @@
 // (never at mount), the floor log, announcements, the ambient set, Pause motion and the CueFeed the engine draws from.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type Ref } from 'react'
 import type { AgentMessage, RunPlan, RunStatus, WorktreeStatus } from '@shared/types'
-import type { ActiveCue, Ambient, CueFeed, FactoryAgentInput, FactoryTestState, FloorEvent, FloorFrame, FloorLayout, FloorLogEntry, LayoutMemory } from '../../../lib/factory/types'
+import type { ActiveCue, Ambient, CueFeed, FactoryAgentInput, FactoryTestState, FloorEvent, FloorFrame, FloorLayout, FloorLogEntry, Lamp, LayoutMemory } from '../../../lib/factory/types'
 import { CueScheduler, diffCues } from '../../../lib/factory/cues'
 import { ambientSet, motionSession } from '../../../lib/factory/motion'
 import { AnnounceGate, appendLog } from '../../../lib/factory/floorLog'
@@ -38,7 +38,9 @@ import { useReducedMotion } from '../../../lib/canvas'
 import { tokenMs } from '../../../lib/useExitPresence'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import { FactoryMirror, placeAll, type MirrorBoard, type MirrorEntry, type PlacementRegistry, type PlanSign } from './FactoryMirror'
-import { FactoryLabels, type FactoryLabelsHandle, type NameplateData, type SignData } from './FactoryLabels'
+import { FactoryLabels, type FactoryLabelsHandle, type LabelFocus, type NameplateData, type SignData } from './FactoryLabels'
+import { filteredOut, inShow, showCounts, type FactoryShow } from '../../../lib/factory/showFilter'
+import { SegmentedControl } from '../../ui/SegmentedControl'
 import { FactoryNotice } from './FactoryNotice'
 import { FactoryControls } from './FactoryControls'
 import { FactoryFind } from './FactoryFind'
@@ -235,6 +237,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const announce = useFrameAnnounce()
   // Pause motion (section 5.5): remembered for the app session (module-level), read on mount so a remount keeps it.
   const [paused, setPaused] = useState(() => motionSession.paused)
+  const [show, setShow] = useState<FactoryShow>('all')
   const togglePause = useCallback(() => {
     setPaused((p) => {
       motionSession.paused = !p
@@ -459,11 +462,21 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
 
   /** Stations the cue layer keeps off the floor now (tote in flight, arrive waiting): their nameplates hide too. */
   const hiddenRef = useRef<{ set: ReadonlySet<string>; key: string }>({ set: new Set(), key: '' })
+  /** The Show filter (Factory board): its workers and choice, read by every label placement. */
+  const showRef = useRef<{ show: FactoryShow; workers: readonly { id: string; lamp: Lamp }[] }>({ show: 'all', workers: [] })
+  const labelFocus = useCallback((): LabelFocus => {
+    const f = { selectedId: selectedRef.current, ...focus.current }
+    const { show: s, workers } = showRef.current
+    if (s === 'all') return { ...f, hidden: hiddenRef.current.set }
+    const out = filteredOut(s, workers, [f.selectedId, f.focusedId, f.hoveredId])
+    for (const id of hiddenRef.current.set) out.add(id)
+    return { ...f, hidden: out }
+  }, [])
   const refreshLabels = useCallback(() => {
     const c = controllerRef.current
     if (!c || !viewRef.current) return
-    labelsRef.current?.update(viewRef.current, c.stageInfo, { selectedId: selectedRef.current, ...focus.current, hidden: hiddenRef.current.set })
-  }, [])
+    labelsRef.current?.update(viewRef.current, c.stageInfo, labelFocus())
+  }, [labelFocus])
 
   const controllerRef = useRef<CameraController | null>(null)
   if (!controllerRef.current) {
@@ -484,7 +497,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         // A tween's frames count as animation for the quality steps (section 9.2); drags and one-off moves do not.
         canvasRef.current?.setView(view, controllerRef.current?.tweening === true)
         placeAll(registry, view, stage)
-        labelsRef.current?.update(view, stage, { selectedId: selectedRef.current, ...focus.current, hidden: hiddenRef.current.set })
+        labelsRef.current?.update(view, stage, labelFocus())
         ambientUpdateRef.current()
         scheduleWriteRef.current()
       }
@@ -567,6 +580,14 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   useEffect(() => {
     refreshLabels()
   }, [selectedId, refreshLabels])
+  // The Show filter: live only (a team layout has no lamps). Labels are placed again when it or the lamps change.
+  const filter: FactoryShow = mode === 'live' ? show : 'all'
+  const showWorkers = useMemo(() => entries.filter((e) => e.id !== PLAN_BOARD_ID).map((e) => ({ id: e.id, lamp: e.lamp })), [entries])
+  const counts = useMemo(() => showCounts(showWorkers.map((w) => w.lamp)), [showWorkers])
+  showRef.current = { show: filter, workers: showWorkers }
+  useEffect(() => {
+    refreshLabels()
+  }, [filter, showWorkers, refreshLabels])
 
   // ---- engine input (3D) ----
   // The engine draws the pure floor model (lib/factory/model.ts, built above).
@@ -668,14 +689,16 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     const cur: FindEntry[] = []
     const byId = new Map(agents.map((a) => [a.id, a]))
     for (const e of entries) {
+      // Under a Show filter Find lists only the workers inside it (earlier sessions light no lamp, so they drop too).
+      if (!inShow(filter, e.lamp)) continue
       const a = byId.get(e.id)
       cur.push({ id: e.id, name: e.name, ...(a?.handle ? { handle: a.handle } : {}), statusWord: e.word, ...(e.kind !== 'booth' ? { line: e.line } : {}), session: 'current' })
     }
-    const earlier: FindEntry[] = agents
+    const earlier: FindEntry[] = filter !== 'all' ? [] : agents
       .filter((a) => a.session === 'earlier')
       .map((a) => ({ id: a.id, name: a.name, ...(a.handle ? { handle: a.handle } : {}), statusWord: a.statusWord, session: 'earlier' as const }))
     return [...cur, ...earlier]
-  }, [agents, entries])
+  }, [agents, entries, filter])
   const onFindChoose = useCallback((id: string, session: 'current' | 'earlier') => {
     // Current: focus the worker on the floor (pans into view), then select. Earlier: select only (the floor is untouched).
     if (session === 'current') focusWorker(id)
@@ -952,6 +975,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
       data-quality={quality}
       data-reason={reason}
       data-hall={hall}
+      data-show={filter}
     >
       {notice && (
         <FactoryNotice
@@ -1011,17 +1035,39 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
             <span>{RESTORING_TEXT}</span>
           </div>
         )}
+        {/* Top of the stage (Factory board): Find a worker on the left, the Show filter (live) on the right. */}
+        <div className="factory-top" data-factory-control="">
+          <FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />
+          {mode === 'live' && (
+            <div className="factory-show glass" data-testid="factory-show-filter">
+              <SegmentedControl<FactoryShow>
+                label="Show"
+                value={show}
+                onChange={setShow}
+                options={[
+                  { value: 'all', label: `All ${counts.all}` },
+                  { value: 'working', label: `Working ${counts.working}` },
+                  { value: 'waiting', label: `Waiting ${counts.waiting}` }
+                ]}
+              />
+            </div>
+          )}
+        </div>
       </div>
-      {/* Scene controls (section 6.7), over the stage's bottom left; Pause motion in live mode only. */}
-      <FactoryControls
-        find={<FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />}
-        onZoomIn={zoomIn}
-        onZoomOut={zoomOut}
-        onFit={fit}
-        pauseMotion={mode === 'live' ? pauseMotion : undefined}
-      />
-      {/* Floor log (section 6.5), live only, over the stage's bottom right (placed by factory-chrome.css). Not a live region. */}
-      {mode === 'live' && <FactoryLog entries={log} />}
+      {/* Bottom of the stage: scene controls (section 6.7; Pause motion live only), the stack light legend and the floor log. */}
+      <div className="factory-bottom">
+        <FactoryControls onZoomIn={zoomIn} onZoomOut={zoomOut} onFit={fit} pauseMotion={mode === 'live' ? pauseMotion : undefined} />
+        {mode === 'live' && (
+          <div className="factory-legend glass" data-testid="factory-legend">
+            <span className="factory-legend-title">Stack light</span>
+            <span className="factory-legend-item" data-lamp="failed"><span className="factory-legend-swatch" aria-hidden="true" />Failed</span>
+            <span className="factory-legend-item" data-lamp="needs-you"><span className="factory-legend-swatch" aria-hidden="true" />Needs you</span>
+            <span className="factory-legend-item" data-lamp="running"><span className="factory-legend-swatch" aria-hidden="true" />Running</span>
+          </div>
+        )}
+        {/* Floor log (section 6.5), live only, grows upward from the bottom right. Not a live region. */}
+        {mode === 'live' && <FactoryLog entries={log} />}
+      </div>
       <output hidden data-testid="factory-state" ref={outRef} />
     </div>
   )

@@ -83,7 +83,8 @@ describe('FACTORY_PALETTE', () => {
       expect(contrastRatio(r.part, r.belt)).toBeGreaterThanOrEqual(8)
       expect(new Set([r.tote, r.capsule, r.part, r.crate]).size).toBe(4)
       // By hue: tote, capsule and crate sit at least 40 degrees apart on the colour wheel, and the travellers are 30 or more
-      // degrees from the lamp hues (green about 160, amber about 40, red about 0) so a carrier is never read as a state.
+      // degrees from the state hues (red about 0, amber about 40, done green about 160, cyan running lamp about 190) so a carrier is
+      // never read as a state.
       const hue = (hex: string): number => {
         const n = parseInt(hex.slice(1), 16)
         const [rr, gg, bb] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255)
@@ -97,7 +98,7 @@ describe('FACTORY_PALETTE', () => {
       expect(apart(r.tote, r.crate)).toBeGreaterThanOrEqual(40)
       expect(apart(r.capsule, r.crate)).toBeGreaterThanOrEqual(40)
       for (const c of [r.tote, r.capsule]) {
-        for (const status of [0, 40, 160]) expect(Math.min(Math.abs(hue(c) - status), 360 - Math.abs(hue(c) - status)), `${c} vs hue ${status}`).toBeGreaterThanOrEqual(30)
+        for (const status of [0, 40, 160, 190]) expect(Math.min(Math.abs(hue(c) - status), 360 - Math.abs(hue(c) - status)), `${c} vs hue ${status}`).toBeGreaterThanOrEqual(30)
       }
     })
 

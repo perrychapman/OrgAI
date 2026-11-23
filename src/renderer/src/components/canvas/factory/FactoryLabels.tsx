@@ -169,11 +169,24 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
           </div>
         )
       })}
-      {signs.map((s) => (
-        <div key={s.key} ref={reg(labelKey({ kind: 'sign', id: s.key }))} className="factory-line-sign" data-testid="factory-line-sign" data-line={s.line} data-shown="false">
-          {s.text}
-        </div>
-      ))}
+      {signs.map((s) => {
+        // Factory board: the line on the first row, its lead under it; the text content stays "Line n · lead".
+        const head = `Line ${s.line} · `
+        const split = s.text.startsWith(head)
+        return (
+          <div key={s.key} ref={reg(labelKey({ kind: 'sign', id: s.key }))} className="factory-line-sign" data-testid="factory-line-sign" data-line={s.line} data-shown="false">
+            {split ? (
+              <>
+                <span className="factory-line-sign-line">Line {s.line}</span>
+                <span className="factory-line-sign-sep"> · </span>
+                <span className="factory-line-sign-lead">{s.text.slice(head.length)}</span>
+              </>
+            ) : (
+              s.text
+            )}
+          </div>
+        )
+      })}
       {dock && (
         <div ref={reg(labelKey({ kind: 'dock', id: 'dock' }))} className="factory-zone-label" data-testid="factory-dock" data-count={dock.count} data-shown="false">
           {dock.text}

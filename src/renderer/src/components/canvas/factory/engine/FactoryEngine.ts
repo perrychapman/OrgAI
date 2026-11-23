@@ -746,10 +746,10 @@ export class FactoryEngine {
     this.materials.applyTheme(this.theme, tokens)
     this.lighting.applyTheme(this.theme, this.hall)
     this.lampColours.off.set(this.kits.lampOffColour(this.theme))
-    this.lampColours.running.set(tokens.success)
+    this.lampColours.running.set(tokens.working)
     this.lampColours['needs-you'].set(tokens.warning)
     this.lampColours.failed.set(tokens.danger)
-    // Plan step lamps: the kit's colour per state, else pending and skipped off, active and done success, blocked warning.
+    // Plan step lamps: the kit's colour per state, else pending and skipped off, active working, done success, blocked warning.
     for (const state of BOARD_STATES) {
       const fromKit = this.kits.boardLampColour?.(this.theme, state, tokens)
       const fallback = state === 'blocked' ? this.lampColours['needs-you'] : state === 'active' || state === 'done' ? this.lampColours.running : this.lampColours.off

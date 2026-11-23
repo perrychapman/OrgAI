@@ -13,7 +13,8 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--surface-0);
+  /* Transparent: the run view's stage (ov-run's glass frame) shows through; the 3D canvas paints its own clear colour. */
+  background: transparent;
 }
 
 .factory-notice {
@@ -76,10 +77,12 @@
 .factory-stage-note > span {
   max-width: 36ch;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  box-shadow: var(--elev-1);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
   color: var(--text-primary);
   font-size: var(--text-body);
   line-height: var(--text-body-lh);
@@ -133,6 +136,7 @@ button.factory-worker:focus-visible {
   gap: 2px;
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   overflow: hidden;
   container-type: size;
@@ -140,6 +144,24 @@ button.factory-worker:focus-visible {
 
 .factory-mirror[data-renderer='floor-plan'] .factory-worker[data-kind='booth'] {
   background: var(--surface-3);
+}
+
+/* Factory board: a lit lamp tints the tile's edge (the status word and icon carry it too, never colour alone). */
+.factory-mirror[data-renderer='floor-plan'] .factory-worker[data-lamp='running'] {
+  border-color: color-mix(in oklab, var(--working) 60%, var(--border-default));
+}
+.factory-mirror[data-renderer='floor-plan'] .factory-worker[data-lamp='needs-you'] {
+  border-color: var(--warning);
+  background-image: linear-gradient(var(--warning-soft), var(--warning-soft));
+}
+.factory-mirror[data-renderer='floor-plan'] .factory-worker[data-lamp='failed'] {
+  border-color: var(--danger);
+}
+
+/* Show filter: floor plan tiles outside it are dimmed; they stay focusable, and focus or selection lifts the dim. */
+.factory-scene[data-show='working'] .factory-mirror[data-renderer='floor-plan'] [data-testid='factory-worker']:not([data-lamp='running']):not(:focus-visible):not([aria-current='true']),
+.factory-scene[data-show='waiting'] .factory-mirror[data-renderer='floor-plan'] [data-testid='factory-worker']:not([data-lamp='needs-you']):not(:focus-visible):not([aria-current='true']) {
+  opacity: 0.4;
 }
 
 .factory-mirror[data-renderer='floor-plan'] button.factory-worker:hover {
@@ -292,7 +314,7 @@ button.factory-worker:focus-visible {
 /* The status icon carries the lamp colour; the word stays in the text colour for contrast. */
 .factory-worker[data-lamp='running'] .factory-worker-status svg,
 .factory-nameplate[data-lamp='running'] .factory-nameplate-status svg {
-  color: var(--success-text);
+  color: var(--working-text);
 }
 .factory-worker[data-lamp='needs-you'] .factory-worker-status svg,
 .factory-nameplate[data-lamp='needs-you'] .factory-nameplate-status svg {
@@ -306,7 +328,7 @@ button.factory-worker:focus-visible {
 /* ---- floor plan backdrop (straight top-down: hall, gantry, dock, board, routes, vacant slots) ---- */
 
 .factory-stage[data-renderer='floor-plan'] {
-  background: var(--surface-0);
+  background: transparent;
 }
 
 .factory-plan,
@@ -408,12 +430,43 @@ button.factory-worker:focus-visible {
   top: 0;
   box-sizing: border-box;
   max-width: 260px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  /* Solid enough to read over the floor without a backdrop blur (up to 24 plates move with the camera). */
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
   box-shadow: var(--elev-1);
   color: var(--text-primary);
   white-space: nowrap;
+}
+
+/* Factory board: a plate's edge takes its lamp's colour (cyan running, amber needs you, red failed). */
+.factory-nameplate[data-lamp='running'] {
+  border-color: var(--working);
+}
+.factory-nameplate[data-lamp='needs-you'] {
+  border-color: var(--warning);
+  box-shadow: var(--elev-1), 0 0 0 1px var(--warning);
+}
+.factory-nameplate[data-lamp='failed'] {
+  border-color: var(--danger);
+}
+
+/* Line signs: the line on the first row, its lead under it. */
+.factory-line-sign-line,
+.factory-line-sign-lead {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.factory-line-sign-line {
+  color: var(--text-primary);
+}
+.factory-line-sign-lead {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+.factory-line-sign-sep {
+  display: none;
 }
 
 .factory-line-sign {

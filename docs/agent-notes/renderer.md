@@ -978,3 +978,13 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
 - A NodeToolbar is portalled but React bubbles its events to the node wrapper: the toolbar row stops them (else a toolbar
   click re-selects the node). Checked by e2e/team.mjs sectionNodeMenu.
 - Engagement styling hangs off `.team-editor[data-kind=engagement]` (TeamView root).
+
+## Scenes, UI overhaul (2026-11-22)
+
+- Pocket Office and Factory Floor roots are transparent inside the run view's `.frame-stage`; the host owns the frame.
+  The Office Show filter lives in `OfficeScene` (`lib/office/showFilter.ts`), the Factory one in `FactoryScene`
+  (`lib/factory/showFilter.ts`, merged into the label layer's hidden set by `labelFocus`). Unit tested; checked by
+  `e2e/office.mjs` and `e2e/factory-floor.mjs` (both renderers). Notes: `docs/design/ui-overhaul/impl-scenes.md`.
+- Testids kept: `office-pause` moved into the Message log card; Find a worker moved out of `factory-controls` (the
+  toolbar now holds Zoom out, Zoom in, Fit, Pause motion). New: `office-log`, `office-show-filter`,
+  `factory-show-filter`, `factory-legend`.
