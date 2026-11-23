@@ -35,7 +35,10 @@ import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, 
 import type { PermissionDecision, PermissionMode, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, DEFAULT_MAX_AUTO_CONTINUES, KNOWLEDGE_RECALL_TOOL, READ_DOCUMENT_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingGoalOf, staffingModeOf, tierForModel } from '@shared/defaults'
-import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
+import { CLAUDE_TIER_ALIAS, decideWithStrongerGate, recordStaffing, roleModelTier, type StrongerModelCard } from './staffing'
+
+/** PreToolUse hook timeout (seconds) while Project.askBeforeStrongerModel is on: the spawn hook may wait for the user's answer. */
+const STRONGER_MODEL_HOOK_TIMEOUT_S = 600
 import { StaffingBook } from './staffingBook'
 import { PermissionModeRefusal } from './permissionModeRefusal'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgedRole, type BridgeSpawnResult, type RunSkill, type CompletionInput, type RunConnection, type ResolvedMcpServer, type RuntimeAdapter, type PeerMessage, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
@@ -78,6 +81,7 @@ import { WorktreeIntegrator } from './integration'
 import { CLAUDE_HOOK_CONTEXT_INLINE_MAX, ReadTextStore, briefFiles, buildContextPackFromTexts, completeReadText, contextPackBlock, contextPackRefusal, contextPackResultLine, contextPackRoots, type ContextPack } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { resolveParent } from './agentTree'
+import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
 import {
   mapRateLimitEvent,
   mapUsageResponse,
@@ -1526,6 +1530,8 @@ export class ClaudeSession implements RuntimeSession {
   private ending = false
   /** The CLI refused the credentials; the run ends 'error' with a readable message. */
   private authFailed = false
+  /** The last `provider.retry` attempt emitted, while the CLI is retrying a failed API call (0 = not retrying). */
+  private providerRetryAttempt = 0
   /** Unattended execution: re-engages the orchestrator when a turn ends with plan steps left. */
   private continuation: ContinuationDriver
   /** Root turn ends so far (every result, failures and auth failures included): RootTurnEnd.turnGen. */
@@ -1690,7 +1696,7 @@ export class ClaudeSession implements RuntimeSession {
    * `caller` is the agent whose Agent call it is. A spawn cut before task_started without an error result (review L4)
    * goes at a query restart (dropSpawnsAtRestart) or after an interrupt (sweepCutSpawns).
    */
-  private spawnModes = new Map<string, { modes: PermissionMode[]; caller: string }>()
+  private spawnModes = new Map<string, { modes: PermissionMode[]; caller: string; /** The spawned role's id (spawn caps count unstarted spawns by it). */ roleId?: string; /** The brief the caller wrote, cut (AgentInstance.brief at task_started). */ brief?: string }>()
   /** Approved, unstarted spawns that existed when interrupt() was called: swept once their caller's turn is over. */
   private spawnsCutByInterrupt = new Set<string>()
   /**
@@ -1894,6 +1900,46 @@ export class ClaudeSession implements RuntimeSession {
     // interrupt kills them (sdk.d.ts, not checked live), and stopTask makes sure. They are settled here, not integrated.
     this.stopBackgroundReports('Interrupted', true)
     this.stopHarnessBackgroundedShells()
+  }
+
+  /**
+   * UI overhaul runs:stopAgent: stop one running report and the reports under it with the SDK's per-task stop
+   * (Query.stopTask(taskId); an agent's task id is its agent id, sdk-facts). Never the root; false for an unknown or
+   * ended agent, when the query has no stopTask, or when the CLI refuses it (already gone). Each stopped agent is settled
+   * as an interrupted background report is (done, "Stopped by you", ledger entry and staffing row closed, branch neither
+   * merged nor held), so the task_notification or SubagentStop that follows changes nothing. Whether the CLI stops a
+   * foreground report mid-call and what its parent's Agent call then returns is not verified live.
+   */
+  async stopAgent(agentId: string): Promise<boolean> {
+    if (typeof agentId !== 'string' || agentId === ROOT_ID) return false
+    const target = this.agents.get(agentId)
+    if (!target || target.state === 'done' || target.state === 'error') return false
+    const q = this.q as Partial<Query> | undefined
+    if (typeof q?.stopTask !== 'function') return false
+    // Deepest first: a child is stopped before the report that spawned it.
+    const tree: string[] = []
+    const visit = (id: string, depth: number): void => {
+      if (depth > 50) return
+      for (const a of this.agents.values()) if (a.parentId === id && a.id !== ROOT_ID && !tree.includes(a.id)) visit(a.id, depth + 1)
+      if (!tree.includes(id)) tree.push(id)
+    }
+    visit(agentId, 0)
+    for (const id of tree) {
+      const a = this.agents.get(id)
+      if (!a || a.state === 'done' || a.state === 'error') continue
+      try {
+        await q.stopTask.call(this.q, id)
+      } catch (e) {
+        // The target itself refusing means nothing was stopped; a descendant that is already gone is expected.
+        if (id === agentId) {
+          this.log('warn', `Could not stop ${a.handle ?? a.name ?? id}: ${(e as Error).message}`)
+          return false
+        }
+      }
+      this.settleBackground(id, 'Stopped by you')
+    }
+    this.log('info', `${target.handle ?? target.name ?? agentId} was stopped${tree.length > 1 ? ` with ${tree.length - 1} report${tree.length === 2 ? '' : 's'} under it` : ''}.`)
+    return true
   }
 
   /**
@@ -2927,6 +2973,28 @@ export class ClaudeSession implements RuntimeSession {
     return definitionTier(this.root, undefined) ?? modelRefTier(this.agents.get(ROOT_ID)?.model, claudeStaffingTierModels(this.ctx))
   }
 
+  /** The tier of the agent that spawns (the book's, else the root's live tier for a spawn by the root). */
+  private parentTierOf(parentAgentId: string | undefined): ModelTier | undefined {
+    return parentAgentId ? this.staffingBook.tierOf(parentAgentId) : this.liveRootTier()
+  }
+
+  /**
+   * The stronger-model question (Project.askBeforeStrongerModel) from inside the spawn hook. The hook's own timeout is
+   * raised to STRONGER_MODEL_HOOK_TIMEOUT_S when the project sets the option, and this wait ends a little before it
+   * with an empty answer (= keep the role's tier), so a hook timeout can never let the stronger spawn through.
+   */
+  private async askStrongerModel(card: StrongerModelCard): Promise<{ selected?: readonly string[] }> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<{ selected: string[] }>((resolve) => {
+      timer = setTimeout(() => resolve({ selected: [] }), (STRONGER_MODEL_HOOK_TIMEOUT_S - 20) * 1000)
+    })
+    try {
+      return await Promise.race([this.ctx.requestQuestion({ agentId: ROOT_ID, ...card }), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   /**
    * The model a spawn's `model: CLAUDE_TIER_ALIAS[tier]` makes the CLI run on this connection, or undefined when the
    * alias would not resolve to a model the connection serves. The connection's ANTHROPIC_DEFAULT_<ALIAS>_MODEL variable
@@ -2971,12 +3039,12 @@ export class ClaudeSession implements RuntimeSession {
    * What was sent is kept under `key` for the row (staffingStarted): a written alias as aliasTarget, else the
    * definition's model (an 'inherit' report of the root: the root's live model; a nested one: 'inherit').
    */
-  private staffSpawn(
+  private async staffSpawn(
     key: string,
     parentAgentId: string | undefined,
     target: Role,
     toolInput: Record<string, unknown>
-  ): { model?: string; effort?: Effort; drop: Array<'model' | 'effort'>; stepId?: string } {
+  ): Promise<{ model?: string; effort?: Effort; drop: Array<'model' | 'effort'>; stepId?: string }> {
     const callModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : undefined
     const callAlias = callModel && SPAWN_MODEL_ALIASES.has(callModel) ? callModel : undefined
     if ('model' in toolInput && !callAlias) {
@@ -2987,12 +3055,25 @@ export class ClaudeSession implements RuntimeSession {
     const callEffort = isEffort(toolInput.effort) ? toolInput.effort : undefined
     const onCall = callTier || callEffort ? { ...(callTier ? { tier: callTier } : {}), ...(callEffort ? { effort: callEffort } : {}) } : undefined
     const planGuard = this.planGuardSteers()
-    const decision = this.staffingBook.decide({
-      key,
+    // Project.askBeforeStrongerModel: a result on a stronger model than the role's own waits for the user's answer here
+    // (the spawn hook is async); "keep" re-decides on the role's tier. Off: one decide, as before.
+    const decision = await decideWithStrongerGate({
       role: target,
-      ...(parentAgentId ? { parentAgentId } : {}),
-      ...(onCall ? { onCall } : {}),
-      planGuard
+      project: this.ctx.project,
+      ...(this.parentTierOf(parentAgentId) ? { parentTier: this.parentTierOf(parentAgentId) } : {}),
+      decide: (keepTier) => {
+        const call = keepTier ? { ...onCall, tier: keepTier } : onCall
+        return this.staffingBook.decide({
+          key,
+          role: target,
+          ...(parentAgentId ? { parentAgentId } : {}),
+          ...(call ? { onCall: call } : {}),
+          planGuard
+        })
+      },
+      cancel: () => this.staffingBook.cancel(key),
+      ask: (card) => this.askStrongerModel(card),
+      log: (level, text) => this.log(level, text)
     })
     const resolved = decision.resolved
     const auto = resolved.mode === 'auto'
@@ -3437,9 +3518,25 @@ export class ClaudeSession implements RuntimeSession {
           this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (its org chart change reaches the session at the next restart)`)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: pendingDenial } }
         }
+        // UI overhaul spawn caps (Role.maxConcurrent, Project.maxAgentsPerRun), read live from ctx; approved spawns that have
+        // no agent yet (spawnModes) count, so parallel calls in one message cannot all slip under a cap.
+        const capRole = this.liveRoleBySlug(requested)
+        const capDenial = capRole
+          ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values(), pending: [...this.spawnModes.values()].map((e) => e.roleId) })
+          : undefined
+        if (capDenial) {
+          this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (spawn cap)`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: capDenial } }
+        }
         // The spawn is approved: what it may run under is fixed now, its caller's modes included (review M1a/b). A live
         // switch before task_started counts it; task_started moves this onto the report.
-        this.spawnModes.set(input.tool_use_id, { modes: [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])], caller: agentId })
+        const spawnBrief = agentBriefOf(toolInput.prompt)
+        this.spawnModes.set(input.tool_use_id, {
+          modes: [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])],
+          caller: agentId,
+          ...(capRole ? { roleId: capRole.id } : {}),
+          ...(spawnBrief ? { brief: spawnBrief } : {})
+        })
         this.setState(agentId, 'delegating', describe(input.tool_name, toolInput))
         // Writing reports get their own worktree when their parent is the orchestrator or is itself
         // isolated (nested isolation). A nested spawn runs from the parent's worktree, so Claude Code
@@ -3469,7 +3566,7 @@ export class ClaudeSession implements RuntimeSession {
         // the resolver did not confirm are dropped. Decided only here, after every denial above.
         const brief = typeof toolInput.prompt === 'string' ? toolInput.prompt : ''
         if (target) {
-          const staff = this.staffSpawn(input.tool_use_id, input.agent_id, target, toolInput)
+          const staff = await this.staffSpawn(input.tool_use_id, input.agent_id, target, toolInput)
           for (const k of staff.drop) drop.add(k)
           // A value the call already carries is left as it is (no updatedInput for an unchanged call).
           if (staff.model !== undefined && staff.model !== toolInput.model) updates.model = staff.model
@@ -3718,7 +3815,7 @@ export class ClaudeSession implements RuntimeSession {
     }
 
     return {
-      PreToolUse: [{ hooks: [preToolUse] }],
+      PreToolUse: [{ hooks: [preToolUse], ...(this.ctx.project.askBeforeStrongerModel === true ? { timeout: STRONGER_MODEL_HOOK_TIMEOUT_S } : {}) }],
       PostToolUse: [{ hooks: [postToolUse] }],
       SubagentStart: [{ hooks: [subagentStart] }],
       SubagentStop: [{ hooks: [subagentStop] }],
@@ -5492,8 +5589,12 @@ export class ClaudeSession implements RuntimeSession {
                     : { mergeTarget: 'main' as const })
                 })
               : undefined)
+          // AgentInstance.brief: what the parent wrote on the Agent call, set once on the call's own task_started.
+          const spawnBrief = msg.tool_use_id ? this.spawnModes.get(msg.tool_use_id)?.brief : undefined
           this.upsert({
-            ...(existing ?? this.ensureAgent(msg.task_id, { roleSlug: slug, parentId })),
+            // The brief goes into the creation too, so the agent.upsert that first creates the agent already carries it.
+            ...(existing ?? this.ensureAgent(msg.task_id, { roleSlug: slug, parentId, ...(spawnBrief ? { brief: spawnBrief } : {}) })),
+            ...(spawnBrief && !existing?.brief ? { brief: spawnBrief } : {}),
             roleId: role?.id ?? null,
             roleSlug: slug,
             name: role?.name ?? slug,
@@ -5552,6 +5653,16 @@ export class ClaudeSession implements RuntimeSession {
           const root = this.ensureAgent(ROOT_ID)
           countUsage(root, 'retries')
           this.upsert(root)
+          // Numbers only, never the provider's error text. The attempt is 1-based and strictly rising within one streak.
+          const attempt = Math.max(Math.floor(Number(msg.attempt)) || 0, this.providerRetryAttempt + 1)
+          this.providerRetryAttempt = attempt
+          const delay = Number(msg.retry_delay_ms)
+          this.emit({
+            type: 'provider.retry',
+            runId,
+            attempt,
+            ...(Number.isFinite(delay) && delay >= 0 ? { nextTryAt: Date.now() + delay } : {})
+          })
         } else if (msg.subtype === 'task_updated') {
           const st = msg.patch?.status
           if (st === 'completed' || st === 'failed' || st === 'killed') this.backgroundTaskEnded(msg.task_id)
@@ -5607,6 +5718,12 @@ export class ClaudeSession implements RuntimeSession {
         if (authRaw !== null) {
           this.failAuth(authRaw)
           break
+        }
+        // The next answer that is not an API error ends a retry streak: one `ok` for it.
+        if (this.providerRetryAttempt > 0 && !msg.error) {
+          const attempt = this.providerRetryAttempt
+          this.providerRetryAttempt = 0
+          this.emit({ type: 'provider.retry', runId, attempt, ok: true })
         }
         const agentId = this.resolveAgentId(msg)
         const a = this.ensureAgent(agentId)
@@ -5746,6 +5863,12 @@ export class ClaudeSession implements RuntimeSession {
           this.apportionCost(msg.modelUsage)
         }
         this.partial.clear(ROOT_ID, true)
+        if (this.providerRetryAttempt > 0) {
+          // A turn that ends after retries: success is the next successful answer; a failure emits no `ok` (RunManager sees the failed end).
+          const attempt = this.providerRetryAttempt
+          this.providerRetryAttempt = 0
+          if (msg.subtype === 'success') this.emit({ type: 'provider.retry', runId, attempt, ok: true })
+        }
         const authRaw = authFailureFrom(msg)
         if (authRaw !== null) {
           this.failAuth(authRaw)

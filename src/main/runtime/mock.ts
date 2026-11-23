@@ -40,9 +40,10 @@ import { BRIDGE_HARNESS_TOOLS, LIVE_RUN_CHANGE_WAIT_MS, READ_DOCUMENT_TOOL, TODO
 import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
-import { recordStaffing } from './staffing'
+import { decideWithStrongerGate, recordStaffing } from './staffing'
 import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
 import { waitingNote, waitingNoteExcluded } from './waitingNote'
+import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
 
 /**
  * A scripted, token-free provider. It plays a script of steps and emits the same normalized RunEvents a
@@ -142,6 +143,13 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
+ * RunHold markers (UI overhaul, work runs, default script, first session only): [mock:budget-stop] ends the root turn on the
+ * spending limit (errorSubtype 'error_max_budget_usd'); [mock:provider-error] ends the run with a provider error (run.status
+ * 'error' with MOCK_PROVIDER_ERROR_MESSAGE, session open); see BUDGET_STOP_TOKEN. Spawn caps (Role.maxConcurrent,
+ * Project.maxAgentsPerRun), AgentInstance.brief and stopAgent behave as on the real adapters.
+ * Provider retry marker (work runs, default script, first session only): [mock:provider-retry] (providerRetrySteps) emits two
+ * `provider.retry` events (attempt 1 then 2, nextTryAt 1.5 s ahead, the run waits 1.5 s after each) and then one with
+ * `ok: true`, then a closing text; no provider text is in the events.
  * Host change answer markers (hostConfigChanged, read from the first prompt; add [mock:model-switch] so the run idles):
  * [mock:host-after-idle] answers 'after-idle' (notice never in line, it waits for the next message); [mock:host-slow]
  * answers after MOCK_HOST_SLOW_MS (LIVE_RUN_CHANGE_WAIT_MS + 1.5 s), so the host reports 'pending' first; combined with
@@ -262,6 +270,8 @@ export type MockStep =
   | { type: 'planComplete'; summary: string }
   /** An API retry (rate limit or overload) against an agent's request; counted in usage.retries. */
   | { type: 'retry'; agent?: string }
+  /** The provider is retrying a failed API call (`provider.retry`: 1-based attempt, nextTryAt `delayMs` ahead), or with `ok` has answered. */
+  | { type: 'providerRetry'; attempt: number; delayMs?: number; ok?: true }
   /** The provider compacted an agent's conversation (agent.compacted; the continuation's thrash guard hears of it). */
   | { type: 'compact'; agent?: string; before?: number; after?: number }
   /** Wait `ms` more before the next step (cut short by interrupt and stop). */
@@ -792,6 +802,18 @@ export const MOCK_HOST_SLOW_MS = LIVE_RUN_CHANGE_WAIT_MS + 1_500
 export const MOCK_HOST_REJECT_REASON = 'This session does not take this change; it applies from the next run.'
 export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
 export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
+/**
+ * RunHold e2e markers (work runs, default script; UI overhaul). [mock:budget-stop] (budgetStopSteps): one text, then the
+ * root turn ends as a Claude turn that hit its spending limit does: ctx.onRootTurnEnded({ ok: false, errorSubtype:
+ * 'error_max_budget_usd' }), root state 'error', then run.status 'idle'. RunManager holds the run on 'budget' when the run
+ * has a cap to report (per-run cap or project budget). [mock:provider-error] (providerErrorSteps): one text, then the
+ * session throws MOCK_PROVIDER_ERROR_MESSAGE as a failing provider call does: the root goes to 'error' and run.status is
+ * 'error' with that message, with the session open (no turn end, no auth flag), so RunManager holds the run on the provider.
+ * Only the first session of a run reacts (a continuation, which carries a resume id, goes on normally).
+ */
+export const BUDGET_STOP_TOKEN = '[mock:budget-stop]'
+export const PROVIDER_ERROR_TOKEN = '[mock:provider-error]'
+export const MOCK_PROVIDER_ERROR_MESSAGE = 'Mock provider error: the provider returned HTTP 529 (overloaded) and the request was not retried.'
 export const EXEC_SLOW_TOKEN = '[mock:exec-slow]'
 /** The [mock:exec-question] options, in order; the first is the recommended one. */
 export const EXEC_QUESTION_OPTIONS = ['(Recommended) Keep the default', 'Change it'] as const
@@ -850,6 +872,38 @@ export function turnFailSteps(): MockStep[] {
   return [
     { type: 'text', text: 'Starting on the request.' },
     { type: 'fail', subtype: 'error_during_execution' }
+  ]
+}
+
+/** [mock:budget-stop]: one text, then the root turn ends on the spending limit (RootTurnEnd errorSubtype 'error_max_budget_usd'). */
+export function budgetStopSteps(): MockStep[] {
+  return [
+    { type: 'text', text: 'Starting on the request.' },
+    { type: 'fail', subtype: 'error_max_budget_usd' }
+  ]
+}
+
+/** [mock:provider-error]: one text; the session then throws MOCK_PROVIDER_ERROR_MESSAGE (see the session loop). */
+export function providerErrorSteps(): MockStep[] {
+  return [{ type: 'text', text: 'Starting on the request.' }]
+}
+
+/**
+ * [mock:provider-retry] (work runs, default script, first session only): one text, two `provider.retry` events (attempts 1
+ * and 2, each with nextTryAt MOCK_PROVIDER_RETRY_DELAY_MS ahead and a wait of that long after it, so a UI sees "Trying
+ * again"), then one `ok: true` and a closing text. No provider text is ever in the events.
+ */
+export const PROVIDER_RETRY_TOKEN = '[mock:provider-retry]'
+export const MOCK_PROVIDER_RETRY_DELAY_MS = 1500
+export function providerRetrySteps(): MockStep[] {
+  return [
+    { type: 'text', text: 'Starting on the request.' },
+    { type: 'providerRetry', attempt: 1, delayMs: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'wait', ms: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'providerRetry', attempt: 2, delayMs: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'wait', ms: MOCK_PROVIDER_RETRY_DELAY_MS },
+    { type: 'providerRetry', attempt: 2, ok: true },
+    { type: 'text', text: 'The provider answered after two retries.' }
   ]
 }
 
@@ -1706,6 +1760,52 @@ export class MockSession implements RuntimeSession {
     this.poke()
   }
 
+  /**
+   * runs:stopAgent (UI overhaul): the mock supports it, as the reference adapter. Stops one running report and the live
+   * reports under it, never the root; false for an unknown or ended agent. Each stopped agent ends 'done' with the activity
+   * "Stopped by you" (as an interrupted Codex report does), its ledger entry and staffing row closed, and the rest of its
+   * scripted steps skipped. Its parent's spawn call is answered with an error result so the transcript stays whole, and a
+   * parent waiting only on it finishes.
+   */
+  async stopAgent(agentId: string): Promise<boolean> {
+    if (typeof agentId !== 'string' || agentId === ROOT_AGENT_ID || this.stopped) return false
+    const target = this.agents.get(agentId)
+    if (!target || target.state === 'done' || target.state === 'error') return false
+    const tree: string[] = []
+    const visit = (id: string, depth: number): void => {
+      if (depth > 50 || tree.includes(id)) return
+      for (const a of this.agents.values()) if (a.parentId === id && a.id !== ROOT_AGENT_ID) visit(a.id, depth + 1)
+      tree.push(id)
+    }
+    visit(agentId, 0)
+    for (const id of tree) {
+      const a = this.agents.get(id)
+      if (!a || a.state === 'done' || a.state === 'error') continue
+      this.ctx.delegation?.ended(id)
+      this.staffing.ended(id, { failed: false })
+      this.pendingFinish.delete(id)
+      // The agent's remaining scripted steps (and its reports') are skipped, as for a refused spawn.
+      this.deniedSpawns.add(id)
+      a.state = 'done'
+      a.activity = 'Stopped by you'
+      a.endedAt = Date.now()
+      this.upsert(a)
+      const toolUseId = this.spawnToolUse.get(id)
+      if (toolUseId && a.parentId) this.transcript(a.parentId, { kind: 'tool_result', toolUseId, content: 'The user stopped this agent before it reported.', isError: true })
+    }
+    this.noteActivity('report')
+    this.log('info', `${target.handle ?? target.name} was stopped.`)
+    if (target.parentId) {
+      this.setState(target.parentId, 'thinking', 'Thinking…')
+      const pending = this.pendingFinish.get(target.parentId)
+      if (pending && !this.stopped && !this.interrupted) {
+        const running = [...this.agents.values()].some((x) => x.parentId === target.parentId && x.state !== 'done' && x.state !== 'error')
+        if (!running) await this.finishStep(pending)
+      }
+    }
+    return true
+  }
+
   /** A message from another run: delivered like a harness message, but RunManager writes the transcript block. */
   async receive(message: PeerMessage): Promise<void> {
     if (this.stopped) return
@@ -2124,6 +2224,8 @@ export class MockSession implements RuntimeSession {
       if (this.ctx.prompt.includes(MODEL_SWITCH_ERROR_TOKEN) && !this.ctx.resumeSessionId) throw new Error('Mock provider error for model switching recovery.')
       await this.skillStep(ROOT_AGENT_ID, this.root)
       await this.turn(this.firstTurnSteps())
+      // [mock:provider-error]: the provider call fails after the first turn; the catch below ends the run like a real adapter does.
+      if (this.ctx.prompt.includes(PROVIDER_ERROR_TOKEN) && !this.ctx.resumeSessionId && !this.stopped) throw new Error(MOCK_PROVIDER_ERROR_MESSAGE)
       while (!this.stopped) {
         const next = await this.nextMessage()
         if (next === null) break
@@ -2385,6 +2487,11 @@ export class MockSession implements RuntimeSession {
     if (prompt.includes(EXEC_BLOCKED_TOKEN)) return execBlockedSteps()
     if (prompt.includes(EXEC_QUESTION_TOKEN)) return execQuestionSteps()
     if (prompt.includes(TURN_FAIL_TOKEN)) return turnFailSteps()
+    if (!this.ctx.resumeSessionId) {
+      if (prompt.includes(BUDGET_STOP_TOKEN)) return budgetStopSteps()
+      if (prompt.includes(PROVIDER_ERROR_TOKEN)) return providerErrorSteps()
+      if (prompt.includes(PROVIDER_RETRY_TOKEN)) return providerRetrySteps()
+    }
     if (prompt.includes(COMPACT_TOKEN)) return compactSteps()
     if (prompt.includes(RATE_LIMIT_TOKEN)) return rateLimitSteps()
     if (prompt.includes(EXEC_SLOW_TOKEN)) return execSlowSteps(this.script.delayMs)
@@ -2573,6 +2680,14 @@ export class MockSession implements RuntimeSession {
         this.upsert(a)
         return
       }
+      case 'providerRetry':
+        this.emit({
+          type: 'provider.retry',
+          runId: this.ctx.run.id,
+          attempt: step.attempt,
+          ...(step.ok ? { ok: true as const } : step.delayMs !== undefined ? { nextTryAt: Date.now() + step.delayMs } : {})
+        })
+        return
       case 'plan':
         await this.harnessStep({
           type: 'harness',
@@ -3025,19 +3140,48 @@ export class MockSession implements RuntimeSession {
       this.deniedSpawns.add(step.id)
       return
     }
+    // UI overhaul spawn caps (Role.maxConcurrent, Project.maxAgentsPerRun), read from ctx now like the real adapters; a
+    // spawn of an agent id that already exists is its resume, not a new agent. Refused like the denials above.
+    const capRole = this.roleBySlug(slug)
+    const capDenial = !this.agents.has(step.id) && capRole ? spawnCapRefusal({ project: this.ctx.project, roles: this.ctx.roles, roleId: capRole.id, agents: this.agents.values() }) : undefined
+    if (capDenial) {
+      this.log('warn', `Blocked spawn: ${parent.roleSlug} -> ${slug} (spawn cap)`)
+      this.transcript(parentId, { kind: 'tool_result', toolUseId, content: capDenial, isError: true })
+      this.deniedSpawns.add(step.id)
+      return
+    }
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
     if (!this.agents.has(step.id)) this.noteActivity('subagent')
     const role = this.roleBySlug(slug)
     // Run staffing: bind to the plan step and resolve before the report exists; apply only an override.
     const onCall = step.tier || step.effort ? { ...(step.tier ? { tier: step.tier } : {}), ...(step.effort ? { effort: step.effort } : {}) } : undefined
-    const decision = role ? this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(onCall ? { onCall } : {}) }) : undefined
+    // Project.askBeforeStrongerModel, like the real adapters: a stronger-than-the-role result waits for the answer; "keep" re-decides on the role's tier.
+    const parentTier = parentId !== ROOT_AGENT_ID ? this.staffing.tierOf(parentId) : (this.root.tier ?? settingTier(this.root.model))
+    const decision = role
+      ? await decideWithStrongerGate({
+          role,
+          project: this.ctx.project,
+          ...(parentTier ? { parentTier } : {}),
+          decide: (keepTier) => {
+            const call = keepTier ? { ...onCall, tier: keepTier } : onCall
+            return this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(call ? { onCall: call } : {}) })
+          },
+          cancel: () => this.staffing.cancel(step.id),
+          ask: (card) => this.ctx.requestQuestion({ agentId: ROOT_AGENT_ID, ...card }),
+          log: (level, text) => this.log(level, text)
+        })
+      : undefined
     const staffedModel = decision?.resolved.tierChanged && decision.resolved.model && decision.resolved.model !== 'inherit' ? decision.resolved.model : undefined
     if (decision?.resolved.overrides) this.staffed.set(step.id, { ...(staffedModel ? { model: staffedModel } : {}), ...(decision.resolved.effortChanged && decision.resolved.effort ? { effort: decision.resolved.effort } : {}) })
     else this.staffed.delete(step.id)
     const agentParent = resolveParent(this.agents, step.id, parentId, ROOT_AGENT_ID)
+    // AgentInstance.brief: set once, when the agent is first created.
+    const agentBrief = this.agents.get(step.id)?.brief ?? agentBriefOf(brief)
     this.upsert({
-      ...this.ensureAgent(step.id, { roleSlug: slug, parentId: agentParent }),
+      // The brief goes into the creation too, so the agent.upsert that first creates the agent already carries it.
+      ...this.ensureAgent(step.id, { roleSlug: slug, parentId: agentParent, ...(agentBrief ? { brief: agentBrief } : {}) }),
+      ...(agentBrief ? { brief: agentBrief } : {}),
       roleId: role?.id ?? null,
       roleSlug: slug,
       name: role?.name ?? slug,

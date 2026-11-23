@@ -2069,6 +2069,39 @@ describe('CodexAdapter session', () => {
     expect(usage).toMatchObject({ turns: 1, toolCalls: 1, retries: 1 })
   })
 
+  it('emits provider.retry for each retried error (counted, no delay, no provider text) and one ok after the next output', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    const retries = () => ctx.events.filter((e) => e.type === 'provider.retry')
+    s.push('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: true, error: { message: 'Reconnecting... 1/5 secret-provider-text' } })
+    s.push('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: true, error: { message: 'Reconnecting... 2/5' } })
+    expect(retries()).toEqual([
+      { type: 'provider.retry', runId: ctx.run.id, attempt: 1 },
+      { type: 'provider.retry', runId: ctx.run.id, attempt: 2 }
+    ])
+    expect(JSON.stringify(retries())).not.toContain('secret-provider-text')
+    // The retried call answers: one ok with the last attempt, then nothing more for later output.
+    s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'm1', text: 'Hello', phase: 'final_answer' } })
+    s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'm2', text: 'More', phase: 'final_answer' } })
+    expect(retries().slice(2)).toEqual([{ type: 'provider.retry', runId: ctx.run.id, attempt: 2, ok: true }])
+    // A later streak starts again at 1.
+    s.push('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: true, error: { message: 'again' } })
+    expect(retries().at(-1)).toEqual({ type: 'provider.retry', runId: ctx.run.id, attempt: 1 })
+  })
+
+  it('emits no provider.retry for an error that is not retried', async () => {
+    const { adapter, servers } = setup()
+    const ctx = ctxFor()
+    session = await adapter.start(ctx)
+    const s = servers[0]
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    s.push('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: false, error: { message: 'boom' } })
+    expect(ctx.events.some((e) => e.type === 'provider.retry')).toBe(false)
+  })
+
   it('pauses on a usage limit and ends the session after the failed turn', async () => {
     const { adapter, servers } = setup()
     const ctx = ctxFor()

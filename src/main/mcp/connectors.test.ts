@@ -137,6 +137,18 @@ describe('connectorState and the mock test', () => {
     expect(ok.tools).toContain('search_threads')
   })
 
+  it('mock tool list carries readOnly annotations for every tool (lookups read-only, others not)', () => {
+    const ok = mockConnectorTest(gmail, gv, info({ auth: { state: 'authorized' } }))
+    expect(ok.toolDetails?.length).toBe(ok.tools?.length)
+    expect(ok.toolDetails?.every((t) => typeof t.readOnly === 'boolean')).toBe(true)
+    const deepwiki = connectorById('deepwiki')!
+    const dw = mockConnectorTest(deepwiki, connectorVariant(deepwiki), info({ auth: { state: 'notRequired' } }))
+    expect(dw.toolDetails?.map((t) => [t.name, t.readOnly])).toEqual([['search', true], ['read_page', true], ['ask_question', true]])
+    const zapier = connectorById('zapier')!
+    const t = mockConnectorTest(zapier, connectorVariant(zapier), info({ auth: { state: 'notRequired' } }))
+    expect(t.toolDetails?.find((d) => d.name === 'trigger_workflow')).toMatchObject({ readOnly: false })
+  })
+
   it("auth kind 'none': no OAuth preset, no secret slot, connected once added, mock tools by category", () => {
     const deepwiki = connectorById('deepwiki')!
     const dv = connectorVariant(deepwiki)

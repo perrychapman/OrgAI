@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, SECRETS_IPC } from '@shared/types'
 import type { ActivityLeaseKind, HostScope, HostState, Project, RunSummary } from '@shared/types'
-import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, DEFAULT_APP_SETTINGS, defaultTierModels } from '@shared/defaults'
 import { VAULT_MESSAGES } from '../store/vaultTypes'
 
 // The dispatcher must load and run without Electron (cli-spec 3.1.1).
@@ -18,6 +18,8 @@ const { HostEventBus } = await import('./events')
 const { HostRpcFailure, socketInvokableChannels, desktopOnlyChannels } = await import('./registry')
 const { requestChannels } = await import('./jsonCodec')
 const { project: makeProject } = await import('../runtime/testHelpers')
+const { AgentImportService } = await import('../setup/import/importer')
+const { forgetAgentFolders, rememberAgentFolder } = await import('../agentFolderPicks')
 type GateFn = import('./registry').GateFn
 type HostServices = import('./types').HostServices
 type HostActivityTrackerApi = import('./types').HostActivityTrackerApi
@@ -636,5 +638,59 @@ describe('host-specific handlers', () => {
   it('makes its own bus when none is given', () => {
     const d = new HostDispatcher(services())
     expect(d.events).toBeInstanceOf(HostEventBus)
+  })
+})
+
+describe('projects:previewImport / applyImport: sourcePath and fromProjectId (UI overhaul)', () => {
+  const PICK = /Choose the folder with the folder picker first\./
+  function withImporter() {
+    const target = makeProject({ id: 'proj_a', path: dir })
+    const from = makeProject({ id: 'proj_from', name: 'From' })
+    const importer = new AgentImportService({
+      projects: { get: (id) => [target, from].find((p) => p.id === id) ?? null, list: () => [target, from], save: (p) => p },
+      modelContext: () => ({ connection: 'anthropic', catalog: ANTHROPIC_BUILTIN_MODELS, tierModels: defaultTierModels(ANTHROPIC_BUILTIN_MODELS) })
+    })
+    return { d: new HostDispatcher(services({ importer }, [target, from])), target, from }
+  }
+
+  it('the desktop window needs to have picked the folder itself; a pick by another window does not count', () => {
+    const { d, target } = withImporter()
+    mkdirSync(join(dir, 'agents-src', '.claude', 'agents'), { recursive: true })
+    const src = join(dir, 'agents-src')
+    writeFileSync(join(src, '.claude', 'agents', 'designer.md'), '---\nname: designer\ndescription: d\nmodel: sonnet\n---\nYou design.')
+    const input = { projectId: target.id, mode: 'merge', sourcePath: src }
+    expect(() => d.invoke(IPC.projectsPreviewImport, [input], DESKTOP)).toThrow(PICK)
+    rememberAgentFolder(DESKTOP.senderId + 1, src)
+    expect(() => d.invoke(IPC.projectsPreviewImport, [input], DESKTOP)).toThrow(PICK)
+    rememberAgentFolder(DESKTOP.senderId, src)
+    const preview = d.invoke(IPC.projectsPreviewImport, [input], DESKTOP) as { items: { name: string }[]; digest: string }
+    expect(preview.items.map((i) => i.name)).toEqual(['designer'])
+    expect(() => d.invoke(IPC.projectsApplyImport, [{ ...input, digest: preview.digest }], { surface: 'desktop', senderId: 99 })).toThrow(PICK)
+    forgetAgentFolders(DESKTOP.senderId)
+    forgetAgentFolders(DESKTOP.senderId + 1)
+  })
+
+  it('the socket and the CLI (inproc) are refused for both fields, even when a window picked the folder', async () => {
+    const { d, target, from } = withImporter()
+    rememberAgentFolder(5, dir)
+    const asSocket = { ...RPC }
+    const asInproc: RpcInvokeContext = { ...RPC, surface: 'inproc', senderId: 5 }
+    for (const ctx of [asSocket, asInproc]) {
+      for (const channel of [IPC.projectsPreviewImport, IPC.projectsApplyImport]) {
+        await expect(d.invokeRpc(channel, [{ projectId: target.id, mode: 'merge', sourcePath: dir, digest: 'd' }], ctx)).rejects.toThrow(/desktop app only/)
+        await expect(d.invokeRpc(channel, [{ projectId: target.id, mode: 'merge', fromProjectId: from.id, digest: 'd' }], ctx)).rejects.toThrow(/desktop app only/)
+      }
+    }
+    forgetAgentFolders(5)
+  })
+
+  it('both fields together are refused on the desktop, and the plain input still works', () => {
+    const { d, target, from } = withImporter()
+    rememberAgentFolder(DESKTOP.senderId, dir)
+    expect(() => d.invoke(IPC.projectsPreviewImport, [{ projectId: target.id, mode: 'merge', sourcePath: dir, fromProjectId: from.id }], DESKTOP)).toThrow(/not both/)
+    expect(() => d.invoke(IPC.projectsPreviewImport, [{ projectId: target.id, mode: 'merge', fromProjectId: target.id }], DESKTOP)).toThrow(/different project/)
+    const plain = d.invoke(IPC.projectsPreviewImport, [{ projectId: target.id, mode: 'merge' }], DESKTOP) as { items: unknown[] }
+    expect(plain.items).toEqual([])
+    forgetAgentFolders(DESKTOP.senderId)
   })
 })

@@ -643,3 +643,64 @@ describe('RunStore atomic renames', () => {
     }
   })
 })
+
+describe('boot normalization of UI overhaul run fields (untrusted file)', () => {
+  const n = (over: Record<string, unknown>): RunSummary => normalizeCrashedRunSummary(run('h', over as Partial<RunSummary>))
+  const hold = {
+    kind: 'budget',
+    since: 5,
+    reason: 'The run cap is spent.',
+    budget: { scope: 'run', limitUsd: 2, spentUsd: 2.1, resetsAt: 9 },
+    actions: ['addBudget', 'end']
+  }
+
+  it('keeps a well-formed hold of every optional part', () => {
+    const full = {
+      ...hold,
+      provider: { connection: 'anthropic', error: 'down', lastOkAt: 3 },
+      failed: { agentId: 'a1', roleId: null, name: 'Dev', costUsd: 0.5 },
+      plan: { blockedReason: 'decide', blockedStepIds: ['s1'] }
+    }
+    expect(n({ hold: full }).hold).toEqual(full)
+  })
+
+  it('keeps provider.tries when it is a positive integer and drops only that field otherwise', () => {
+    expect(n({ hold: { ...hold, provider: { connection: 'anthropic', tries: 4 } } }).hold?.provider).toEqual({ connection: 'anthropic', tries: 4 })
+    for (const tries of [0, -1, 1.5, NaN, Infinity, '3', null, {}]) {
+      const h = n({ hold: { ...hold, provider: { connection: 'anthropic', error: 'down', tries } } }).hold
+      expect(h?.provider).toEqual({ connection: 'anthropic', error: 'down' })
+      expect(h?.kind).toBe('budget')
+    }
+  })
+
+  it('deletes providerRetry on boot, whatever the status (it died with the process)', () => {
+    const retry = { attempt: 2, since: 5, nextTryAt: 9, connection: 'anthropic' }
+    expect('providerRetry' in n({ status: 'running', providerRetry: retry })).toBe(false)
+    expect('providerRetry' in n({ status: 'finished', providerRetry: retry })).toBe(false)
+    expect('providerRetry' in n({ status: 'error', providerRetry: 'junk' })).toBe(false)
+  })
+
+  it('drops the whole hold when anything is malformed', () => {
+    const bad: unknown[] = [
+      'x',
+      { ...hold, kind: 'nope' },
+      { ...hold, since: Infinity },
+      { ...hold, reason: 'x'.repeat(501) },
+      { ...hold, actions: ['addBudget', 'format'] },
+      { ...hold, actions: 'end' },
+      { ...hold, budget: { ...hold.budget, scope: 'year' } },
+      { ...hold, budget: { ...hold.budget, limitUsd: NaN } },
+      { ...hold, provider: { error: 5 } },
+      { ...hold, failed: { agentId: 7 } },
+      { ...hold, plan: { blockedStepIds: [1] } }
+    ]
+    for (const h of bad) expect('hold' in n({ hold: h })).toBe(false)
+  })
+
+  it('checks excludedRoleIds and runBudgetUsd', () => {
+    expect(n({ excludedRoleIds: ['r1', 'r2'] }).excludedRoleIds).toEqual(['r1', 'r2'])
+    for (const v of ['r1', ['../x'], [3], Array.from({ length: 201 }, (_, i) => `r${i}`)]) expect('excludedRoleIds' in n({ excludedRoleIds: v })).toBe(false)
+    expect(n({ runBudgetUsd: 1.5 }).runBudgetUsd).toBe(1.5)
+    for (const v of [0, -1, NaN, Infinity, '2']) expect('runBudgetUsd' in n({ runBudgetUsd: v })).toBe(false)
+  })
+})

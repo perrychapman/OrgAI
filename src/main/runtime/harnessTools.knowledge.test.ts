@@ -3,9 +3,9 @@ import type { EngagementNote, KnowledgeEdge, KnowledgeGraph, KnowledgeNode, Know
 import { KNOWLEDGE_COMMON_KINDS, KNOWLEDGE_COMMON_RELATIONS, KNOWLEDGE_RECALL_QUERY_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_SEARCH_LIMIT, KNOWLEDGE_TOOL, QUICK_PROJECT_ID } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { knowledgeFixture } from '@shared/knowledge.fixture'
-import { harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
+import { harnessToolsFor, isBlockingHarnessTool, knowledgeWriteRefusal, type HarnessTool } from './harnessTools'
 import type { KnowledgeCaller, RuntimeContext } from './types'
-import { fakeCtx, project, runSummary } from './testHelpers'
+import { fakeCtx, orgChart, project, runSummary } from './testHelpers'
 
 const byName = (tools: HarnessTool[], name: string): HarnessTool => {
   const t = tools.find((x) => x.name === name)
@@ -239,6 +239,79 @@ describe('engagement_knowledge: get', () => {
     expect(text).toContain('facts: none')
     expect(text).toContain('relations: none')
     expect(text).not.toContain('context notes')
+  })
+})
+
+describe('engagement_knowledge: Role.knowledgeWrite (UI overhaul)', () => {
+  const rolesWith = (flag: Record<string, boolean | undefined>) => orgChart().map((r) => (r.id in flag ? { ...r, ...(flag[r.id] === undefined ? {} : { knowledgeWrite: flag[r.id] }) } : r))
+  const ctxFor = (roles: ReturnType<typeof orgChart>, kg: ReturnType<typeof fakeKnowledge>, kind: 'engagement' | 'code' = 'engagement') =>
+    fakeCtx({ project: project({ kind, roles }), run: runSummary({ kind: 'work' }), knowledge: kg.api })
+  const writes = [
+    { action: 'upsert_node', kind: 'person', name: 'Alice', facts: ['Owns invoices'] },
+    { action: 'link', from: 'kn_1', to: 'kn_2', relation: 'works-at' },
+    { action: 'retire', nodeId: 'kn_1' }
+  ]
+  const seeded = () => fakeKnowledge({ nodes: [node('kn_1', 'person', 'Alice'), node('kn_2', 'organisation', 'Acme')] })
+
+  it('refuses every writing action for a role set to false and writes nothing, reads still work', async () => {
+    const kg = seeded()
+    const t = tool(ctxFor(rolesWith({ 'r-eng': false }), kg))
+    const who = { agentId: 'a1', roleId: 'r-eng' }
+    for (const w of writes) {
+      const text = await t.call(w, who)
+      expect(text).toMatch(/^REFUSED: the Engineer role is set to read the knowledge graph without changing it\. /)
+    }
+    expect(kg.callers).toEqual([])
+    expect(kg.graph.nodes).toHaveLength(2)
+    expect(kg.graph.edges).toEqual([])
+    expect(kg.graph.nodes[0].retired).toBeUndefined()
+    expect(await t.call({ action: 'search', query: 'alice' }, who)).toContain('kn_1 | person | Alice')
+    expect(await t.call({ action: 'get', nodeId: 'kn_1' }, who)).toContain('kn_1 | person | Alice')
+    expect(await t.call({ action: 'vocabulary' }, who)).toContain('person | 1')
+  })
+
+  it('allows the write for a role set to true, a role without the field and other roles', async () => {
+    for (const flag of [true, undefined]) {
+      const kg = seeded()
+      const t = tool(ctxFor(rolesWith({ 'r-eng': flag }), kg))
+      expect(await t.call(writes[0], { agentId: 'a1', roleId: 'r-eng' })).toBe('Merged into existing entity (kn_1): 1 fact added.')
+      expect(kg.callers).toEqual([{ agentId: 'a1', roleId: 'r-eng' }])
+    }
+    const kg = seeded()
+    const t = tool(ctxFor(rolesWith({ 'r-eng': false }), kg))
+    expect(await t.call(writes[1], { agentId: 'a2', roleId: 'r-rev' })).toMatch(/^Linked kn_1 works-at kn_2 /)
+  })
+
+  it('applies to the root when the caller names no role', async () => {
+    const kg = seeded()
+    const t = tool(ctxFor(rolesWith({ 'r-lead': false }), kg))
+    expect(await t.call(writes[0])).toMatch(/^REFUSED: the Lead role /)
+    expect(await t.call(writes[0], { agentId: 'root' })).toMatch(/^REFUSED: the Lead role /)
+    expect(kg.callers).toEqual([])
+    // A subagent whose role cannot be resolved is not guessed to be the root, but fails closed while any role is read only (M6).
+    expect(await t.call(writes[0], { agentId: 'a9' })).toMatch(/^REFUSED: this caller's role could not be identified/)
+    expect(kg.callers).toEqual([])
+  })
+
+  it('lets an unresolved caller write when no role of the project is read only (M6)', async () => {
+    const kg = seeded()
+    const t = tool(ctxFor(rolesWith({}), kg))
+    expect(await t.call(writes[0], { agentId: 'a9' })).toBe('Merged into existing entity (kn_1): 1 fact added.')
+  })
+
+  it('refuses an unresolved caller on an engagement when any role is read only, and not on a code project (M6)', () => {
+    const roles = rolesWith({ 'r-rev': false })
+    const engagement = { project: project({ kind: 'engagement', roles }), roles }
+    expect(knowledgeWriteRefusal(engagement, { agentId: 'a9' })).toMatch(/^REFUSED/)
+    expect(knowledgeWriteRefusal(engagement, { agentId: 'a9', roleId: 'r-gone' })).toMatch(/^REFUSED/)
+    expect(knowledgeWriteRefusal({ project: project({ roles }), roles }, { agentId: 'a9' })).toBeNull()
+  })
+
+  it('does not touch code projects', () => {
+    const roles = rolesWith({ 'r-eng': false })
+    expect(knowledgeWriteRefusal({ project: project({ kind: 'code', roles }), roles }, { agentId: 'a1', roleId: 'r-eng' })).toBeNull()
+    expect(knowledgeWriteRefusal({ project: project({ roles }), roles }, { agentId: 'a1', roleId: 'r-eng' })).toBeNull()
+    expect(knowledgeWriteRefusal({ project: project({ kind: 'engagement', roles }), roles }, { agentId: 'a1', roleId: 'r-eng' })).toMatch(/^REFUSED/)
   })
 })
 

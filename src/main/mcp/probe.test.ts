@@ -11,6 +11,7 @@ import {
   reachabilityMessage,
   redact,
   testServer,
+  toolAnnotationFlags,
   usesWindowsShell
 } from './probe'
 
@@ -138,6 +139,46 @@ describe('testServer (http)', () => {
     const list = seen.find((s) => s.method === 'tools/list')!
     expect(list.headers['Mcp-Session-Id']).toBe('sess-1')
     expect(list.headers.Authorization).toBe('Bearer tok-123')
+  })
+
+  it('maps tool annotations: boolean hints become readOnly / destructive, anything else stays absent', async () => {
+    const tools = [
+      { name: 'read_it', annotations: { readOnlyHint: true, destructiveHint: false } },
+      { name: 'wipe_it', description: 'Deletes', annotations: { readOnlyHint: false, destructiveHint: true } },
+      { name: 'odd', annotations: { readOnlyHint: 'yes', destructiveHint: 1 } },
+      { name: 'only_destructive', annotations: { destructiveHint: true, title: 'x' } },
+      { name: 'null_annotations', annotations: null },
+      { name: 'array_annotations', annotations: [true] },
+      { name: 'bare' }
+    ]
+    const fake = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body))
+      if (body.method === 'initialize') return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18' } }), { headers: { 'content-type': 'application/json' } })
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { tools } }), { headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    const r = await testServer(http(), 5000, fake)
+    expect(r.ok).toBe(true)
+    expect(r.toolDetails).toEqual([
+      { name: 'read_it', readOnly: true, destructive: false },
+      { name: 'wipe_it', description: 'Deletes', readOnly: false, destructive: true },
+      { name: 'odd' },
+      { name: 'only_destructive', destructive: true },
+      { name: 'null_annotations' },
+      { name: 'array_annotations' },
+      { name: 'bare' }
+    ])
+    // structured-clone safe, and the tool names are unchanged
+    expect(structuredClone(r.toolDetails)).toEqual(r.toolDetails)
+    expect(r.tools).toEqual(tools.map((t) => t.name))
+  })
+
+  it('toolAnnotationFlags is pure and tolerant', () => {
+    expect(toolAnnotationFlags(undefined)).toEqual({})
+    expect(toolAnnotationFlags('x')).toEqual({})
+    expect(toolAnnotationFlags({})).toEqual({})
+    expect(toolAnnotationFlags({ readOnlyHint: false })).toEqual({ readOnly: false })
+    expect(toolAnnotationFlags({ readOnlyHint: true, destructiveHint: true })).toEqual({ readOnly: true, destructive: true })
   })
 
   it('reports HTTP errors without the secret', async () => {

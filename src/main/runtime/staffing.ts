@@ -768,3 +768,124 @@ export function staffingLabel(resolved: ResolvedStaffing): string {
   }
   return `${head} (${why})`
 }
+
+// ---------- Ask before a stronger model (Project.askBeforeStrongerModel) ----------
+
+/** The two answers of the question an adapter asks before a stronger spawn. Labels are the contract with the card. */
+export const STRONGER_MODEL_USE = 'Use it'
+export const STRONGER_MODEL_KEEP = "Keep the role's model"
+
+/** The question text; `roleName` is the role's display name. */
+export function strongerModelQuestion(roleName: string): string {
+  return `Use a stronger model for ${roleName}? It may cost more.`
+}
+
+export interface StrongerModelCheck {
+  /** True when the spawn must wait for the user's answer. */
+  ask: boolean
+  /** Set with `ask`: the tier "keep" spawns on (never above the resolved tier). The adapter re-decides with it as the call's tier. */
+  keepTier?: ModelTier
+  /** Set with `ask`: the tier the staffing would use. */
+  to?: ModelTier
+}
+
+/**
+ * Should a spawn wait for the user before running on a stronger model? Pure; adapters call it with the StaffingBook's
+ * decision and apply the result. Never asks when the project does not set `askBeforeStrongerModel`, for a fixed result
+ * (the role runs as configured), for the plan guard (it only lowers) or when no tier is known. It asks when the
+ * resolved tier is above the role's own tier (roleModelTier; for an 'inherit' role its tier, else `parentTier`), and
+ * for a retry escalation whose note says the tier was raised (the note is the resolver's own generated text); "keep" is
+ * then the lower of the role's own tier and the tier the retry came from. Raising only the effort never asks (the
+ * setting is about models). Note: resolveStaffing never goes above a role's own tier, so the first case is a guard
+ * today and the second covers the escalation that has no request.
+ */
+export function strongerModelCheck(input: {
+  role: Pick<Role, 'model' | 'tier'>
+  project: Pick<Project, 'askBeforeStrongerModel'>
+  parentTier?: ModelTier
+  resolved: Pick<ResolvedStaffing, 'mode' | 'tier' | 'source' | 'note'>
+}): StrongerModelCheck {
+  const { role, project, parentTier, resolved } = input
+  if (project.askBeforeStrongerModel !== true) return { ask: false }
+  if (resolved.mode !== 'auto' || !resolved.tier || resolved.source === 'plan-guard') return { ask: false }
+  const to = resolved.tier
+  const own = roleModelTier(role) ?? (isModelTier(role.tier) ? role.tier : undefined) ?? parentTier
+  let keep: ModelTier | undefined
+  if (own && compareTier(to, own) > 0) keep = own
+  if (resolved.source === 'escalated' && resolved.note) {
+    // joinNotes capitalises the first letter and ends with a period, so compare without case.
+    const note = resolved.note.toLowerCase()
+    for (const from of MODEL_TIERS) {
+      if (compareTier(to, from) > 0 && note.includes(WORDS.note.escalatedTier(from, to).toLowerCase())) {
+        keep = keep && compareTier(keep, from) < 0 ? keep : from
+        break
+      }
+    }
+  }
+  return keep ? { ask: true, keepTier: keep, to } : { ask: false }
+}
+
+/** The user's answer to the stronger-model question: 'use' only for exactly the "Use it" label, anything else (empty, free text, run ended) keeps. */
+export function strongerModelChoice(answer: { selected?: readonly string[] } | undefined): 'use' | 'keep' {
+  return answer?.selected?.length === 1 && answer.selected[0] === STRONGER_MODEL_USE ? 'use' : 'keep'
+}
+
+/** The question the adapters raise through ctx.requestQuestion (they add the root's agentId). */
+export interface StrongerModelCard {
+  question: string
+  options: { label: string }[]
+  allowMultiple: false
+  allowFreeText: false
+}
+
+export function strongerModelCard(roleName: string): StrongerModelCard {
+  return {
+    question: strongerModelQuestion(roleName),
+    options: [{ label: STRONGER_MODEL_USE }, { label: STRONGER_MODEL_KEEP }],
+    allowMultiple: false,
+    allowFreeText: false
+  }
+}
+
+/**
+ * Decide a spawn's staffing and, with `askBeforeStrongerModel` set, hold a stronger-model result for the user's answer.
+ * Adapters pass their StaffingBook calls as callbacks: `decide(keepTier?)` is book.decide with `keepTier` as the call's tier
+ * (the on-call values otherwise unchanged) and `cancel` is book.cancel for the same key. No callback means no question
+ * can be asked (`ask` absent): the role's own tier is kept and a run line says why, never a wider spend. A question that
+ * fails or is answered with anything but "Use it" (an ended run answers empty) keeps too. Settings off, or a result that
+ * is not stronger: exactly one `decide()` and no question.
+ */
+export async function decideWithStrongerGate<D extends { resolved: ResolvedStaffing }>(opts: {
+  role: Pick<Role, 'name' | 'model' | 'tier'>
+  project: Pick<Project, 'askBeforeStrongerModel'>
+  parentTier?: ModelTier
+  decide(keepTier?: ModelTier): D
+  cancel(): void
+  ask?: (card: StrongerModelCard) => Promise<{ selected?: readonly string[] }>
+  log(level: 'info' | 'warn', text: string): void
+}): Promise<D> {
+  const first = opts.decide()
+  const check = strongerModelCheck({ role: opts.role, project: opts.project, parentTier: opts.parentTier, resolved: first.resolved })
+  if (!check.ask) return first
+  let choice: 'use' | 'keep' = 'keep'
+  let asked = false
+  if (opts.ask) {
+    try {
+      choice = strongerModelChoice(await opts.ask(strongerModelCard(opts.role.name)))
+      asked = true
+    } catch {
+      choice = 'keep'
+    }
+  }
+  if (choice === 'use') return first
+  opts.log('info', strongerModelKeptLine(opts.role.name, check.keepTier ?? first.resolved.tier ?? 'everyday', asked ? 'kept' : 'unavailable'))
+  opts.cancel()
+  return opts.decide(check.keepTier)
+}
+
+/** The run line when a stronger model is not used: the question could not be asked, or the answer was "keep". */
+export function strongerModelKeptLine(roleName: string, keepTier: ModelTier, reason: 'unavailable' | 'kept'): string {
+  return reason === 'unavailable'
+    ? `Kept ${roleName} on the ${keepTier} tier: a stronger model needs the user's approval and a question could not be asked.`
+    : `Kept ${roleName} on the ${keepTier} tier: the stronger model was not approved.`
+}

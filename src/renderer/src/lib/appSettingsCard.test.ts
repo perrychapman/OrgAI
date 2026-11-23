@@ -42,8 +42,8 @@ describe('grouping', () => {
   it('groups rows by pane in first-seen order, with a plain group for fields no screen shows', () => {
     const groups = groupAppSettingChanges([ch('appearance.theme', 'dark', 'light'), ch('appearance.canvas.pattern', 'dots', 'grid'), ch('appearance.accent', '#111111', '#222222'), ch('defaultKeepRuns', 10, 20)])
     expect(groups.map((g) => g.path)).toEqual([
-      'App settings › General › Appearance',
-      'App settings › General › Canvas',
+      'Settings › App › Appearance',
+      'Settings › App › Appearance › Canvas',
       'App settings › General › New projects (not shown on a screen yet)'
     ])
     expect(groups[0].changes).toHaveLength(2)

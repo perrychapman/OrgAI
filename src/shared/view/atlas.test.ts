@@ -135,7 +135,7 @@ describe('atlas surfaces', () => {
   })
 
   it('builds paths and checks ids', () => {
-    expect(atlasPath('app-settings-general-appearance')).toBe('App settings › General › Appearance')
+    expect(atlasPath('app-settings-general-appearance')).toBe('Settings › App › Appearance')
     expect(isAtlasSurfaceId('chat-start')).toBe(true)
     expect(isAtlasSurfaceId('')).toBe(false)
     expect(isAtlasSurfaceId('nope')).toBe(false)

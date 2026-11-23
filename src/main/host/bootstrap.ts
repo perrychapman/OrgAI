@@ -80,6 +80,21 @@ import type { DesktopHooks, HostControl, HostServices } from './types'
 /** How long after a proxy run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
 export const LITELLM_SPEND_DELAY_MS = 15_000
 
+/**
+ * The finished-copies retention sweep (Project.keepFailedBranchesDays) at boot. It removes worktrees, so only the
+ * desktop host, which owns the repository, runs it; a failure is logged and never blocks startup. Returns the
+ * promise (always resolved) so a test can await it.
+ */
+export function startFinishedCopiesSweep(hostKind: HostKind, maintenance: Pick<MaintenanceService, 'sweepFinishedCopies'>, log: (m: string) => void): Promise<void> {
+  if (hostKind !== 'desktop') return Promise.resolve()
+  return Promise.resolve()
+    .then(() => maintenance.sweepFinishedCopies())
+    .then((removed) => {
+      if (removed.length) log(`Finished-copies sweep removed ${removed.length} copy(ies).`)
+    })
+    .catch((e: unknown) => log(`Finished-copies sweep failed: ${e instanceof Error ? e.message : String(e)}`))
+}
+
 /** What a housekeeping step sees. */
 export interface HousekeepingContext {
   dataDir: string
@@ -818,7 +833,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     mock: mockAdapter
   })
   capabilities = caps
-  const maintenance = new MaintenanceService(projects, teamFiles)
+  const maintenance = new MaintenanceService(projects, teamFiles, {
+    runs: runStore,
+    hasLiveRun: (projectId) => rm.liveRuns().some((s) => s.projectId === projectId),
+    log: (m) => log.info(m)
+  })
   const importer = new AgentImportService({
     projects,
     modelContext: (id) => connections.importModelContext(id),
@@ -867,6 +886,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   dropped += steps.sweepScratchDirs(ctx)
   steps.sweepStaleSkillDirs(ctx)
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+  void startFinishedCopiesSweep(hostKind, maintenance, (m) => log.info(m))
 
   // Wave 7 (cli-standalone.md 4.3): the one shutdown sequence. The activity tracker drains and settles the writers; the
   // coordinator closes the socket, releases ownership (never before the writers are done), ends the process through

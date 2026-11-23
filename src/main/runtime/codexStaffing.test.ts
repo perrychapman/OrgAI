@@ -321,6 +321,104 @@ describe('Codex run staffing', () => {
   })
 })
 
+// Project.askBeforeStrongerModel on Codex: spawn_report is an async tool call, so the question is raised through
+// ctx.requestQuestion before the thread exists. The only staffing result above where a role's work has been is a retry
+// escalation (resolveStaffing never goes above the role's own tier), so each case fails a first report on fast/high
+// (high is the role's effort ceiling, so the retry has to raise the tier).
+describe('Codex askBeforeStrongerModel', () => {
+  let dir = ''
+  let session: RuntimeSession | undefined
+  beforeEach(() => {
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-stronger-')))
+  })
+  afterEach(async () => {
+    await session?.stop()
+    session = undefined
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+  })
+
+  async function startOn(ask: boolean | undefined, answer: string[]) {
+    const servers: FakeServer[] = []
+    const roles = chart()
+    // thread/start requests seen when the question was raised (root + the failed first report = 2).
+    const threadsAtAsk: number[] = []
+    const requestQuestion = vi.fn(async (_req: unknown) => {
+      threadsAtAsk.push(servers.at(-1)!.of('thread/start').length)
+      return { selected: answer }
+    })
+    const ctx = fakeCtx({
+      project: project({ path: dir, roles, isolateWriters: false, ...(ask === undefined ? {} : { askBeforeStrongerModel: ask }) }),
+      roles,
+      connection: CONNECTION,
+      autoContinue: false,
+      requestQuestion
+    })
+    session = await new CodexAdapter({ createServer: (o) => (servers.push(new FakeServer(o)), servers.at(-1)!) }).start(ctx)
+    const s = servers.at(-1)!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    // A first report on fast / high fails; the next spawn of the step is an escalation.
+    await s.ask('item/tool/call', call('th-1', 'cp', 'set_plan', { goal: 'Ship', steps: [{ title: 'Build', staff: { role: 'engineer', tier: 'fast', effort: 'high' } }] }))
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { brief: 'Do it', role: 'engineer' }))
+    s.push('item/completed', agentMessage('th-2', 'm1', 'Could not finish'))
+    s.push('turn/completed', turnFailed('th-2', 'tu-2'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1' && e.agent.state === 'error')).toBe(true))
+    return { ctx, s, requestQuestion, threadsAtAsk }
+  }
+  const retry = (s: FakeServer) => s.ask('item/tool/call', call('th-1', 'c2', 'spawn_report', { brief: 'Do it again', role: 'engineer' }))
+
+  it('off (unset): the escalated retry spawns on the stronger tier with no question', async () => {
+    const { ctx, s, requestQuestion } = await startOn(undefined, [])
+    expect((await retry(s)).success).toBe(true)
+    expect(requestQuestion).not.toHaveBeenCalled()
+    expect(ctx.getStaffing()!.assignments[1]).toMatchObject({ source: 'escalated', tier: 'everyday' })
+    // everyday is the role's own tier, so the thread runs on the role's model (no override), not the fast one.
+    expect(s.of('thread/start')[2]!.params.model).not.toBe('gpt-fast')
+  })
+
+  it('on, "Use it": asks first, then spawns on the stronger tier', async () => {
+    const { ctx, s, requestQuestion, threadsAtAsk } = await startOn(true, ['Use it'])
+    expect((await retry(s)).success).toBe(true)
+    expect(requestQuestion).toHaveBeenCalledTimes(1)
+    // Asked before the new thread existed, and the thread started afterwards.
+    expect(threadsAtAsk).toEqual([2])
+    expect(s.of('thread/start')).toHaveLength(3)
+    expect(requestQuestion.mock.calls[0]![0]).toMatchObject({
+      agentId: 'root',
+      question: 'Use a stronger model for Engineer? It may cost more.',
+      options: [{ label: 'Use it' }, { label: "Keep the role's model" }]
+    })
+    expect(ctx.getStaffing()!.assignments[1]).toMatchObject({ source: 'escalated', tier: 'everyday' })
+    expect(s.of('thread/start')[2]!.params.model).not.toBe('gpt-fast')
+  })
+
+  it('on, "Keep the role\'s model": spawns on the tier the failed attempt ran on and says so in the log', async () => {
+    const { ctx, s, requestQuestion } = await startOn(true, ["Keep the role's model"])
+    expect((await retry(s)).success).toBe(true)
+    expect(requestQuestion).toHaveBeenCalledTimes(1)
+    expect(ctx.getStaffing()!.assignments[1]!.tier).toBe('fast')
+    expect(s.of('thread/start')[2]!.params.model).toBe('gpt-fast')
+    expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('stronger model was not approved'))).toBe(true)
+  })
+
+  it('on, an empty answer (the run ended) keeps', async () => {
+    const { ctx, s } = await startOn(true, [])
+    expect((await retry(s)).success).toBe(true)
+    expect(ctx.getStaffing()!.assignments[1]!.tier).toBe('fast')
+  })
+
+  it('on, but a spawn that is not above the role (the first attempt) never asks', async () => {
+    const servers: FakeServer[] = []
+    const roles = chart()
+    const requestQuestion = vi.fn(async () => ({ selected: ['Use it'] }))
+    const ctx = fakeCtx({ project: project({ path: dir, roles, isolateWriters: false, askBeforeStrongerModel: true }), roles, connection: CONNECTION, autoContinue: false, requestQuestion })
+    session = await new CodexAdapter({ createServer: (o) => (servers.push(new FakeServer(o)), servers.at(-1)!) }).start(ctx)
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    expect((await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { brief: 'Do it', role: 'engineer', tier: 'fast' }))).success).toBe(true)
+    expect(requestQuestion).not.toHaveBeenCalled()
+  })
+})
+
 describe('codexRootTier', () => {
   it('reads the chart tier until the root switches models, then the tier the new model maps to', async () => {
     const { codexRootTier } = await import('./codex')

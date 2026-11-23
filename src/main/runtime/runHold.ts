@@ -100,13 +100,19 @@ export function usageLimitHold(input: { since: number; facts: HoldFacts }): RunH
 }
 
 /** The run ended in an error from the provider or the connection. Never the provider's own text. */
-export function providerHold(input: { connection?: ConnectionId; auth: boolean; lastOkAt?: number; since: number; facts: HoldFacts }): RunHold {
+export function providerHold(input: { connection?: ConnectionId; auth: boolean; lastOkAt?: number; tries?: number; since: number; facts: HoldFacts }): RunHold {
   const error = input.auth ? 'The provider did not accept the sign-in for this connection.' : 'The provider could not be reached or answered with an error.'
   return {
     kind: 'provider',
     since: input.since,
     reason: input.auth ? `${error} Sign in again, then retry.` : `${error} Retry, or choose another model.`,
-    provider: { ...(input.connection ? { connection: input.connection } : {}), error, ...(input.lastOkAt !== undefined ? { lastOkAt: input.lastOkAt } : {}) },
+    provider: {
+      ...(input.connection ? { connection: input.connection } : {}),
+      error,
+      ...(input.lastOkAt !== undefined ? { lastOkAt: input.lastOkAt } : {}),
+      // How many times the provider SDK retried before giving up (provider.retry); absent when none was reported.
+      ...(input.tries !== undefined && Number.isInteger(input.tries) && input.tries > 0 ? { tries: input.tries } : {})
+    },
     actions: holdActionsFor('provider', input.facts)
   }
 }
