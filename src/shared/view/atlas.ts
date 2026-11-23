@@ -1402,7 +1402,17 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
   // PLACEHOLDER (Schedules contract): the renderer engineer points this at the Schedules surface. Never proposable.
   schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'schedules', control: 'user' },
   // The person's own name for the Dashboard greeting. Never proposable and never sent to a model.
-  displayName: { summary: 'Your own name, shown only in the Dashboard greeting. Optional, up to 40 characters, kept on this computer and never sent to a model.', surface: 'dashboard', control: 'user' }
+  displayName: { summary: 'Your own name, shown only in the Dashboard greeting. Optional, up to 40 characters, kept on this computer and never sent to a model.', surface: 'dashboard', control: 'user' },
+  // UI overhaul (docs/design/ui-overhaul/impl-runtime.md). Surfaces move to the new settings pages when the renderer lands them.
+  playSound: { summary: 'Play a sound when something needs you. Off unless turned on.', surface: 'none', control: 'user' },
+  spendWarnPercent: { summary: 'Warn in the run (and the Inbox) when spending reaches this percent of a limit, for example 80. Off unless set.', surface: 'none', control: 'user' },
+  openAtLogin: { summary: 'Start OrgAI when you sign in to this computer. Off unless turned on.', surface: 'none', control: 'user' },
+  closeBehavior: { summary: 'What closing the last window does: quit (the default) or keep running in the background while runs or schedules are live.', surface: 'none', control: 'user' },
+  keepAwakeDuringRuns: { summary: 'Keep the computer from sleeping while a run is live. Off unless turned on.', surface: 'none', control: 'user' },
+  notifyNeedsMe: { summary: 'Notify when a run needs you (under the main notifications switch). On unless turned off.', surface: 'none', control: 'user' },
+  notifyRunFinished: { summary: 'Notify when a run finishes (under the main notifications switch). On unless turned off.', surface: 'none', control: 'user' },
+  notifyScheduleFindings: { summary: 'Notify when a scheduled run finds something (under the main notifications switch). On unless turned off.', surface: 'none', control: 'user' },
+  dateFormat: { summary: 'How dates are written in the app.', surface: 'none', control: 'user' }
 }
 
 export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDoc>> = {
@@ -1536,6 +1546,16 @@ export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDo
     control: 'user'
   },
   roles: { summary: 'The org chart\'s roles.', surface: 'project-team', control: 'user' },
+  // UI overhaul (docs/design/ui-overhaul/impl-runtime.md). Surfaces move to the new settings pages when the renderer lands them.
+  maxDailyUsd: { summary: 'Most this project may spend in a day across all its runs and schedules. No cap unless set.', surface: 'none', control: 'user' },
+  maxMonthlyUsd: { summary: 'Most this project may spend in a calendar month across all its runs and schedules. No cap unless set.', surface: 'none', control: 'user' },
+  onSpendLimit: { summary: 'What a run does when the daily or monthly cap is reached: pause until the period resets (the default) or stop.', surface: 'none', control: 'user' },
+  maxAgentsPerRun: { summary: 'Most agents one run may start in total. No cap unless set.', surface: 'none', control: 'user' },
+  schedulesNearPlanLimit: { summary: 'Let scheduled runs start while the plan window is near its limit. Off unless turned on.', surface: 'none', control: 'user' },
+  mainBranch: { summary: 'The branch finished work merges into. The detected default branch unless set.', surface: 'none', control: 'user' },
+  requireTestsPass: { summary: 'Run the test command in a finished copy before merging it; a failure stops the merge. Off unless turned on.', surface: 'none', control: 'user' },
+  testCommand: { summary: 'The command that runs the tests for "Require tests to pass".', surface: 'none', control: 'user' },
+  keepFailedBranchesDays: { summary: 'Remove failed or discarded finished copies after this many days. Kept unless set.', surface: 'none', control: 'user' },
   mcpServers: {
     summary: 'The MCP servers and connected services this project\'s roles may use.',
     surface: 'project-team-catalog-connections',

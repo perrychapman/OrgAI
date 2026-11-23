@@ -87,7 +87,13 @@ async function fullFlow(w, h, theme) {
   }
 
   // Dashboard: rows carry the title and never "R?".
-  await page.locator('.sidebar .nav-item', { hasText: /^\s*(Dashboard|Projects)\s*$/ }).or(page.locator('.sidebar [aria-label="Dashboard"]')).first().click()
+  // Home (data-testid nav-home) after the shell overhaul; the old Dashboard / Projects entry before it.
+  await page
+    .locator('[data-testid=nav-home]')
+    .or(page.locator('.sidebar .nav-item', { hasText: /^\s*(Home|Dashboard|Projects)\s*$/ }))
+    .or(page.locator('.sidebar [aria-label="Home"], .sidebar [aria-label="Dashboard"]'))
+    .first()
+    .click()
   await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
   await sleep(500)
   const dash = await page.locator('[data-testid=dashboard]').innerText()

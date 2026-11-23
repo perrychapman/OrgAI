@@ -1,8 +1,9 @@
 import { BookOpen, Plug, TriangleAlert, Wrench } from 'lucide-react'
 import { Icon } from './ui/Icon'
-import type { CSSProperties, ReactElement } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement, SyntheticEvent } from 'react'
 import { memo } from 'react'
-import { Handle, useConnection, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, NodeToolbar, useConnection, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { useRoleNodeActions } from './team/roleNodeActions'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { TOOL_CATALOG, type CanvasLayout, type CanvasNodeStyle, type Role } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
@@ -54,6 +55,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   const geo = stationGeometry(layout)
   const hs = (side: string): { style?: CSSProperties } => (station ? { style: stationHandleStyle(geo, side as `${Position}`) } : {})
   const isRoot = role.reportsTo === null
+  const actions = useRoleNodeActions()
   // The provider shows only when this role is pinned to a connection other than the project's (never on the root).
   const base = useAppStore((s) => {
     const p = selectedProject(s)
@@ -123,6 +125,11 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
           {chip}
         </span>
         {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">Delegates to {delegateCount}</span>}
+        {typeof role.maxConcurrent === 'number' && (
+          <span className="chip" data-testid="role-node-many" title={`At most ${role.maxConcurrent} of this role at once`}>
+            up to {role.maxConcurrent}
+          </span>
+        )}
       </div>}
       {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (
@@ -140,8 +147,62 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         )}
       </div>}
       <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
+      {team && actions && (
+        <NodeToolbar isVisible={selected} position={'top' as Position} offset={8} align="start" className="role-node-toolbar" data-testid="role-node-toolbar">
+          {/* The toolbar is portalled, but React still bubbles its events to the node wrapper (select, menu, keys):
+              stop them here so an action never re-selects the node it came from (review H1). */}
+          <div
+            role="toolbar"
+            aria-label={`Actions for ${role.name}`}
+            className="role-node-toolbar-row"
+            onKeyDown={onToolbarKey}
+            onClick={stop}
+            onDoubleClick={stop}
+            onContextMenu={stop}
+            onPointerDown={stop}
+            onMouseDown={stop}
+          >
+            <button type="button" data-testid="role-node-add-report" onClick={() => actions.addReport(id)}>
+              Add a report
+            </button>
+            {!isRoot && (
+              <>
+                <button type="button" data-testid="role-node-duplicate" onClick={() => actions.duplicate(id)}>
+                  Duplicate
+                </button>
+                <button type="button" data-testid="role-node-move" onClick={() => actions.move(id)}>
+                  Move
+                </button>
+                <button type="button" className="is-danger" data-testid="role-node-remove" onClick={() => actions.remove(id)}>
+                  Remove
+                </button>
+              </>
+            )}
+          </div>
+        </NodeToolbar>
+      )}
     </div>
   )
+}
+
+/** Left / Right, Home and End move between the toolbar's buttons (one toolbar, every button still a Tab stop). */
+function stop(e: SyntheticEvent): void {
+  e.stopPropagation()
+}
+
+function onToolbarKey(e: KeyboardEvent<HTMLDivElement>): void {
+  // Enter, Space, Escape, Delete and the menu keys belong to the button, not to the node behind the portal.
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+    e.stopPropagation()
+    return
+  }
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button'))
+  const at = items.indexOf(document.activeElement as HTMLButtonElement)
+  if (items.length === 0) return
+  e.preventDefault()
+  e.stopPropagation()
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowRight' ? (at + 1) % items.length : (at - 1 + items.length) % items.length
+  items[next]?.focus()
 }
 
 export const RoleNode = memo(RoleNodeView)

@@ -156,7 +156,7 @@
 .home-square {
   width: 12px;
   height: 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 .home-row-line {
@@ -216,7 +216,7 @@
   flex: none;
   width: 7px;
   height: 7px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--border-strong);
 }
 .home-repo-mark[data-mark='accent'] {
@@ -343,7 +343,7 @@
 .home-mark {
   width: 10px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--border-strong);
   --pulse-color: var(--working);
 }

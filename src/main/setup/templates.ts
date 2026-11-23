@@ -174,6 +174,15 @@ export class TemplateService {
     }
   }
 
+  /**
+   * UI overhaul (templates:duplicate): copy a template (a built-in included) as a new saved one named "<name> copy".
+   * CONTRACT STUB: implemented by a Runtime Engineer.
+   */
+  duplicate(templateId: string): OrgTemplateInfo {
+    void templateId
+    throw new Error('Duplicating a template is not available yet.')
+  }
+
   /** Save a stored project's chart as a new template. Refuses at ORG_TEMPLATES_MAX and for an empty chart. */
   saveFromProject(input: OrgTemplateSaveInput): OrgTemplateInfo {
     const name = cleanTemplateName(input?.name)

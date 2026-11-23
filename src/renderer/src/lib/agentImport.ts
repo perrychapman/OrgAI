@@ -1,5 +1,6 @@
-import type { AgentImportAction, AgentImportChoice, AgentImportMode, AgentImportItem, AgentImportPreview, AgentImportSource, ProjectPathCheck, Role } from '@shared/types'
+import type { AgentImportAction, AgentImportChoice, AgentImportMode, AgentImportItem, AgentImportPreview, AgentImportSource, ModelTier, ProjectPathCheck, Role } from '@shared/types'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
+import { PLAIN_TIER_ORDER, PLAIN_TIER_WORD } from './tierWords'
 
 /** What a new project does with the agent files found in its folder. */
 export type SetupChoice = 'import' | 'architect' | 'default' | 'template' | 'team'
@@ -112,8 +113,117 @@ export function importCount(preview: Pick<AgentImportPreview, 'items'> | null | 
 }
 
 export function importButtonLabel(count: number, mode: AgentImportMode = 'merge'): string {
+  if (count <= 0) return 'Select at least one'
   const roles = `${count} role${count === 1 ? '' : 's'}`
-  return mode === 'replace' ? `Replace team with ${roles}` : `Import ${roles}`
+  return mode === 'replace' ? `Replace team with ${roles}` : `Add ${roles} to the team`
+}
+
+/** "Found 6 agents. 4 selected." (the list header; every number comes from the preview). */
+export function foundSelectedLine(found: number, selected: number): string {
+  return `Found ${found} agent${found === 1 ? '' : 's'}. ${selected} selected.`
+}
+
+/** The quiet line under a role whose file asks for tools OrgAI has no equivalent for. */
+export function toolsDroppedLine(names: string[]): string {
+  return `Its file asks for a tool OrgAI does not have (${names.join(', ')}). It will work without it.`
+}
+
+/** "The team goes from 12 to 15 roles." */
+export function teamSizeLine(before: number, after: number): string {
+  return before === after ? `The team stays at ${after} role${after === 1 ? '' : 's'}.` : `The team goes from ${before} to ${after} roles.`
+}
+
+/**
+ * The Level choices of an imported role: "inherit", one entry per tier named in plain words with the exact model id the
+ * connection maps it to, then the connection's catalog. The value is always what AgentImportChoice.model accepts.
+ */
+export function levelOptions(
+  tierModels: Partial<Record<ModelTier, string>>,
+  catalog: { id: string }[] | undefined
+): { value: string; label: string }[] {
+  const seen = new Set<string>(['inherit'])
+  const out: { value: string; label: string }[] = [{ value: 'inherit', label: 'Inherit from parent' }]
+  for (const tier of PLAIN_TIER_ORDER) {
+    const id = tierModels[tier] ?? tier
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({ value: id, label: id === tier ? PLAIN_TIER_WORD[tier] : `${PLAIN_TIER_WORD[tier]} · ${id}` })
+  }
+  for (const m of catalog ?? []) {
+    if (seen.has(m.id)) continue
+    seen.add(m.id)
+    out.push({ value: m.id, label: m.id })
+  }
+  return out
+}
+
+/**
+ * Where agents can come from. Today only the project's own folder is scanned and a kit goes through the kit dialog. The
+ * other two need main (a folder picker and a read of another stored project); they stay off until `AgentImportInput`
+ * carries them, and this is the one place to turn them on.
+ */
+export interface ImportSourceSupport {
+  otherProject: boolean
+  chooseFolder: boolean
+  /** Shown as the title of a control that is off. */
+  unavailable: string
+}
+
+export function importSourceSupport(): ImportSourceSupport {
+  // Main supports both since the runtime contract of 2026-11-22 (importSources.pickAgentFolder, sourcePath, fromProjectId).
+  const on = typeof window !== 'undefined' && typeof window.orgai?.importSources?.pickAgentFolder === 'function'
+  return { otherProject: on, chooseFolder: on, unavailable: 'Not available in this build' }
+}
+
+export interface ImportGroupRole {
+  id: string
+  name: string
+  /** 'new' is added by the import, 'replaces' takes the place of an existing role, 'existing' stays as it is. */
+  state: 'existing' | 'new' | 'replaces'
+}
+
+export interface ImportGroup {
+  id: string
+  name: string
+  color: string
+  roles: ImportGroupRole[]
+  /** Roles in the group that the import adds or replaces. */
+  changed: number
+}
+
+/**
+ * The "What will change" cards from the previewed chart: one card per lead role that has reports (its whole subtree), plus
+ * one for the top role with the leads that have none. Everything is read from the preview, never invented.
+ */
+export function importGroups(preview: Pick<AgentImportPreview, 'roles' | 'items'>): ImportGroup[] {
+  const roles = preview.roles
+  const byAction = new Map<string, AgentImportAction>()
+  for (const i of preview.items) if (i.roleId && i.action !== 'skip') byAction.set(i.roleId, i.action)
+  const children = new Map<string, Role[]>()
+  const roots: Role[] = []
+  for (const r of roles) {
+    if (r.reportsTo && roles.some((p) => p.id === r.reportsTo)) children.set(r.reportsTo, [...(children.get(r.reportsTo) ?? []), r])
+    else roots.push(r)
+  }
+  const entry = (r: Role): ImportGroupRole => {
+    const action = byAction.get(r.id)
+    return { id: r.id, name: r.name, state: action === 'replace' ? 'replaces' : action ? 'new' : 'existing' }
+  }
+  const subtree = (r: Role, seen = new Set<string>()): Role[] => {
+    if (seen.has(r.id)) return []
+    seen.add(r.id)
+    return [r, ...(children.get(r.id) ?? []).flatMap((c) => subtree(c, seen))]
+  }
+  const make = (id: string, name: string, color: string, members: Role[]): ImportGroup => {
+    const list = members.map(entry)
+    return { id, name, color, roles: list, changed: list.filter((e) => e.state !== 'existing').length }
+  }
+  const [top, ...otherRoots] = roots
+  if (!top) return []
+  const leads = [...(children.get(top.id) ?? []), ...otherRoots]
+  const leaves = leads.filter((l) => subtree(l).length === 1)
+  const trees = leads.filter((l) => subtree(l).length > 1)
+  return [make(top.id, top.name, top.color, [top, ...leaves]), ...trees.map((l) => make(l.id, l.name, l.color, subtree(l)))]
 }
 
 /** One line on what the chosen mode does to the chart, with counts. */

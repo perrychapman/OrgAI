@@ -17,7 +17,12 @@ import {
   serverGranted,
   skillRoleIds,
   toggleSkillRoleIds,
-  withoutRoleServer
+  withoutRoleServer,
+  cannotEditFiles,
+  roleGroupName,
+  roleSubline,
+  roleUseChips,
+  roleWorkPlaces
 } from './roleCapabilities'
 
 const role = { slug: 'reviewer', tools: ['Read', 'Grep'], mcpServers: undefined as string[] | undefined, skills: ['s1'] }
@@ -133,5 +138,48 @@ describe('role editor helpers', () => {
   })
   it('splits skills', () => {
     expect(roleSkillSplit([{ id: 's1' }, { id: 's2' }], role)).toEqual({ granted: [{ id: 's1' }], available: [{ id: 's2' }] })
+  })
+})
+
+describe('panel header and chips', () => {
+  const roles = [
+    { id: 'o', name: 'Orchestrator', reportsTo: null },
+    { id: 'q', name: 'Lead reviewer', reportsTo: 'o' },
+    { id: 'r', name: 'Reviewer', reportsTo: 'q' },
+    { id: 's', name: 'Security check', reportsTo: 'r' }
+  ]
+  it('names the group by the root report holding the role', () => {
+    expect(roleGroupName(roles, roles[0])).toBe('Leads the team')
+    expect(roleGroupName(roles, roles[1])).toBe('Lead reviewer')
+    expect(roleGroupName(roles, roles[2])).toBe('Lead reviewer')
+    expect(roleGroupName(roles, roles[3])).toBe('Lead reviewer')
+  })
+  it('counts groups: root reports that lead someone', async () => {
+    const { teamGroupCount } = await import('./roleCapabilities')
+    expect(teamGroupCount(roles)).toBe(1)
+    expect(teamGroupCount([...roles, { id: 'x', name: 'Solo', reportsTo: 'o' }])).toBe(1)
+    expect(teamGroupCount([roles[0]])).toBe(0)
+  })
+  it('words the subline', () => {
+    expect(roleSubline(roles, roles[0])).toBe('Leads the team')
+    expect(roleSubline(roles, roles[2])).toBe('Lead reviewer \u00b7 reports to Lead reviewer')
+    expect(roleSubline(roles, { id: 'x', name: 'Lost', reportsTo: 'gone' })).toBe('Lost')
+  })
+  it('knows a role that cannot change files', () => {
+    expect(cannotEditFiles(['Read', 'Bash'])).toBe(true)
+    expect(cannotEditFiles(['Read', 'Edit'])).toBe(false)
+    expect(cannotEditFiles(['Write'])).toBe(false)
+  })
+  it('lists chips and folds a long list into one more chip', () => {
+    const chips = roleUseChips({ toolGroupLabels: ['Read files'], services: ['A', 'B', 'C', 'D', 'E'], skills: ['S'], perKind: 3 })
+    expect(chips.map((c) => c.label)).toEqual(['Read files', 'A', 'B', 'C', '+2 more', 'S'])
+    expect(chips[4].kind).toBe('service')
+  })
+  it('lists the work places, reference folders always read only', () => {
+    expect(roleWorkPlaces({ name: 'Acme', referenceDirectories: ['C:/ref'] }, ['Read'])).toEqual([
+      { name: 'Acme (working folder)', mode: 'Read only' },
+      { name: 'C:/ref', mode: 'Read only' }
+    ])
+    expect(roleWorkPlaces({ name: 'Acme' }, ['Write'])).toEqual([{ name: 'Acme (working folder)', mode: 'Can write' }])
   })
 })

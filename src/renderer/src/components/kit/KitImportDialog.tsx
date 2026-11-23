@@ -25,6 +25,7 @@ import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { ClampText } from '../proposals/ClampText'
+import '../../styles/kit.css'
 
 const ELEVATED_LABEL: Record<KitRoleElevatedTool, string> = {
   Bash: 'Runs commands',

@@ -36,12 +36,33 @@
 .kit-skeleton {
   height: var(--space-16);
 }
+
+/* Glass look shared with the Import agents dialog (UI overhaul). The overhaul tokens have fallbacks to the old ones. */
+.dialog[data-testid='kit-export-dialog'],
+.dialog[data-testid='kit-import-dialog'] {
+  background: var(--glass-strong, var(--surface-2));
+  backdrop-filter: var(--glass-blur, none);
+  border-color: var(--glass-line, var(--border-strong));
+  box-shadow: var(--elev-2);
+}
+.dialog[data-testid='kit-export-dialog'] .dialog-head h2,
+.dialog[data-testid='kit-import-dialog'] .dialog-head h2 {
+  font-family: var(--font-display, inherit);
+}
+.dialog[data-testid='kit-export-dialog'] .dialog-foot,
+.dialog[data-testid='kit-import-dialog'] .dialog-foot {
+  background: transparent;
+  border-top-color: var(--glass-line, var(--border-default));
+}
+
 .kit-group {
   margin: 0;
   padding: var(--space-3) var(--space-4);
   min-width: 0;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  background: var(--glass, var(--surface-1));
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -100,6 +121,18 @@
   container-type: inline-size;
   container-name: kit-preview;
   min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  background: var(--glass, var(--surface-1));
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-lg);
+}
+.kit-preview-wrap:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.kit-preview tbody tr:last-child td {
+  border-bottom: 0;
 }
 .kit-preview {
   width: 100%;
@@ -248,4 +281,14 @@
   .kit-cell-action {
     width: 100%;
   }
+}
+
+/* Groups rise in once when the export dialog opens; nothing moves under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .kit-export .motion-enter {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .kit-export .motion-enter {
+  animation: none;
 }
