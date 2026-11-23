@@ -571,6 +571,9 @@ interface AppState {
   cancelAutoResume(runId: string): Promise<void>
   /** Bumped to ask the live view's composer to take focus (e.g. "Continue" in the Runs tab). */
   composerFocusToken: number
+  /** One-shot Team / Ask mode for the next New run page of a project: read once, then cleared; never persisted. */
+  newRunModeOnce: { projectId: string; mode: 'team' | 'ask' } | null
+  setNewRunModeOnce(v: { projectId: string; mode: 'team' | 'ask' } | null): void
   focusComposer(): void
   interrupt(): Promise<void>
   stopRun(): Promise<void>
@@ -2063,6 +2066,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   composerFocusToken: 0,
+  newRunModeOnce: null,
+  setNewRunModeOnce(v) {
+    set({ newRunModeOnce: v })
+  },
 
   focusComposer() {
     set((s) => ({ composerFocusToken: s.composerFocusToken + 1 }))
