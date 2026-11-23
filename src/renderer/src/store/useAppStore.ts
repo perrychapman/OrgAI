@@ -123,7 +123,7 @@ export interface ImportNotice {
 
 export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'appSettings' | 'usage' | 'schedules'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
+export type SideTab = 'transcript' | 'agents' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
 
 /** A request to open the project's Outputs tab, on one output when it names one (docs/design/outputs.md section 2). */
 export interface OutputsFocusRequest {

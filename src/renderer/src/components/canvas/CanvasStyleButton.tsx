@@ -13,7 +13,7 @@ import '../../styles/canvas-settings.css'
 import { CanvasPresetGroup } from './CanvasPresetGroup'
 import { CanvasPresentationChoices } from './CanvasPresentationChoices'
 
-function StylePanel({ close }: { close: () => void }): ReactElement {
+function StylePanel({ close, withPresentation }: { close: () => void; withPresentation: boolean }): ReactElement {
   const canvas = useCanvasOptions()
   const announce = useFrameAnnounce()
   const root = useRef<HTMLDivElement>(null)
@@ -28,10 +28,10 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
       // Popover moves focus after placement. Redirect only that first entry, never later user navigation.
       if (focused.current) return
       focused.current = true
-      root.current?.querySelector<HTMLInputElement>('[data-testid="canvas-presentation"] input:checked')?.focus()
+      root.current?.querySelector<HTMLInputElement>('[data-testid="canvas-presentation"] input:checked, [data-testid="canvas-scene-palette"] input:checked')?.focus()
     }}>
       <h3 className="canvas-style-popover-heading">Canvas style</h3>
-      <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => {
+      <CanvasPresentationChoices hidePresentation={!withPresentation} canvas={canvas} onPresentation={(presentation) => {
         void saveCanvas((c) => ({ ...c, presentation })).then(() => announce?.(`Canvas presentation: ${presentationLabel(presentation)}.`), () => announce?.('Could not save canvas presentation.'))
       }} onPalette={(scenePalette) => {
         void saveCanvas((c) => ({ ...c, scenePalette })).then(() => announce?.(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`), () => announce?.('Could not save office palette.'))
@@ -58,9 +58,11 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
 
 /**
  * "Canvas style" button for the Live run and Team canvas toolbars: a popover with the style presets (picked and applied
- * at once) and a link to App settings > General > Canvas (docs/design/canvas-themes.md 7.2).
+ * at once) and a link to App settings > General > Canvas (docs/design/canvas-themes.md 7.2). It also offers the
+ * presentation radio group unless `withPresentation` is false: pass false wherever CanvasThemeMenu sits beside it, so
+ * the presentation is chosen in one place only.
  */
-export function CanvasStyleButton({ testId }: { testId?: string }): ReactElement {
+export function CanvasStyleButton({ testId, withPresentation = true }: { testId?: string; withPresentation?: boolean }): ReactElement {
   return (
     <Popover
       label="Canvas style"
@@ -72,7 +74,7 @@ export function CanvasStyleButton({ testId }: { testId?: string }): ReactElement
       testId="canvas-style-popover"
       triggerTestId={testId}
     >
-      {({ close }) => <StylePanel close={close} />}
+      {({ close }) => <StylePanel close={close} withPresentation={withPresentation} />}
     </Popover>
   )
 }

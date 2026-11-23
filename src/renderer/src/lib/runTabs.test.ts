@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
-import { countReplies, replyArrived, resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab } from './runTabs'
+import { countReplies, replyArrived, resolveRunTab, runTabIds, showsAgentsTab, showsKnowledgeTab, showsOutputsTab, showsPlanTab } from './runTabs'
 
 const quick: QuickRunInfo = { folder: 'C:\\work', team: 'single', allowEdits: false, gitRepo: false }
 
@@ -53,6 +53,18 @@ describe('run tabs', () => {
     expect(showsKnowledgeTab({ kind: 'work', projectId: 'p1' }, 'code')).toBe(false)
     expect(showsKnowledgeTab({ kind: 'work', quick, projectId: 'quick' }, 'engagement')).toBe(false)
     expect(showsKnowledgeTab({ kind: 'skill-assist', projectId: 'p1' }, 'engagement')).toBe(false)
+  })
+  it('Agents sits right after the transcript, only for a team work run with more than one agent', () => {
+    expect(runTabIds({ plan: true, outputs: true, knowledge: true, agents: true })).toEqual(['transcript', 'agents', 'plan', 'usage', 'outputs', 'knowledge', 'logs'])
+    expect(runTabIds({ plan: false, outputs: false, knowledge: false, agents: false })).toEqual(['transcript', 'usage', 'logs'])
+    expect(showsAgentsTab({ kind: 'work' }, 2)).toBe(true)
+    expect(showsAgentsTab({ kind: 'work' }, 1)).toBe(false)
+    expect(showsAgentsTab({ kind: 'work', team: 'single' }, 5)).toBe(false)
+    expect(showsAgentsTab({ kind: 'work', quick }, 5)).toBe(false)
+    expect(showsAgentsTab({ kind: 'setup' }, 5)).toBe(false)
+    expect(showsAgentsTab(undefined, 5)).toBe(false)
+    const without = runTabIds({ plan: true, outputs: false, knowledge: false })
+    expect(resolveRunTab('agents', without)).toBe('transcript')
   })
   it('a stored tab the run does not have falls back to the transcript', () => {
     const chat = runTabIds({ plan: true, outputs: false, knowledge: false })
