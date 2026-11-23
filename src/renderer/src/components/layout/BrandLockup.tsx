@@ -59,7 +59,7 @@ export function BrandLockup({
     <div className="brand-lockup">
       {img}
       <span className="brand-lockup-word">OrgAI</span>
-      {tag}
+      {tag && <span className="brand-lockup-tags">{tag}</span>}
       {trailing && <span className="brand-lockup-trail">{trailing}</span>}
     </div>
   )

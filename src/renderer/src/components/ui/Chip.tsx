@@ -24,6 +24,7 @@ export function Chip({
   tone?: ChipTone
   disabled?: boolean
   className?: string
+  /** A custom accessible name must contain the visible label text (WCAG 2.5.3 Label in Name); prefer omitting it. */
   'aria-label'?: string
   'data-testid'?: string
 }): ReactElement {
