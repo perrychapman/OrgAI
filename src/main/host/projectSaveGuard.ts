@@ -13,6 +13,8 @@ import { cleanProjectLimits } from '../store/projects'
  * - `schedulesNearPlanLimit`: may be turned off or kept; never turned on.
  * - `onSpendLimit`, `requireTestsPass`, `testCommand`: never changed (a test command is a shell command the user
  *   chose in the window; a gate is not waived from a terminal; pause / stop decides what a limit does).
+ * - `branchNamePattern`, `askBeforeStrongerModel`: never changed (a pattern decides which branches a later delete may
+ *   treat as OrgAI's; the question gates staffing escalation). A missing flag equals false.
  *
  * Other new fields (`maxAgentsPerRun`, `Role.maxConcurrent`) only narrow what a run may do, so they are not guarded.
  * Team files never carry any of these (teamFiles/parse.ts ignores unknown team.json keys), and the settings proposal
@@ -32,6 +34,9 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
   if ((now.onSpendLimit ?? 'pause') !== (was.onSpendLimit ?? 'pause')) refused.push('onSpendLimit')
   if ((now.requireTestsPass === true) !== (was.requireTestsPass === true)) refused.push('requireTestsPass')
   if (now.testCommand !== was.testCommand) refused.push('testCommand')
+  // Branch naming and the staffing question change what the user sees and what runs spend: window only, any change.
+  if (now.branchNamePattern !== was.branchNamePattern) refused.push('branchNamePattern')
+  if ((now.askBeforeStrongerModel === true) !== (was.askBeforeStrongerModel === true)) refused.push('askBeforeStrongerModel')
   return refused
 }
 

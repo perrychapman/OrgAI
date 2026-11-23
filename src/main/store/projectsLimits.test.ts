@@ -73,9 +73,34 @@ describe('cleanProjectLimits', () => {
 
   it('does not add a key that was not there', () => {
     const out = cleanProjectLimits(project()) as unknown as Record<string, unknown>
-    for (const k of ['maxDailyUsd', 'maxMonthlyUsd', 'onSpendLimit', 'maxAgentsPerRun', 'schedulesNearPlanLimit', 'mainBranch', 'requireTestsPass', 'testCommand', 'keepFailedBranchesDays']) {
+    for (const k of ['maxDailyUsd', 'maxMonthlyUsd', 'onSpendLimit', 'maxAgentsPerRun', 'schedulesNearPlanLimit', 'mainBranch', 'requireTestsPass', 'testCommand', 'keepFailedBranchesDays', 'askBeforeStrongerModel', 'branchNamePattern']) {
       expect(Object.hasOwn(out, k)).toBe(false)
     }
+  })
+
+  it('keeps askBeforeStrongerModel only as a boolean', () => {
+    const on = asProject({ askBeforeStrongerModel: true })
+    expect(cleanProjectLimits(on)).toBe(on)
+    expect(cleanProjectLimits(asProject({ askBeforeStrongerModel: false }))).toMatchObject({ askBeforeStrongerModel: false })
+    for (const bad of ['true', 1, 0, null, {}, []]) expect(Object.hasOwn(cleanProjectLimits(asProject({ askBeforeStrongerModel: bad })), 'askBeforeStrongerModel')).toBe(false)
+  })
+
+  it('keeps a safe branchNamePattern and drops traversal, ref-injection and option-like ones', () => {
+    for (const ok of ['orgai/{task}', 'orgai/{role}/{task}-{id}', 'feature/{id}', 'a.b/c_d-{task}', 'x{task}y']) {
+      const p = asProject({ branchNamePattern: ok })
+      expect(cleanProjectLimits(p)).toBe(p)
+    }
+    expect(cleanProjectLimits(asProject({ branchNamePattern: '  orgai/{task}  ' })).branchNamePattern).toBe('orgai/{task}')
+    const bad = [
+      '', '   ', 'a'.repeat(81), '../{task}', 'a/../b', 'a//b', '/abs/{task}', '-rf/{task}', '.hidden/{task}', 'a/.b', 'a/', 'a.', 'a.lock', 'a.lock/b', 'a/b.lock',
+      '{task', '{unknown}', '{{task}}', '{task}}', 'a b', 'a~b', 'a^b', 'a:b', 'a?b', 'a*b', 'a[b', 'a\\b', 'a@{u}', 'orgai/$(id)', 'orgai/`id`', 'orgai/;rm', 'refs/heads/x\n{id}',
+      'ünï/{task}', 'orgai/{TASK}', 'orgai/{ task }', 42, null, {}, ['orgai/{task}']
+    ]
+    for (const value of bad) {
+      const out = cleanProjectLimits(asProject({ branchNamePattern: value }))
+      expect(Object.hasOwn(out, 'branchNamePattern'), `kept ${JSON.stringify(value)}`).toBe(false)
+    }
+    expect(cleanProjectLimits(asProject({ branchNamePattern: 'a'.repeat(80) })).branchNamePattern).toBe('a'.repeat(80))
   })
 })
 

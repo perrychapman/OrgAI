@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
 import { gitExecutable, neutralCwd, system32Path } from '../host/systemBinaries'
 import { trackChildProcess } from '../host/shutdown'
+import { REPORT_BRANCH_PREFIX } from './branchNames'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
 /**
@@ -42,7 +43,7 @@ import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from 
  */
 
 const EXCLUDE_LINE = '.claude/worktrees/'
-const BRANCH_PREFIX = 'worktree-agent-'
+const BRANCH_PREFIX = REPORT_BRANCH_PREFIX
 
 /**
  * Dependency and cache directories a report may create while building or testing. They are
@@ -819,4 +820,71 @@ export async function diffWorktree(root: string, branch: string): Promise<Worktr
     patch: text,
     changedFiles: names.ok ? names.out.split(/\r?\n/).filter(Boolean) : []
   }
+}
+
+// ---- Branch deletion (maintenance.deleteBranch) ----
+
+/**
+ * One git call for the branch checks and deletions below: no pager and the hostile-config overrides in front of the
+ * subcommand, and (when `root` has a plain `.git` directory) the pinned read-only environment of readOnlyGitEnv, which
+ * allows no transport and no lazy fetch. Branch deletion talks to no remote and runs no hook; this is defence in depth.
+ */
+function gitGuarded(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  const bin = gitExecutable()
+  if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
+  const env = hasPlainGitDir(root) ? readOnlyGitEnv(root) : scrubControlEnv(process.env)
+  return new Promise((resolve) => {
+    const child = execFile(bin, ['--no-pager', ...HOSTILE_CONFIG_OVERRIDES, ...args], { cwd: root, env, windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
+    })
+    trackChildProcess(child, 'git')
+  })
+}
+
+/** The branch the checkout at `root` is on, or null on a detached HEAD (or when git cannot say). */
+export async function currentBranchName(root: string): Promise<string | null> {
+  const res = await gitGuarded(root, ['symbolic-ref', '--short', '-q', 'HEAD'])
+  return res.ok && res.out ? res.out : null
+}
+
+/** True when `refs/heads/<name>` exists. `name` must already pass isValidBranchName. */
+export async function localBranchExists(root: string, name: string): Promise<boolean> {
+  return (await gitGuarded(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])).ok
+}
+
+/**
+ * Names that count as the repository's default branch: what origin/HEAD points at (when a remote is configured),
+ * `init.defaultBranch`, and the two usual names. Local read only.
+ */
+export async function defaultBranchNames(root: string): Promise<string[]> {
+  const names = new Set<string>(['main', 'master'])
+  const remote = await gitGuarded(root, ['symbolic-ref', '--short', '-q', 'refs/remotes/origin/HEAD'])
+  if (remote.ok && remote.out.startsWith('origin/')) names.add(remote.out.slice('origin/'.length))
+  const configured = await gitGuarded(root, ['config', '--get', 'init.defaultBranch'])
+  if (configured.ok && configured.out) names.add(configured.out)
+  return [...names]
+}
+
+export type DeleteBranchOutcome = { ok: true; removedCopy: boolean } | { ok: false; message: string }
+
+/**
+ * Delete the local branch `branch` (only ever refs/heads, never a remote; nothing is pushed or fetched).
+ * - With `copyPath` (the branch's finished copy): the copy is removed like a discard (nested copies are moved out first)
+ *   and the branch is force-deleted: `git branch -D -- <branch>`. Unmerged work goes with it.
+ * - Without: `git branch -d -- <branch>`, which git itself refuses unless the branch is merged into HEAD.
+ * Under the repository lock. Throws UnfinishedGitStateError, changing nothing, when the repository or the copy holds an
+ * unfinished operation (a merge in progress, an index.lock that stays). Re-checks under the lock that the branch is not
+ * the checkout's current one. The caller has already decided the branch may go (maintenance.ts deleteBranch).
+ */
+export async function deleteReportBranch(root: string, branch: string, opts: { copyPath?: string } = {}): Promise<DeleteBranchOutcome> {
+  return withRepoLock(root, async (): Promise<DeleteBranchOutcome> => {
+    const refusal = await unfinishedGitStateRefusal(opts.copyPath ? [root, opts.copyPath] : [root], `branch ${branch} is kept`)
+    if (refusal) throw new UnfinishedGitStateError(refusal.message, refusal.files)
+    if ((await currentBranchName(root)) === branch) return { ok: false, message: `${branch} is the branch this checkout is on, so it was not deleted.` }
+    if (opts.copyPath) await removeWorktree(root, opts.copyPath)
+    const res = await gitGuarded(root, ['branch', opts.copyPath ? '-D' : '-d', '--', branch])
+    if (res.ok) return { ok: true, removedCopy: Boolean(opts.copyPath) }
+    const why = /not fully merged/i.test(res.err) ? 'it has commits that are not merged into the current branch' : res.err.split(/\r?\n/)[0]?.slice(0, 200) || 'git refused'
+    return { ok: false, message: `${branch} was not deleted: ${why}.${opts.copyPath ? ' Its finished copy was already removed.' : ''}` }
+  })
 }

@@ -63,7 +63,25 @@ describe('desktopOnlyProjectChanges (pure)', () => {
   })
 
   it('treats a default value as unchanged (missing onSpendLimit is pause, missing requireTestsPass is false)', () => {
-    expect(desktopOnlyProjectChanges(withLimits(), withLimits({ onSpendLimit: 'pause', requireTestsPass: false }))).toEqual([])
+    expect(desktopOnlyProjectChanges(withLimits(), withLimits({ onSpendLimit: 'pause', requireTestsPass: false, askBeforeStrongerModel: false }))).toEqual([])
+  })
+
+  it('refuses any change to branchNamePattern, setting, changing or removing it, and a junk one that would be dropped', () => {
+    const withPattern = withLimits({ branchNamePattern: 'orgai/{task}' })
+    expect(desktopOnlyProjectChanges(withLimits(), withPattern)).toEqual(['branchNamePattern'])
+    expect(desktopOnlyProjectChanges(withPattern, withLimits({ branchNamePattern: 'orgai/{role}' }))).toEqual(['branchNamePattern'])
+    expect(desktopOnlyProjectChanges(withPattern, withLimits())).toEqual(['branchNamePattern'])
+    expect(desktopOnlyProjectChanges(withPattern, withLimits({ branchNamePattern: '../x' }))).toEqual(['branchNamePattern'])
+    expect(desktopOnlyProjectChanges(withPattern, structuredClone(withPattern))).toEqual([])
+    // A junk value on a project without one is dropped, so it changes nothing.
+    expect(desktopOnlyProjectChanges(withLimits(), withLimits({ branchNamePattern: '../x' }))).toEqual([])
+  })
+
+  it('refuses any change to askBeforeStrongerModel (a missing flag is false)', () => {
+    expect(desktopOnlyProjectChanges(withLimits(), withLimits({ askBeforeStrongerModel: true }))).toEqual(['askBeforeStrongerModel'])
+    expect(desktopOnlyProjectChanges(withLimits({ askBeforeStrongerModel: true }), withLimits())).toEqual(['askBeforeStrongerModel'])
+    expect(desktopOnlyProjectChanges(withLimits({ askBeforeStrongerModel: true }), withLimits({ askBeforeStrongerModel: false }))).toEqual(['askBeforeStrongerModel'])
+    expect(desktopOnlyProjectChanges(withLimits({ askBeforeStrongerModel: true }), withLimits({ askBeforeStrongerModel: true }))).toEqual([])
   })
 
   it('names every refused field in one plain sentence', () => {
@@ -106,6 +124,15 @@ describe('projects:save from a non-desktop surface', () => {
       message: expect.stringContaining('requireTestsPass, testCommand') as unknown as string
     })
     expect(saveFromRenderer).not.toHaveBeenCalled()
+  })
+
+  it('refuses a save that sets the branch pattern or the stronger-model question, and the desktop may', async () => {
+    const { d, saveFromRenderer } = setup(stored)
+    await expect(d.invokeRpc(IPC.projectsSave, [{ ...stored, branchNamePattern: 'orgai/{task}' }], CONFIGURE)).rejects.toMatchObject({ code: 'scope_denied', message: expect.stringContaining('branchNamePattern') as unknown as string })
+    await expect(d.invokeRpc(IPC.projectsSave, [{ ...stored, askBeforeStrongerModel: true }], CONFIGURE)).rejects.toMatchObject({ code: 'scope_denied', message: expect.stringContaining('askBeforeStrongerModel') as unknown as string })
+    expect(saveFromRenderer).not.toHaveBeenCalled()
+    await d.invoke(IPC.projectsSave, [{ ...stored, branchNamePattern: 'orgai/{task}', askBeforeStrongerModel: true }], DESKTOP)
+    expect(saveFromRenderer).toHaveBeenCalledTimes(1)
   })
 
   it('refuses the in-process surface too', async () => {
