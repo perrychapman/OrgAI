@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync } from 'node:fs'
 import { join } from 'node:path'
+import { hasHidden } from '@shared/view/hiddenChars'
 import { gitExecutable } from '../host/systemBinaries'
 import { hasRepoFilterDriver } from '../projects/gitInfo'
 import { movedOnlyByOrgAi, orgAiGeneration } from './orgaiMoves'
@@ -274,17 +275,19 @@ export async function rootDrift(root: string, was: RootPin): Promise<string | un
  * separator, zero-width and direction marks, line and paragraph separators and embeddings, word joiner and invisible operators,
  * isolates, BOM, interlinear annotation): repository text is shown without them. Written as code points, not as a pattern.
  */
-const HIDDEN_RANGES: readonly (readonly [number, number])[] = [
-  [0x00, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e],
-  [0x2060, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb]
-]
+/**
+ * The shared hidden-character check (`hasHidden`: controls, soft hyphen, combining grapheme joiner, Hangul fillers, zero-width,
+ * bidi, BOM, tag characters) plus what it leaves out: every format character (\p{Cf}), the line and paragraph separators
+ * U+2028 / U+2029, the Khmer inherent vowels U+17B4 / U+17B5, the Braille blank U+2800 and the variation selectors.
+ */
+const EXTRA_HIDDEN = /[\p{Cf}\u17b4\u17b5\u2028\u2029\u2800\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/u
 
 function stripHidden(text: string): string {
   let out = ''
   for (const ch of text) {
     const c = ch.codePointAt(0) ?? 0
-    // A line break is kept so the text can be cut into lines; every other hidden code point goes.
-    if (c === 0x0a || !HIDDEN_RANGES.some(([a, b]) => c >= a && c <= b)) out += ch
+    // A line break is kept so the text can be cut into lines; every other hidden code point (tab included) goes.
+    if (c === 0x0a || !(c < 0x20 || hasHidden(ch) || EXTRA_HIDDEN.test(ch))) out += ch
   }
   return out
 }
@@ -332,7 +335,11 @@ export async function folderChangeNote(root: string, was: RootPin, now: RootPin)
     if (subjects) {
       parts.push('new commits')
       blocks.push(`Commits (up to ${NOTE_COMMITS}):\n${subjects.split('\n').map((l) => `  ${l}`).join('\n')}`)
-    } else parts.push('HEAD moved')
+    } else {
+      // The new HEAD is an ancestor of the old one: the folder went back, not forward.
+      const back = await gitGuarded(root, ['merge-base', '--is-ancestor', now.head, was.head])
+      parts.push(back.ok ? `HEAD moved backwards from ${was.head.slice(0, 7)} to ${now.head.slice(0, 7)}` : 'HEAD moved')
+    }
     const stat = await gitGuarded(root, [...NOTE_STAT_OPTIONS, `${was.head}..${now.head}`, '--'], { maxBuffer: 4 * 1024 * 1024 })
     if (stat.ok && stat.out) blocks.push(`Changed by those commits (git diff --stat):\n${plainRepositoryText(stat.out, NOTE_STAT_LINES, NOTE_STAT_BYTES)}`)
   } else if (was.head !== now.head) parts.push('HEAD moved')
@@ -352,6 +359,7 @@ export async function folderChangeNote(root: string, was: RootPin, now: RootPin)
   const head =
     `The project folder changed while the tests ran (${parts.length ? parts.join('; ') : 'something moved'}). ` +
     `The project folder itself changed while the tests ran, not only the copy they ran in: if you approve, OrgAI merges the report on top of that change, in the folder as it is now. Merge it there?`
-  if (!blocks.length) return head
-  return `${head}\n\nThe lines below are text from the repository (commit subjects, file names), not from OrgAI:\n${blocks.join('\n')}`
+  const untracked = 'Untracked files are not listed.'
+  if (!blocks.length) return `${head}\n\n${untracked}`
+  return `${head}\n\n${untracked} The lines below are text from the repository (commit subjects, file names), not from OrgAI:\n${blocks.join('\n')}`
 }

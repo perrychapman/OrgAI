@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import type { AgentInstance, WorktreeInfo } from '@shared/types'
 import { WorktreeIntegrator } from './integration'
 import { ensureMainBranch, gitGuarded, gitVersionRefusal, integrateWorktree, parseGitVersion, setGitVersionForTest, mergeAttributeRefusal, mergeCarriedConfigArgs, mergeMadeMove, mergeScratchDir, prepareRepo, sweepMergeScratch } from './worktrees'
-import { pinRoot, rootDrift, rootVerdict } from './rootPin'
+import { pinRoot, plainRepositoryText, rootDrift, rootVerdict } from './rootPin'
 import { resetOrgAiMoves } from './orgaiMoves'
 import { fakeCtx, project } from './testHelpers'
 
@@ -396,6 +396,32 @@ describe('M2: the re-ask shows what changed in the project folder', () => {
       return (c < 0x20 && c !== 0x0a) || (c >= 0x7f && c <= 0x9f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)
     })
     expect(hidden).toEqual([])
+  }, 60_000)
+
+  it('repository text loses every invisible character: file names and commit subjects made of the usual disguises', () => {
+    const hiddenSet = [0x34f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x2800, 0x3164, 0xffa0, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0xe0000, 0xe0041, 0xe007f, 0x200b, 0x202e, 0xad, 0x9, 0x1b]
+    const disguised = (word: string): string => [...word].map((ch) => ch + String.fromCodePoint(...hiddenSet)).join('')
+    for (const text of [`src/${disguised('app')}.js | 2 ++`, `abc1234 ${disguised('fix')} it`]) {
+      const plain = plainRepositoryText(text, 12, 1600)
+      expect(plain).toBe(text.replace(/[^\x20-\x7e]/g, ''))
+    }
+    expect(plainRepositoryText('a\nb', 12, 1600)).toBe('a\nb')
+  })
+
+  it('says untracked files are not listed, and names the old and new short sha when HEAD moved backwards', async () => {
+    await prepareRepo(root)
+    put(root, 'src/second.js', 'export const s = 1\n')
+    git(root, 'add', '-A')
+    git(root, 'commit', '-q', '-m', 'second')
+    const before = headOf(root)
+    let after = ''
+    const { g } = await withUserChange(() => {
+      git(root, 'reset', '-q', '--hard', 'HEAD~1')
+      after = headOf(root)
+    })
+    const note = vi.mocked(g.ctx.requestMergeReview).mock.calls[1]![0].stat
+    expect(note).toContain('Untracked files are not listed.')
+    expect(note).toContain(`HEAD moved backwards from ${before.slice(0, 7)} to ${after.slice(0, 7)}`)
   }, 60_000)
 
   it('is bounded: a folder change of many files lists a few lines of stat and says how many more', async () => {
