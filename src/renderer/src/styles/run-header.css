@@ -46,6 +46,26 @@
   gap: var(--space-1h);
   color: var(--text-primary);
 }
+/* A long word ("Stopped at its budget limit") ends in an ellipsis so cost and the "more" button keep their place;
+   the full word is the chip's title. */
+.run-meta > .run-meta-item.run-meta-status {
+  max-width: calc(var(--space-16) * 3);
+}
+.run-meta[data-squeeze] > .run-meta-item.run-meta-status {
+  max-width: calc(var(--space-16) * 1.6);
+}
+.run-meta-status-word {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The toolbar row keeps room for status, cost and "more": the canvas chrome next to it gives way first (it clips). */
+@container frame (min-width: 680px) {
+  .frame-toolbar-dense > .run-meta {
+    flex: 1 0 calc(var(--space-16) * 4);
+  }
+}
 .run-status-dot {
   flex: none;
   width: var(--space-2);
@@ -218,6 +238,14 @@
 .run-view[data-kind='engagement'] .run-meta-steps,
 .run-view[data-kind='engagement'] .run-meta-recorded {
   border-color: var(--eng-line);
+}
+
+/* The selected card on an engagement run: the coral ring (run.css draws it in the accent; the rule in canvas-chrome.css
+   only reached the React Flow wrapper, which has no border). Same ring width as run.css, so the shape cue is unchanged. */
+.run-view[data-kind='engagement'] .agent-node[data-style='card'].selected {
+  border-color: var(--eng);
+  background: linear-gradient(var(--eng-soft), var(--eng-soft)), var(--glass-strong, var(--canvas-node-bg));
+  box-shadow: 0 0 0 3px var(--eng-line), var(--elev-2);
 }
 
 /* ---------- Finished list (side panel) and folded "done" groups: same glass family ---------- */

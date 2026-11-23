@@ -34,3 +34,32 @@ Boards: Run, RunLight, Scale, Engagement. Code: `RunTabs`, `RunMeta`, `RunAction
 ## Not verified
 
 Screen reader speech, a run with many chips folded (staffing, recorded, revision, schedule together), forced colors.
+
+## Looked at (2026-11-23, ui-engineer-run-a)
+
+Driven on the mock adapter with a throwaway data dir, 1024x640 and 1600x1000, dark and light, screenshots opened and read
+(`e2e/shots/look-*`, not committed). Runs: `[mock:exec-slow]` (running), `[mock:fatigue]` (needs you),
+`[mock:provider-error]` (failed), `[mock:no-price]` (cost unknown), an ended run (stopped), `[mock:budget-stop]` with a
+project cap, `[mock:staffing]` and `[mock:factory-floor]` (40 agents).
+
+- **Project header (shell).** At 1024 with the sidebar expanded (main pane 792 px) the name, kind chip, section tabs and
+  Settings button did not fit: the chip shrank to 18 px with its text spilling over the tabs, and the Settings button went
+  past the window edge. Now: the name shrinks (64 to 220 px, ellipsis, full name as title), the folder pill hides under
+  1100 px of pane, the chip is the icon alone under 900 px (its title is "Engagement . client" or "Code project", and the words stay
+  in the accessibility tree) and clips with `overflow: hidden` otherwise. `e2e/layout.mjs` checks no overlap, nothing past the
+  topbar and the strip under the topbar at both sizes and in a 792 px pane.
+- **Status chip.** Running is cyan, the pulse ring is on the dot's `::after` and runs only while working; Needs you is amber
+  and breathes; Failed red, Stopped and Idle grey, all dot plus word. Reduced motion: no animation (checked).
+- **Cost.** Chips fold from the least useful end; cost now folds second to last (before: after the agent count), status never.
+  The toolbar row keeps 256 px for them (the theme name and the Show filter give way first). A long status word ("Stopped at its
+  budget limit") shortens to an ellipsis before cost folds. "Cost unknown" shows for an unpriced run.
+- **More menu.** Enter opens it, the first item takes focus, Escape closes it and focus returns to the button.
+- **Dock open at 1600.** Running, time, cost and agents show, the rest sits in the menu (1024 with the dock: status and cost).
+- **Engagement run.** The `:has()` rule matches (the coral bar and the serif title are on the selected tab; the serif shows in
+  the panel headings). The selected agent card kept the violet ring (the existing rule hit the React Flow wrapper, which has no
+  border); `run-header.css` now draws it in `--eng`. The coral plan strip segment is only visible while a step is in progress and was
+  not seen.
+- **Scale.** The mock cannot start 121 agents (`[mock:factory-floor]` is 40: 3 leads, 9 sub-leads, 27 workers). At 1600 the chart,
+  Show filter hidden under 1100 px of frame, Find an agent clipped to a letter when the "Hide finished agents" switch is on (now the
+  theme name hides at 1000 px, which gives it room), flat Agents tab "Showing 40 of 40". Minimap did not render in either size; the
+  folded finished groups were not on screen in this run.

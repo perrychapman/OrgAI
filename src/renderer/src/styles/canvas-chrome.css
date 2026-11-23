@@ -493,6 +493,17 @@
 @container frame (max-width: 900px) {
   .canvas-chrome-start [data-testid='find-agent'] { display: none; }
 }
+/* Status and cost keep 256 px at the start of the row (run-header.css), so the theme name gives way before it is clipped. */
+@container frame (max-width: 1000px) {
+  /* Clipped, not removed: the trigger's accessible name still ends in the current theme. */
+  .canvas-chrome-start .canvas-theme-current {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+}
 @container frame (max-width: 680px) {
   .canvas-chrome-start .canvas-theme-label { display: none; }
 }

@@ -255,7 +255,7 @@ export default function App(): ReactElement {
               <div className="topbar project-topbar">
                 <h1 title={isVirtual ? undefined : project.name}>{selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project.name}</h1>
                 {!isVirtual && (
-                  <span className="kind-chip" data-testid="project-kind-chip" data-kind={engagement ? 'engagement' : 'code'}>
+                  <span className="kind-chip" data-testid="project-kind-chip" data-kind={engagement ? 'engagement' : 'code'} title={engagement ? `Engagement${project.client?.trim() ? ` · ${project.client.trim()}` : ''}` : 'Code project'}>
                     <Icon icon={engagement ? Briefcase : Code} size="xs" />
                     <span className="kind-chip-word">{engagement ? 'Engagement' : 'Code project'}</span>
                     <ProjectClient project={project} />

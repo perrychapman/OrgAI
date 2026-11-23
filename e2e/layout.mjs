@@ -381,6 +381,39 @@ try {
       check(inside(m.strip), `run strip inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.strip))
       check(inside(m.composer), `composer with mode row inside viewport at ${w}x${h} ${theme}`, JSON.stringify(m.composer))
       check(!!m.strip && !!m.topbar && m.strip.t >= m.topbar.b - 0.5 && Math.abs(m.strip.b - m.strip.t - 40) <= 1.5, `run strip is 40 px and sits under the topbar at ${w}x${h} ${theme}`, JSON.stringify([m.topbar, m.strip]))
+      // The project header (name, kind chip, folder, section tabs, settings button) never overlaps itself, leaves the
+      // topbar or reaches the run strip; clipped text ends in an ellipsis (or is the icon-only chip with its full name as title).
+      const headerFit = async () =>
+        page.evaluate(() => {
+          const rc = (e) => { const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom } }
+          const top = document.querySelector('main .project-topbar')
+          const strip = document.querySelector('[data-testid=run-strip]')
+          const items = ['h1', '.kind-chip', '.project-folder', '.topbar-tabs', '.topbar-needs', '.save-indicator', '.topbar-settings']
+            .map((s) => [s, top.querySelector(s)]).filter(([, e]) => e && e.getBoundingClientRect().width > 0)
+          const tb = rc(top)
+          const problems = []
+          for (const [s, e] of items) { const r = rc(e); if (r.r > tb.r + 0.5 || r.l < tb.l - 0.5 || r.b > tb.b + 0.5 || r.t < tb.t - 0.5) problems.push(`${s} leaves the topbar`) }
+          for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+            const a = rc(items[i][1]), b = rc(items[j][1])
+            if (Math.min(a.r, b.r) - Math.max(a.l, b.l) > 1 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 1) problems.push(`${items[i][0]} overlaps ${items[j][0]}`)
+          }
+          if (strip && rc(strip).t < tb.b - 0.5) problems.push('the run strip starts inside the topbar')
+          const h1 = top.querySelector('h1')
+          if (h1.scrollWidth > h1.clientWidth + 1 && (getComputedStyle(h1).textOverflow !== 'ellipsis' || !h1.title)) problems.push('the project name is clipped without an ellipsis and a title')
+          const chip = top.querySelector('.kind-chip')
+          if (chip && !chip.title) problems.push('the kind chip has no full-name title')
+          return problems
+        })
+      check((await headerFit()).length === 0, `project header fits and does not touch the run strip at ${w}x${h} ${theme}`, JSON.stringify(await headerFit()))
+      if (w < 1180 && theme === 'dark') {
+        // The narrowest main pane the header meets: 1024 px with the sidebar expanded leaves 792 px, which a 848 px window
+        // gives next to the 56 px rail (the sidebar is automatic, so no explicit choice is stored).
+        await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [848, h])
+        await sleep(500)
+        check((await headerFit()).length === 0, `project header fits in a 792 px main pane (848x${h}) ${theme}`, JSON.stringify(await headerFit()))
+        await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+        await sleep(500)
+      }
       check(!!m.toolbar && !!m.strip && m.toolbar.t >= m.strip.b - 0.5 && Math.abs(m.toolbar.b - m.toolbar.t - 32) <= 1.5, `canvas toolbar is 32 px and sits under the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.toolbar]))
       check(!!m.tabs && !!m.strip && m.tabs.l >= m.strip.l - 0.5 && m.tabs.r <= m.strip.r + 0.5, `run tabs live inside the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.tabs]))
       check(!!m.stage && !!m.toolbar && m.stage.t >= m.toolbar.b - 0.5, `stage sits under the toolbar at ${w}x${h} ${theme}`, JSON.stringify([m.toolbar, m.stage]))
