@@ -1,4 +1,4 @@
-import type { AgentInstance, PermissionMode, RunPlan, RunSummary, Schedule, TodoItem, UsageOverview } from '@shared/types'
+import type { AgentInstance, PermissionMode, ProjectSpend, RunPlan, RunSummary, Schedule, TodoItem, UsageOverview } from '@shared/types'
 import { formatDate } from '@shared/view/dates'
 import { formatUsdCompact, runCostInput, costView, type CostInput } from '@shared/view/cost'
 import { lastResultText } from '@shared/view/schedules'
@@ -133,6 +133,35 @@ export interface MonthSpend {
   typicalText: string | null
   /** Runs whose cost the figure leaves out. */
   unknownRuns: number
+  /** "of $200.00 a month" when the project has a monthly cap (projectSpend only). */
+  limitText?: string
+  /** "on course for about $90.00" once the month has enough days (projectSpend only). */
+  projectionText?: string
+}
+
+/**
+ * The month figure from `runInsights.projectSpend` (recorded spend, caps, projection), with the typical-run line of the
+ * usage overview. Unknown stays "unknown": a month whose runs all lack a price is never $0, and a partly unknown month
+ * is a lower bound ("$12.00+"). null when the project has no run this month or the answer is missing (the caller then
+ * uses `monthSpend`).
+ */
+export function monthSpendFrom(spend: Pick<ProjectSpend, 'month' | 'maxMonthlyUsd' | 'monthProjectionUsd'> | null | undefined, overview?: Parameters<typeof monthSpend>[0]): MonthSpend | null {
+  const m = spend?.month
+  if (!m || !Number.isFinite(m.spentUsd) || !(m.runs > 0)) return null
+  const typical = monthSpend(overview)
+  const allUnknown = m.unknownRuns >= m.runs && m.spentUsd === 0
+  const partial = m.unknownRuns > 0 && !allUnknown
+  const text = allUnknown ? 'unknown' : `${formatUsdCompact(m.spentUsd)}${partial ? '+' : ''}`
+  return {
+    text,
+    title: allUnknown ? 'No run this month has a known price' : partial ? 'At least this much; some runs have no known price' : 'Estimated from recorded usage',
+    runs: m.runs,
+    typicalUsd: typical?.typicalUsd ?? null,
+    typicalText: typical?.typicalText ?? null,
+    unknownRuns: m.unknownRuns,
+    ...(typeof spend?.maxMonthlyUsd === 'number' && spend.maxMonthlyUsd > 0 ? { limitText: `of ${formatUsdCompact(spend.maxMonthlyUsd)} a month` } : {}),
+    ...(typeof spend?.monthProjectionUsd === 'number' && !allUnknown ? { projectionText: `on course for about ${formatUsdCompact(spend.monthProjectionUsd)}` } : {})
+  }
 }
 
 /** First millisecond of the local calendar month holding `now`. */

@@ -270,6 +270,29 @@ describe('words', () => {
     expect(rowName(item, '2 min')).toBe(`Permission: ${item.title}, Implementer 2, Notes API, run started 2 min ago`)
     expect(rowName(item, 'just now')).toContain('run started just now')
   })
+  it('times a decision by when it was raised and says "waiting"', () => {
+    const item = buildWaiting({ runs: [run('r1', 'p1', 1, { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Bash', requestedAt: 5000 }] })], teamItems: [], projectName: names })[0]
+    expect(item).toMatchObject({ at: 5000, atSource: 'decision' })
+    expect(rowName(item, '2 min')).toBe(`Permission: ${item.title}, Implementer 2, Notes API, waiting 2 min`)
+    expect(rowName(item, 'just now')).toContain('waiting just now')
+  })
+  it('sorts by decision time across runs, falling back to the run start, team items last', () => {
+    const list = buildWaiting({
+      runs: [
+        // An old run whose question was only asked late.
+        run('old', 'p1', 100, { questions: [{ id: 'q', agentId: 'a2', question: 'Late?', createdAt: 9000 }] }),
+        // A newer run whose permission has waited longer.
+        run('new', 'p2', 5000, { permissions: [{ id: 'p', agentId: 'a1', toolName: 'Bash', requestedAt: 6000 }] }),
+        // No decision time: the run start (7000) is used.
+        run('bare', 'p2', 7000, { mcpInstalls: [{ id: 'i', agentId: 'a1' }] })
+      ],
+      teamItems: [{ key: 'team:p1', projectId: 'p1', projectName: 'Notes API', state: 'pending' as const, label: 'Team files' }],
+      projectName: names
+    })
+    expect(list.map((i) => i.id)).toEqual(['w:new/p', 'w:bare/i', 'w:old/q', 't:team:p1'])
+    expect(list.map((i) => i.atSource)).toEqual(['decision', 'run', 'decision', 'none'])
+    expect(rowName(list[1], '3 min')).toContain('run started 3 min ago')
+  })
 })
 
 describe('what the user has seen', () => {

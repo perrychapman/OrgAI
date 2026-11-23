@@ -1,4 +1,4 @@
-import type { ProjectKind } from '@shared/types'
+import type { ProjectKind, ProposalKind } from '@shared/types'
 import { waitingItems, type WaitingKind, type WaitRun } from './needsYou'
 import { sinceLastSeen, errorFirstLine, type EndedRunLike } from './dashboard'
 import type { TeamAttentionItem } from './teamFiles'
@@ -64,14 +64,52 @@ export interface InboxItem {
   runId?: string
   /** The decision's key inside its run (a team item's `team:<projectId>`). */
   key?: string
-  /** Waiting: when the run started (no decision carries its own time). Finished: when it ended. Epoch ms. */
+  /** Waiting: when the decision was raised ('decision') or, when the card carries no time, when its run started ('run'). Finished: when it ended. Epoch ms. */
   at: number
+  /** Where `at` comes from. 'none' = no time at all (a team-files item): it sorts last and shows no age. */
+  atSource: 'decision' | 'run' | 'ended' | 'none'
 }
 
 /** What the builder reads of a live run: a WaitRun plus the summary fields the Inbox names it by. */
 export interface InboxRunIn extends WaitRun {
   summary: WaitRun['summary'] & { projectId: string; kind?: string }
   agents: Record<string, { name: string }>
+  // The time each decision was raised: requestedAt on a permission card, createdAt on the others. Absent on cards that
+  // predate those fields; the row then falls back to the run's start.
+  permissions?: readonly { id: string; agentId: string; toolName: string; input?: unknown; requestedAt?: number }[]
+  proposals?: readonly { id: string; title?: string; kind?: ProposalKind; createdAt?: number }[]
+  questions?: readonly { id: string; agentId: string; question: string; createdAt?: number }[]
+  ruleRequests?: readonly { id: string; agentId: string; createdAt?: number }[]
+  mergeReviews?: readonly { id: string; agentName: string; createdAt?: number }[]
+  mcpInstalls?: readonly { id: string; agentId: string; createdAt?: number }[]
+}
+
+/** When one decision was raised, epoch ms; undefined when the card carries no usable time. */
+function raisedAt(run: InboxRunIn, kind: WaitingKind, key: string): number | undefined {
+  let t: unknown
+  switch (kind) {
+    case 'permission':
+      t = run.permissions?.find((p) => p.id === key)?.requestedAt
+      break
+    case 'question':
+      t = run.questions?.find((q) => q.id === key)?.createdAt
+      break
+    case 'rules':
+      t = run.ruleRequests?.find((r) => r.id === key)?.createdAt
+      break
+    case 'install':
+      t = run.mcpInstalls?.find((i) => i.id === key)?.createdAt
+      break
+    case 'merge':
+      t = run.mergeReviews?.find((m) => m.id === key)?.createdAt
+      break
+    case 'proposal':
+      t = run.proposals?.find((p) => p.id === key)?.createdAt
+      break
+    default:
+      t = undefined
+  }
+  return typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : undefined
 }
 
 export interface InboxFinishedIn extends EndedRunLike {
@@ -119,8 +157,9 @@ export interface BuildWaitingInput {
 }
 
 /**
- * Every open decision, oldest first: by the start of its run, then the order its cards show, team-files items last (they
- * have no run and no time). The length is the number the sidebar badge and the Needs-you popover show.
+ * Every open decision, longest-waiting first: by when the decision was raised (the run's start when the card carries no
+ * time), then the run's start, then the order its cards show; team-files items last (they have no run and no time). The
+ * length is the number the sidebar badge and the Needs-you popover show.
  */
 export function buildWaiting({ runs, teamItems, projectName, projectKind }: BuildWaitingInput): InboxItem[] {
   const ordered = [...runs].sort((a, b) => a.summary.startedAt - b.summary.startedAt || a.summary.id.localeCompare(b.summary.id))
@@ -128,6 +167,7 @@ export function buildWaiting({ runs, teamItems, projectName, projectKind }: Buil
   for (const run of ordered) {
     const name = projectName(run)
     for (const it of waitingItems(run, projectKind?.(run.summary.projectId))) {
+      const raised = raisedAt(run, it.kind, it.key)
       out.push({
         id: `w:${it.runId}/${it.key}`,
         group: 'waiting',
@@ -140,10 +180,13 @@ export function buildWaiting({ runs, teamItems, projectName, projectKind }: Buil
         projectName: name,
         runId: it.runId,
         key: it.key,
-        at: run.summary.startedAt
+        at: raised ?? run.summary.startedAt,
+        atSource: raised !== undefined ? 'decision' : 'run'
       })
     }
   }
+  // Stable: equal times keep the run order and card order built above.
+  out.sort((a, b) => a.at - b.at)
   for (const t of teamItems) {
     out.push({
       id: `t:${t.key}`,
@@ -156,7 +199,8 @@ export function buildWaiting({ runs, teamItems, projectName, projectKind }: Buil
       projectId: t.projectId,
       projectName: t.projectName,
       key: t.key,
-      at: Number.MAX_SAFE_INTEGER
+      at: Number.MAX_SAFE_INTEGER,
+      atSource: 'none'
     })
   }
   return out
@@ -197,7 +241,8 @@ export function buildFinished<T extends InboxFinishedIn>({ summaries, seenAt, re
       projectId: e.run.projectId,
       projectName: projectName(e.run),
       runId: e.run.id,
-      at: e.endedAt
+      at: e.endedAt,
+      atSource: 'ended'
     })
   }
   return out.slice(0, cap)
@@ -337,7 +382,14 @@ export function selectionText(item: InboxItem, index: number, total: number): st
 /** The accessible name of a list row: everything the row shows, in reading order. */
 export function rowName(item: InboxItem, when: string): string {
   const who = item.who ? `, ${item.who}` : ''
-  const at = when ? (item.group === 'waiting' ? `, run started ${when}${when === 'just now' ? '' : ' ago'}` : `, ended ${when}${when === 'just now' ? '' : ' ago'}`) : ''
+  const ago = when === 'just now' ? when : `${when} ago`
+  const at = !when
+    ? ''
+    : item.group !== 'waiting'
+      ? `, ended ${ago}`
+      : item.atSource === 'decision'
+        ? `, waiting ${when}`
+        : `, run started ${ago}`
   return `${item.kindLabel}: ${item.title}${who}, ${item.projectName}${at}`
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { EngagementDocumentInfo, EngagementNote, KnowledgeGraph, McpServerInfo, Project, RunSummary, TodoItem, UsageOverview } from '@shared/types'
+import type { EngagementDocumentInfo, EngagementNote, KnowledgeGraph, McpServerInfo, Project, ProjectSpend, RunSummary, ScheduleHistoryEntry, TodoItem, UsageOverview } from '@shared/types'
 import { todoScopeFor } from '@shared/view/todos'
 import { itemsOf, type KnowledgeItem } from '@shared/view/knowledge'
 import { isRunLive, useAppStore } from '../../store/useAppStore'
@@ -67,26 +67,34 @@ export function useMonthOverview(projectId: string, refreshKey: string): UsageOv
   return state
 }
 
-type GitReader = (projectId: string) => Promise<unknown>
+/**
+ * What the repository read answered. 'loading': the first answer is on its way. 'none': not a git repository, git is
+ * missing, or this build has no git read (Home says "No git information", not an error). 'failed': the call rejected
+ * and there is no earlier answer (a later failure keeps the earlier 'ready' answer).
+ */
+export type GitState = { kind: 'loading' } | { kind: 'none' } | { kind: 'failed' } | { kind: 'ready'; git: HomeGit }
 
-/** The main process's git read for a code project, when this build has it (it lands with the Home brief's runtime half). */
-function gitReader(): GitReader | null {  const projects = (api() as unknown as { projects?: { gitSummary?: GitReader } } | undefined)?.projects
-  const fn = projects?.gitSummary
-  return typeof fn === 'function' ? (id) => fn.call(projects, id) : null
+function gitReader(): ((projectId: string) => Promise<unknown>) | null {
+  const info = api()?.gitInfo
+  return typeof info?.summary === 'function' ? (id) => info.summary(id) : null
 }
 
 /**
- * The repository facts of a code project, normalized (lib/projectHomeGit `normalizeGit`). undefined while the first answer
- * is on its way, null when this build has no git read, the folder is not a repository or the read failed. Refreshed when
- * `refreshKey` changes (a run started or ended), never more than once per HOME_REFRESH_MIN_MS.
+ * The repository facts of a code project through `gitInfo.summary`, normalized (lib/projectHomeGit `normalizeGit`).
+ * Refreshed when `refreshKey` changes (a run started or ended), never more than once per HOME_REFRESH_MIN_MS.
  */
-export function useProjectGit(projectId: string, refreshKey: string): HomeGit | null | undefined {
-  const [state, setState] = useState<HomeGit | null | undefined>(() => (gitReader() ? undefined : null))
+export function useProjectGit(projectId: string, refreshKey: string): GitState {
+  const [state, setState] = useState<GitState>(() => (gitReader() ? { kind: 'loading' } : { kind: 'none' }))
   const last = useRef(0)
+  const lastProject = useRef(projectId)
   useEffect(() => {
+    if (lastProject.current !== projectId) {
+      lastProject.current = projectId
+      setState(gitReader() ? { kind: 'loading' } : { kind: 'none' })
+    }
     const read = gitReader()
     if (!read) {
-      setState(null)
+      setState({ kind: 'none' })
       return
     }
     let alive = true
@@ -95,10 +103,12 @@ export function useProjectGit(projectId: string, refreshKey: string): HomeGit | 
         last.current = Date.now()
         read(projectId).then(
           (raw) => {
-            if (alive) setState(normalizeGit(raw))
+            if (!alive) return
+            const git = normalizeGit(raw)
+            setState(git ? { kind: 'ready', git } : { kind: 'none' })
           },
           () => {
-            if (alive) setState((s) => s ?? null)
+            if (alive) setState((s) => (s.kind === 'ready' ? s : { kind: 'failed' }))
           }
         )
       },
@@ -107,6 +117,56 @@ export function useProjectGit(projectId: string, refreshKey: string): HomeGit | 
     return () => {
       alive = false
       window.clearTimeout(t)
+    }
+  }, [projectId, refreshKey])
+  return state
+}
+
+/** A schedule's history through the peek channel (it does not clear the unread count Schedules shows). */
+export function useScheduleOutcomes(scheduleId: string | undefined, refreshKey: string): ScheduleHistoryEntry[] | null | undefined {
+  const [state, setState] = useState<ScheduleHistoryEntry[] | null | undefined>(undefined)
+  useEffect(() => {
+    const peek = api()?.runInsights?.scheduleHistory
+    if (!scheduleId || typeof peek !== 'function') {
+      setState(null)
+      return
+    }
+    let alive = true
+    peek(scheduleId).then(
+      (list) => {
+        if (alive) setState(Array.isArray(list) ? list : [])
+      },
+      () => {
+        if (alive) setState((s) => s ?? null)
+      }
+    )
+    return () => {
+      alive = false
+    }
+  }, [scheduleId, refreshKey])
+  return state
+}
+
+/** Today's and this month's spend (`runInsights.projectSpend`). undefined while loading, null when unavailable or failed. */
+export function useProjectSpend(projectId: string, refreshKey: string): ProjectSpend | null | undefined {
+  const [state, setState] = useState<ProjectSpend | null | undefined>(undefined)
+  useEffect(() => {
+    const read = api()?.runInsights?.projectSpend
+    if (typeof read !== 'function') {
+      setState(null)
+      return
+    }
+    let alive = true
+    read(projectId).then(
+      (s) => {
+        if (alive) setState(s && typeof s === 'object' && s.month ? s : null)
+      },
+      () => {
+        if (alive) setState((s) => s ?? null)
+      }
+    )
+    return () => {
+      alive = false
     }
   }, [projectId, refreshKey])
   return state
