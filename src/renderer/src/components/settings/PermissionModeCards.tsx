@@ -203,7 +203,11 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
         </div>
       )}
       {!inMore && (
-        <button type="button" className="perm-more-toggle" aria-expanded={showMore} aria-controls={groupId} data-testid="permission-mode-more" onClick={() => setMoreOpen((o) => !o)}>
+        <button type="button" className="perm-more-toggle" aria-expanded={showMore} aria-controls={groupId} data-testid="permission-mode-more" onClick={() => {
+            // Folding the extra modes away drops a preview of one of them, so no hidden mode stays "not saved".
+            if (showMore && pending && MORE_MODES.includes(pending)) setPending(null)
+            setMoreOpen((o) => !o)
+          }}>
           <ChevronRight className="perm-more-chevron" size={14} aria-hidden="true" />
           {showMore ? 'Fewer options' : 'More options: never ask, plan only, skip all checks'}
         </button>

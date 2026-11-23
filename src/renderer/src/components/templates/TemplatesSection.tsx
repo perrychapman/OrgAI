@@ -38,6 +38,13 @@ export default function TemplatesSection(): ReactElement {
     try {
       await removeTemplate(id)
       setStatus(`Removed the template ${name}.`)
+      setSelected(null)
+      // Its panel and Remove button are gone: land on the section heading.
+      window.setTimeout(() => {
+        const h = document.querySelector<HTMLElement>('[data-testid=templates-section] .settings-section-title')
+        h?.setAttribute('tabindex', '-1')
+        h?.focus()
+      }, 60)
     } catch (e) {
       setRemoveError(cleanIpcError(e))
     }
@@ -93,7 +100,7 @@ export default function TemplatesSection(): ReactElement {
             if (!t) return null
             const more = t.roleCount - t.roleNames.length
             return (
-              <div className="template-detail" data-testid="template-detail" data-template={t.id}>
+              <div key={t.id} className="template-detail" data-testid="template-detail" data-template={t.id}>
                 <DetailHeader name={t.name} tag={`${templateKindLabel(t.kind)} · ${savedDateLine(t.updatedAt)}`} />
                 {t.description && <DetailNote tone="off">{t.description}</DetailNote>}
                 <DetailChips title={`The team (${roleCountText(t.roleCount)})`} chips={more > 0 ? [...t.roleNames, `and ${more} more`] : t.roleNames} empty="No roles" />
@@ -102,7 +109,7 @@ export default function TemplatesSection(): ReactElement {
                 </p>
                 <DetailActions>
                   <Button size="sm" variant="primary" icon={Plus} testId="template-new-project" onClick={openNewProject}>
-                    New project
+                    Start a new project
                   </Button>
                   <Button size="sm" variant="danger" icon={Trash2} ariaLabel={`Remove the template ${t.name}`} testId="template-remove" onClick={() => void remove(t.id, t.name)}>
                     Remove...

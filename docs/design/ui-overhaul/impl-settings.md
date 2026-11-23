@@ -6,10 +6,9 @@ Providers, Tools, Skills, Templates. Renderer only; tokens from ov-foundation (m
 ## The frame (all boards)
 
 - **One settings menu** (`components/settings/SettingsNav.tsx`, the boards' `snav`): a glass panel with an "App" group
-  and a "Project: <name>" / "Engagement: <name>" group. App settings and a project's Settings tab stay two views (the
-  shell owns routing), so each page shows its own panes as a native tablist (roving tabindex, arrows, Home/End) and the
-  other page's panes as plain buttons that navigate there. The project group in App settings follows the selected
-  project and is hidden for Chat / the helpers or before a project exists. Narrow widths: a scrolling strip.
+  and a "Project: <name>" / "Engagement: <name>" group. (Part 2 below made this one view: both groups are tablists and
+  every pane shows in place.) The project group follows the selected project and is hidden for Chat / the helpers or
+  before a project exists. Narrow widths: a scrolling strip.
 - **Pane ids are the atlas ids**, so every deep link still lands. New renderer-only pane `appearance`
   (`lib/settingsMenu.ts` `appSettingsPaneFor` maps the atlas `appearance` and `canvas` sections, and the Motion
   surface, to it).
@@ -49,21 +48,14 @@ Providers, Tools, Skills, Templates. Renderer only; tokens from ov-foundation (m
 - **About and updates**: Updates first (the card takes the accent border when a newer version is waiting; release
   notes stay plain text), then About OrgAI (version, maker, platform, data and logs folders), then Help (Ask OrgAI
   about itself, Keyboard shortcuts).
-- **Providers / Tools / Skills / Templates**: existing sections restyled to glass in the wide column, plain-language
-  titles ("Your providers", "Services", "Your own tools (advanced)", "Your skills"), Tools helper / Skills helper
-  entry points ("Ask the Tools helper", "Ask the Skills helper").
+- **Providers / Tools / Skills / Templates**: plain-language titles ("Your providers", "Services", "Your own tools
+  (advanced)", "Your skills"), Tools helper / Skills helper entry points. Part 2 rebuilt them as galleries with a
+  detail panel (below).
 
 ## Deviations from the boards and why
 
-- Two views, one menu (see the frame). A true single Settings view needs App.tsx routing (ov-shell).
-- The Providers card grid with a detail aside, the Tools / Skills / Templates gallery-with-aside layout and the
-  "Fast / Standard / Most capable" tier columns were not rebuilt: the subagent limit blocked handing them to UI
-  Engineers and the lead did the frame, permissions, limits, appearance and about. The existing cards and galleries
-  (connector tiles with category chips and search already exist) carry the glass look. The app has four tiers (Top,
-  Deep, Everyday, Fast), not three; the e2e and the model selects depend on those names.
+- (Part 1 only, since resolved by part 2: two views, the galleries not rebuilt, isolation left in Permissions.)
 - Permissions: Unattended is "Recommended" (the app's recommendation), not Auto-accept edits as drawn.
-- Isolation and merge review stay in Permissions > Advanced > Runs rather than moving to Branches (permissions e2e and
-  deep links depend on them there).
 
 ## Needs runtime (sent to ov-runtime)
 
@@ -89,3 +81,69 @@ new menu (self-help breadcrumbs).
 - Atlas path text (shared) still names the old panes; `e2e/self-help.mjs` asserts it.
 - `RunActions.tsx` ("App settings > General") and `TeamAssistantTray.tsx` comments use old names (other leads).
 - No UX walkthrough of the changed flow yet; no screen reader pass; macOS not checked.
+
+## Part 2 (lead ov-settings-2, 2026-11-22)
+
+### Built
+
+- **One Settings view.** `AppSettingsView` shows both menu groups as native tablists (`SettingsNav` `groups`; testids
+  `settings-tab-<app|project>-<pane>`) and renders the project's panes in place (`ProjectSettingsPanes.tsx`). The
+  project Settings tab (`views/SettingsView.tsx`, still routed by App.tsx unchanged) embeds the same view, opening on
+  the stored project pane and without its own topbar. App.tsx was not touched; ov-shell agreed. In the embedded view
+  App deep links are left alone (they navigate to the App settings view), so a caller must `setView('appSettings')`.
+- **Shared gallery** `components/settings/SettingsGallery.tsx`: tiles are native buttons (aria-pressed, aria-controls
+  the aside) in one roving tab stop (arrows, Home, End), sections with actions and footnotes, search and filter chips
+  with a polite count, a sticky glass aside (static under 820 px of window height or a narrow column, scrolls inside
+  when taller than the window), Detail parts (header, note, can / cannot list, facts, chips, actions).
+- **AI providers** (Providers board): a tile per connection (how it signs in, Default, projects using it, model count,
+  status in words; "Needs attention" breathes), a dashed "Add a proxy" tile, the selected connection's full card in the
+  aside (`ConnectionCard` / `ProxyCard` `embedded`: always open, no collapse), then "Model tiers on <provider>": all
+  four tiers with plain names (Top = Most capable, Deep = Deep thinking, Everyday = Standard, Fast = Fast), each with
+  the app tier word, what it is for, the exact model id it resolves to (automatic or mapped) and how many roles in
+  your projects use it there. Editing stays in the card's tier editor.
+- **Tools and services** (Tools board): the services gallery keeps its tiles, chips, search, ranked order and dialogs
+  (other e2e drive them) and gains the detail panel beside it, following the focused or clicked tile: state note,
+  "The team can / could" and "cannot" (`connectors/toolCapabilities.ts`: the service's description, the variant's
+  read-only declaration worded as enforced by the service not OrgAI, "can" only when connected and used by a project),
+  sign-in expiry only when the entry needs attention, preset notes behind "Good to know", projects and roles that use
+  it (Role grants through `mcpServersForRole`), the tile's action and "Ask the Tools helper". Presets and "Your own
+  tools" stay below as before.
+- **Skills** (Skills board): tiles per library skill (source, file count, in use or not, a warning when it carries
+  scripts), filters In use / Not used yet, a dashed "Write a skill" tile, and a detail panel with a plain-text preview
+  of the instructions (first 1,200 characters, says when cut, bidi controls shown as a replacement mark, re-read after
+  an edit), projects and roles that use it, Edit, Remove (focus moves to New skill and a status says so).
+- **Templates** (Templates board): tiles per saved template (kind, role count, saved date), kind chips when both kinds
+  exist, a detail panel with the role names, what a template keeps, Start a new project and Remove.
+- **Permission mode cards**: arrowing previews a mode (dashed card, "not saved yet" bar, the effects table captioned
+  "(not saved)"); Enter, Space, a pointer click or "Use <mode>" saves; "Keep <mode>" drops the preview; folding More
+  options drops a preview hidden there. Bypass still asks first on every save path.
+- **Branches**: "Where work happens" (engagements: "Separate copies", only once opted in) holds worktree isolation and
+  merge review, moved from Permissions > Advanced (`WorkCopiesSection.tsx`, same fields and rules).
+
+### Deviations
+
+- Tools: the board's one mixed gallery would replace the services dialog that presets.mjs and team.mjs drive; the
+  panel sits beside the existing tiles instead, and custom servers stay in "Your own tools (advanced)".
+- Providers: no "Signed in as", "Limit resets", "Last checked N min ago" rows beyond what the cards already show;
+  no cost words per tier (a proxy's mapping makes them unreliable).
+- Templates: no built-in templates, usage counts or Duplicate (no data). Skills: no Duplicate or Export.
+- Branches board rows that need runtime (main branch, branch name pattern, tests must pass, keep failed branches) are
+  not drawn.
+
+### Verified
+
+- typecheck, unit tests (new `toolCapabilities.test.ts`, every curated connector checked for host names as
+  capabilities), build; e2e connections, connectors, presets, skills, engagement2, permissions (keyboard preview and
+  Enter save, isolation on Branches), maintenance on the mock adapter. Screenshots of AI providers and Tools at
+  1600x1000 dark / light looked at.
+- Reviewer (set2-review): approve, no Critical or High; M1-M8 fixed (M9 is `KitSection.tsx`, reported to its owner),
+  L1, L2, L4, L5, L6 fixed.
+
+### Open
+
+- `e2e/layout.mjs` clicks `label.seg-item` "Dark" in Colour mode, which part 1's picture cards replaced; it fails on
+  dev independent of part 2 (reported to the orchestrator).
+- `KitSection.tsx` "Open connectors" dispatches an App deep link without `setView` (reported).
+- Low items left: gallery section and detail headings are h3 like their section title (L3); `dimmed` / `trailing` on
+  gallery items are unused (a trailing control would add a Tab stop per tile).
+- No UX walkthrough of part 2, no screen reader pass, narrow (1024x640) screenshots of Skills and Templates not looked at.

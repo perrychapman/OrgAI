@@ -166,6 +166,10 @@ export function SettingsGallery({
           )}
           {toolbar && <div className="settings-gallery-toolbar">{toolbar}</div>}
         </div>
+        {/* One stable polite region: the count while a search or filter narrows the gallery. */}
+        <p className="sr-only" role="status" aria-live="polite">
+          {query.trim() || filter !== 'all' ? (visible.length === 0 ? 'Nothing matches' : `${visible.length} shown`) : ''}
+        </p>
         <div ref={grid} className="settings-gallery-sections" onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
           {shownSections.every((s) => s.cards.length === 0 && s.emptyNote === undefined) && (empty ?? <p className="settings-gallery-empty">Nothing matches.</p>)}
           {shownSections.map((s) => (

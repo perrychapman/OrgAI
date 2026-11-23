@@ -78,7 +78,7 @@ export function SettingsNav({
                     id={settingsTabId(idBase, g.key, it.id)}
                     className={`settings-nav-item${on ? ' active' : ''}`}
                     aria-selected={on}
-                    aria-controls={settingsPanelId(idBase)}
+                    aria-controls={current !== null ? settingsPanelId(idBase) : undefined}
                     tabIndex={it.id === tabStop ? 0 : -1}
                     data-testid={`settings-tab-${g.key}-${it.id}`}
                     onClick={() => onSelect(g.key, it.id)}

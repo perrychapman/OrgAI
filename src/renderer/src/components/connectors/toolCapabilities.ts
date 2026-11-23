@@ -1,20 +1,21 @@
 import type { ConnectorInfo, ConnectorVariant } from '@shared/types'
 
 /**
- * "The team can / cannot" for a service on Tools and services (ui-overhaul Tools board), from data the renderer
- * already has and nothing else: the connector variant's own label and description, its readOnly flag (the server
- * exposes only read tools, or the requested scopes are read-only: ConnectorVariant), the projects that link the
- * library entry and its OAuth token expiry. Nothing here claims a limit main does not enforce: "cannot" lines only
- * restate what the variant is set up for, and say so.
+ * "The team can / could" for a service on Tools and services (ui-overhaul Tools board), from data the renderer
+ * already has and nothing else: the service's own description, the connector variant's label and readOnly flag, the
+ * projects that link the library entry and its OAuth token expiry. OrgAI passes the whole server to every role that
+ * may use it; it does not filter tools. So nothing here is worded as an OrgAI-enforced limit: a read-only variant is
+ * "declared read-only by the preset; the service enforces it".
  */
 export interface ToolCapabilities {
-  /** 'can' once added (it is in the library), 'could' while still in the catalog. */
+  /** 'can' only when connected and at least one project uses it; 'could' otherwise. */
   mode: 'can' | 'could'
   can: string[]
+  /** What the preset declares the connection is not set up for (enforced by the service, not by OrgAI). */
   cannot: string[]
   /** Projects that link the library entry (names). Empty when none or not added. */
   projects: string[]
-  /** One line about the sign-in, when known (expiry of the stored access token). */
+  /** One line about the sign-in when it needs attention (an expired token on an entry that is not connected). */
   signIn?: string
 }
 
@@ -39,26 +40,25 @@ export function shortDate(iso: string | undefined, locale?: string): string | un
 
 export function toolCapabilities(info: ConnectorInfo, now: number = Date.now(), locale?: string): ToolCapabilities {
   const v = variantOf(info)
-  const added = info.state !== 'available'
+  const projects = (info.library?.usedBy ?? []).map((u) => u.projectName)
   const can: string[] = []
   const cannot: string[] = []
+  // The service's own one-liner says what it does; a variant's description can be a host name, so it is not used here.
+  if (info.connector.description) can.push(sentence(info.connector.description))
   if (v) {
-    const what = v.description ? sentence(v.description) : `Use ${info.connector.name}'s tools (${v.label})`
-    can.push(what)
     if (v.readOnly) {
-      can.push('Read tools only')
-      cannot.push('Use write tools: this connection is set up read-only')
+      can.push(`Read tools only (${v.label})`)
+      cannot.push('Use write tools: the preset declares this connection read-only, and the service enforces it')
     } else {
-      can.push('Read and write, as far as the service and your account allow')
+      can.push(`Read and write, as far as the service and your account allow (${v.label})`)
     }
   }
-  const projects = (info.library?.usedBy ?? []).map((u) => u.projectName)
   let signIn: string | undefined
   const exp = info.library?.auth.expiresAt
-  if (exp) {
+  // A connected entry's access token is refreshed by main, so its expiry is only worth a word when something is wrong.
+  if (exp && (info.state === 'needsSetup' || info.state === 'error')) {
     const when = shortDate(exp, locale)
-    const past = new Date(exp).getTime() <= now
-    if (when) signIn = past ? `The sign-in token expired on ${when}.` : `The current sign-in token expires on ${when}.`
+    if (when) signIn = new Date(exp).getTime() <= now ? `The sign-in expired on ${when}.` : `The sign-in is valid until ${when}.`
   }
-  return { mode: added ? 'can' : 'could', can, cannot, projects, signIn }
+  return { mode: info.state === 'connected' && projects.length > 0 ? 'can' : 'could', can, cannot, projects, signIn }
 }

@@ -28,6 +28,10 @@ export default function SkillLibrarySection(): ReactElement {
   const [actionError, setActionError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
+  const [status, setStatus] = useState('')
+  // Bumped when the edit form closes, so the detail panel re-reads the instructions (a body-only edit changes no
+  // listed field, and the preview is where people check untrusted instructions).
+  const [previewTick, setPreviewTick] = useState(0)
   const { confirm, dialog } = useConfirm()
 
   const addFolder = async (): Promise<void> => {
@@ -67,6 +71,10 @@ export default function SkillLibrarySection(): ReactElement {
     setActionError(null)
     try {
       await lib.remove(info.entry.id)
+      setSelected(null)
+      setStatus(`Removed ${info.entry.name} from the library.`)
+      // The removed skill's panel (and its Remove button) is gone: land on New skill, which is always there.
+      window.setTimeout(() => document.querySelector<HTMLElement>('[data-testid=skill-library-new]')?.focus(), 60)
     } catch (e) {
       setActionError(cleanIpcError(e))
     }
@@ -94,6 +102,9 @@ export default function SkillLibrarySection(): ReactElement {
       }
     >
       <div className="mcp-body">
+        <p className="sr-only" role="status" aria-live="polite" data-testid="skill-library-status">
+          {status}
+        </p>
         {actionError && (
           <Banner tone="danger" title="That did not work">
             {actionError}
@@ -186,7 +197,9 @@ export default function SkillLibrarySection(): ReactElement {
                 )
               }
               const info = list.find((i) => i.entry.id === item.id)
-              return info ? <SkillDetail info={info} lib={lib} onEdit={() => setModal({ kind: 'form', editing: info })} onRemove={() => void remove(info)} /> : null
+              return info ? (
+                <SkillDetail key={info.entry.id} info={info} lib={lib} tick={previewTick} onEdit={() => setModal({ kind: 'form', editing: info })} onRemove={() => void remove(info)} />
+              ) : null
             }}
           />
         )}
@@ -197,7 +210,10 @@ export default function SkillLibrarySection(): ReactElement {
           editing={modal.editing}
           lib={lib}
           takenNames={(list ?? []).filter((i) => i.entry.id !== modal.editing?.entry.id).map((i) => i.entry.name)}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            setModal(null)
+            setPreviewTick((t) => t + 1)
+          }}
         />
       )}
       {dialog}
@@ -212,7 +228,19 @@ const PREVIEW_CHARS = 1200
  * The Skills board's detail panel: what the skill is for, where it came from, a plain-text preview of its instructions
  * (read from the library on demand), which projects and roles use it, and Edit / Remove.
  */
-function SkillDetail({ info, lib, onEdit, onRemove }: { info: SkillLibraryInfo; lib: ReturnType<typeof useSkillLibrary>; onEdit: () => void; onRemove: () => void }): ReactElement {
+function SkillDetail({
+  info,
+  lib,
+  tick,
+  onEdit,
+  onRemove
+}: {
+  info: SkillLibraryInfo
+  lib: ReturnType<typeof useSkillLibrary>
+  tick: number
+  onEdit: () => void
+  onRemove: () => void
+}): ReactElement {
   const { entry } = info
   const hint = skillElevatedHint(skillScriptPaths(entry.files))
   const used = usedByList(info.usedBy)
@@ -230,8 +258,11 @@ function SkillDetail({ info, lib, onEdit, onRemove }: { info: SkillLibraryInfo; 
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry.id, entry.description, entry.files.length])
-  const preview = body === null ? null : body.length > PREVIEW_CHARS ? `${body.slice(0, PREVIEW_CHARS).trimEnd()}\n…` : body
+  }, [entry.id, entry.description, entry.files.length, tick])
+  // Bidi overrides and isolates would let untrusted text reorder what the preview shows: shown as a visible mark instead.
+  const visible = body === null ? null : body.replace(/[‪-‮⁦-⁩‎‏]/g, '�')
+  const cut = visible !== null && visible.length > PREVIEW_CHARS
+  const preview = visible === null ? null : cut ? visible.slice(0, PREVIEW_CHARS).trimEnd() : visible
   return (
     <div className="skill-detail" data-testid="skill-library-detail" data-id={entry.id}>
       <DetailHeader mark={entry.name.slice(0, 1).toUpperCase()} name={entry.name} tag={`${sourceLabel(entry.source)} · ${entry.files.length} file${entry.files.length === 1 ? '' : 's'}`} />
@@ -250,6 +281,11 @@ function SkillDetail({ info, lib, onEdit, onRemove }: { info: SkillLibraryInfo; 
           <pre className="skill-detail-body" tabIndex={0} role="region" aria-label={`Instructions of ${entry.name}`}>
             {preview || 'No instructions yet.'}
           </pre>
+        )}
+        {cut && body !== null && (
+          <p className="settings-detail-hint muted" data-testid="skill-library-preview-cut">
+            First {PREVIEW_CHARS.toLocaleString('en-US')} of {body.length.toLocaleString('en-US')} characters. Edit to read all of it.
+          </p>
         )}
       </DetailBlock>
       <div className="settings-detail-block skill-used-by" data-testid="skill-library-used-by">

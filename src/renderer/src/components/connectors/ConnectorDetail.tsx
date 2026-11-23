@@ -46,11 +46,11 @@ export function ConnectorDetail({ info, onOpen }: { info: ConnectorInfo; onOpen:
   const scope = info.state === 'available' ? 'Not added' : caps.projects.length === 0 ? 'Added, no project uses it yet' : `Used in ${caps.projects.length} ${caps.projects.length === 1 ? 'project' : 'projects'}`
   const note =
     info.state === 'connected'
-      ? `${chip.label}. Runs in the projects that use it act with this sign-in, limited to the tools below.`
+      ? `${chip.label}. Roles that may use it act with this sign-in, with every tool the service offers that account.`
       : info.state === 'needsSetup'
         ? 'Added, but it is not signed in yet. Runs that need it cannot use it until you finish setup.'
         : info.state === 'error'
-          ? `The last sign-in failed${info.library?.auth.error ? `: ${info.library.auth.error}` : '.'}`
+          ? `The last sign-in failed${info.library?.auth.error ? `: ${info.library.auth.error.slice(0, 300)}` : '.'}`
           : def.description
 
   return (
@@ -67,6 +67,7 @@ export function ConnectorDetail({ info, onOpen }: { info: ConnectorInfo; onOpen:
         testId="connector-detail-can"
       />
       <DetailList title={caps.mode === 'can' ? 'The team cannot' : 'The team could not'} mark="cannot" items={caps.cannot.map((t) => ({ text: t }))} testId="connector-detail-cannot" />
+      {info.state === 'connected' && caps.projects.length === 0 && <p className="settings-detail-hint muted">No project uses it yet. Add it to a project on its Team tab so roles can use it.</p>}
       {variant && def.variants.length > 1 && (
         <p className="settings-detail-hint muted">
           {info.state === 'available' ? 'Starts as' : 'Set up as'} "{variant.label}". {def.variants.length - 1} other {def.variants.length === 2 ? 'option' : 'options'} in {action.label}.
