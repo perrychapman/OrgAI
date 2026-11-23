@@ -5,7 +5,11 @@ import { cameraArea, contentSize, mapOffset, zoomLabel, zoomName, OFFICE_TILE_PX
 import { assignAppearances } from '../../../lib/office/layout'
 import type { Point as WalkPoint } from '../../../lib/office/motion'
 import { furnishBuilding } from '../../../lib/office/themes'
+import { Minus, Plus } from 'lucide-react'
 import { Button } from '../../ui/Button'
+import { IconButton } from '../../ui/IconButton'
+import { SegmentedControl } from '../../ui/SegmentedControl'
+import { inShow, showCounts, type OfficeShow } from '../../../lib/office/showFilter'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import { recentMessages } from '../../../lib/office/messageCursor'
 import { activeBubbles } from '../../../lib/office/scheduler'
@@ -38,6 +42,7 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
   const reduced = useOfficeReducedMotion()
   const announce = useFrameAnnounce()
   const [paused, setPaused] = useState(false)
+  const [show, setShow] = useState<OfficeShow>('all')
   const motionOff = reduced || paused
   const stage = useRef<HTMLDivElement>(null)
   const spriteRefs = useRef(new Map<string, SpriteRefs>())
@@ -125,45 +130,68 @@ export function OfficeScene({ agents: allAgents, messages, onSelect, onRemove, s
     ...order.filter(agent => officeState(agent.status) === 'waiting').map(agent => ({ id: agent.id, name: agent.name, reason: 'needs you' as const })),
     ...bubbles.filter(bubble => byId.get(bubble.to)?.status !== 'waiting').map(bubble => ({ id: bubble.to, name: names.get(bubble.to) ?? bubble.to, reason: 'message' as const }))
   ]
+  // Show filter (Office board): live only; people outside it are dimmed and leave the Find list, nobody moves or hides.
+  const filter: OfficeShow = mode === 'live' ? show : 'all'
+  const counts = showCounts(agents.map(agent => agent.status))
+  const dimmedIds = filter === 'all' ? undefined : new Set(agents.filter(agent => !inShow(filter, agent.status)).map(agent => agent.id))
+  const listed = filter === 'all' ? agents : agents.filter(agent => inShow(filter, agent.status))
+  const strip = <OfficeStrip
+    mode={mode} motionOff={motionOff} names={names} messages={recentMessages(messages, 3)}
+    active={deliveries.scheduler.active.length} queued={deliveries.scheduler.queued.length} onShow={showPerson}
+  />
   return <section
     className="office-scene" onFocusCapture={deliveries.onFocusCapture}
     style={{ '--office-label-width': `${Math.max(96, 4 * OFFICE_TILE_PX * zoom - 4)}px` } as CSSProperties}
     data-testid="office-scene" data-mode={mode} data-palette={palette} data-plates={zoom >= 2 ? 'always' : 'hover'} data-paused={paused ? 'true' : undefined}
-    data-office-clock={clock.running ? 'running' : 'stopped'} data-office-animated={clock.animated}
+    data-office-clock={clock.running ? 'running' : 'stopped'} data-office-animated={clock.animated} data-show={filter}
   >
-    {mode === 'team' && <p>Team layout · roles, not live activity</p>}{mode === 'sample' && <p>Sample office · example agents</p>}
-    <div className="office-controls">
-      <Button size="sm" onClick={camera.zoomOut}>Zoom out</Button>
-      <span data-testid="office-zoom" data-zoom={zoom} role="img" aria-label={zoomName(zoom)}>{zoomLabel(zoom)}</span>
-      <Button size="sm" onClick={camera.zoomIn}>Zoom in</Button>
-      <Button size="sm" onClick={camera.fit}>Fit</Button>
-      {mode === 'live' && <Button
-        size="sm" testId="office-pause" pressed={paused} onClick={() => setPaused(value => !value)}
-        inert={reduced} title={reduced ? 'Motion is already off: Reduce motion is on in Settings' : undefined}
-      >Pause motion</Button>}
+    {mode === 'team' && <p className="office-mode-note">Team layout · roles, not live activity</p>}{mode === 'sample' && <p className="office-mode-note">Sample office · example agents</p>}
+    <div className="office-controls" role="group" aria-label="Office controls">
+      <OfficeDirectory agents={listed} rooms={rooms} selectedId={selectedId} onPick={agent => showPerson(agent.id)} onRemove={onRemove} filteredOut={agents.length - listed.length} />
       <OfficeOffscreen stage={stage} items={cueItems} positions={positionsNow} area={area} zoom={zoom} client={client} onShow={showFromChip} />
+      {mode === 'live' && <div className="office-show glass-strong" data-testid="office-show-filter">
+        <SegmentedControl<OfficeShow> label="Show" value={show} onChange={setShow} options={[
+          { value: 'all', label: `All ${counts.all}` },
+          { value: 'working', label: `Working ${counts.working}` },
+          { value: 'waiting', label: `Waiting ${counts.waiting}` }
+        ]} />
+      </div>}
     </div>
-    <div
-      className="office-stage" data-testid="office-stage" data-width={building.bounds.width} data-height={building.bounds.height}
-      ref={stage} tabIndex={0} role="group" aria-label="Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building, Home resets the view." {...camera.stageProps}
-    >
-      <div className="office-map" data-testid="office-floor" style={{ width: Math.max(content.width, client.width), height: Math.max(content.height, client.height) }}>
-        <div className="office-world" style={{ left: offset.x, top: offset.y, width: content.width, height: content.height }}>
-          <OfficeBuilding building={building} tiles={furnished.tiles} props={staticProps} palette={palette} zoom={zoom} area={area} />
-          <OfficeRoomLabels building={building} area={area} zoom={zoom} />
-          <OfficeSprites
-            people={people} area={area} zoom={zoom} palette={palette} paused={paused} selectedId={selectedId} foundId={camera.foundId} exchangeIds={exchangeIds}
-            spriteRefs={spriteRefs} onSelect={selectId} onRemove={onRemove ? removeId : undefined} onReveal={revealId}
-          />
-          <OfficeBubbles bubbles={bubbles} positions={positionsNow} zoom={zoom} area={area} size={content} spriteRefs={spriteRefs} />
+    <div className="office-stage-wrap">
+      <div
+        className="office-stage" data-testid="office-stage" data-width={building.bounds.width} data-height={building.bounds.height}
+        ref={stage} tabIndex={0} role="group" aria-label="Office scene. Arrow keys pan, plus and minus zoom, 0 fits the building, Home resets the view." {...camera.stageProps}
+      >
+        <div className="office-map" data-testid="office-floor" style={{ width: Math.max(content.width, client.width), height: Math.max(content.height, client.height) }}>
+          <div className="office-world" style={{ left: offset.x, top: offset.y, width: content.width, height: content.height }}>
+            <OfficeBuilding building={building} tiles={furnished.tiles} props={staticProps} palette={palette} zoom={zoom} area={area} />
+            <OfficeRoomLabels building={building} area={area} zoom={zoom} />
+            <OfficeSprites
+              people={people} area={area} zoom={zoom} palette={palette} paused={paused} selectedId={selectedId} foundId={camera.foundId} exchangeIds={exchangeIds}
+              dimmedIds={dimmedIds} spriteRefs={spriteRefs} onSelect={selectId} onRemove={onRemove ? removeId : undefined} onReveal={revealId}
+            />
+            <OfficeBubbles bubbles={bubbles} positions={positionsNow} zoom={zoom} area={area} size={content} spriteRefs={spriteRefs} />
+          </div>
         </div>
       </div>
+      <div className="office-zoom glass-strong" role="group" aria-label="Zoom">
+        <IconButton icon={Minus} label="Zoom out" size="sm" onClick={camera.zoomOut} />
+        <span className="office-zoom-readout" data-testid="office-zoom" data-zoom={zoom} role="img" aria-label={zoomName(zoom)}>{zoomLabel(zoom)}</span>
+        <IconButton icon={Plus} label="Zoom in" size="sm" onClick={camera.zoomIn} />
+        <Button size="sm" variant="ghost" onClick={camera.fit}>Fit</Button>
+      </div>
     </div>
-    <OfficeStrip
-      mode={mode} motionOff={motionOff} names={names} messages={recentMessages(messages, 3)}
-      active={deliveries.scheduler.active.length} queued={deliveries.scheduler.queued.length} onShow={showPerson}
-    />
+    {mode === 'live' ? <div className="office-log glass" data-testid="office-log">
+      <div className="office-log-head">
+        <h3 className="office-log-title">Message log</h3>
+        <span className="office-log-count">{messages.length === 1 ? '1 message' : `${messages.length} messages`}</span>
+        <Button
+          size="sm" testId="office-pause" pressed={paused} onClick={() => setPaused(value => !value)}
+          inert={reduced} title={reduced ? 'Motion is already off: Reduce motion is on in Settings' : undefined}
+        >Pause motion</Button>
+      </div>
+      {strip}
+    </div> : strip}
     {!agents.length && <p className="office-empty">The office is ready. People appear here when your team starts work.</p>}
-    <OfficeDirectory agents={agents} rooms={rooms} selectedId={selectedId} onPick={agent => showPerson(agent.id)} onRemove={onRemove} />
   </section>
 }

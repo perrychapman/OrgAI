@@ -1,5 +1,6 @@
-import { useState, type ReactElement } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 import type { AgentMessage } from '@shared/types'
+import { relativeTime } from '@shared/view/runChains'
 import { bubbleText } from '../../../lib/office/motion'
 import { Button } from '../../ui/Button'
 
@@ -43,6 +44,14 @@ export function OfficeStrip({ mode, motionOff, names, messages, active, queued, 
   const [held, setHeld] = useState<readonly AgentMessage[] | null>(null)
   const latest = mode === 'live' ? messages : []
   const rows = held ?? latest
+  // "just now / 2 min ago" reads from a clock that ticks every 30 s only while there are rows (text only, never motion).
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!rows.length) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [rows.length, rows[0]]) // eslint-disable-line react-hooks/exhaustive-deps
   return <div
     className="office-message-strip" role="region" aria-label="Office message deliveries" tabIndex={rows.length ? 0 : undefined}
     data-office-strip-held={held ? 'true' : undefined}
@@ -56,8 +65,9 @@ export function OfficeStrip({ mode, motionOff, names, messages, active, queued, 
         const to = message.to ? names.get(message.to) ?? message.to : 'team'
         const present = !!message.to && names.has(message.to)
         return <div key={rowKey(message)} className="office-strip-row" data-testid="office-caption" title={`${from} to ${to}: ${message.text}`}>
-          <span className="office-strip-text">{clipName(from)} to {clipName(to)} · {bubbleText(message.text)}</span>
+          <span className="office-strip-text"><strong className="office-strip-name">{clipName(from)}</strong><span className="office-strip-to"> to </span><strong className="office-strip-name">{clipName(to)}</strong><span className="office-strip-to"> · </span>{bubbleText(message.text)}</span>
           <span className="office-full-message"> Full available message: {message.text}</span>
+          {Number.isFinite(message.at) && <time className="office-strip-when" dateTime={new Date(message.at).toISOString()} title={new Date(message.at).toLocaleTimeString()}>{relativeTime(message.at, now)}</time>}
           {present && onShow && <Button size="sm" testId="office-show" ariaLabel={`Show ${to}`} title={`Show ${to}`} onClick={() => onShow(message.to!)}>Show {clipName(to)}</Button>}
         </div>
       })}

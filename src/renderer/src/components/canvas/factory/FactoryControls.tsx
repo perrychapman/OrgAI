@@ -1,5 +1,6 @@
 // Factory Floor scene controls (docs/design/factory-floor.md section 6.7): one role=toolbar row at the bottom left of the
-// stage with Find a worker, Zoom out, Zoom in, Fit and (live only) Pause motion. Arrow keys, Home and End move between
+// stage with Zoom out, Zoom in, Fit and (live only) Pause motion; since the UI overhaul Find a worker sits at the stage's
+// top (Factory board) unless a caller passes it in. Arrow keys, Home and End move between
 // the controls; only one is a Tab stop (the roving tabindex used by the Outputs diagram toolbar).
 import { useLayoutEffect, useRef, type KeyboardEvent, type ReactElement, type ReactNode } from 'react'
 import { Maximize, Pause, ZoomIn, ZoomOut } from 'lucide-react'
@@ -8,8 +9,8 @@ import { IconButton } from '../../ui/IconButton'
 import '../../../styles/factory-chrome.css'
 
 export interface FactoryControlsProps {
-  /** The <FactoryFind/> element. */
-  find: ReactNode
+  /** A <FactoryFind/> element inside the row. The scene places Find at the stage's top instead (Factory board) and omits it. */
+  find?: ReactNode
   onZoomIn(): void
   onZoomOut(): void
   onFit(): void

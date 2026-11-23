@@ -40,6 +40,8 @@ export interface OfficeSpritesProps {
   foundId: string | null
   /** People in a message exchange: their plates show at every zoom, inverted (S5b). */
   exchangeIds?: ReadonlySet<string>
+  /** People outside the Show filter: drawn dimmed, still present and focusable. */
+  dimmedIds?: ReadonlySet<string>
   spriteRefs: SpriteRegistry
   onSelect(id: string): void
   onRemove?(id: string): void
@@ -79,21 +81,21 @@ const Desk = memo(function Desk({ id, x, y, desk, chair, screen, mug, propSheet,
 
 interface ArtProps {
   id: string; silhouette: string; direction: string; pose: string; x: number; y: number; depth: number
-  state: string; phase: string; cue: string; mark: OfficeMarkName | null; workerSheet: string; propSheet: string; registry: SpriteRegistry
+  state: string; phase: string; cue: string; mark: OfficeMarkName | null; workerSheet: string; propSheet: string; registry: SpriteRegistry; dimmed: boolean
 }
-const Art = memo(function Art({ id, silhouette, direction, pose, x, y, depth, state, phase, cue, mark, workerSheet, propSheet, registry }: ArtProps): ReactElement {
+const Art = memo(function Art({ id, silhouette, direction, pose, x, y, depth, state, phase, cue, mark, workerSheet, propSheet, registry, dimmed }: ArtProps): ReactElement {
   const frame = workerFrames[workerFrameName(silhouette, direction, pose)] ?? workerFrames[workerFrameName(silhouette, 'down', 'idle')]
   // The mark element always carries its sheet and size, so the clock only has to flip `hidden` and the frame.
   const markFrame = propFrames[`prop.mark-${mark ?? 'wait'}`]
   return <>
     <i
       className="office-sprite office-person-art" data-office-sprite-id={id} data-office-motion-phase={phase} data-office-x={x} data-office-y={y}
-      data-office-state={state} data-office-cue={cue} ref={element => register(registry, id, 'art', element)}
+      data-office-state={state} data-office-cue={cue} data-office-dimmed={dimmed ? 'true' : undefined} ref={element => register(registry, id, 'art', element)}
       style={{ left: x, top: y, zIndex: depth, ...frameBackground(frame, workerSheet) }}
     />
     <i
       className="office-sprite office-mark" aria-hidden="true" hidden={!mark} data-agent-id={id} data-mark={mark ?? undefined}
-      data-testid={mark ? 'office-mark' : undefined} ref={element => register(registry, id, 'mark', element)}
+      data-office-dimmed={dimmed ? 'true' : undefined} data-testid={mark ? 'office-mark' : undefined} ref={element => register(registry, id, 'mark', element)}
       style={{ left: x, top: y - 13, zIndex: depth + 1000, ...frameBackground(markFrame, propSheet) }}
     />
   </>
@@ -102,14 +104,15 @@ const Art = memo(function Art({ id, silhouette, direction, pose, x, y, depth, st
 interface TargetProps {
   id: string; name: string; line: string; ariaLabel: string; title: string
   left: number; top: number; width: number; height: number
-  selected: boolean; found: boolean; exchange: boolean
+  selected: boolean; found: boolean; exchange: boolean; state: string; dimmed: boolean
   registry: SpriteRegistry
   onSelect(id: string): void; onRemove?(id: string): void; onReveal(id: string): void
 }
-const Target = memo(function Target({ id, name, line, ariaLabel, title, left, top, width, height, selected, found, exchange, registry, onSelect, onRemove, onReveal }: TargetProps): ReactElement {
+const Target = memo(function Target({ id, name, line, ariaLabel, title, left, top, width, height, selected, found, exchange, state, dimmed, registry, onSelect, onRemove, onReveal }: TargetProps): ReactElement {
   return <button
     type="button" className="office-person" data-office-worker-id={id} data-testid="pocket-office-agent" data-agent-id={id}
     data-office-found={found ? 'true' : undefined} data-office-exchange={exchange ? 'true' : undefined}
+    data-office-state={state} data-office-dimmed={dimmed ? 'true' : undefined}
     aria-label={ariaLabel} aria-pressed={selected} title={title} ref={element => register(registry, id, 'button', element)}
     style={{ left, top, width, height }}
     onClick={() => onSelect(id)}
@@ -132,7 +135,7 @@ export function targetBox(x: number, y: number, area: Rect, zoom: number): { lef
   return { left: Math.round(centreX - width / 2), top: Math.round(centreY - height / 2), width, height }
 }
 
-export function OfficeSprites({ people, area, zoom, palette, paused, selectedId, foundId, exchangeIds, spriteRefs, onSelect, onRemove, onReveal }: OfficeSpritesProps): ReactElement {
+export function OfficeSprites({ people, area, zoom, palette, paused, selectedId, foundId, exchangeIds, dimmedIds, spriteRefs, onSelect, onRemove, onReveal }: OfficeSpritesProps): ReactElement {
   const sheets = sheetsFor(palette)
   /** An arrival waiting outside for a walk slot has its desk but is not drawn (and is not tabbable) until it walks in. */
   const drawn = people.filter(person => !person.queued)
@@ -145,13 +148,14 @@ export function OfficeSprites({ people, area, zoom, palette, paused, selectedId,
       {drawn.map(person => <Art
         key={`art-${person.id}`} id={person.id} silhouette={person.silhouette} direction={person.frame.direction} pose={person.frame.pose}
         x={person.x} y={person.y} depth={person.depth} state={person.state} phase={person.phase} cue={person.frame.cue} mark={person.frame.mark}
-        workerSheet={sheets.workers} propSheet={sheets.props} registry={spriteRefs}
+        workerSheet={sheets.workers} propSheet={sheets.props} registry={spriteRefs} dimmed={dimmedIds?.has(person.id) ?? false}
       />)}
     </div>
     <div className="office-people">
       {drawn.map(person => <Target
         key={`target-${person.id}`} id={person.id} name={person.name} line={person.line} ariaLabel={person.ariaLabel} title={person.title}
         {...targetBox(person.x, person.y, area, zoom)} selected={person.id === selectedId} found={person.id === foundId} exchange={exchangeIds?.has(person.id) ?? false}
+        state={person.state} dimmed={dimmedIds?.has(person.id) ?? false}
         registry={spriteRefs} onSelect={onSelect} onRemove={onRemove} onReveal={onReveal}
       />)}
     </div>

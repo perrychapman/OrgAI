@@ -246,6 +246,19 @@ try {
   const leftNote = ((await page.locator('[data-testid=history-left-note]').first().innerText().catch(() => '')) || '').trim()
   check(leftNote === '' || /^(No files registered\.|Checking files…|Could not load the files\.)$/.test(leftNote), 'What it left says files, not outputs', leftNote)
 
+  // The row agent strip is loaded lazily and never draws an empty strip as an answer: each row shows a strip, a loading
+  // or failed note, or nothing (no agents recorded).
+  await sleep(800)
+  const stripStates = await page.evaluate(() => [...document.querySelectorAll('tr.run-row')].map((r) => ({ strip: !!r.querySelector('[data-testid=history-row-strip]'), note: !!r.querySelector('[data-testid=history-row-strip-loading],[data-testid=history-row-strip-failed]') })))
+  check(stripStates.every((s) => !(s.strip && s.note)), 'a row never shows a strip and a loading note together', JSON.stringify(stripStates))
+  const stripLabels = await page.locator('[data-testid=history-row-strip]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
+  check(stripLabels.every((l) => /^Final state of \d+ agents?/.test(l ?? '')), 'row agent strips are named with the final state in words', JSON.stringify(stripLabels))
+  // What it left: merge facts or a plain "no merge recorded" / loading note, never a number the record does not hold.
+  const mergeBlock = ((await page.locator('[data-testid=history-left-branches],[data-testid=history-left-branches-note]').first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(mergeBlock === '' || !/[+−-]\d+\s*[+−-]\d+/.test(mergeBlock), 'What it left shows no invented line counts', mergeBlock)
+  // Try again exists only for a failed run: these two runs finished, so there is no button and nothing was sent.
+  check((await page.locator('[data-testid=history-detail-retry]').count()) === 0, 'no Try again on a finished run')
+
   // Keyboard path: a row's title button selects it, Open opens it on the Live tab (the mouse shortcuts are extras).
   const titleBtns = page.locator('button.hb-main')
   await titleBtns.nth(1).focus()

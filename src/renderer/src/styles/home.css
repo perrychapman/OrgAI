@@ -983,3 +983,37 @@
     max-width: none;
   }
 }
+
+/* Git: a quiet note under the repo strip when the folder has no repository answer, and the commit sha. */
+.home-git-note {
+  margin: 0;
+  padding: var(--space-1) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.home-git-note[data-tone='warn'] {
+  color: var(--warning-text);
+}
+.home-sha {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+
+/* Schedule outcome bar (inline SVG, tokens only; colour is never the only cue: the label names every bar). */
+.home-nightly {
+  flex: none;
+  display: block;
+}
+.home-nightly-bar {
+  fill: var(--success-text);
+}
+.home-nightly-bar[data-tone='warn'] {
+  fill: var(--warning-text);
+}
+.home-nightly-bar[data-tone='bad'] {
+  fill: var(--danger-text);
+}

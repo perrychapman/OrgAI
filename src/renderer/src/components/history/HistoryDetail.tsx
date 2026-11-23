@@ -16,7 +16,7 @@ import { promptLine, runTag, shortPrompt } from '../../lib/runLabels'
 import { statusText, type RunStatusView } from '../../lib/runStatus'
 import { kindLabel, outputsCountLabel } from '../../lib/outputs'
 import { formatDateTime } from '../../lib/dates'
-import { agentTally, agentsLabel, chainFacts, filesNote, rerunPlan, runSummaryText, RERUN_NOT_CARRIED, STEP_WORD, stepTone, tallyText, MARK_WORD, type AgentMark, type OutputsPhase } from '../../lib/runHistory'
+import { agentTally, agentsLabel, branchFacts, branchLines, chainFacts, filesNote, refusalText, rerunPlan, retryPlan, runSummaryText, RERUN_NOT_CARRIED, STEP_WORD, stepTone, tallyText, MARK_WORD, type AgentMark, type OutputsPhase } from '../../lib/runHistory'
 import { STATUS_BADGE } from './groupStatus'
 import { useRunRecord } from './useRunRecord'
 
@@ -56,7 +56,7 @@ export function HistoryDetail({
   const { first, newest, members } = group
   const headingId = useId()
   const tag = runTag(indexes.get(first.id))
-  const record = useRunRecord(newest)
+  const { record, phase: recordPhase } = useRunRecord(newest)
   const openSchedules = useAppStore((s) => s.openSchedules)
   const project = useAppStore(selectedProject)
   const selectedProjectId = project?.id
@@ -72,6 +72,7 @@ export function HistoryDetail({
 
   const agents = useMemo(() => (record ? Object.values(record.agents ?? {}) : []), [record])
   const tally = useMemo(() => agentTally(agents.map((a) => a.state)), [agents])
+  const branch = useMemo(() => branchLines(branchFacts(agents)), [agents])
   const root = agents.find((a) => a.parentId === null)
   const summary = runSummaryText({ planSummary: record?.plan?.summary, rootResult: root?.result })
   const steps = record?.plan?.steps ?? []
@@ -93,6 +94,58 @@ export function HistoryDetail({
     clearTimeout(timer.current)
     setAgain(null)
   }, [first.id])
+  // "Try again" continues the failed run and spends tokens, so it never acts on the first press: the first press opens a
+  // confirmation that names the project and the request, and only its own button calls runActions.retry. Enter acts on
+  // key-up (a held Enter repeats keydown), a ref guard stops a double activation, and a refusal is shown inline.
+  const [retry, setRetry] = useState<{ runId: string; state: 'confirm' | 'busy' | 'error'; message?: string } | null>(null)
+  const retrying = useRef(false)
+  const retryArmed = useRef(false)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const retryOffer = retryPlan(newest, selectedProjectId)
+  const retryState = retry?.runId === newest.id ? retry : null
+  useEffect(() => {
+    retrying.current = false
+    retryArmed.current = false
+    setRetry(null)
+  }, [newest.id])
+  useEffect(() => {
+    if (retryState?.state === 'confirm') cancelRef.current?.focus()
+  }, [retryState?.state])
+  const askRetry = (): void => {
+    if (!retryOffer.ok) {
+      setRetry({ runId: newest.id, state: 'error', message: retryOffer.reason })
+      return
+    }
+    setRetry({ runId: newest.id, state: 'confirm' })
+  }
+  const confirmRetry = (): void => {
+    if (retrying.current || !retryOffer.ok) return
+    retrying.current = true
+    const runId = newest.id
+    setRetry({ runId, state: 'busy' })
+    window.orgai.runActions
+      .retry({ runId })
+      .then((summary) => {
+        retrying.current = false
+        setRetry(null)
+        onOpen(summary.id)
+      })
+      .catch((e: unknown) => {
+        retrying.current = false
+        setRetry({ runId, state: 'error', message: refusalText(e, 'The run could not be tried again.') })
+      })
+  }
+  const onRetryKeyDown = (e: ReactKeyboardEvent<HTMLElement>): void => {
+    if (e.key !== 'Enter' || !(e.target instanceof Element) || !e.target.closest('[data-retry-confirm]')) return
+    e.preventDefault()
+    if (!e.repeat) retryArmed.current = true
+  }
+  const onRetryKeyUp = (e: ReactKeyboardEvent<HTMLElement>): void => {
+    if (e.key !== 'Enter' || !retryArmed.current) return
+    retryArmed.current = false
+    e.preventDefault()
+    confirmRetry()
+  }
   const runAgain = (): void => {
     if (opening.current) return
     const plan = rerunPlan(first, selectedProjectId)
@@ -172,6 +225,11 @@ export function HistoryDetail({
               </Button>
             </span>
           )}
+          {retryOffer.ok && (
+            <Button onClick={askRetry} testId="history-detail-retry" inert={retryState?.state === 'busy'} title="Continue this failed run. You confirm before anything is sent.">
+              Try again
+            </Button>
+          )}
           {canContinue && (
             <Button onClick={() => onContinue(newest.id)} testId="history-detail-continue" title="Open this run and continue its session with its memory">
               Continue from here
@@ -188,6 +246,28 @@ export function HistoryDetail({
             Run it again opens the New run page for {project?.name ?? 'this project'} with {'“'}
             {request}
             {'”'} filled in; nothing is sent until you start it there. {RERUN_NOT_CARRIED}
+          </p>
+        )}
+        {(retryState?.state === 'confirm' || retryState?.state === 'busy') && retryOffer.ok && (
+          <div className="hb-confirm" role="group" aria-labelledby={`${headingId}-retry`} data-testid="history-retry-confirm-box" onKeyDownCapture={onRetryKeyDown} onKeyUpCapture={onRetryKeyUp} onBlurCapture={() => (retryArmed.current = false)}>
+            <p className="hb-note" id={`${headingId}-retry`}>
+              Try again continues this failed run in {project?.name ?? 'this project'} and sends {'“'}
+              {shortPrompt(retryOffer.request, REQUEST_CHARS)}
+              {'”'} to the team. It spends tokens against this project{'’'}s limits. Nothing is sent until you confirm.
+            </p>
+            <span className="hb-confirm-actions">
+              <button type="button" className="btn primary sm" data-retry-confirm="" data-testid="history-retry-confirm" aria-busy={retryState.state === 'busy' || undefined} onClick={() => confirmRetry()}>
+                {retryState.state === 'busy' ? 'Starting…' : 'Yes, try again'}
+              </button>
+              <button type="button" className="btn ghost sm" ref={cancelRef} data-testid="history-retry-cancel" disabled={retryState.state === 'busy'} onClick={() => setRetry(null)}>
+                Cancel
+              </button>
+            </span>
+          </div>
+        )}
+        {retryState?.state === 'error' && (
+          <p className="hb-error" role="alert" data-testid="history-retry-error">
+            {retryState.message}
           </p>
         )}
         {failure && (
@@ -246,6 +326,28 @@ export function HistoryDetail({
             <h4 className="hb-section-title" id={`${headingId}-left`}>
               What it left
             </h4>
+            {!record && (
+              <p className="hb-note" data-testid="history-left-branches-note">
+                {recordPhase === 'loading' ? 'Checking what was merged…' : 'What was merged could not be loaded.'}
+              </p>
+            )}
+            {record && branch.length === 0 && (
+              <p className="hb-note" data-testid="history-left-branches-note">
+                No merge was recorded for this run.
+              </p>
+            )}
+            {record && branch.length > 0 && (
+              <ul className="hb-left" data-testid="history-left-branches">
+                {branch.map((l, i) => (
+                  <li key={i}>
+                    <span className="hb-left-name" title={l.title}>
+                      {l.title}
+                    </span>
+                    {l.note && <span className="hb-left-kind">{l.note}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
             {filesNote(outputsPhase, outputs.length) ? (
               <p className="hb-note" data-testid="history-left-note">
                 {filesNote(outputsPhase, outputs.length)}
