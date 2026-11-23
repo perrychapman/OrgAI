@@ -19,6 +19,7 @@ import {
   projectSchedules,
   runningLine,
   runningNow,
+  safeSquareColor,
   teamLine,
   teamSummary,
   type RunningNowIn,
@@ -27,6 +28,7 @@ import {
 import { healthLines, mergedRows, repoStrip } from '../../lib/projectHomeGit'
 import { BAND_BREATHING_MAX } from '../../lib/dashboardBand'
 import { displayRunName } from '../../lib/orgChange'
+import { modKeyLabel, currentPlatform } from '../../lib/platform'
 import { useNow } from '../dashboard/useDashboardData'
 
 /**
@@ -136,7 +138,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
                       </span>
                       <span className="home-squares" aria-hidden="true">
                         {g.colors.map((c, i) => (
-                          <span key={i} className="home-square" style={{ background: c }} />
+                          <span key={i} className="home-square" style={{ background: safeSquareColor(c) }} />
                         ))}
                       </span>
                       <span className="home-group-count">{g.count}</span>
@@ -206,6 +208,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
 function NewRunBox({ project, hasRuns }: { project: Project; hasRuns: boolean }): ReactElement {
   const [text, setText] = useState('')
   const id = useId()
+  const mod = modKeyLabel(currentPlatform())
   const start = (message: string): void => openNewRunWith(project.id, message)
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -246,7 +249,7 @@ function NewRunBox({ project, hasRuns }: { project: Project; hasRuns: boolean })
         </Button>
       </div>
       <p id={`${id}-hint`} className="home-hint">
-        Opens the New run page with your message, where you pick a model and send. Ctrl+Enter does the same.
+        Opens the New run page with your message, where you pick a model and send. {mod}+Enter does the same.
       </p>
     </section>
   )

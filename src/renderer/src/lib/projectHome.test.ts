@@ -10,6 +10,7 @@ import {
   isRunningNow,
   median,
   mergeDraftText,
+  safeSquareColor,
   monthSpend,
   monthStart,
   permissionWords,
@@ -139,12 +140,36 @@ describe('month spend', () => {
   it('reads an unknown total as unknown, never $0', () => {
     expect(monthSpend(overview([row(null)], null))!.text).toBe('unknown')
   })
+  it('never shows $0 when runs matched but their cost is not known', () => {
+    // No figure at all for matched runs
+    const none = { ...overview([row(null)], null), totals: { costUsd: null, costSource: 'none' } } as unknown as Parameters<typeof monthSpend>[0]
+    expect(monthSpend(none)!.text).toBe('unknown')
+    // A zero total that leaves out runs of unknown cost
+    const zeroWithUnknown = { ...overview([row(null)], 0), totals: { costUsd: 0, costSource: 'none' }, costUnknownRuns: 1 } as unknown as Parameters<typeof monthSpend>[0]
+    expect(monthSpend(zeroWithUnknown)!.text).toBe('unknown')
+    expect(monthSpend(zeroWithUnknown)!.title).toMatch(/unknown/i)
+  })
+  it('keeps $0.00 for a true zero: every matched run known and nothing spent', () => {
+    const zero = { ...overview([row(0)], 0), totals: { costUsd: 0, costSource: 'none' } } as unknown as Parameters<typeof monthSpend>[0]
+    expect(monthSpend(zero)!.text).toBe('$0.00')
+  })
   it('finds the start of the local month and the median', () => {
     const now = new Date(2026, 10, 22, 15, 30).getTime()
     expect(monthStart(now)).toBe(new Date(2026, 10, 1).getTime())
     expect(median([])).toBeNull()
     expect(median([3, 1, 2])).toBe(2)
     expect(median([4, 1, 3, 2])).toBe(2.5)
+  })
+})
+
+describe('role square colour', () => {
+  it('lets only hex colours into an inline style', () => {
+    expect(safeSquareColor('#12aBcd')).toBe('#12aBcd')
+    expect(safeSquareColor('#fff')).toBe('#fff')
+    expect(safeSquareColor('red')).toBe('var(--border-strong)')
+    expect(safeSquareColor('url(https://x/y)')).toBe('var(--border-strong)')
+    expect(safeSquareColor('#fff; background: red')).toBe('var(--border-strong)')
+    expect(safeSquareColor(undefined)).toBe('var(--border-strong)')
   })
 })
 

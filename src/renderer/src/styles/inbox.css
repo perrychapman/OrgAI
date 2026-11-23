@@ -160,6 +160,22 @@
 .inbox-row[aria-current='true'] {
   background: var(--accent-soft);
   border-color: var(--accent);
+  /* Not colour alone: a heavier title and a solid bar on the leading edge also mark the selected row. */
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.inbox-row[aria-current='true'] .inbox-row-title {
+  font-weight: 600;
+}
+@media (forced-colors: active) {
+  .inbox-row[aria-current='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+    border-color: Highlight;
+    forced-color-adjust: auto;
+  }
+  .inbox-row[aria-current='true'] .inbox-row-title {
+    text-decoration: underline;
+  }
 }
 .inbox-dot {
   flex: none;
