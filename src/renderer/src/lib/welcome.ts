@@ -48,8 +48,8 @@ export function connectOptions(list: readonly ConnectionInfo[] | null, defaultId
       const connected = c.status.state === 'connected'
       const sub = connected
         ? c.status.account
-          ? `Connected as ${c.status.account}.`
-          : 'Connected.'
+          ? `Signed in as ${c.status.account}.`
+          : 'Ready for your teams to use.'
         : c.status.state === 'connecting'
           ? 'Connecting…'
           : c.status.state === 'error'

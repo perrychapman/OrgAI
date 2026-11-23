@@ -11,11 +11,11 @@ describe('welcome', () => {
     const out = connectOptions(list, null)
     expect(out.map((o) => o.id)).toEqual(['anthropic', 'openai', 'proxy-y'])
     expect(out[0].connected).toBe(false)
-    expect(out[1].sub).toBe('Connected.')
+    expect(out[1].sub).toBe('Ready for your teams to use.')
     expect(out[2].sub).toMatch(/Not working/)
   })
   it('names the account when the provider reports one, and returns nothing before the list loads', () => {
-    expect(connectOptions([info('anthropic', 'connected', { status: { state: 'connected', account: 'Max plan' } })], 'anthropic')[0].sub).toBe('Connected as Max plan.')
+    expect(connectOptions([info('anthropic', 'connected', { status: { state: 'connected', account: 'Max plan' } })], 'anthropic')[0].sub).toBe('Signed in as Max plan.')
     expect(connectOptions(null, null)).toEqual([])
   })
   it('chat skips the asking step; Back walks one step', () => {
