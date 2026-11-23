@@ -191,6 +191,7 @@ span.home-chip {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  column-gap: var(--space-1);
 }
 @container dash (max-width: 1099px) {
   .dash-now-group-count {
