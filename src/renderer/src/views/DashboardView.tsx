@@ -31,6 +31,7 @@ import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
 import { DashboardContext, type DashboardAnnouncement, type DashboardCtx } from '../components/dashboard/DashboardContext'
 import { useDashboardLayout } from '../components/dashboard/useDashboardLayout'
 import { Briefing } from '../components/dashboard/Briefing'
+import { HomeHero } from '../components/dashboard/HomeHero'
 import { CustomiseBar } from '../components/dashboard/CustomiseBar'
 import { NeedsYouRegion } from '../components/dashboard/AttentionColumn'
 import { useLastSeen } from '../components/dashboard/useLastSeen'
@@ -73,11 +74,11 @@ function ringSection(id: DashSectionId): void {
 }
 
 /**
- * The home page (docs/design/dashboard-usage-redesign/project/dashboard.md): the Briefing hero card, then the work area
- * (Needs you, Right now and the arrangeable sections in the person's order), one page scroll. Needs you and Right now are
- * fixed regions drawn only with content. From an 880 px container the work area is two columns (Needs you and, when it is
- * the first visible arrangeable section, Your week on the left; Right now on the right), from 1280 px Pick up and Up next
- * share a row, under 880 px it is one column in reading order. First launch keeps the start choice under the greeting.
+ * The home page (docs/design/ui-overhaul/project/Main.dc.html): the task box (HomeHero), the Briefing card (greeting, status,
+ * quick actions, Team pulse), then the work area (Working now and Waiting on you side by side, then the arrangeable sections
+ * in the person's order), one page scroll. The two columns are fixed regions that show an EmptyState when idle. From an
+ * 880 px container they are two equal columns, from 1280 px Pick up and Up next share a row, under 880 px it is one column
+ * in reading order. First launch keeps the start choice under the greeting and shows no task box.
  */
 export default function DashboardView(): ReactElement {
   const projects = useAppStore((s) => s.projects)
@@ -143,8 +144,8 @@ export default function DashboardView(): ReactElement {
 
   const visible = layout.order.filter((id) => !layout.hidden.includes(id) && emptyOf[id] === false)
   const placed = placeSections(visible, caps.pair && !customising)
-  // Your week joins the work area's left column only while it is the first visible arrangeable section.
-  const lead: DashSectionId | null = !customising && visible[0] === 'week' ? 'week' : null
+  // Working now and Waiting on you share the first row of the work area; every arrangeable section starts below them.
+  const lead: DashSectionId | null = null
   const spanKey = placed.map((p) => `${p.id}:${p.span}`).join(',')
 
   const move = useCallback(
@@ -239,7 +240,7 @@ export default function DashboardView(): ReactElement {
     week: <WeekSection key="week" />,
     pickup: <PickUpSection key="pickup" lastSeen={lastSeen} />,
     upnext: <UpNextSection key="upnext" />,
-    projects: <ProjectsGrid key="projects" onAnnounce={say} />,
+    projects: <ProjectsGrid key="projects" onAnnounce={say} onNewProject={() => setFormOpen(true)} />,
     engagements: <EngagementsSection key="engagements" />,
     commits: <CommitsSection key="commits" />,
     todos: <TodosSection key="todos" />
@@ -264,7 +265,7 @@ export default function DashboardView(): ReactElement {
   return (
     <>
       <div className="topbar">
-        <h1>Dashboard</h1>
+        <h1>Home</h1>
       </div>
       <AppNavigateBanner />
       <div className="dashboard" data-testid="dashboard" data-customising={customising ? '' : undefined} onKeyDown={onKeyDown}>
@@ -279,6 +280,7 @@ export default function DashboardView(): ReactElement {
                   </Banner>
                 </div>
               )}
+              {!empty && <HomeHero />}
               <Briefing
                 firstLaunch={empty}
                 announce={announce}
@@ -295,9 +297,10 @@ export default function DashboardView(): ReactElement {
                 <FirstLaunch mockAvailable={mockAvailable} />
               ) : (
                 <div className="dash-work" data-testid="dash-work" data-customising={customising ? '' : undefined}>
-                  {/* Fixed regions, in reading order: never hidden, reordered or listed in Customise, drawn only with content. */}
-                  <NeedsYouRegion caps={caps} onAnnounce={say} />
+                  {/* The two fixed columns, in reading order (board: Working now left, Waiting on you right): never hidden,
+                      reordered or listed in Customise. Each shows its quiet state through EmptyState when it has nothing. */}
                   <RightNowBand caps={caps} onAnnounce={say} />
+                  <NeedsYouRegion caps={caps} onAnnounce={say} />
                   {layout.order.map((id) => sections[id])}
                   {!customising && layout.order.every((id) => layout.hidden.includes(id)) && (
                     <p className="dash-all-hidden" data-testid="dash-all-hidden">

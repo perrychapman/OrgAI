@@ -180,16 +180,24 @@ export function ProjectTile({
               <span className="project-tile-name">{project.name}</span>
             </button>
           </h3>
-          {/* The one meta line: a mark whose shape follows the state, its words, and the client of an engagement. */}
+          {/* The kind line (Main board): "Code · 12 roles", "Engagement · Acme · 5 roles". */}
+          <p className="project-tile-kind" data-testid="tile-kind">
+            {client ? 'Engagement' : projectKindOf(project) === 'engagement' ? 'Engagement' : 'Code'}
+            {client && (
+              <>
+                {' · '}
+                <span className="project-tile-client" data-testid="tile-client" title={client}>
+                  {client}
+                </span>
+              </>
+            )}
+            {` · ${project.roles.length} ${project.roles.length === 1 ? 'role' : 'roles'}`}
+          </p>
+          {/* The status line: a mark whose shape follows the state (a working dot pulses) and its words. */}
           <p className="project-tile-status" data-kind={statusKind}>
-            <span className="tile-mark" data-kind={statusKind} aria-hidden="true" />
+            <span className={statusKind === 'working' ? 'tile-mark motion-pulse' : 'tile-mark'} data-kind={statusKind} aria-hidden="true" />
             <span className="project-tile-status-text">{statusLine}</span>
             {pending && <Badge>Setup pending</Badge>}
-            {client && (
-              <span className="project-tile-client" data-testid="tile-client" title={client}>
-                {client}
-              </span>
-            )}
           </p>
         </div>
       </div>
