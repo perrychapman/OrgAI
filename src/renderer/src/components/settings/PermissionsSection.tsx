@@ -7,6 +7,7 @@ import { MAX_AUTO_CONTINUES_LIMIT, projectKindOf, runMessagingOn, teamReviewOf }
 import PermissionRulesPanel from '../PermissionRulesPanel'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
 import { Switch } from '../ui/Switch'
+import { PERMISSION_TITLE } from '../../lib/permissionWords'
 import { PERMISSION_MODE_SHORT, SETTINGS_COPY, RUN_MESSAGING_ENGAGEMENT_DESCRIPTION, TEAM_ASSISTANT_COPY } from '../../lib/settingsCopy'
 import { foldersSummary } from '../../lib/folderLists'
 import { PERMISSION_MODE_TRADEOFF, collapseRules, rulesApplyInMode } from '../../lib/permissionCopy'
@@ -33,7 +34,7 @@ export { PERMISSION_MODE_SHORT }
 
 /** What still asks in each mode (renderer copy; provider-neutral, config-review spec 5). */
 const MODE_MORE =
-  'Every mode except Never ask and Bypass can show approval cards in the live view. Unattended lets the model\'s safety check approve routine calls and asks least without turning checks off; Auto-accept edits still asks for commands and for files outside the project and its allowed folders. A card\'s "Always allow for project" saves its rules below, adds its folders to Allowed folders, and for an edit on "Ask for everything risky" switches the project to Auto-accept edits.'
+  'Every mode except Never ask and Bypass can show approval cards in the live view. Go ahead within the rules lets the model\'s safety check approve routine calls and asks least without turning checks off; Edit freely, ask for commands still asks for commands and for files outside the project and its allowed folders. A card\'s "Always allow in this project" saves its rules below, adds its folders to Allowed folders, and for an edit on "Ask before risky actions" switches the project to Edit freely, ask for commands.'
 
 /** "3 rules and 1 folder you allowed" / "2 reference folders, 1 folder you allowed"; null while the rule count is loading. */
 export function allowedSummary(rules: number | null, folders: number, reference = 0): string | null {
@@ -143,14 +144,14 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
               </span>
               {appDefault && (
                 <span className="perm-mode-default" data-testid="permission-mode-default">
-                  App default for new projects: {PERMISSION_MODE_SHORT[appDefault] ?? appDefault}
+                  App default for new projects: {PERMISSION_TITLE[appDefault] ?? appDefault}
                 </span>
               )}
             </p>
           </div>
           <p className="perm-mode-note" data-testid="permission-mode-note">
             {rulesApplyInMode(project.permissionMode)
-              ? 'Saved rules and allowed folders apply in every mode except Plan only and Bypass.'
+              ? 'Saved rules and allowed folders apply in every mode except Plan only and Skip all checks.'
               : 'Saved rules and allowed folders are not used in this mode.'}
           </p>
           <div data-testid="permissions-summary">

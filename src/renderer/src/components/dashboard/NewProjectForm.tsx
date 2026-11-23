@@ -98,10 +98,13 @@ export function NewProjectForm({
   mockAvailable,
   onCancel,
   variant = 'card',
-  autoFocus = true
+  autoFocus = true,
+  onKindChange
 }: {
   mockAvailable: boolean
   onCancel?: () => void
+  /** Called with the chosen kind (null until one is chosen), so a side card can describe what that kind sets up. */
+  onKindChange?: (kind: ProjectKind | null) => void
   variant?: NewProjectFormVariant
   /** Put the cursor in the project kind choice on mount (default). Off where the form sits beside other controls. */
   autoFocus?: boolean
@@ -127,6 +130,9 @@ export function NewProjectForm({
   })
   // None picked on first launch; afterwards the kind of the last project created here.
   const [projectKind, setProjectKind] = useState<ProjectKind | null>(draft ? draft.projectKind : readLastProjectKind())
+  useEffect(() => {
+    onKindChange?.(projectKind)
+  }, [projectKind, onKindChange])
   const [client, setClient] = useState(draft?.client ?? '')
   const [refs, setRefs] = useState<string[]>(draft?.refs ?? [])
   const [refInput, setRefInput] = useState('')
@@ -700,12 +706,12 @@ export function NewProjectForm({
 
       {engagement ? (
         <>
-          {nameField('Client or case name')}
+          {nameField('Name this engagement')}
           <div className="field">
-            <label htmlFor={ids.client}>Client or case (optional)</label>
+            <label htmlFor={ids.client}>Who or what it is for (optional)</label>
             <Input id={ids.client} value={client} onChange={setClient} maxLength={PROJECT_CLIENT_MAX_CHARS} data-testid="new-project-client" />
           </div>
-          {pathField('Working folder', examplePath('engagement'), 'Where the team saves deliverables. Your files stay where they are.')}
+          {pathField('Working folder', examplePath('engagement'), 'Where the team saves what it writes. Your files stay where they are.')}
           <div className="field ref-folders">
             <label htmlFor={ids.ref}>Folders the team may read (optional)</label>
             <ul className="ref-folder-list" aria-label="Folders the team may read">
@@ -764,7 +770,7 @@ export function NewProjectForm({
                 id={ids.brief}
                 value={brief}
                 onChange={setBrief}
-                placeholder="Who the client is, what you deliver, and anything the team must not touch. The setup interview asks about the rest."
+                placeholder="What this is for, who it is for, and anything the team must not touch. The setup interview asks about the rest."
               />
             </div>
           )}

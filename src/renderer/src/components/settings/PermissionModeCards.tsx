@@ -3,6 +3,7 @@ import { useId, useState } from 'react'
 import { Check, ChevronRight } from 'lucide-react'
 import type { PermissionMode } from '@shared/types'
 import { PERMISSION_MODE_SHORT } from '../../lib/settingsCopy'
+import { PERMISSION_TITLE, RECOMMENDED_PERMISSION_MODE } from '../../lib/permissionWords'
 import { PERMISSION_MODE_TRADEOFF, rulesApplyInMode } from '../../lib/permissionCopy'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { Button } from '../ui/Button'
@@ -15,14 +16,7 @@ export const MORE_MODES: readonly PermissionMode[] = ['dontAsk', 'plan', 'bypass
  * Plain-language card titles (ui-overhaul Settings board). The exact mode name (PERMISSION_MODE_SHORT, the name run
  * chips, cards and the CLI use) stays visible under each title, so the two never compete.
  */
-export const MODE_TITLE: Record<PermissionMode, string> = {
-  default: 'Ask before every change',
-  acceptEdits: 'Edit freely, ask for commands',
-  auto: 'Work on its own',
-  dontAsk: 'Never ask',
-  plan: 'Plan only',
-  bypassPermissions: 'Skip all checks'
-}
+export const MODE_TITLE: Record<PermissionMode, string> = PERMISSION_TITLE
 
 /** How many of the three freedom bars are lit. */
 const LEVEL: Record<PermissionMode, number> = { default: 1, acceptEdits: 2, auto: 3, dontAsk: 0, plan: 0, bypassPermissions: 3 }
@@ -185,7 +179,7 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
     <div className="perm-cards-block">
       <div id={groupId} className="perm-cards" role="radiogroup" aria-label={label} data-testid="permission-mode-cards">
         {PRIMARY_MODES.map((m) => (
-          <ModeCard key={m} mode={m} current={mode} chosen={chosen} name={name} recommended={m === 'auto'} onPick={(x) => void pick(x)} onFocusMode={onFocusMode} />
+          <ModeCard key={m} mode={m} current={mode} chosen={chosen} name={name} recommended={m === RECOMMENDED_PERMISSION_MODE} onPick={(x) => void pick(x)} onFocusMode={onFocusMode} />
         ))}
         {showMore && MORE_MODES.map((m) => <ModeCard key={m} mode={m} current={mode} chosen={chosen} name={name} onPick={(x) => void pick(x)} onFocusMode={onFocusMode} />)}
       </div>
@@ -195,10 +189,10 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
             {MODE_TITLE[pending]} is not saved yet. Press Enter, or:
           </span>
           <Button variant="primary" size="sm" testId="permission-mode-use" onClick={() => void pick(pending)}>
-            Use {PERMISSION_MODE_SHORT[pending]}
+            Use {PERMISSION_TITLE[pending]}
           </Button>
           <Button variant="ghost" size="sm" testId="permission-mode-keep" onClick={() => setPending(null)}>
-            Keep {PERMISSION_MODE_SHORT[mode]}
+            Keep {PERMISSION_TITLE[mode]}
           </Button>
         </div>
       )}
@@ -215,7 +209,7 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
       <div className="perm-effects" data-testid="permission-mode-effects">
         <table>
           <caption className={pending ? 'perm-effects-caption' : 'sr-only'}>
-            {pending ? `What would happen with ${PERMISSION_MODE_SHORT[chosen]} (not saved)` : `What happens with ${PERMISSION_MODE_SHORT[chosen]}`}
+            {pending ? `What would happen with ${PERMISSION_TITLE[chosen]} (not saved)` : `What happens with ${PERMISSION_TITLE[chosen]}`}
           </caption>
           <tbody>
             {MODE_ACTIONS.map((a, i) => (
@@ -232,7 +226,7 @@ export function PermissionModeCards({ mode, onChange, label, projectName }: { mo
         {rulesApplyInMode(chosen) && <p className="perm-effects-note">A saved rule or an allowed folder below lets specific calls through.</p>}
       </div>
       <p className="sr-only" role="status" aria-live="polite">
-        {`${PERMISSION_MODE_SHORT[chosen]}${pending ? ', not saved, press Enter to use it' : ''}: ${MODE_ACTIONS.map((a, i) => `${a.toLowerCase()}, ${OUTCOME_LABEL[effects[i]].toLowerCase()}`).join('; ')}.`}
+        {`${PERMISSION_TITLE[chosen]}${pending ? ', not saved, press Enter to use it' : ''}: ${MODE_ACTIONS.map((a, i) => `${a.toLowerCase()}, ${OUTCOME_LABEL[effects[i]].toLowerCase()}`).join('; ')}.`}
       </p>
       {dialog}
     </div>

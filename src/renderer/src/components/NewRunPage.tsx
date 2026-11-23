@@ -36,7 +36,7 @@ import { SettingTile } from './newRun/SettingTile'
 import { PickUpList } from './newRun/PickUpList'
 import { WhoWorksPanel } from './newRun/WhoWorksPanel'
 import { SpendLimitControl } from './newRun/SpendLimitControl'
-import { parseRunLimit, teamGroups, validExcluded } from './newRun/newRunData'
+import { parseRunLimit, scheduleSeed, teamGroups, validExcluded } from './newRun/newRunData'
 import ScheduleEditor from './schedules/ScheduleEditor'
 import '../styles/new-run.css'
 
@@ -408,7 +408,18 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           <ScheduleEditor
             open={scheduleOpen}
             editing={null}
-            initial={{ projectId: project.id, prompt: draftText, single: ask }}
+            initial={scheduleSeed({
+              projectId: project.id,
+              prompt: draftText,
+              single: ask,
+              projectMode: project.permissionMode,
+              pickedMode,
+              pickedModel: pickedModel ? { model: pickedModel.model, connection: pickedModel.connection } : null,
+              limitUsd: limit.ok ? limit.usd : null,
+              excludedCount: excluded.length,
+              pickedEffort: pickedEffort !== null,
+              pickedGoal: pickedGoal !== null
+            })}
             onClose={() => setScheduleOpen(false)}
             onSaved={(saved) => {
               setScheduleOpen(false)
@@ -440,9 +451,9 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
               Setup is complete and the folder is still empty. The org chart can build the initial structure from the approved architecture
               document.{' '}
               {project.permissionMode === 'auto'
-                ? "It runs unattended: the model's safety check approves each call and asks only when unsure."
+                ? "It goes ahead within the rules: the model's safety check approves each call and asks only when unsure."
                 : project.permissionMode === 'acceptEdits'
-                  ? 'Edits are auto-accepted; shell commands still ask.'
+                  ? 'File edits go ahead without asking; commands still ask.'
                   : 'Approvals follow the project permission mode.'}
             </p>
             <Button variant="primary" loading={busy} onClick={() => void scaffold()}>

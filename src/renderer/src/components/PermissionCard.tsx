@@ -48,6 +48,20 @@ function showHidden(s: string): string {
   })
 }
 
+/**
+ * A worktree is "its own copy of the project" for a first-time reader; the exact name stays as secondary text.
+ * Anything else passes through unchanged.
+ */
+export function plainLocation(label: string): { label: string; exact?: string } {
+  const m = /^(Starts in|In) worktree (.+?) \(inside the project\)$/.exec(label)
+  return m ? { label: `${m[1]} its own copy of the project`, exact: `worktree ${m[2]}` } : { label }
+}
+
+/** The glance sentence for Always allow, worded for the button that sits under it ("Always allow in this project"). */
+export function projectEffectText(text: string): string {
+  return text.replace(/^Always allow for project:/, 'Always allow in this project:').replace(/ in this project\.$/, '.')
+}
+
 const MAX_LINES = 8
 const MAX_LINE_CHARS = 200
 
@@ -184,7 +198,9 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
     return scopeCopy(canScope ? request.suggestions : undefined, project?.permissionMode)
   }, [canScope, sessionOnly, place, request.suggestions, project?.permissionMode])
   const chips = canScope ? [...new Set(request.ruleLabels ?? [])].map(ruleChip).filter((c) => c.text) : []
-  const effectText = sessionOnly ? copy.session : (copy as { project?: string }).project
+  const projectText = (copy as { project?: string }).project
+  const effectText = sessionOnly ? copy.session : projectText ? projectEffectText(projectText) : undefined
+  const place2 = location ? plainLocation(location.label) : null
   const showEffect = canScope && !!effectText
   const prior = priorAllowsLine(request.priorAllows)
   const noRule = referenceFolder ? null : noRuleLine(request.toolName, canScope)
@@ -211,7 +227,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
           <ul className="decision-scopes" data-testid="perm-scopes">
             <li>{copy.once}</li>
             {canScope && copy.session && <li>{copy.session}</li>}
-            {canScope && !sessionOnly && (copy as { project?: string }).project && <li>{(copy as { project?: string }).project}</li>}
+            {/* The project effect is the glance sentence above the buttons (read once, not three times). */}
           </ul>
           {project && showSettingsLink && (
             <button type="button" className="link-btn perm-settings-link" data-testid="perm-settings-link" onClick={() => openPermissionSettings(project.id)}>
@@ -233,7 +249,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
             </Button>
             {!sessionOnly && (
               <Button size="sm" disabled={busy} onClick={() => send({ behavior: 'allow', scope: 'project' })}>
-                Always allow for project
+                Always allow in this project
               </Button>
             )}
           </>
@@ -266,8 +282,8 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         {location && (
           <p className="perm-location" data-testid="perm-location" data-kind={location.kind} data-attention={location.attention ? 'true' : undefined} title={location.full}>
             <Icon icon={location.attention ? TriangleAlert : location.kind === 'reference' ? Lock : FolderOpen} size="xs" />
-            <span className="perm-location-label">{location.label}</span>
-            {location.detail && <span className="perm-location-detail">{location.detail}</span>}
+            <span className="perm-location-label">{place2?.label ?? location.label}</span>
+            {(place2?.exact || location.detail) && <span className="perm-location-detail">{[place2?.exact, location.detail].filter(Boolean).join(' · ')}</span>}
           </p>
         )}
         {/* Right under the location so it stays in the compact glance; renders nothing unless the folder's settings are ignored. */}

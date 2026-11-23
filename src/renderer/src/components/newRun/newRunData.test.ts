@@ -1,6 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import type { RunSummary } from '@shared/types'
-import { parseRunLimit, pickUpRuns, roleNamesLine, teamGroups, validExcluded, whoCountText } from './newRunData'
+import { parseRunLimit, pickUpRuns, roleNamesLine, scheduleSeed, shortScheduleName, teamGroups, validExcluded, whoCountText } from './newRunData'
+
+describe('schedule seed', () => {
+  const base = { projectId: 'p', prompt: 'Check the dependencies for known problems and open a summary', single: false, projectMode: 'default' as const, pickedMode: null, pickedModel: null, limitUsd: null, excludedCount: 0, pickedEffort: false, pickedGoal: false }
+  it('names the schedule with a short clamp of the first line', () => {
+    expect(shortScheduleName('Fix the flaky test\nthen more')).toBe('Fix the flaky test')
+    const name = shortScheduleName('Check the dependencies for known problems and open a summary of what needs an update')
+    expect(name.length).toBeLessThanOrEqual(49)
+    expect(name.endsWith('…')).toBe(true)
+    expect(name).not.toMatch(/\s…$/)
+  })
+  it('carries the limit, the model and a narrower mode', () => {
+    const s = scheduleSeed({ ...base, limitUsd: 0.25, pickedMode: 'plan', pickedModel: { model: 'm', connection: 'anthropic' } })
+    expect(s).toMatchObject({ budgetUsd: 0.25, permissionMode: 'plan', model: { model: 'm', connection: 'anthropic' }, notKept: [] })
+  })
+  it('drops a wider mode and Bypass, and names what it cannot hold', () => {
+    const wide = scheduleSeed({ ...base, pickedMode: 'auto', excludedCount: 2, pickedEffort: true, pickedGoal: true })
+    expect(wide.permissionMode).toBeNull()
+    expect(wide.notKept).toEqual(['the roles you left out', 'the effort you chose', 'the goal you chose', 'a permission mode that asks less than the project’s'])
+    expect(scheduleSeed({ ...base, projectMode: 'bypassPermissions', pickedMode: 'bypassPermissions' }).permissionMode).toBeNull()
+    expect(scheduleSeed({ ...base, projectMode: 'auto', pickedMode: 'bypassPermissions' }).permissionMode).toBeNull()
+  })
+})
 
 const role = (id: string, name: string, reportsTo: string | null) => ({ id, name, color: '#123456', reportsTo })
 

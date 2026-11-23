@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectionInfo } from '@shared/types'
+import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { ASK_OPTIONS, WELCOME_DONE_KEY, askChoiceFor, connectOptions, nextStage, prevStage, readWelcomeDone, writeWelcomeDone } from './welcome'
 
 const info = (id: string, state: 'connected' | 'disconnected' | 'error' | 'connecting', extra: Partial<ConnectionInfo> = {}, enabled = true): ConnectionInfo =>
@@ -31,6 +32,11 @@ describe('welcome', () => {
     expect(askChoiceFor('acceptEdits')).toBe('acceptEdits')
     expect(askChoiceFor('bypassPermissions')).toBeNull()
     expect(askChoiceFor(undefined)).toBeNull()
+  })
+  it('reads step 3 names from permissionWords and marks one Recommended: the default', () => {
+    expect(ASK_OPTIONS.map((o) => o.name)).toEqual(['Ask before risky actions', 'Edit freely, ask for commands', 'Go ahead within the rules'])
+    expect(ASK_OPTIONS.filter((o) => o.recommended).map((o) => o.mode)).toEqual([DEFAULT_APP_SETTINGS.defaultPermissionMode])
+    expect(ASK_OPTIONS.find((o) => o.mode === 'auto')?.engine).toBe('Unattended')
   })
   it('remembers that setup is done', () => {
     const m = new Map<string, string>()

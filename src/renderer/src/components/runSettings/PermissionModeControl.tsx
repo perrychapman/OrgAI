@@ -7,7 +7,8 @@ import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import { useConfirm } from '../ui/ConfirmDialog'
-import { isWideningMode, permissionModeHelp, permissionModeName, permissionTone, wideningConfirmOptions } from '../../lib/runSettings'
+import { isWideningMode, permissionModeHelp, permissionTone, wideningConfirmOptions } from '../../lib/runSettings'
+import { permissionTitle, permissionWords } from '../../lib/permissionWords'
 import '../../styles/run-settings.css'
 
 /**
@@ -76,7 +77,7 @@ export function PermissionModeControl({
   const unchanged = choice === value && !(inForce && inForce !== value)
   const region = useTriggerAttrs({ 'data-default': isDefault ? 'true' : 'false', 'data-tone': tone })
   const { confirm, dialog } = useConfirm()
-  const name = permissionModeName(value)
+  const name = permissionTitle(value)
   const pending = busy || working
   const focusTrigger = (): void => region.current?.querySelector<HTMLButtonElement>('[data-testid="run-permission-change"]')?.focus()
 
@@ -123,7 +124,7 @@ export function PermissionModeControl({
           testId="run-permission-picker"
           className="run-permission-picker"
           triggerClassName={tone ? `run-chip run-chip--${tone}` : 'run-chip'}
-          triggerTitle={`${permissionModeName(value)}${valueSuffix ? ` · ${valueSuffix}` : ''}: ${permissionModeHelp(value)}`}
+          triggerTitle={`${permissionTitle(value)} (${permissionWords(value).engine})${valueSuffix ? ` · ${valueSuffix}` : ''}: ${permissionModeHelp(value)}`}
           trigger={
             <>
               <Icon icon={tone === 'danger' ? ShieldOff : tone ? ShieldAlert : Shield} size="xs" />
@@ -160,10 +161,12 @@ export function PermissionModeControl({
                             <Icon icon={mode === 'bypassPermissions' ? ShieldOff : ShieldAlert} size="xs" />
                           </span>
                         )}
-                        {permissionModeName(mode)}
+                        {permissionTitle(mode)}
                         {defaultMode === mode && <span className="run-permission-option__tag"> · {defaultLabel}</span>}
                       </span>
-                      <span className="run-permission-option__help">{permissionModeHelp(mode)}</span>
+                      <span className="run-permission-option__help">
+                        {permissionModeHelp(mode)} Mode name: {permissionWords(mode).engine}.
+                      </span>
                     </span>
                   </label>
                 ))}

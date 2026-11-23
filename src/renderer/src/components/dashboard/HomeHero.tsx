@@ -8,7 +8,8 @@ import { Icon } from '../ui/Icon'
 import { useDashboard } from './DashboardContext'
 import { useAllSummaries } from './useDashboardData'
 import { continueProjectId } from '../../lib/dashboardBrief'
-import { HERO_CHAT_TARGET, HERO_HEADING, HERO_SUGGESTIONS, heroCanStart, heroPermissionLabel, heroScopeLabel, heroTargets, pickHeroTarget } from '../../lib/dashboardHero'
+import { HERO_CHAT_TARGET, HERO_HEADING, HERO_SUGGESTIONS, heroCanStart, heroScopeLabel, heroTargets, pickHeroTarget } from '../../lib/dashboardHero'
+import { permissionTitle } from '../../lib/permissionWords'
 import { modKeyLabel, currentPlatform } from '../../lib/platform'
 import { projectHue } from '../../lib/projectIdentity'
 
@@ -39,7 +40,7 @@ export function HomeHero(): ReactElement {
   const chat = targetId === HERO_CHAT_TARGET
   const project = chat ? undefined : projects.find((p) => p.id === targetId)
   const scope = heroScopeLabel(project)
-  const permission = heroPermissionLabel(project?.permissionMode)
+  const permission = project ? permissionTitle(project.permissionMode) : ''
   const can = heroCanStart(text)
   const mod = modKeyLabel(currentPlatform())
 
@@ -128,10 +129,15 @@ export function HomeHero(): ReactElement {
           <span className="home-hint" id={ids.note} data-testid="home-hint">
             {mod} + Enter
           </span>
-          <Button variant="primary" testId="home-start" disabled={!can} onClick={start} title={chat ? 'Opens a new Chat with this task' : 'Opens the New run page with this task, ready to send'}>
-            {chat ? 'Start chat' : 'Start run'}
+          <Button variant="primary" testId="home-start" disabled={!can} onClick={start} ariaDescribedBy={chat ? undefined : `${ids.note}-start`} title={chat ? 'Opens a new Chat with this task' : 'Opens the New run page with this task, ready to send'}>
+            {chat ? 'Start chat' : 'Review and start'}
           </Button>
         </div>
+        {!chat && (
+          <p className="home-hint home-start-note" id={`${ids.note}-start`} data-testid="home-start-note">
+            Opens New run with this message so you can check the team, model and limit. Nothing is sent yet.
+          </p>
+        )}
       </div>
       <div className="home-try" role="group" aria-label="Try one of these">
         <span className="home-try-label" aria-hidden="true">

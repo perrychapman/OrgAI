@@ -24,6 +24,7 @@ import { cleanIpcError } from '../../lib/ipcError'
 import { scrollWithin } from '../../lib/scrollWithin'
 import { CHAT_CHANGES_SWITCH, chatChangesHint } from '../../lib/chatPermissions'
 import { adapterOfModel, isWideningMode, permissionModeHelp, permissionModeName, scheduleWideningConfirmOptions, type RunModel } from '../../lib/runSettings'
+import { shortScheduleName, type ScheduleSeed } from '../newRun/newRunData'
 import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
@@ -81,7 +82,7 @@ export default function ScheduleEditor({
   /** The schedule being edited; null = a new one. */
   editing: Schedule | null
   /** A new schedule's starting values (the New run page's "Save as a schedule instead"). Ignored when editing. */
-  initial?: { projectId?: string; prompt?: string; single?: boolean }
+  initial?: ScheduleSeed
   onClose: () => void
   onSaved: (saved: Schedule, created: boolean) => void
 }): ReactElement {
@@ -112,8 +113,12 @@ export default function ScheduleEditor({
         ? scheduleToForm(editing, t)
         : {
             ...newScheduleForm({ projectId: start, now: t }),
-            ...(prompt ? { prompt, name: prompt.split('\n')[0].trim().slice(0, SCHEDULE_NAME_MAX_CHARS) } : {}),
-            ...(initial?.single ? { single: true } : {})
+            ...(prompt ? { prompt, name: (initial?.name?.trim() || shortScheduleName(prompt)).slice(0, SCHEDULE_NAME_MAX_CHARS) } : {}),
+            ...(initial?.single ? { single: true } : {}),
+            // New run's settings a schedule can hold ride along (never Bypass: the seed already dropped it).
+            ...(initial?.model ? { model: initial.model } : {}),
+            ...(initial?.permissionMode ? { permissionMode: initial.permissionMode } : {}),
+            ...(typeof initial?.budgetUsd === 'number' ? { budget: String(initial.budgetUsd) } : {})
           }
     )
     setTried(false)
@@ -516,6 +521,12 @@ export default function ScheduleEditor({
             </div>
           </div>
 
+          {!editing && initial?.notKept && (
+            <p className="schedule-unattended" data-testid="schedule-not-kept-note">
+              {initial.notKept.length > 0 ? `Not carried over from New run: ${initial.notKept.join(', ')}. ` : ''}
+              {initial.single ? 'A schedule cannot hold effort or goal.' : 'A schedule always starts with the whole team, with the project’s own effort and goal.'}
+            </p>
+          )}
           <p className="schedule-unattended" data-testid="schedule-unattended-note">
             {SCHEDULE_UNATTENDED_NOTE}
           </p>

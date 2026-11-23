@@ -2,7 +2,9 @@
  * Pure data for the New run page's side panels: the project's team groups and the earlier runs offered under
  * "Or pick up from". No store, no IPC; everything comes from records the renderer already holds.
  */
-import type { Role, RunSummary } from '@shared/types'
+import type { ConnectionId, PermissionMode, Role, RunSummary } from '@shared/types'
+import { SCHEDULE_BUDGET_MAX_USD, SCHEDULE_PERMISSION_MODES } from '@shared/types'
+import { isNarrowingMode } from '../../lib/runSettings'
 import { chainGroups, isOpenStatus, lastActivityAt } from '../../lib/runChains'
 import { isOrgChangeRun } from '../../lib/orgChange'
 
@@ -133,4 +135,70 @@ export function pickUpRuns(summaries: readonly RunSummary[], limit = 3): PickUpR
     out.push({ id: g.newest.id, summary: g.first, at: lastActivityAt(g.newest) })
   }
   return out
+}
+
+/** What "Save as a schedule instead" hands the schedule editor (ScheduleEditor's `initial` prop). */
+export interface ScheduleSeed {
+  projectId?: string
+  prompt?: string
+  single?: boolean
+  /** A short name from the first line of the prompt. */
+  name?: string
+  /** The New run page's own model pick, when it made one. */
+  model?: { model: string; connection: ConnectionId } | null
+  /** Carried only when it is no wider than the project's mode and not Bypass (a schedule refuses Bypass on save). */
+  permissionMode?: PermissionMode | null
+  /** The per-run limit in USD. */
+  budgetUsd?: number | null
+  /** What the user set on New run that a schedule cannot hold, in plain words ("the roles you left out"). */
+  notKept?: string[]
+}
+
+/** A short schedule name: the first non-empty line, cut at a word boundary near `max` characters, with an ellipsis. */
+export function shortScheduleName(prompt: string, max = 48): string {
+  const line = (prompt.split('\n').find((l) => l.trim()) ?? '').replace(/\s+/g, ' ').trim()
+  if (line.length <= max) return line
+  const cut = line.slice(0, max)
+  const space = cut.lastIndexOf(' ')
+  return `${(space >= max * 0.5 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, '')}…`
+}
+
+/**
+ * The schedule editor's starting values from the New run draft: every setting a schedule can hold (model, spend limit,
+ * permission mode, one assistant instead of the team) is carried; the ones it cannot hold are named in `notKept`.
+ * A permission mode wider than the project's is not carried, and neither is Bypass.
+ */
+export function scheduleSeed(input: {
+  projectId: string
+  prompt: string
+  single: boolean
+  projectMode: PermissionMode
+  pickedMode: PermissionMode | null
+  pickedModel: { model: string; connection: ConnectionId } | null
+  limitUsd: number | null
+  excludedCount: number
+  pickedEffort: boolean
+  pickedGoal: boolean
+}): ScheduleSeed {
+  const notKept: string[] = []
+  if (input.excludedCount > 0) notKept.push(input.excludedCount === 1 ? 'the role you left out' : 'the roles you left out')
+  if (input.pickedEffort) notKept.push('the effort you chose')
+  if (input.pickedGoal) notKept.push('the goal you chose')
+  let permissionMode: PermissionMode | null = null
+  if (input.pickedMode && input.pickedMode !== input.projectMode) {
+    const allowed = (SCHEDULE_PERMISSION_MODES as readonly PermissionMode[]).includes(input.pickedMode) && isNarrowingMode(input.projectMode, input.pickedMode)
+    if (allowed) permissionMode = input.pickedMode
+    else notKept.push('a permission mode that asks less than the project’s')
+  }
+  const limit = input.limitUsd !== null && input.limitUsd <= SCHEDULE_BUDGET_MAX_USD ? input.limitUsd : null
+  return {
+    projectId: input.projectId,
+    prompt: input.prompt,
+    single: input.single,
+    name: shortScheduleName(input.prompt),
+    model: input.pickedModel,
+    permissionMode,
+    budgetUsd: limit,
+    notKept
+  }
 }
