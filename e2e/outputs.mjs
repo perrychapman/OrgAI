@@ -1120,6 +1120,9 @@ async function secondRunChecks(label) {
 try {
   project = await createProject(page, { mode: 'existing', path: repo, name: NAME })
   check(!!project, 'project created on the mock adapter')
+  // The grid is the default view for a project with no stored choice; this script's checks are written for the list, so the
+  // choice is stored explicitly (the same key the view itself keeps) before the Files tab first opens.
+  await page.evaluate((id) => localStorage.setItem(`orgai.outputsView.${id}`, 'list'), project.id)
   thumbProbe = await installThumbProbe()
   if (!thumbProbe) console.log('SKIP thumbnail concurrency: window.orgai.outputs.thumb cannot be wrapped from the page')
   // The tab exists on a stored project.
@@ -1192,6 +1195,7 @@ try {
     }, scriptFile)
     project2 = await createProject(page, { mode: 'existing', path: repo2, name: NAME2 })
     check(!!project2, 'the diagrams project was created')
+    await page.evaluate((id) => localStorage.setItem(`orgai.outputsView.${id}`, 'list'), project2.id)
     await startRun('Draw the diagrams')
     const n = () => page.evaluate((id) => window.orgai.outputs.list(id).then((l) => l.length), project2.id)
     check(await until(async () => (await n()) >= 3, 60_000), 'the scripted run produced three diagrams', String(await n()))

@@ -1003,17 +1003,20 @@
   color: var(--text-tertiary);
 }
 
-/* Schedule outcome bar (inline SVG, tokens only; colour is never the only cue: the label names every bar). */
-.home-nightly {
-  flex: none;
-  display: block;
+/* Schedule outcome bar: the shared RunBars (styles/schedules.css, imported by CodeHome). Shape under each bar carries the outcome, so colour is never the only cue. */
+.home-row-line.home-sched {
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
 }
-.home-nightly-bar {
-  fill: var(--success-text);
+/* The bars sit on their own line under the name and the last result, the readout beside them. */
+.home-sched .runbars {
+  flex: 1 1 100%;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
 }
-.home-nightly-bar[data-tone='warn'] {
-  fill: var(--warning-text);
-}
-.home-nightly-bar[data-tone='bad'] {
-  fill: var(--danger-text);
+.home-sched .runbars-read {
+  min-width: 0;
+  text-align: left;
 }

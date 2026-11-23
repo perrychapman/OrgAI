@@ -133,6 +133,8 @@ export interface MonthSpend {
   typicalText: string | null
   /** Runs whose cost the figure leaves out. */
   unknownRuns: number
+  /** True for a month with no run at all: the section says "No spend yet", never a figure. */
+  empty?: boolean
   /** "of $200.00 a month" when the project has a monthly cap (projectSpend only). */
   limitText?: string
   /** "on course for about $90.00" once the month has enough days (projectSpend only). */
@@ -142,12 +144,24 @@ export interface MonthSpend {
 /**
  * The month figure from `runInsights.projectSpend` (recorded spend, caps, projection), with the typical-run line of the
  * usage overview. Unknown stays "unknown": a month whose runs all lack a price is never $0, and a partly unknown month
- * is a lower bound ("$12.00+"). null when the project has no run this month or the answer is missing (the caller then
- * uses `monthSpend`).
+ * is a lower bound ("$12.00+"). A month with no run is `empty` ("No spend yet"). null only when there is no usable
+ * answer (the caller tells loading from a failed call). The usage overview only supplies the typical-run line.
  */
 export function monthSpendFrom(spend: Pick<ProjectSpend, 'month' | 'maxMonthlyUsd' | 'monthProjectionUsd'> | null | undefined, overview?: Parameters<typeof monthSpend>[0]): MonthSpend | null {
   const m = spend?.month
-  if (!m || !Number.isFinite(m.spentUsd) || !(m.runs > 0)) return null
+  if (!m || !Number.isFinite(m.spentUsd) || !Number.isFinite(m.runs)) return null
+  if (!(m.runs > 0)) {
+    return {
+      text: 'No spend yet',
+      title: 'No run has started this month',
+      runs: 0,
+      typicalUsd: null,
+      typicalText: null,
+      unknownRuns: 0,
+      empty: true,
+      ...(typeof spend?.maxMonthlyUsd === 'number' && spend.maxMonthlyUsd > 0 ? { limitText: `of ${formatUsdCompact(spend.maxMonthlyUsd)} a month` } : {})
+    }
+  }
   const typical = monthSpend(overview)
   const allUnknown = m.unknownRuns >= m.runs && m.spentUsd === 0
   const partial = m.unknownRuns > 0 && !allUnknown

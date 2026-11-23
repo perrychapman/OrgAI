@@ -112,19 +112,33 @@ export function KnowledgeFilters({
     const on = filter.kinds.includes(kind)
     onChange({ kinds: on ? filter.kinds.filter((k) => k !== kind) : [...filter.kinds, kind] })
   }
-  const toggleOrigin = (origin: ItemOrigin): void => {
-    const on = filter.origins.includes(origin)
-    onChange({ origins: on ? filter.origins.filter((o) => o !== origin) : [...filter.origins, origin] })
-  }
+  // "Recorded by" is one exclusive choice over the existing origin filter: Everyone = no origin filter (or both origins),
+  // You = ['user'], Team = ['agent']. Each segment keeps the `knowledge-origin` test id and its `data-origin`.
+  const originValue: 'all' | ItemOrigin = filter.origins.length === 1 ? filter.origins[0] : 'all'
+  const pickOrigin = (value: 'all' | ItemOrigin): void => onChange({ origins: value === 'all' ? [] : [value] })
+  const originSegments: { value: 'all' | ItemOrigin; label: string; count: number }[] = [
+    { value: 'all', label: 'Everyone', count: origins.user + origins.agent },
+    { value: 'user', label: 'You', count: origins.user },
+    { value: 'agent', label: 'Team', count: origins.agent }
+  ]
   const originChips = (
-    <>
-      <KnowledgeChip testId="knowledge-origin" origin="user" selected={filter.origins.includes('user')} count={origins.user} onClick={() => toggleOrigin('user')}>
-        You
-      </KnowledgeChip>
-      <KnowledgeChip testId="knowledge-origin" origin="agent" selected={filter.origins.includes('agent')} count={origins.agent} onClick={() => toggleOrigin('agent')}>
-        Agents
-      </KnowledgeChip>
-    </>
+    <div className="seg knowledge-origin-seg">
+      {originSegments.map((s) => (
+        <label key={s.value} className={`seg-item${originValue === s.value ? ' on' : ''}`}>
+          <input
+            type="radio"
+            name={`${uid}-origin`}
+            value={s.value}
+            checked={originValue === s.value}
+            data-testid="knowledge-origin"
+            data-origin={s.value}
+            onChange={() => pickOrigin(s.value)}
+          />
+          {s.label}
+          <span className="tabular"> {s.count}</span>
+        </label>
+      ))}
+    </div>
   )
   const retiredSwitch = (
     <div className="knowledge-switch-row">

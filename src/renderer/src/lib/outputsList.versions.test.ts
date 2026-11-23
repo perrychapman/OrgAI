@@ -43,5 +43,8 @@ describe('version helpers', () => {
     expect(gridTarget('End', 0, 7, 3)).toBe(6)
     expect(readViewMode('grid')).toBe('grid')
     expect(readViewMode('x')).toBe('list')
+    expect(readViewMode('list')).toBe('list')
+    // A project with no stored preference opens the grid (the board's default); a stored choice always wins.
+    expect(readViewMode(null)).toBe('grid')
   })
 })

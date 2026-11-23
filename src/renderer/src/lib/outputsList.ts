@@ -255,7 +255,9 @@ export function gridTarget(key: string, from: number, count: number, cols: numbe
 
 export type OutputsViewMode = 'list' | 'grid'
 export const outputsViewKey = (projectId: string): string => `orgai.outputsView.${projectId}`
+/** A stored 'list' or 'grid' wins; a project with no stored choice (null) opens the grid, the board's default. */
 export function readViewMode(raw: string | null): OutputsViewMode {
+  if (raw === null) return 'grid'
   return raw === 'grid' ? 'grid' : 'list'
 }
 

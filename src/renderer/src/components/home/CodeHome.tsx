@@ -8,6 +8,8 @@ import { Button } from '../ui/Button'
 import { startSessionFromTodo } from '../../lib/todoStart'
 import { cleanIpcError } from '../../lib/ipcError'
 import { useSchedules } from '../schedules/useSchedules'
+import RunBars from '../schedules/RunBars'
+import '../../styles/schedules.css'
 import { HomeLink, HomeSection } from './HomeSection'
 import { openNewRunWith } from './startRun'
 import { useLiveKey, useMonthOverview, useProjectGit, useProjectHistory, useProjectSpend, useProjectTodos, useScheduleOutcomes } from './useHomeData'
@@ -15,7 +17,6 @@ import {
   QUICK_STARTS,
   RUNNING_MARKS_MAX,
   homeTodos,
-  monthSpend,
   monthSpendFrom,
   projectSchedules,
   runningLine,
@@ -26,7 +27,7 @@ import {
   type RunningNowIn,
   type TodoHomeRow
 } from '../../lib/projectHome'
-import { healthLines, mergedRows, nightlyBars, nightlySummary, repoStrip } from '../../lib/projectHomeGit'
+import { healthLines, mergedRows, repoStrip } from '../../lib/projectHomeGit'
 import { BAND_BREATHING_MAX } from '../../lib/dashboardBand'
 import { displayRunName } from '../../lib/orgChange'
 import { modKeyLabel, currentPlatform } from '../../lib/platform'
@@ -68,7 +69,10 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
   const scheduleRows = useMemo(() => (schedules.list ?? []).filter((s) => s.target.kind === 'team' && s.target.projectId === project.id), [schedules.list, project.id])
   const health = healthLines(git, scheduleRows, now)
   const merged = mergedRows(git, now)
-  const spend = monthSpendFrom(projectSpend, overview) ?? monthSpend(overview)
+  // projectSpend is the source. undefined = still loading (section left out); null = the call failed or is missing (says
+  // so, never a figure); a month with no run reads "No spend yet".
+  const spend = projectSpend ? monthSpendFrom(projectSpend, overview) : null
+  const spendFailed = projectSpend === null || (projectSpend !== undefined && spend === null)
   const todo = homeTodos(todos ?? undefined)
   const team = useMemo(() => teamSummary(project.roles), [project.roles])
   const runCount = history.filter((h) => h.kind === 'work').length
@@ -173,6 +177,14 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
               </p>
             </HomeSection>
 
+            {spendFailed && (
+              <HomeSection title="spend this month" testId="home-spend-section-failed" enter={2}>
+                <p className="home-hint" role="status" data-testid="home-spend-failed">
+                  This month's spend could not be read.
+                </p>
+              </HomeSection>
+            )}
+
             {spend && (
               <HomeSection
                 title="spend this month"
@@ -194,7 +206,7 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
                   <span className="home-figure" title={spend.title} data-testid="home-spend-figure">
                     {spend.text}
                   </span>
-                  <span className="home-figure-note">{spend.runs === 1 ? '1 run' : `${spend.runs} runs`} this month</span>
+                  <span className="home-figure-note">{spend.empty ? 'no run this month' : `${spend.runs === 1 ? '1 run' : `${spend.runs} runs`} this month`}</span>
                 </div>
                 {(spend.limitText || spend.projectionText) && <p className="home-summary">{[spend.limitText, spend.projectionText].filter(Boolean).join(' · ')}</p>}
                 {spend.typicalText && <p className="home-summary">A typical run costs {spend.typicalText}.</p>}
@@ -206,15 +218,15 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
               <HomeSection title="scheduled" testId="home-schedules" enter={3} action={<HomeLink onClick={() => openSchedules()} testId="home-schedules-open">Schedules</HomeLink>}>
                 <ul className="home-rows" aria-label="Schedules">
                   {mySchedules.map((s) => (
-                    <li key={s.id} className="home-row-line">
+                    <li key={s.id} className="home-row-line home-sched">
                       <span className="home-row-title" title={s.name}>
                         {s.name}
                         {!s.enabled && <span className="home-muted"> · paused</span>}
                       </span>
-                      <ScheduleBar scheduleId={s.id} refreshKey={liveKey} />
                       <span className="home-mono-note" data-tone={s.tone}>
                         {s.last}
                       </span>
+                      <ScheduleBar scheduleId={s.id} refreshKey={liveKey} />
                     </li>
                   ))}
                 </ul>
@@ -229,33 +241,15 @@ export default function CodeHome({ project }: { project: Project }): ReactElemen
 
 // ---------- schedule outcome bar ----------
 
-const BAR_W = 5
-const BAR_GAP = 2
-const BAR_H = 16
-
 /**
- * The outcome of a schedule's recent runs, oldest left: one bar per handled slot (green finished, amber skipped or
- * needing you, red failed; height = relative cost where known, otherwise a fixed low bar). Read through the peek
- * channel so Home never clears the Schedules unread count. Fewer than 3 entries, or no answer: nothing is drawn.
+ * The last runs of a schedule, drawn by the same RunBars the Schedules page uses (height = cost, a shape under each bar =
+ * outcome, dashed stub = cost unknown, Left / Right read one run in the line below). Read through the peek channel so
+ * Home never clears the Schedules unread count. No answer, or no entry: nothing is drawn (the row keeps its words).
  */
 function ScheduleBar({ scheduleId, refreshKey }: { scheduleId: string; refreshKey: string }): ReactElement | null {
   const entries = useScheduleOutcomes(scheduleId, refreshKey)
-  const now = useNow()
-  const bars = useMemo(() => (entries ? nightlyBars(entries, now) : null), [entries, now])
-  if (!bars) return null
-  const w = bars.length * (BAR_W + BAR_GAP) - BAR_GAP
-  return (
-    <svg className="home-nightly" width={w} height={BAR_H} viewBox={`0 0 ${w} ${BAR_H}`} role="img" aria-label={nightlySummary(bars)} data-testid="home-nightly">
-      {bars.map((b, i) => {
-        const h = Math.max(3, Math.round((b.height / 100) * BAR_H))
-        return (
-          <rect key={i} className="home-nightly-bar" data-tone={b.tone} x={i * (BAR_W + BAR_GAP)} y={BAR_H - h} width={BAR_W} height={h} rx={1}>
-            <title>{b.label}</title>
-          </rect>
-        )
-      })}
-    </svg>
-  )
+  if (!entries || entries.length === 0) return null
+  return <RunBars state={{ status: 'ok', entries }} testId="home-nightly" />
 }
 
 // ---------- "> new run" ----------
