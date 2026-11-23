@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, CircleCheck, CircleHelp, CircleX } from 'lucide-react'
+import { mergeFacts } from '../lib/decisionCard'
 import type { MergeDecision, MergeReview } from '@shared/types'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import DiffView from './DiffView'
@@ -28,6 +29,7 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
   }
 
   const files = review.changedFiles
+  const facts = mergeFacts(review.checks)
   return (
     <>
       <DecisionCard
@@ -36,6 +38,7 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
         runId={runId}
         who={review.agentName}
         agentId={review.agentId}
+        waitingSince={review.createdAt}
         title={mergeTitle(review.agentName)}
         headerExtra={
           <code className="mono-dim decision-branch" title={review.branch}>
@@ -66,6 +69,18 @@ export default function MergeReviewCard({ runId, review, onDecide }: Props): Rea
         }
       >
         <div className="stack-2">
+          {facts.length > 0 && (
+            <ul className="merge-facts" data-testid="merge-facts" aria-label="Checks on this branch">
+              {facts.map((f) => (
+                <li key={f.key} className="merge-fact" data-tone={f.tone} data-testid={`merge-fact-${f.key}`}>
+                  <Icon icon={f.tone === 'ok' ? CircleCheck : f.tone === 'bad' ? CircleX : CircleHelp} size="xs" />
+                  <span className="merge-fact-label">{f.label}</span>
+                  <span className="merge-fact-text">{f.text}</span>
+                  {f.detail && <span className="merge-fact-detail">{f.detail}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="mono-dim">
             {files.length} file{files.length === 1 ? '' : 's'} changed
             {files.length > 0 ? `: ${files.slice(0, 12).join(', ')}${files.length > 12 ? `, +${files.length - 12} more` : ''}` : ''}

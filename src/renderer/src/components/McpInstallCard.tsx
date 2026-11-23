@@ -127,6 +127,7 @@ export default function McpInstallCard({
       runId={runId}
       who={agentName}
       agentId={request.agentId}
+      waitingSince={request.createdAt}
       title={title}
       error={error}
       headerExtra={

@@ -915,3 +915,77 @@
     margin-block var(--dur-fast) var(--ease-in),
     opacity var(--dur-fast) var(--ease-in);
 }
+
+/* Waiting time in the card's meta line (UI overhaul): text, never colour alone; it updates on a minute tick. */
+.decision-waiting {
+  flex: none;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.perm-prior {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+/* The tray's kind breakdown ("2 permissions · 1 question"). */
+.decision-breakdown {
+  margin-left: var(--space-2);
+  font-weight: var(--weight-regular);
+  color: var(--text-secondary);
+}
+
+/* Merge review facts: icon + words, so a state never rests on colour. */
+.merge-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-small);
+}
+.merge-fact {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+}
+.merge-fact-label {
+  font-weight: var(--weight-semibold);
+}
+.merge-fact[data-tone='ok'] {
+  color: var(--success-text);
+}
+.merge-fact[data-tone='bad'] {
+  color: var(--danger-text);
+}
+.merge-fact-detail {
+  flex-basis: 100%;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* After "Always allow": the one real undo. */
+.decision-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.decision-receipt-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.decision-receipt-rule {
+  font-family: var(--font-mono);
+}

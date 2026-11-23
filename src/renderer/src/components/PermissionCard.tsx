@@ -13,7 +13,18 @@ import { chatLocationLine, chatPlace, quickReadOnlyLine, scopeLimit, sessionScop
 import { PROJECT_SETTINGS_SECTIONS } from '../lib/settingsTarget'
 import { openProjectSettings } from '../lib/openProjectSettings'
 import { useAppStore } from '../store/useAppStore'
+import { addedRules, priorAllowsLine, setAlwaysAllowReceipt } from '../lib/decisionCard'
 import { FolderTrustCardLine } from './FolderTrustNotice'
+
+/** The saved rules, or null when they cannot be read (then no receipt is offered). Never throws. */
+async function listRulesQuietly(projectId: string): Promise<string[] | null> {
+  try {
+    const list = await window.orgai.permissions.list(projectId)
+    return Array.isArray(list) ? list : null
+  } catch {
+    return null
+  }
+}
 
 export type PermissionChoice = { behavior: 'allow'; scope: 'once' | 'session' | 'project' } | { behavior: 'deny'; message: string }
 
@@ -124,11 +135,21 @@ function openPermissionSettings(projectId: string): void {
  */
 export default function PermissionCard({ runId, request, who, onDecide }: Props): ReactElement {
   const { busy, error, submit } = useDecisionAnswer()
+  const projectId = useAppStore((st) => st.runs[runId]?.summary.projectId)
   const send = (d: PermissionChoice): void => {
     if (busy) return
-    void submit(() => onDecide(d))
+    const saves = d.behavior === 'allow' && d.scope === 'project' && !!projectId && !isVirtualProjectId(projectId)
+    void submit(async () => {
+      // Always allow saves rules: remember which ones this answer added, for the one real undo (the receipt line).
+      const before = saves ? await listRulesQuietly(projectId as string) : null
+      await onDecide(d)
+      if (before) {
+        const after = await listRulesQuietly(projectId as string)
+        const added = after ? addedRules(before, after) : []
+        if (added.length > 0) setAlwaysAllowReceipt({ runId, projectId: projectId as string, rules: added })
+      }
+    })
   }
-  const projectId = useAppStore((st) => st.runs[runId]?.summary.projectId)
   const project = useAppStore((st) => (projectId && !isVirtualProjectId(projectId) ? st.projects.find((p) => p.id === projectId) : undefined))
   const agentCwd = useAppStore((st) => st.runs[runId]?.agents[request.agentId]?.worktree?.path)
   // A command that touches a reference folder offers Allow once and Deny only; main sends no suggestions, and any that
@@ -165,6 +186,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
   const chips = canScope ? [...new Set(request.ruleLabels ?? [])].map(ruleChip).filter((c) => c.text) : []
   const effectText = sessionOnly ? copy.session : (copy as { project?: string }).project
   const showEffect = canScope && !!effectText
+  const prior = priorAllowsLine(request.priorAllows)
   const noRule = referenceFolder ? null : noRuleLine(request.toolName, canScope)
   return (
     <DecisionCard
@@ -173,6 +195,7 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
       runId={runId}
       who={who}
       agentId={request.agentId}
+      waitingSince={request.requestedAt}
       title={permissionTitle(request.toolName, request.input)}
       focusDetails={isShell && command !== undefined}
       headerExtra={
@@ -222,8 +245,13 @@ export default function PermissionCard({ runId, request, who, onDecide }: Props)
         </Button>
       }
     >
-      {(location || place || showEffect || noRule || referenceFolder) && (
+      {(location || place || showEffect || noRule || referenceFolder || prior) && (
       <div className="perm-glance">
+        {prior && (
+          <p className="perm-prior" data-testid="perm-prior-allows">
+            {prior}
+          </p>
+        )}
         {place && !location && (
           <p className="perm-location" data-testid="perm-location" data-kind="chat" title={place.full}>
             <Icon icon={FolderOpen} size="xs" />

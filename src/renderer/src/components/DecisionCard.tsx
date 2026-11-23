@@ -9,6 +9,21 @@ import { Badge, type BadgeTone } from './ui/Badge'
 import { Banner } from './ui/Banner'
 import { Icon } from './ui/Icon'
 import { RunLabel } from './RunLabel'
+import { useMinuteNow, waitingAbsolute, waitingLabel } from '../lib/decisionCard'
+
+/** How long a decision has waited: a relative time on a minute tick, the absolute time in the title and description. Nothing when unknown. */
+function WaitingTime({ since }: { since: number | undefined }): ReactElement | null {
+  const now = useMinuteNow()
+  const label = waitingLabel(since, now)
+  if (!label) return null
+  const abs = waitingAbsolute(since)
+  return (
+    <span className="decision-waiting" data-testid="decision-waiting" title={abs ?? undefined}>
+      <span aria-hidden="true">Waiting {label}</span>
+      <span className="sr-only">{`Waiting ${label}${abs ? `. ${abs}` : ''}`}</span>
+    </span>
+  )
+}
 
 export type DecisionKind = 'permission' | 'rules' | 'question' | 'proposal' | 'install' | 'merge'
 
@@ -37,6 +52,8 @@ interface Props {
    * size, so a folded compact card still names its content. Untrusted text: plain React text only.
    */
   summary?: string
+  /** When the decision was raised (epoch ms). Shows "Waiting 2 min" in the meta line; absent shows nothing. */
+  waitingSince?: number
   /** Extra content at the end of the meta line (a time, a branch name, an outcome badge). */
   headerExtra?: ReactNode
   /** What the decision changes when that is not the run's own project (a Badge), before the run line. */
@@ -140,7 +157,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, target, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, summary, waitingSince, headerExtra, target, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
@@ -211,6 +228,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
             <RunLabel runId={runId} />
           </span>
           {headerExtra}
+          <WaitingTime since={waitingSince} />
         </div>
         <div className="decision-titlebar">
           <span className="decision-title" title={title}>
