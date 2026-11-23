@@ -2038,7 +2038,7 @@ export const SKILL_FILE_RETURN_MAX_BYTES = 64 * 1024
 export const SKILL_MD_RETURN_MAX_BYTES = 64 * 1024
 
 /** The role whose grants apply to a call: the caller's, else the root. */
-function callerRoleId(ctx: RuntimeContext, caller: HarnessToolCaller): string | undefined {
+function callerRoleId(ctx: Pick<RuntimeContext, 'roles'>, caller: HarnessToolCaller): string | undefined {
   if (caller.roleId) return caller.roleId
   // Only the root (or an unnamed caller) falls back to the root role; an unresolved subagent has no skills.
   if (caller.agentId !== undefined && caller.agentId !== ROOT_AGENT_ID) return undefined
@@ -2773,6 +2773,19 @@ function resolveForLink(graph: KnowledgeGraph, ref: string, what: 'from' | 'to')
 }
 
 /**
+ * UI overhaul: on an engagement, a role with `knowledgeWrite === false` may read the knowledge graph but not change it.
+ * Returns the refusal text for the caller's role, or null when the write may go on (missing or true, a code project,
+ * or a caller whose role cannot be resolved). Enforced at call time, so it holds on every adapter.
+ */
+export function knowledgeWriteRefusal(ctx: Pick<RuntimeContext, 'project' | 'roles'>, caller: HarnessToolCaller): string | null {
+  if (projectKindOf(ctx.project) !== 'engagement') return null
+  const roleId = callerRoleId(ctx, caller)
+  const role = roleId ? ctx.roles.find((r) => r.id === roleId) : undefined
+  if (role?.knowledgeWrite !== false) return null
+  return `REFUSED: ${role.name ? `the ${knowledgeField(role.name, 80)} role` : 'this role'} is set to read the knowledge graph without changing it. Search and get still work; pass what you learned to a role that records knowledge, or tell the user.`
+}
+
+/**
  * engagement_knowledge (KNOWLEDGE_TOOL): the engagement's knowledge graph (types.ts "Engagement knowledge graph")
  * through RuntimeContext.knowledge. Reads are the pure helpers of shared/knowledge.ts over the graph read at call
  * time; writes go through the context (RunManager fills the provenance, counts the write and pushes the change) and a
@@ -2807,6 +2820,11 @@ export const knowledgeTool = defineTool({
   async handler(ctx, args, _hooks, caller) {
     const kg = ctx.knowledge
     if (!kg) return 'No knowledge graph is available in this run.'
+    // Role.knowledgeWrite === false: reads stay, the writing actions are refused here whatever the provider offers.
+    if (args.action === 'upsert_node' || args.action === 'link' || args.action === 'retire') {
+      const refusal = knowledgeWriteRefusal(ctx, caller)
+      if (refusal) return refusal
+    }
     const who = { agentId: caller.agentId, roleId: caller.roleId }
     const graph = (): KnowledgeGraph => kg.graph()
     const nameOf = (g: KnowledgeGraph, id: string): string => {
