@@ -62,7 +62,7 @@ export const PROJECT_SETTING_FIELD_LABELS: Readonly<Record<ProjectSettingsPropos
   reviewMerges: 'Review merges',
   autoContinue: 'Keep going unattended',
   maxAutoContinues: 'Automatic continues per run',
-  client: 'Client'
+  client: 'Who it is for'
 }
 
 /**

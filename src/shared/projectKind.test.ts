@@ -41,7 +41,7 @@ describe('project kind helpers', () => {
   it('the engagement Architect prompt keeps files out of the folder, asks for the client and never proposes isolateWriters', () => {
     const text = architectPrompt('engagement')
     expect(text).toContain('never in the working folder')
-    expect(text).toContain("client = the client's name")
+    expect(text).toContain("client = who or what the work is for")
     expect(text).toContain('Never propose isolateWriters for an engagement')
     expect(text).not.toContain('.orgai/ENGAGEMENT.md')
     expect(architectPrompt('code')).toContain('writes the approved architecture to .orgai/ARCHITECTURE.md')
@@ -161,7 +161,7 @@ describe('architectPrompt', () => {
     expect(p).not.toContain('.orgai/ARCHITECTURE.md')
     expect(p).toMatch(/ONE message of at most five questions/)
     const interview = p.split('\n').find((l) => l.startsWith('1. Interview first'))!
-    for (const topic of ['client', 'field of work', 'platforms or systems', 'phase', 'deliverables', 'coding']) expect(interview).toContain(topic)
+    for (const topic of ['what the work is', 'who or what it is for', 'field of work', 'platforms or systems', 'how the user wants to work', 'what the team should produce', 'coding']) expect(interview).toContain(topic)
     expect(p).toMatch(/never edit them/)
     expect(p).toMatch(/only when coding is in scope/)
     expect(architectRole(undefined, { kind: 'engagement' }).prompt).toBe(p)
@@ -170,7 +170,7 @@ describe('architectPrompt', () => {
 
   it('the engagement prompt recommends permissionMode "default" and "auto" only on request', () => {
     const p = architectPrompt('engagement')
-    expect(p).toContain('recommend permissionMode "default" (ask for risky actions) for client work')
+    expect(p).toContain('recommend permissionMode "default" (ask for risky actions) for engagement work')
     expect(p).toContain('Propose "auto" only when the user asks for unattended runs')
     expect(p).toContain('asks before any command that names one')
     expect(p).not.toContain('Recommend permissionMode "auto"')
