@@ -286,6 +286,14 @@
   border: 1px solid var(--glass-line, var(--border-default));
   border-radius: var(--radius-xl);
 }
+/* Sections with their own blocks (providers, tools, skills, templates) take the same glass inside settings. */
+.settings-col .card-block {
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border-color: var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
+}
 .settings-card > * {
   padding: var(--space-3) 0;
   min-width: 0;
@@ -900,7 +908,7 @@
   height: 34px;
   padding: 0 var(--space-3) 0 calc(var(--space-3) + 20px);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--glass-line, var(--border-default));
+  border: 1px solid var(--border-default);
   background: var(--glass, var(--field-bg));
   -webkit-backdrop-filter: var(--glass-blur, none);
   backdrop-filter: var(--glass-blur, none);
