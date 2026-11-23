@@ -59,7 +59,7 @@ export default function InboxList({
   onMarkAllRead: () => void
 }): ReactElement {
   return (
-    <section className="inbox-list" aria-label="Items" data-testid="inbox-list">
+    <section className="inbox-list" aria-label="Inbox items" data-testid="inbox-list">
       {(waiting.length > 0 || (saysNothingWaiting && finished.length > 0)) && (
         <div className="glass inbox-section" data-testid="inbox-section-waiting" data-empty={waiting.length === 0 ? '' : undefined}>
           <h2 className="inbox-section-title waiting">Waiting on you</h2>

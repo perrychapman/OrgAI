@@ -1820,6 +1820,37 @@ async function setName(name) {
     check((await focusedRowId()) === ids0[0], 'IB Esc inside the card goes back to the selected row', String(await focusedRowId()))
     check((await waitRows().count()) === n, 'IB Esc answers nothing (a decline is always a visible button)')
 
+    // ---- A held or doubled Enter never answers a permission (the High finding): two waiting permissions, nothing answered.
+    const dispatchEnter = (repeat) =>
+      ip.evaluate((rep) => {
+        const el = document.activeElement
+        if (!el) return null
+        // dispatchEvent returns false when a listener called preventDefault: the guard swallowed it before the card's button.
+        return { notCancelled: el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: rep, bubbles: true, cancelable: true })), inPane: !!el.closest('[data-testid=inbox-detail-pane]') }
+      }, repeat)
+    await rows().first().focus()
+    const heldBefore = await waitRows().count()
+    for (let i = 0; i < 5; i++) await ip.evaluate(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true })))
+    await sleep(250)
+    check((await waitRows().count()) === heldBefore && heldBefore >= 2 && (await selectedId()) === ids0[0] && (await focusedRowId()) === ids0[0], 'IB IBH1 a repeating Enter (keydown repeat:true) on a row moves nothing and answers nothing', `${await waitRows().count()} of ${heldBefore} waiting, focus on ${await focusedRowId()}`)
+    // A real hold: the fresh Enter moves focus to the card; repeats and a second keydown without a keyup are swallowed.
+    await ip.keyboard.down('Enter')
+    const heldIn = await focusIn('[data-testid=inbox-detail-pane]')
+    await ip.keyboard.down('Enter') // the browser marks this repeat:true
+    await ip.keyboard.down('Enter')
+    const rep = await dispatchEnter(true)
+    const dbl = await dispatchEnter(false)
+    await ip.keyboard.up('Enter')
+    // A rapid second tap, inside the short dwell after the Enter that moved focus.
+    await ip.keyboard.press('Enter')
+    const tap = await dispatchEnter(false)
+    await sleep(250)
+    check(heldIn && rep?.inPane === true && rep.notCancelled === false && dbl?.notCancelled === false && tap?.notCancelled === false, 'IB IBH2 Enter held, repeated, doubled without a keyup and tapped again at once is swallowed in the card', JSON.stringify({ heldIn, rep, dbl, tap }))
+    check((await waitRows().count()) === heldBefore && (await selectedId()) === ids0[0], 'IB IBH3 a held and rapidly doubled Enter answered nothing: both permissions are still waiting', `${await waitRows().count()} of ${heldBefore} waiting`)
+    await ip.keyboard.press('Escape')
+    await sleep(200)
+    check((await focusedRowId()) === ids0[0], 'IB IBH4 Esc returns to the row after the held-Enter test', String(await focusedRowId()))
+
     // ---- Chips and the project filter.
     const chipTexts = await I('inbox-chips').locator('button').evaluateAll((els) => els.map((e) => ({ label: (e.textContent ?? '').replace(/\s+/g, ' ').trim(), pressed: e.getAttribute('aria-pressed') })))
     check(chipTexts[0]?.pressed === 'true' && /^All\s*\d+$/.test(chipTexts[0].label) && chipTexts.some((c) => /^Permissions\s*\d+$/.test(c.label)) && !chipTexts.some((c) => /^Finished/.test(c.label)), 'IB the chips are a pressed group: All plus only the kinds present', JSON.stringify(chipTexts))
@@ -1860,10 +1891,29 @@ async function setName(name) {
     await rows().first().click()
     const idsBefore = await rowIds()
     const bellBefore = await bell()
-    await card.locator('.decision-footer .btn.primary').click()
+    // By keyboard, as a hold: Enter on the row moves focus to Allow once and is released; a deliberate Enter answers exactly
+    // this one while the key stays down; the held Enter then repeats and answers nothing else.
+    await rows().first().focus()
+    await ip.keyboard.press('Enter')
+    await sleep(600)
+    const onPrimary = await ip.evaluate(() => !!document.activeElement?.matches?.('[data-testid=inbox-detail-pane] .decision-footer .btn.primary'))
+    check(onPrimary && (await waitRows().count()) === n, 'IB IBH5 after Enter on the row and a release, focus is on the card\'s primary button and nothing is answered', String(await waitRows().count()))
+    await ip.keyboard.down('Enter')
+    await sleep(80)
+    await ip.keyboard.down('Enter')
     await ibUntil(async () => (await waitRows().count()) === n - 1, 15_000)
     await sleep(500)
+    const heldFocus = await focusedRowId()
+    for (let i = 0; i < 4; i++) {
+      await ip.keyboard.down('Enter')
+      await sleep(150)
+    }
+    await ip.keyboard.up('Enter')
+    await sleep(300)
     const idsAfter = await rowIds()
+    check(idsAfter.length === n - 1 && !idsAfter.includes(idsBefore[0]), 'IB IBH6 the deliberate Enter answered exactly the selected permission and the held Enter answered nothing more', `${idsAfter.length} left of ${n}`)
+    check(heldFocus === idsAfter[0] && (await focusedRowId()) === idsAfter[0], 'IB IBH7 after the answer focus is on the next ROW (not the next card\'s action), also after the held Enter repeated', `${heldFocus} / ${await focusedRowId()} / ${idsAfter[0]}`)
+    check(!(await focusIn('[data-testid=inbox-detail-pane]')), 'IB IBH8 no card took focus on its own after the answer')
     check(idsAfter.length === n - 1 && !idsAfter.includes(idsBefore[0]), 'IB answering removes the item from the list', JSON.stringify(idsAfter))
     check((await badge()) === n - 1 && (await bell()) === bellBefore - 1 && (await summary()).waiting === n - 1, 'IB the badge, the Needs-you row and the summary all drop by one', `${await badge()} / ${await bell()} / ${(await summary()).waiting}`)
     check((await selectedId()) === idsAfter[0], 'IB the next item is selected after an answer', String(await selectedId()))

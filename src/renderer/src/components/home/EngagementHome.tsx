@@ -9,7 +9,7 @@ import { openProjectSettings } from '../../lib/openProjectSettings'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { displayRunName } from '../../lib/orgChange'
 import { useNow } from '../dashboard/useDashboardData'
-import { permissionWords, plural, teamSummary } from '../../lib/projectHome'
+import { permissionWords, plural, safeSquareColor, teamSummary } from '../../lib/projectHome'
 import { connectionRows, engagementFacts, folderRows, knowledgeHome, latestFiles, purposeOf, recentRuns, type RecentRunIn } from '../../lib/projectHomeEngagement'
 import { HomeLink, HomeSection } from './HomeSection'
 import { openNewRunWith } from './startRun'
@@ -105,7 +105,7 @@ export default function EngagementHome({ project }: { project: Project }): React
                 <HomeSection title="Waiting on you" className="eng-waiting" testId="eng-waiting" tone="waiting" enter={0} action={<HomeLink onClick={() => setView('inbox')} testId="eng-inbox">Inbox</HomeLink>}>
                   <ul className="eng-rows" aria-label="Decisions waiting">
                     {waiting.map((w) => (
-                      <li key={w.key} className="eng-ask">
+                      <li key={`${w.runId}/${w.key}`} className="eng-ask">
                         <span className="eng-ask-text">
                           <span className="eng-ask-q">{w.label}</span>
                           <span className="eng-ask-who">{w.runName}</span>
@@ -252,7 +252,7 @@ export default function EngagementHome({ project }: { project: Project }): React
                         </span>
                         <span className="home-squares" aria-hidden="true">
                           {g.colors.map((c, i) => (
-                            <span key={i} className="home-square" style={{ background: c }} />
+                            <span key={i} className="home-square" style={{ background: safeSquareColor(c) }} />
                           ))}
                         </span>
                       </li>

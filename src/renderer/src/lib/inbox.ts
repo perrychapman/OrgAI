@@ -273,6 +273,56 @@ export function relativeAgo(at: number, now: number): string {
   return `${Math.floor(ms / (24 * 60 * MIN))} d`
 }
 
+// ---------------------------------------------------------------- the activation guard (pure)
+
+/**
+ * The keys that press a card's button. A card's action must never be pressed by a key event that began before that
+ * action had focus (a held or doubled Enter that moved focus there, or that is still repeating after the previous
+ * card was answered). The guard is a small value the Inbox keeps in a ref:
+ *  - `held`: guarded keys currently down (from the Inbox's own capture-phase key tracking);
+ *  - `blocked`: the keys that were down when focus arrived in the detail pane, swallowed until each is released;
+ *  - `until`: epoch ms before which a fresh press is also swallowed (a short dwell after Enter moved focus there, so a
+ *    rapid second tap cannot answer the card the user has not yet seen).
+ * A repeating keydown (`repeat`) is never allowed to press anything.
+ */
+export interface KeyGuard {
+  held: readonly string[]
+  blocked: readonly string[]
+  until: number
+}
+export const GUARDED_KEYS: readonly string[] = ['Enter', ' ']
+/** How long a fresh Enter / Space stays swallowed after Enter on a row moved focus to the card's action. */
+export const ENTER_DWELL_MS = 400
+export const FRESH_GUARD: KeyGuard = { held: [], blocked: [], until: 0 }
+
+/** A key went down (only a non-repeating keydown counts as a press). */
+export function guardPress(g: KeyGuard, key: string, repeat: boolean): KeyGuard {
+  if (repeat || !GUARDED_KEYS.includes(key) || g.held.includes(key)) return g
+  return { ...g, held: [...g.held, key] }
+}
+
+/** A key went up: it is no longer held and no longer blocked. */
+export function guardRelease(g: KeyGuard, key: string): KeyGuard {
+  if (!g.held.includes(key) && !g.blocked.includes(key)) return g
+  return { ...g, held: g.held.filter((k) => k !== key), blocked: g.blocked.filter((k) => k !== key) }
+}
+
+/** Focus arrived in the detail pane from outside it: every key down right now is blocked until it is released. `dwellMs` adds a short fresh-press hold. */
+export function guardArrive(g: KeyGuard, now: number, dwellMs = 0): KeyGuard {
+  return { ...g, blocked: [...g.held], until: dwellMs > 0 ? now + dwellMs : g.until }
+}
+
+/** The window lost focus: a keyup may never arrive, so nothing is tracked as held and nothing stays blocked. */
+export function guardReset(): KeyGuard {
+  return FRESH_GUARD
+}
+
+/** True when this keydown must not reach the card (it would press its action). */
+export function guardSwallows(g: KeyGuard, key: string, repeat: boolean, now: number): boolean {
+  if (!GUARDED_KEYS.includes(key)) return false
+  return repeat || g.blocked.includes(key) || now < g.until
+}
+
 /** Spoken when the selection moves by itself (the answered item left). */
 export function afterAnswerText(next: InboxItem | null, index: number, total: number, remaining: number, verb: 'Answered' | 'Cleared' = 'Answered'): string {
   if (!next) return remaining === 0 ? `${verb}. Nothing is waiting on you.` : `${verb}.`

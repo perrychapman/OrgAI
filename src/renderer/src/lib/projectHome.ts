@@ -170,9 +170,13 @@ export function monthSpend(overview: Pick<UsageOverview, 'totals' | 'matchedRuns
     .filter((r) => (r.kind === 'work' || r.kind === undefined) && r.usage.costUsd !== null && !r.usage.costPartial && r.usage.costUsd > 0)
     .map((r) => r.usage.costUsd as number)
   const typicalUsd = priced.length >= TYPICAL_MIN_RUNS ? median(priced) : null
+  // "Nothing recorded" with runs matched is a true zero only when every run's cost is known; a run whose cost is unknown
+  // (or a total with no figure at all) reads "unknown", never $0.
+  const trueZero = total.empty && overview.totals.costUsd === 0 && !(overview.costUnknownRuns > 0)
+  const unknownCost = costView({ costUsd: null, costSource: 'unknown' }, { compact: true })
   return {
-    text: total.empty ? '$0.00' : total.text,
-    title: total.title,
+    text: total.empty ? (trueZero ? '$0.00' : unknownCost.text) : total.text,
+    title: total.empty && !trueZero ? unknownCost.title : total.title,
     runs: overview.matchedRuns,
     typicalUsd,
     typicalText: typicalUsd === null ? null : formatUsdCompact(typicalUsd),
@@ -247,6 +251,14 @@ export function teamSummary(roles: readonly TeamRoleIn[]): TeamSummary {
     ]
   }
   return { roleCount: roles.length, groups: shown.map((g) => ({ ...g, colors: g.colors.slice(0, TEAM_SQUARES_MAX) })) }
+}
+
+/**
+ * A role colour is data from a team file (a hand edit, an import, an agent): only a hex colour reaches an inline style;
+ * anything else draws as a neutral token colour.
+ */
+export function safeSquareColor(color: unknown): string {
+  return typeof color === 'string' && /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color.trim()) ? color.trim() : 'var(--border-strong)'
 }
 
 /** "12 roles · asks before risky actions". */
