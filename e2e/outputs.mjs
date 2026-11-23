@@ -1065,7 +1065,7 @@ async function secondRunChecks(label) {
     await until(async () => (await page.locator('[data-testid=output-detail]').first().getAttribute('data-id')) === other.id, 3000)
   } else {
     // Project plan is the only output left, so it stays selected: fold the pane so its detail is not on screen.
-    const hide = page.locator('[data-testid=outputs-detail]').getByRole('button', { name: /^Hide output preview/ })
+    const hide = page.locator('[data-testid=outputs-detail]').getByRole('button', { name: /^Hide file preview/ })
     if (await hide.count()) await hide.click()
     await until(async () => (await page.locator('[data-testid=outputs-detail]').getAttribute('data-collapsed')) === 'true', 3000)
   }

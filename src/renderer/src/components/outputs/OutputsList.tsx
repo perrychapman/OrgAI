@@ -234,7 +234,7 @@ export function OutputsList({
   const more = Math.min(OUTPUTS_PAGE, rows.length - shownCount)
   return (
     <div className="outputs-list-wrap">
-      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus} onContextMenu={rowMenu.onContextMenu}>
+      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Files" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus} onContextMenu={rowMenu.onContextMenu}>
         {groups.map((g) => (
           <li key={g.key} role="presentation" className="outputs-group" data-testid="outputs-group">
             {/* Hidden from the tree (a listbox owns options and groups only); aria-labelledby still reads it as the group's name. */}

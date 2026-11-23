@@ -349,7 +349,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
       <OutputsFilters filter={filter} kinds={kinds} runs={runs} countText={countText} onChange={changeFilter} />
       <div className="outputs-main" data-testid="outputs-main" data-view={view} onKeyDown={onMainKeyDown}>
         <div className="outputs-toolbar" data-testid="outputs-toolbar">
-          <h2 className="outputs-toolbar-title">Outputs</h2>
+          <h2 className="outputs-toolbar-title">Files</h2>
           <span data-testid="outputs-view-switch">
             <SegmentedControl<OutputsViewMode> label="View" value={view} options={VIEW_OPTIONS} onChange={changeView} />
           </span>
@@ -401,7 +401,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
           </div>
         )}
       </div>
-      <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={OUTPUTS_PANE_COLLAPSE_BELOW_PX} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
+      <SidePanel label="file preview" persistKey="outputs" autoCollapseBelow={OUTPUTS_PANE_COLLAPSE_BELOW_PX} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
         <div className="outputs-detail-body" data-testid="outputs-detail-body" tabIndex={-1} onKeyDown={onPaneKeyDown}>
           {selected ? (
             <>
