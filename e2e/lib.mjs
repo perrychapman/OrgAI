@@ -29,6 +29,66 @@ export const SHOTS_DIR = path.join(E2E_DIR, 'shots')
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
 
+// ---------- One slow-runner scale for every wait ----------
+// The CI runners are two cores and a software GPU; the same product code passed or failed a script depending on how slow the
+// runner happened to be (a 65 to 92 minute chain, a different script red each time). TIME_SCALE stretches how long a WAIT may
+// take, never how long anything is allowed to sleep for ordering: a wait ends the moment its state is there, so a fast machine
+// loses nothing, and a slow one gets room. E2E_TIME_SCALE=N sets it; the default is 1, and 3 when CI is set.
+// It is applied to Playwright's default timeout and navigation timeout on EVERY window of a launched app (the app's 'window'
+// event, so a window a script opens later is covered), to any page.setDefaultTimeout a script calls afterwards (the call is
+// scaled, so `page.setDefaultTimeout(8000)` means 8 s at scale 1), and to the shared helpers below. Scripts use t(ms) for their
+// own explicit timeouts: `{ timeout: t(8000) }`, the deadline of a poll loop. Do NOT wrap a sleep that orders two things in t():
+// wait on the state instead (a MutationObserver installed before the action, a standing state, a mock hold).
+const scaleEnv = Number(process.env.E2E_TIME_SCALE)
+export const TIME_SCALE = Number.isFinite(scaleEnv) && scaleEnv > 0 ? scaleEnv : process.env.CI ? 3 : 1
+export const t = (ms) => (ms === 0 || !Number.isFinite(ms) ? ms : Math.round(ms * TIME_SCALE))
+let scaleLogged = false
+const logScaleOnce = () => {
+  if (scaleLogged) return
+  scaleLogged = true
+  log(`time scale ${TIME_SCALE} (E2E_TIME_SCALE; default 3 when CI is set, else 1): every wait may take ${TIME_SCALE} times as long`)
+}
+
+/**
+ * Scale one Playwright page: its default timeout and navigation timeout (Playwright's 30 s times the scale), and any later
+ * page.setDefaultTimeout call by a script. Safe to call twice on a page.
+ */
+export function scalePage(page) {
+  if (page.__orgaiScaled) return page
+  page.__orgaiScaled = true
+  const setTimeoutOrig = page.setDefaultTimeout.bind(page)
+  page.setDefaultTimeout = (ms) => setTimeoutOrig(t(ms))
+  setTimeoutOrig(t(30_000))
+  page.setDefaultNavigationTimeout(t(30_000))
+  return page
+}
+
+/**
+ * Scale every window of an Electron app: those open now and any opened later (a run window, a second window), so no script
+ * can miss one. launch() calls this; a script that starts Electron itself calls it right after electron.launch().
+ */
+export function scaleApp(app) {
+  logScaleOnce()
+  for (const w of app.windows()) scalePage(w)
+  app.on('window', (w) => scalePage(w))
+  return app
+}
+
+/** Poll `fn` (sync or async; a throw counts as false) until it returns something truthy, which is returned; null after `ms` (scaled). */
+export async function until(fn, ms = 10_000, every = 150) {
+  const end = Date.now() + t(ms)
+  for (;;) {
+    try {
+      const v = await fn()
+      if (v) return v
+    } catch {
+      /* keep polling */
+    }
+    if (Date.now() > end) return null
+    await sleep(every)
+  }
+}
+
 /** os.tmpdir() with symlinks resolved (macOS: /var/folders/... is /private/var/folders/...), as the app reports paths. */
 export const TMP = fs.realpathSync.native(os.tmpdir())
 
@@ -232,7 +292,7 @@ export async function ensureDefaultViewport(app, page) {
   const clamp = /^(\d+)x(\d+)$/.exec(process.env.E2E_CLAMP_WINDOW ?? '')
   if (clamp) {
     await app.evaluate(({ BrowserWindow }, [nw, nh]) => BrowserWindow.getAllWindows()[0].setContentSize(nw, nh), [Number(clamp[1]), Number(clamp[2])])
-    await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, Number(clamp[1]), { timeout: 10_000 }).catch(() => {})
+    await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, Number(clamp[1]), { timeout: t(10_000) }).catch(() => {})
   }
   const [cw, ch] = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
   if (cw >= DEFAULT_CONTENT.width && ch >= DEFAULT_CONTENT.height) return
@@ -240,7 +300,7 @@ export async function ensureDefaultViewport(app, page) {
   const h = Math.max(ch, DEFAULT_CONTENT.height)
   log(`window opened at ${cw}x${ch}; widening to ${w}x${h} (a small screen clamps the default window)`)
   await app.evaluate(({ BrowserWindow }, [nw, nh]) => BrowserWindow.getAllWindows()[0].setContentSize(nw, nh), [w, h])
-  await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
 }
 
@@ -252,8 +312,11 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
-  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
+  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: t(60_000), env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
+  // Before anything is awaited on a window: the scale covers this window and every one the app opens later.
+  scaleApp(app)
   const page = await app.firstWindow()
+  scalePage(page)
   page.on('dialog', (d) => {
     log('dialog:', d.message().slice(0, 100))
     void d.accept()
@@ -262,7 +325,7 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
     if (m.type() === 'error') log('console.error:', m.text().slice(0, 200))
   })
   page.on('pageerror', (e) => log('pageerror:', e.message.slice(0, 200)))
-  await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   await ensureDefaultViewport(app, page)
   // E2E_CPU_THROTTLE=4 slows the renderer four times (CDP Emulation.setCPUThrottlingRate), to reproduce on a fast machine the
   // races a slow CI runner shows. Opt-in; nothing changes without it.
@@ -283,7 +346,7 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
   if (cleared.length) {
     log('cleared stale UI preferences from a shared data dir:', cleared.join(', '))
     await page.reload()
-    await page.waitForSelector('.sidebar', { timeout: 60_000 })
+    await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   }
   // First launch opens on the three setup steps (FirstLaunch, ui-overhaul Welcome). Scripts start past them, on the
   // start choice and its New project form, unless they ask for the steps with `welcome: true`.
@@ -294,11 +357,11 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
     })
     if (onSetup) {
       await page.reload()
-      await page.waitForSelector('.sidebar', { timeout: 60_000 })
+      await page.waitForSelector('.sidebar', { timeout: t(60_000) })
     }
   }
   // A relaunch on existing data may open on the dashboard or a run.
-  if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
+  if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: t(60_000) })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
@@ -330,7 +393,7 @@ export async function gotoProjects(page) {
     .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
     .first()
     .click()
-  await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { timeout: t(10_000) })
 }
 
 /**
@@ -342,7 +405,7 @@ export async function openProjectForm(page) {
   if (await trigger.count()) {
     await trigger.click()
     const form = page.locator('[data-testid=new-project-dialog] form')
-    await form.waitFor({ timeout: 10_000 })
+    await form.waitFor({ timeout: t(10_000) })
     return form
   }
   // First launch on the setup steps (a script that launched the app itself): skip to the start choice.
@@ -352,7 +415,7 @@ export async function openProjectForm(page) {
   const choice = page.locator('[data-testid=dash-start-choice]').getByRole('radio', { name: 'Start a project' })
   if (!(await choice.isChecked())) await choice.check({ force: true })
   const form = page.locator('[data-testid=dashboard] form.project-form')
-  await form.waitFor({ state: 'visible', timeout: 10_000 })
+  await form.waitFor({ state: 'visible', timeout: t(10_000) })
   return form
 }
 
@@ -365,7 +428,7 @@ export async function openProjectForm(page) {
 export async function pickSetup(form, skipSetup) {
   const box = form.locator('[data-testid=architect-setup]')
   const fieldset = form.locator('[data-testid=setup-choice]')
-  await box.or(fieldset).first().waitFor({ timeout: 30_000 })
+  await box.or(fieldset).first().waitFor({ timeout: t(30_000) })
   if (await box.count()) {
     if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: /Set up with the Architect|Start with the setup interview/ }).click()
     if ((await box.isChecked()) === skipSetup) throw new Error('could not toggle "Set up with the Architect"')
@@ -397,8 +460,8 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   const kindRadio = form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]')
   const modeRadio = form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true })
   const choose = async (radio) => {
-    await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: 10_000 })
-    await radio.check({ force: true, timeout: 10_000 })
+    await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: t(10_000) })
+    await radio.check({ force: true, timeout: t(10_000) })
   }
   for (let attempt = 0; ; attempt++) {
     try {
@@ -453,7 +516,7 @@ export async function findProject(page, name) {
 /** Open a project from the sidebar. */
 export async function openProject(page, name) {
   await page.locator(`.sidebar [data-testid=nav-project][data-name="${name.replace(/"/g, '\\"')}"]`).first().click()
-  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: t(10_000) })
 }
 
 /** Delete every project tile with this name. Returns how many tiles remain (0 on success). */
@@ -462,11 +525,14 @@ export async function deleteProject(page, name) {
   const tiles = () => page.locator(`[data-testid=project-tile][data-name="${name.replace(/"/g, '\\"')}"]`)
   for (let i = 0; i < 5; i++) {
     const tile = tiles().first()
-    if (!(await tile.count())) break
+    const before = await tiles().count()
+    if (!before) break
     await tile.locator('[data-testid=project-tile-more]').click()
     await page.locator('[data-testid=project-tile-delete]').click()
     await page.getByRole('button', { name: /^(Delete project|Forget engagement)$/ }).click()
-    await sleep(700)
+    // The tile goes once the main process has removed the project (a fixed sleep read the count too early on a slow runner).
+    await until(async () => (await tiles().count()) < before, 10_000)
+    await sleep(300)
   }
   return tiles().count()
 }
@@ -476,6 +542,8 @@ export async function endSession(page, { timeout } = {}) {
   const end = page.getByRole('button', { name: 'End session' })
   if (await end.count()) {
     await end.click(timeout ? { timeout } : undefined)
+    // The button goes when the session has ended; callers go on from there (a fixed sleep alone was a guess on a slow runner).
+    await end.first().waitFor({ state: 'detached', timeout: t(8000) }).catch(() => {})
     await sleep(1500)
   }
 }
@@ -568,7 +636,7 @@ export function projectTab(page, name) {
 /** Open the project's Team tab (`tab-team`). */
 export async function openTeam(page) {
   await page.locator('[data-testid=tab-team]').click()
-  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: t(10_000) })
 }
 
 /** The Role | Catalog tab of the Team side panel. */
@@ -615,7 +683,7 @@ export async function setReduceMotion(page, mode) {
   }, mode)
   // lib/theme.ts writes data-reduce-motion='on' only for 'on' and removes it otherwise.
   await page
-    .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: 5000 })
+    .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: t(5000) })
     .catch(() => {})
 }
 

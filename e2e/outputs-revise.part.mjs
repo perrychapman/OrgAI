@@ -1,6 +1,7 @@
 // Revise part (docs/design/outputs-2.md 7, 11.4). Called at the end of e2e/outputs-notes.mjs with a project that has a finished
 // run that produced a markdown and a docx output. ctx: { app, page, project, label, size: [w,h], theme, check, sleep }.
 import { readFileSync } from 'node:fs'
+import { t as scaled } from './lib.mjs'
 
 const mockHasRevise = (() => {
   try {
@@ -34,18 +35,18 @@ export default async function (ctx) {
 
   await more.focus()
   await more.click()
-  await t('output-revise').waitFor({ state: 'visible', timeout: 4000 }).catch(() => undefined)
+  await t('output-revise').waitFor({ state: 'visible', timeout: scaled(4000) }).catch(() => undefined)
   check((await t('output-revise').count()) === 1, `${label}: one "Ask the team to revise" item in More (and none in the toolbar)`)
   await t('output-revise').first().click()
   const dialog = t('output-revise-dialog')
-  check(await dialog.waitFor({ timeout: 4000 }).then(() => true, () => false), `${label}: Revise opens its dialog`)
+  check(await dialog.waitFor({ timeout: scaled(4000) }).then(() => true, () => false), `${label}: Revise opens its dialog`)
   const heading = await dialog.locator('h2').innerText()
   check(/^Ask the team to revise /.test(heading), `${label}: the heading names the output`, heading)
   check((await t('output-revise-selection').isDisabled()), `${label}: "The part I selected" is disabled without a selection`)
   check((await t('output-revise-whole').isChecked()), `${label}: the whole output is the default scope`)
 
   // Targets: the ended run reads "continue the conversation"; a new run is offered last.
-  await page.waitForFunction(() => document.querySelector('[data-testid=output-revise-target] select'), null, { timeout: 4000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelector('[data-testid=output-revise-target] select'), null, { timeout: scaled(4000) }).catch(() => {})
   const labels = await dialog.locator('[data-testid=output-revise-target] option').allInnerTexts()
   check(labels.some((l) => /continue the conversation|still running/.test(l)), `${label}: a run option is offered`, labels.join(' | '))
   check(labels.includes('A new run'), `${label}: "A new run" is offered`, labels.join(' | '))
@@ -83,7 +84,7 @@ export default async function (ctx) {
     look()
   })
   await t('output-revise-send').click()
-  await dialog.waitFor({ state: 'detached', timeout: 6000 }).catch(() => {})
+  await dialog.waitFor({ state: 'detached', timeout: scaled(6000) }).catch(() => {})
   const closed = !(await dialog.count()) || !(await dialog.isVisible())
   check(closed, `${label}: the dialog closes after sending`)
   if (!closed) return
@@ -105,7 +106,7 @@ export default async function (ctx) {
     skip('the mock does not answer revise requests in this build (arrival, answered line and Compare)')
     return
   }
-  const answered = await t('output-revision-answered').first().waitFor({ timeout: 25000 }).then(() => true, () => false)
+  const answered = await t('output-revision-answered').first().waitFor({ timeout: scaled(25000) }).then(() => true, () => false)
   check(answered, `${label}: the team's new version is announced in the detail`)
   if (answered) {
     const txt = await t('output-revision-answered').first().innerText()

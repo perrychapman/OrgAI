@@ -6,7 +6,7 @@
 // Scenario 5 ([mock:org-change]): an approved org chart is usable in the same run (roster shown by name, saved, survives reload).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-proposals-script-')), 'script.json')
@@ -23,7 +23,7 @@ const { app, page, shot } = await launch({ shotPrefix: 'proposals' })
 page.setDefaultTimeout(8000)
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await sleep(600)
 }
 const setTheme = async (theme) => {
@@ -138,7 +138,7 @@ try {
   await page.evaluate((id) => window.orgai.mcp.startAssist({ projectId: id, scope: 'project', instruction: 'Tighten access' }), pid)
   const card = page.locator('section.frame-tray .decision-card.kind-proposal')
   await page.locator('.run-tablist [role="tab"]', { hasText: 'R1' }).click()
-  await card.waitFor({ timeout: 30_000 })
+  await card.waitFor({ timeout: t(30_000) })
   await sleep(500)
 
   let g = await geometry()
@@ -311,13 +311,13 @@ try {
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t').catch(() => {})
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Work with three decisions')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('.decision-card.kind-question').waitFor({ timeout: 30_000 })
+  await page.locator('.decision-card.kind-question').waitFor({ timeout: t(30_000) })
   await page.locator('.decision-card.kind-question .question-option').first().click()
   await page.locator('.decision-card.kind-question .btn.primary').click()
-  await page.locator('.decision-card.kind-proposal').waitFor({ timeout: 30_000 })
+  await page.locator('.decision-card.kind-proposal').waitFor({ timeout: t(30_000) })
   await sleep(600)
   const chips = (await page.locator('.decision-chip-label').allInnerTexts()).map((t) => t.trim())
   check(chips.some((t) => /^Org chart: /.test(t)), 'the stepper chip for the org chart proposal starts with its kind', chips.join(' | '))
@@ -402,11 +402,11 @@ try {
   await setTheme('dark')
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t').catch(() => {})
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Set up notes [mock:config-change]')
   await page.locator('.composer .btn.primary').click()
   const mcpCard = page.locator('.decision-card.kind-proposal')
-  await mcpCard.waitFor({ timeout: 30_000 })
+  await mcpCard.waitFor({ timeout: t(30_000) })
   await sleep(600)
   const cardText = async () => ((await mcpCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
   check(/mock-notes/.test(await cardText()), 'the first config-change card names the mock-notes server', (await cardText()).slice(0, 200))
@@ -431,7 +431,7 @@ try {
   await note.waitFor()
   await note.fill('Not needed for this task')
   await page.locator('[data-testid=proposal-decline-send]').click()
-  await page.locator('.decision-card.kind-proposal', { hasText: 'mock-config-skill' }).waitFor({ timeout: 30_000 })
+  await page.locator('.decision-card.kind-proposal', { hasText: 'mock-config-skill' }).waitFor({ timeout: t(30_000) })
   check((await page.locator('[data-testid^=proposal-next-]').count()) === 0, 'a declined proposal leaves no next-link')
   const need2 = ((await cardText()) || '')
   check(/mock-config-skill/.test(need2), 'the run continued after the decline and proposed the skill', need2.slice(0, 160))
@@ -447,7 +447,7 @@ try {
   check(items === 1, 'the skills card lists one created skill', String(items))
   await shot('config-change-skills-1024-light')
   await page.locator('.decision-card.kind-proposal .btn.primary').click()
-  await page.locator('[data-testid=proposal-next-project-skills]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=proposal-next-project-skills]').waitFor({ timeout: t(15_000) })
   check(true, 'approving the skills proposal shows its project link in the run metadata')
   if (secrets === 0) {
     check((await page.locator('[data-testid=proposal-next-secrets]').count()) === 0, 'no secrets notice when the proposal had no secret slot')
@@ -539,10 +539,10 @@ try {
   await setTheme('dark')
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t').catch(() => {})
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Grow the team')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('.decision-card.kind-proposal').waitFor({ timeout: 30_000 })
+  await page.locator('.decision-card.kind-proposal').waitFor({ timeout: t(30_000) })
   await sleep(600)
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await setSize(w, h)
@@ -563,11 +563,11 @@ try {
   await page.locator('[data-testid=team-start-from]').click()
   await page.locator('[data-testid=start-from-architect]').click()
   const archDlg = page.locator('[data-testid=architect-dialog]')
-  await archDlg.waitFor({ timeout: 10_000 })
+  await archDlg.waitFor({ timeout: t(10_000) })
   await archDlg.getByLabel('What should change').fill('Grow the team')
   await archDlg.locator('[data-testid=org-change-start]').click()
   const setupCard = 'section.frame-tray .decision-card.kind-proposal'
-  await page.locator(setupCard).first().waitFor({ timeout: 30_000 })
+  await page.locator(setupCard).first().waitFor({ timeout: t(30_000) })
   await sleep(600)
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await setSize(w, h)
@@ -590,12 +590,12 @@ try {
   await setTheme('dark')
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t').catch(() => {})
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Staff up [mock:org-change]')
   // Scenario 4's org change session left setup unfinished, so the page offers "Start without setup" (not the primary Send).
   await page.locator('.composer .composer-row .btn').click()
   const rosterCard = page.locator('.decision-card.kind-proposal')
-  await rosterCard.waitFor({ timeout: 30_000 })
+  await rosterCard.waitFor({ timeout: t(30_000) })
   check(/Add a Roster Tester/.test(((await rosterCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')), 'the org chart card is titled "Add a Roster Tester"')
   const detailsBtn = page.locator('[data-testid=decision-details], .decision-details').first()
   if ((await detailsBtn.isVisible().catch(() => false)) && (await rosterCard.getAttribute('data-expanded')) !== 'true') await detailsBtn.click()
@@ -606,9 +606,9 @@ try {
   await shot('org-change-live-card')
   await page.locator('[data-testid=proposal-approve]').click()
   const testerNode = page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first()
-  await testerNode.waitFor({ timeout: 30_000 })
+  await testerNode.waitFor({ timeout: t(30_000) })
   check(true, 'an agent named Roster Tester appears in the live view after approval')
-  await page.locator('.react-flow__node .agent-node.state-done', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 30_000 })
+  await page.locator('.react-flow__node .agent-node.state-done', { hasText: 'Roster Tester' }).first().waitFor({ timeout: t(30_000) })
   check(true, 'the Roster Tester agent finishes')
   const nodeText = ((await testerNode.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
   check(/Roster Tester/.test(nodeText) && !/unknown/i.test(nodeText), 'the Roster Tester node shows its role name', nodeText)
@@ -620,26 +620,26 @@ try {
 
   // The Team tab shows the role saved.
   await projectTab(page, 'Team').click()
-  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
-  await page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 10_000 })
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: t(10_000) })
+  await page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: t(10_000) })
   check(true, 'the Team tab shows the Roster Tester role saved')
 
   // After a reload the finished run still names the agent.
   await page.reload()
-  await page.locator('.sidebar').waitFor({ timeout: 20_000 })
+  await page.locator('.sidebar').waitFor({ timeout: t(20_000) })
   await sleep(1000)
   // The app reopens on the dashboard; the ended run is a "Pick up where you left off" row.
   const runRow = page.locator(`[data-testid=dash-resume-row][data-run="${rosterRunId}"] [data-testid=dash-resume-main]`)
-  await runRow.waitFor({ timeout: 15_000 })
+  await runRow.waitFor({ timeout: t(15_000) })
   await runRow.click()
   // "Hide finished agents" is on by default and folds a report into a group node COLLAPSE_GRACE_MS (6 s) after it ended. The
   // report ended about as long ago as the steps since (Team tab, reload, reopen) take: a quick machine opened the run inside
   // the grace period and saw the node, a slower one (macOS CI) saw only the group, so this check depended on speed. Turn the
   // fold off, as a user looking for a named agent would, and the node is there at any speed.
   const foldSwitch = page.getByRole('switch', { name: 'Hide finished agents' })
-  await foldSwitch.waitFor({ timeout: 15_000 })
+  await foldSwitch.waitFor({ timeout: t(15_000) })
   if (await foldSwitch.isChecked()) await foldSwitch.click()
-  await page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 20_000 })
+  await page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: t(20_000) })
   check(true, 'after a reload the finished run still shows Roster Tester by name')
   await shot('org-change-reloaded')
 } catch (e) {

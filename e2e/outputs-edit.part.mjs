@@ -3,6 +3,7 @@
 // Drives the in-app editors: markdown edit + Save, the CSV cell grid by keyboard, invalid JSON blocking Save, a stale save, the
 // dirty guard and that no page scrolls. A step logs SKIP when the shell's testid it needs is not rendered yet.
 //   export default async function (ctx) with ctx = { app, page, project, label, size: [w, h], theme, check, sleep }
+import { t } from './lib.mjs'
 
 const ROW = '[data-testid=output-row], [data-testid=run-output-row]'
 const DETAIL = '[data-testid=output-detail]'
@@ -16,7 +17,7 @@ async function openKind(page, kind) {
   const show = row.locator('[data-testid=run-output-show]')
   if ((await show.count()) > 0) await show.click()
   else await row.click()
-  await page.waitForSelector(DETAIL, { timeout: 8000 }).catch(() => undefined)
+  await page.waitForSelector(DETAIL, { timeout: t(8000) }).catch(() => undefined)
   return id
 }
 
@@ -24,7 +25,7 @@ async function startEdit(page) {
   const btn = page.locator('[data-testid=output-edit]').first()
   if ((await btn.count()) === 0) return false
   await btn.click()
-  await page.waitForSelector('[data-testid=output-editor]', { timeout: 8000 }).catch(() => undefined)
+  await page.waitForSelector('[data-testid=output-editor]', { timeout: t(8000) }).catch(() => undefined)
   return (await page.locator('[data-testid=output-editor]').count()) > 0
 }
 
@@ -49,7 +50,7 @@ async function leaveEditor(page) {
   // A dirty editor asks first: answer Don't save when a dialog appears.
   const dont = page.getByRole('button', { name: /Don.t save|Discard/i }).first()
   if (await dont.isVisible().catch(() => false)) await dont.click()
-  await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: 4000 }).catch(() => undefined)
+  await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: t(4000) }).catch(() => undefined)
 }
 
 export default async function (ctx) {
@@ -63,7 +64,7 @@ export default async function (ctx) {
   if (!(await startEdit(page))) return skip('output-edit is not rendered yet (shell testid)')
   check((await page.locator('[data-testid=output-editor][data-kind=markdown]').count()) === 1, `${label}: markdown editor opens`)
   check(
-    await page.waitForFunction(() => document.activeElement?.matches('[data-testid=output-edit-area]') ?? false, null, { timeout: 6000 }).then(() => true).catch(() => false),
+    await page.waitForFunction(() => document.activeElement?.matches('[data-testid=output-edit-area]') ?? false, null, { timeout: t(6000) }).then(() => true).catch(() => false),
     `${label}: focus is in the markdown source`
   )
   check((await page.locator('[data-testid=output-edit-dirty]').textContent())?.trim() === 'No changes', `${label}: bar says No changes at first`)
@@ -120,7 +121,7 @@ export default async function (ctx) {
   await page.locator('[data-testid=output-save]').click()
   const savedMd = await spoken(page, /Saved as version \d+\./)
   check(savedMd, `${label}: Ctrl+S saves and says "Saved as version N."`)
-  await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: 6000 }).catch(() => undefined)
+  await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: t(6000) }).catch(() => undefined)
   check((await page.locator('[data-testid=output-editor]').count()) === 0, `${label}: back to the preview after Save`)
   const latest = await page.evaluate(async (input) => {
     const output = (await window.orgai.outputs.list(input.projectId)).find((item) => item.id === input.outputId)
@@ -195,7 +196,7 @@ export default async function (ctx) {
       check(await noPageScroll(page), `${label}: no page scroll in the grid`)
       await page.locator('[data-testid=output-save]').click()
       check(await spoken(page, /Saved as version \d+\./), `${label}: csv saves a version`)
-      await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: 6000 }).catch(() => undefined)
+      await page.waitForSelector('[data-testid=output-editor]', { state: 'detached', timeout: t(6000) }).catch(() => undefined)
     }
   } else skip('csv editor did not open')
 
@@ -254,7 +255,7 @@ export default async function (ctx) {
       await sleep(400)
       check((await page.locator('[data-testid=output-editor]').count()) === 1, `${label}: a new version does not reset the open editor`)
       await page.locator('[data-testid=output-save]').click()
-      await page.waitForSelector('[data-testid=output-edit-stale]', { timeout: 6000 }).catch(() => undefined)
+      await page.waitForSelector('[data-testid=output-edit-stale]', { timeout: t(6000) }).catch(() => undefined)
       const stale = page.locator('[data-testid=output-edit-stale]')
       check((await stale.count()) === 1 && /was made while you were editing\. Your changes are still here\./.test((await stale.textContent()) ?? ''), `${label}: stale save shows its sentence`)
       check(/Save as version \d+ anyway/.test((await page.locator('[data-testid=output-save-anyway]').textContent()) ?? ''), `${label}: offers "Save as version N anyway"`)
@@ -272,7 +273,7 @@ export default async function (ctx) {
   else if (await startEdit(page)) {
     check((await page.locator('[data-testid=output-editor][data-kind=mermaid]').count()) === 1, `${label}: diagram editor opens`)
     const src = page.locator('[data-testid=diagram-source]')
-    await src.waitFor({ timeout: 8000 }).catch(() => undefined)
+    await src.waitFor({ timeout: t(8000) }).catch(() => undefined)
     if ((await src.count()) === 0) skip('diagram source not shown')
     else {
       check((await page.locator('[data-testid=diagram-scratch-note]').count()) === 0, `${label}: no scratch note in the real editor`)

@@ -3,7 +3,7 @@
 // "Make a project-only copy" dialog. Needs the runtime side (window.orgai.mcpProject); skips without it. Also the code
 // project's Home tab (e2e/home-checks.mjs), which needs nothing from the runtime half.
 import * as path from 'node:path'
-import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openTeam, removeFixture, sleep, teamPanelTab } from './lib.mjs'
+import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openTeam, removeFixture, sleep, teamPanelTab, t } from './lib.mjs'
 import { codeHomeChecks } from './home-checks.mjs'
 
 process.env.ORGAI_MOCK = '1'
@@ -58,7 +58,7 @@ try {
     await setSize(w, h)
     await openTeam(page)
     await teamPanelTab(page, 'Catalog').click()
-    await page.waitForSelector('[data-testid=catalog-connections]', { timeout: 10_000 })
+    await page.waitForSelector('[data-testid=catalog-connections]', { timeout: t(10_000) })
     const row = page.locator('[data-testid=mcp-row][data-server=client-idp-admin]')
     await row.waitFor()
     const block = row.locator('[data-testid=mcp-per-project]')

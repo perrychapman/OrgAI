@@ -7,7 +7,7 @@
 // shows the Done line. A `[mock:self-config-project]` run proposes a $5 cap on a mock project: the card names the
 // project, Approve, then Project settings > Limits shows 5. 1024x640 and 1600x1000, dark and light, keyboard steps.
 // Needs the mock markers (src/main/runtime/mock.ts on dev at e2deb561); without them the run checks SKIP.
-import { check, createProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { check, createProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -26,7 +26,7 @@ const setTheme = async (theme) => {
     const s = await window.orgai.settings.get()
     await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
   }, theme)
-  await page.waitForFunction((t) => document.documentElement.getAttribute('data-theme') === t, theme, { timeout: 5000 }).catch(() => {})
+  await page.waitForFunction((t) => document.documentElement.getAttribute('data-theme') === t, theme, { timeout: t(5000) }).catch(() => {})
 }
 const menu = (id) =>
   app.evaluate(({ Menu }, itemId) => {
@@ -68,8 +68,8 @@ async function focusChip(example) {
 /** Help > Ask OrgAI about itself: a fresh Chat start page with the seed, focus in the field, caret at the end. */
 async function askFromMenu(tag) {
   await menu('ask-about-orgai')
-  await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: 10_000 })
-  await page.waitForFunction(() => document.querySelector('[data-testid=assistant-start-quick] .composer textarea')?.value === 'How do I ', null, { timeout: 5000 }).catch(() => {})
+  await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: t(10_000) })
+  await page.waitForFunction(() => document.querySelector('[data-testid=assistant-start-quick] .composer textarea')?.value === 'How do I ', null, { timeout: t(5000) }).catch(() => {})
   check((await startField().inputValue()) === 'How do I ', `Help > Ask OrgAI about itself seeds "How do I " ${tag}`)
   await settleFocus()
   const caret = await page.evaluate(() => {
@@ -83,7 +83,7 @@ async function askFromMenu(tag) {
 async function startChat(prompt) {
   await startField().fill(prompt)
   await startField().press('Enter')
-  await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+  await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: t(20_000) }).catch(() => {})
 }
 
 /** Push an AppNavigateEvent from main exactly as DesktopHooks.navigate does (channel 'app:navigate'). */
@@ -101,11 +101,11 @@ async function pushedNavigation(tag, project) {
   check(!!runId, `a Chat run is on screen to ask ${tag}`)
   if (!runId) return
   await pushNavigate({ surfaceId: 'app-settings-general-appearance', runId, agentLabel: 'Assistant' })
-  await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: t(10_000) }).catch(() => {})
   check(await visible('[data-testid=appearance-section]'), `a pushed navigation opens App settings > General > Appearance ${tag}`)
   check((await text('[data-testid=app-navigate-text]')) === 'Assistant opened Settings › App › Appearance for you.', `the banner names the path ${tag}`, await text('[data-testid=app-navigate-text]'))
   const announced = await page
-    .waitForFunction(() => /Settings › App › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 })
+    .waitForFunction(() => /Settings › App › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: t(3000) })
     .then(
       () => true,
       () => false
@@ -120,7 +120,7 @@ async function pushedNavigation(tag, project) {
   await setTheme('dark')
   await page.locator('[data-testid=app-navigate-back]').focus()
   await page.keyboard.press('Enter')
-  await page.waitForFunction(() => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest('.composer'), null, { timeout: 5000 }).catch(() => {})
+  await page.waitForFunction(() => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest('.composer'), null, { timeout: t(5000) }).catch(() => {})
   check(!(await visible('[data-testid=app-navigate-banner]')), `Back to chat clears the banner ${tag}`)
   check(await page.evaluate(() => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest('.composer')), `Back to chat focuses the composer ${tag}`)
   check((await page.locator(`.run-tab-wrap[data-run="${runId}"] .run-tab[aria-selected=true]`).count()) === 1, `Back to chat shows the run that asked ${tag}`)
@@ -128,7 +128,7 @@ async function pushedNavigation(tag, project) {
   if (project) {
     await sleep(2100)
     await pushNavigate({ surfaceId: 'project-settings-limits', projectId: project.id, runId, agentLabel: 'Assistant' })
-    await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 10_000 }).catch(() => {})
+    await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: t(10_000) }).catch(() => {})
     check((await text('[data-testid=app-navigate-text]')) === `Assistant opened ${NAME} › Settings › Limits for you.`, `a project place names the project ${tag}`, await text('[data-testid=app-navigate-text]'))
     check((await page.getByRole('tab', { name: 'Limits' }).getAttribute('aria-selected')) === 'true', `the project's Limits pane is shown ${tag}`)
     check(await page.evaluate(() => document.activeElement?.classList.contains('settings-pane-title') ?? false), `focus is on the Limits pane heading ${tag}`, await activeTestId())
@@ -137,13 +137,13 @@ async function pushedNavigation(tag, project) {
     check(!(await visible('[data-testid=app-navigate-banner]')), `leaving the destination clears the banner ${tag}`)
   }
   await pushNavigate({ surfaceId: 'project-team', projectId: 'p_missing', runId, agentLabel: 'Assistant' })
-  await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: t(5000) }).catch(() => {})
   check(/tried to open a project this window does not have/.test(await text('[data-testid=app-navigate-text]')), `an unknown project is refused with a visible line ${tag}`)
   await page.locator('[data-testid=app-navigate-banner]').getByRole('button', { name: 'Dismiss notice' }).focus()
   await page.keyboard.press('Escape')
   check(!(await visible('[data-testid=app-navigate-banner]')), `Esc in the banner dismisses it ${tag}`)
   await pushNavigate({ surfaceId: 'menu-help', runId, agentLabel: 'Assistant' })
-  await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: t(5000) }).catch(() => {})
   check((await text('[data-testid=app-navigate-text]')) === 'Assistant pointed you to Help in the menu bar.', `a menu place only names the menu path ${tag}`)
   await page.locator('[data-testid=app-navigate-banner]').getByRole('button', { name: 'Dismiss notice' }).click()
 }
@@ -186,7 +186,7 @@ try {
 
     // ---- [mock:self-config]: locate, open App settings > Appearance, propose theme light ----
     await startChat('[mock:self-config] Where do I change the theme? Make it light.')
-    const landed = await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 30_000 }).then(
+    const landed = await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: t(30_000) }).then(
       () => true,
       () => false
     )
@@ -199,7 +199,7 @@ try {
     const bannerText = await text('[data-testid=app-navigate-text]')
     check(/opened Settings › App › Appearance for you\./.test(bannerText), `the banner names the path ${tag}`, bannerText)
     check(await visible('[data-testid=app-navigate-back]'), `the banner offers Back to chat ${tag}`)
-    const announced = await page.waitForFunction(() => /Settings › App › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: 3000 }).then(
+    const announced = await page.waitForFunction(() => /Settings › App › Appearance/.test(document.querySelector('[data-testid=menu-announce]')?.textContent ?? ''), null, { timeout: t(3000) }).then(
       () => true,
       () => false
     )
@@ -209,11 +209,11 @@ try {
       return !!a && !!document.getElementById('main-content')?.contains(a) && /^H[1-4]$/.test(a.tagName)
     })
     check(focusOk, `focus lands on the destination heading, not on an action ${tag}`, await activeTestId())
-    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Colour mode', null, { timeout: 3000 }).catch(() => {})
+    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Colour mode', null, { timeout: t(3000) }).catch(() => {})
     const headingText = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? '')
     check(headingText === 'Colour mode', `focus lands on the Appearance pane's first section heading (Colour mode), not the pane title ${tag}`, headingText)
     // The asking run has a card open by now: the banner says so and Back reads "Back to chat to decide".
-    await page.waitForFunction(() => /A change is waiting for you in the chat\./.test(document.querySelector('[data-testid=app-navigate-banner]')?.textContent ?? ''), null, { timeout: 15_000 }).catch(() => {})
+    await page.waitForFunction(() => /A change is waiting for you in the chat\./.test(document.querySelector('[data-testid=app-navigate-banner]')?.textContent ?? ''), null, { timeout: t(15_000) }).catch(() => {})
     check(/A change is waiting for you in the chat\./.test(await text('[data-testid=app-navigate-banner]')), `the banner says a change is waiting ${tag}`, await text('[data-testid=app-navigate-banner]'))
     check((await text('[data-testid=app-navigate-back]')) === 'Back to chat to decide', `Back reads "Back to chat to decide" ${tag}`, await text('[data-testid=app-navigate-back]'))
     await page.keyboard.press('Tab')
@@ -225,15 +225,15 @@ try {
     // Back to chat (keyboard): the run again, composer focused, banner gone.
     await page.locator('[data-testid=app-navigate-back]').focus()
     await page.keyboard.press('Enter')
-    await page.locator('[data-testid=app-navigate-banner]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    await page.locator('[data-testid=app-navigate-banner]').waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
     check(!(await visible('[data-testid=app-navigate-banner]')), `Back to chat clears the banner ${tag}`)
-    await page.waitForFunction(() => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest('.composer'), null, { timeout: 5000 }).catch(() => {})
+    await page.waitForFunction(() => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest('.composer'), null, { timeout: t(5000) }).catch(() => {})
     check(await page.evaluate(() => document.activeElement instanceof HTMLTextAreaElement && !!document.activeElement.closest('.composer')), `Back to chat focuses the composer ${tag}`)
     check((await page.locator('.run-tab[aria-selected=true]').count()) === 1, `Back to chat shows the run ${tag}`)
 
     // The App settings card: Setting / Now / New, the theme row, Apply and Decline in view.
     const card = page.locator('article.decision-card', { has: page.locator('[data-testid=appsettings-proposal]') }).first()
-    await card.waitFor({ timeout: 30_000 }).catch(() => {})
+    await card.waitFor({ timeout: t(30_000) }).catch(() => {})
     check((await card.count()) === 1, `the App settings card appears ${tag}`)
     check((await text('[data-testid=proposal-target-badge]')) === 'App settings', `the card head says App settings ${tag}`)
     const details = card.locator('.decision-details')
@@ -250,7 +250,7 @@ try {
     check(await noPageScroll(), `the card does not scroll the page ${tag}`)
     await shot(`card-${w}x${h}-dark`)
     await approve.click()
-    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light', null, { timeout: 10_000 }).catch(() => {})
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light', null, { timeout: t(10_000) }).catch(() => {})
     check((await page.evaluate(() => document.documentElement.getAttribute('data-theme'))) === 'light', `Approve makes the theme light ${tag}`)
     check(await waitText('Done: the theme is now light.'), `the transcript shows the Done line ${tag}`)
     check((await page.locator('[data-testid=self-help-row][data-tool=app_reference]').count()) >= 1, `the reference lookup is one quiet row ${tag}`)
@@ -262,7 +262,7 @@ try {
     // ---- light theme: the same navigation again; nothing to change, the banner still shows ----
     await askFromMenu(`${tag} light`)
     await startChat('[mock:self-config] Make it light.')
-    const again = await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: 30_000 }).then(
+    const again = await page.locator('[data-testid=app-navigate-banner]').waitFor({ timeout: t(30_000) }).then(
       () => true,
       () => false
     )
@@ -276,10 +276,10 @@ try {
 
     // ---- [mock:self-config-project]: a $5 cap on the first project ----
     await menu('new-chat')
-    await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: 10_000 })
+    await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: t(10_000) })
     await startChat('[mock:self-config-project] Cap my project at $5 per run.')
     const pcard = page.locator('article.decision-card', { has: page.locator('[data-testid=proposal-target-badge]') }).first()
-    await pcard.waitFor({ timeout: 30_000 }).catch(() => {})
+    await pcard.waitFor({ timeout: t(30_000) }).catch(() => {})
     check((await pcard.count()) === 1, `the project settings card appears ${tag}`)
     check((await pcard.locator('[data-testid=proposal-target-badge]').innerText()).includes(NAME.slice(0, 20)), `the card names the project ${tag}`)
     check((await pcard.locator('[data-testid=proposal-target]').innerText()).startsWith('Applies to'), `the card says which project it applies to ${tag}`)
@@ -305,17 +305,17 @@ try {
 
   // ---- About pane and the shortcuts dialog ----
   await menu('open-about')
-  await page.locator('[data-testid=ask-orgai-button]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=ask-orgai-button]').waitFor({ timeout: t(10_000) }).catch(() => {})
   check(await visible('[data-testid=ask-orgai-button]'), 'App settings > About offers Ask OrgAI about itself')
   await page.locator('[data-testid=ask-orgai-button]').click()
-  await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: t(10_000) }).catch(() => {})
   check(await visible('[data-testid=assistant-start-quick]'), 'the About button opens the Chat start page')
   await menu('keyboard-shortcuts')
-  await page.locator('[data-testid=shortcuts-ask-orgai]').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.locator('[data-testid=shortcuts-ask-orgai]').waitFor({ timeout: t(5000) }).catch(() => {})
   check(await visible('[data-testid=shortcuts-ask-orgai]'), 'the shortcuts dialog offers Ask OrgAI')
   await page.locator('[data-testid=shortcuts-ask-orgai]').click()
   // The closing dialog stays displayed for its exit (~100 ms): wait for it to go.
-  await page.waitForFunction(() => { const d = document.querySelector('[data-testid=keyboard-shortcuts-dialog]'); return !d || !d.getClientRects().length }, null, { timeout: 3000 }).catch(() => {})
+  await page.waitForFunction(() => { const d = document.querySelector('[data-testid=keyboard-shortcuts-dialog]'); return !d || !d.getClientRects().length }, null, { timeout: t(3000) }).catch(() => {})
   check(!(await visible('[data-testid=keyboard-shortcuts-dialog]')), 'Ask OrgAI closes the shortcuts dialog')
   check(await visible('[data-testid=assistant-start-quick]'), 'Ask OrgAI from the dialog lands on the Chat start page')
 } catch (e) {

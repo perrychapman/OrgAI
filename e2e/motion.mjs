@@ -4,7 +4,7 @@
 // focus; with Reduce motion on every animation on a dialog / popover is ~0 ms, the motion distance is 0px and every
 // working canvas node breathes at --dur-pulse (at most 12) and stops. 1024x640 and 1600x1000, dark and light. Never
 // waits on an animation to finish.
-import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openProject, removeFixture, setReduceMotion, sleep } from './lib.mjs'
+import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openProject, removeFixture, setReduceMotion, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -24,7 +24,7 @@ const setTheme = async (theme) => {
     const { dataDir: _d, appVersion: _v, ...rest } = s
     await window.orgai.settings.set({ ...rest, appearance: { ...rest.appearance, theme: t } })
   }, theme)
-  await page.waitForFunction((t) => document.documentElement.getAttribute('data-theme') === t, theme, { timeout: 5000 }).catch(() => {})
+  await page.waitForFunction((t) => document.documentElement.getAttribute('data-theme') === t, theme, { timeout: t(5000) }).catch(() => {})
 }
 const menu = (id) =>
   app.evaluate(({ Menu }, itemId) => {
@@ -109,11 +109,11 @@ const openShortcuts = async () => {
   await menu('keyboard-shortcuts')
   // [open], not just visible: a closing dialog stays displayed for its --dur-fast exit, so "visible" right after a
   // close can match the leaving dialog before the reopen lands.
-  await page.locator(`${DIALOG}[open]`).waitFor({ timeout: 5000 })
+  await page.locator(`${DIALOG}[open]`).waitFor({ timeout: t(5000) })
 }
 const closeShortcuts = async () => {
   await page.keyboard.press('Escape')
-  await page.locator(`${DIALOG}[open]`).waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+  await page.locator(`${DIALOG}[open]`).waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
 }
 
 try {
@@ -147,7 +147,7 @@ try {
       }, DIALOG)
       check(!leaving.open, `Esc closes the dialog at once ${tag}`, JSON.stringify(leaving))
       check(!leaving.panel || (leaving.inert && leaving.hidden === 'true'), `a leaving dialog panel is inert and aria-hidden ${tag}`, JSON.stringify(leaving))
-      await page.waitForFunction((sel) => !document.querySelector(`${sel} .dialog-panel`), DIALOG, { timeout: 2000 }).catch(() => {})
+      await page.waitForFunction((sel) => !document.querySelector(`${sel} .dialog-panel`), DIALOG, { timeout: t(2000) }).catch(() => {})
       check(await page.evaluate((sel) => !document.querySelector(`${sel} .dialog-panel`), DIALOG), `the panel leaves after the exit ${tag}`)
 
       // Three quick cycles: no stuck open dialog, focus is not left inside a closed dialog.
@@ -169,7 +169,7 @@ try {
         const pop = await seen()
         check((pop ?? []).some((a) => a.state === 'running' && a.duration >= 50), `a popover open starts a running transition ${tag}`, JSON.stringify(pop))
         await page.keyboard.press('Escape')
-        await page.waitForFunction(() => !document.querySelector('[data-testid=account-popover]:popover-open'), null, { timeout: 2000 }).catch(() => {})
+        await page.waitForFunction(() => !document.querySelector('[data-testid=account-popover]:popover-open'), null, { timeout: t(2000) }).catch(() => {})
       } else check(true, `account row not shown under the mock ${tag} (popover check skipped)`)
 
       // ---- Reduce motion on ----
@@ -201,10 +201,10 @@ try {
   await openProject(page, NAME)
   await page.getByRole('tab', { name: 'Live', exact: true }).click()
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Motion breathe check [mock:deep-tree]')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('.react-flow [data-breathe]').first().waitFor({ timeout: 20_000 }).catch(() => {})
+  await page.locator('.react-flow [data-breathe]').first().waitFor({ timeout: t(20_000) }).catch(() => {})
   const breathe = () =>
     page.evaluate(() => {
       const marks = [...document.querySelectorAll('.react-flow [data-breathe]')]
@@ -235,13 +235,13 @@ try {
   await page.locator('[data-testid=nav-usage]').click()
   // Page arrival (motion.md): the first visit stages it with the arrival classes for about 800 ms, then they go.
   const staged = await page
-    .waitForFunction(() => !!document.querySelector('[data-testid=usage-pacing].motion-arrive-hero') && document.querySelectorAll('.usage-view .motion-arrive-band, [data-testid=usage-view] .motion-arrive-band').length > 0, null, { timeout: 15_000, polling: 'raf' })
+    .waitForFunction(() => !!document.querySelector('[data-testid=usage-pacing].motion-arrive-hero') && document.querySelectorAll('.usage-view .motion-arrive-band, [data-testid=usage-view] .motion-arrive-band').length > 0, null, { timeout: t(15_000), polling: 'raf' })
     .then(() => true)
     .catch(() => false)
   const stagedAnim = staged ? await page.evaluate(() => document.querySelector('[data-testid=usage-pacing]')?.getAnimations().some((a) => a.playState === 'running') ?? false) : false
   check(staged || (await page.locator('[data-testid=usage-pacing]').count()) === 0, 'usage: the first visit stages its arrival (hero and band classes)', String(staged))
   check(!staged || stagedAnim, 'usage: the arriving Pacing hero runs an animation', String(stagedAnim))
-  await page.locator('[data-testid=usage-summary]').waitFor({ timeout: 20_000 }).catch(() => {})
+  await page.locator('[data-testid=usage-summary]').waitFor({ timeout: t(20_000) }).catch(() => {})
   await sleep(1200)
   check((await page.locator('[data-testid=usage-view] .motion-arrive-hero, [data-testid=usage-view] .motion-arrive-band').count()) === 0, 'usage: the arrival classes are gone after it (the page rests)')
   await sleep(800)

@@ -4,7 +4,7 @@
 // one announcement per action), keyboard (spend plot, project rows, efficiency grid), states (filtered-empty, Kind chip),
 // layout at 1024x640 and 1600x1000 in both themes, and a live run with the page open. Seeds through the IPC
 // (runs.start / runs.startQuick), so it never drives the composer. A check that cannot be driven logs SKIP with a reason.
-import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep, pickSetup } from './lib.mjs'
+import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep, pickSetup, t } from './lib.mjs'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -21,7 +21,7 @@ let { app, page, shot } = await launch({ shotPrefix: 'usage-app' })
 const skip = (what, why) => log(`SKIP ${what}: ${why}`)
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await sleep(500)
 }
@@ -51,8 +51,8 @@ const focusInfo = () =>
   })
 /** Waits for the Usage page to show data (summary) or an empty state. */
 const settle = async () => {
-  await T('usage-view').waitFor({ timeout: 15_000 })
-  await page.waitForFunction(() => !document.querySelector('[data-testid=usage-view]')?.getAttribute('aria-busy')?.includes('true') && !document.querySelector('[data-testid=usage-skeleton]'), null, { timeout: 20_000 })
+  await T('usage-view').waitFor({ timeout: t(15_000) })
+  await page.waitForFunction(() => !document.querySelector('[data-testid=usage-view]')?.getAttribute('aria-busy')?.includes('true') && !document.querySelector('[data-testid=usage-skeleton]'), null, { timeout: t(20_000) })
   await sleep(300)
 }
 const goUsage = async () => {
@@ -142,14 +142,14 @@ async function createEngagement(name, dir) {
   await gotoProjects(page)
   await T('new-project').click()
   const form = page.locator('[data-testid=new-project-dialog] form')
-  await form.waitFor({ timeout: 10_000 })
+  await form.waitFor({ timeout: t(10_000) })
   await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
   await form.getByLabel('Name', { exact: true }).fill(name)
   await T('new-project-client').fill('Acme Corp')
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
   await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
-  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: t(60_000) })
 }
 
 const createCode = async (name, dir) => {
@@ -209,7 +209,7 @@ try {
   // order, the plot wipes in. The classes go after ARRIVAL_REST_MS (800 ms), so they are caught while they are there.
   await T('nav-usage').click()
   const arrived = await page
-    .waitForFunction(() => document.querySelector('[data-testid=usage-pacing].motion-arrive-hero') && document.querySelectorAll('[data-testid=usage-view] .motion-arrive-band').length >= 3, null, { timeout: 15_000, polling: 'raf' })
+    .waitForFunction(() => document.querySelector('[data-testid=usage-pacing].motion-arrive-hero') && document.querySelectorAll('[data-testid=usage-view] .motion-arrive-band').length >= 3, null, { timeout: t(15_000), polling: 'raf' })
     .then(() => true)
     .catch(() => false)
   check(arrived, 'arrival: the first navigation to Usage stages it (motion-arrive-hero on Pacing, at least three motion-arrive-band bands)')
@@ -220,8 +220,8 @@ try {
   // Back to the Dashboard and again to Usage, no data change: the page appears at rest.
   await gotoProjects(page)
   await T('nav-usage').click()
-  await T('usage-view').waitFor({ timeout: 15_000 })
-  await page.waitForSelector('[data-testid=usage-pacing]', { timeout: 15_000 })
+  await T('usage-view').waitFor({ timeout: t(15_000) })
+  await page.waitForSelector('[data-testid=usage-pacing]', { timeout: t(15_000) })
   const again = await page.locator('[data-testid=usage-view] .motion-arrive-hero, [data-testid=usage-view] .motion-arrive-band').count()
   check(again === 0, 'arrival: returning to Usage without a data change shows no arrival classes', String(again))
   check(Number(await plot().getAttribute('data-draw')) === 0, 'arrival: and the plot does not redraw (data-draw is 0)', String(await plot().getAttribute('data-draw')))
@@ -257,7 +257,7 @@ try {
   await openProject(page, A)
   await projectTab(page, 'History').click()
   await page.locator('.seg label', { hasText: 'Trends' }).click()
-  await T('trends-see-all').waitFor({ timeout: 15_000 })
+  await T('trends-see-all').waitFor({ timeout: t(15_000) })
   await T('trends-see-all').click()
   await settle()
   check(JSON.stringify(await chipKinds()) === '["project"]', 'entry: trends-see-all opens with the Project chip', JSON.stringify(await chips()))
@@ -277,7 +277,7 @@ try {
   if (await showPanel.count()) await showPanel.first().click()
   if (await T('side-tab-usage').count()) {
     await T('side-tab-usage').click()
-    await T('run-usage-all').waitFor({ timeout: 10_000 })
+    await T('run-usage-all').waitFor({ timeout: t(10_000) })
     await T('run-usage-all').click()
     await settle()
     check(JSON.stringify(await chipKinds()) === '["project"]', 'entry: run-usage-all opens with the Project chip', JSON.stringify(await chips()))
@@ -396,7 +396,7 @@ try {
   if (await open.count()) {
     const rowProject = await T('usage-wasteful-row').first().getAttribute('data-project')
     await open.click()
-    await page.waitForSelector('[data-testid=run-meta]', { timeout: 15_000 })
+    await page.waitForSelector('[data-testid=run-meta]', { timeout: t(15_000) })
     await sleep(800)
     const sel = await T('side-tab-usage').getAttribute('aria-selected').catch(() => null)
     check(sel === 'true', 'drilldown: usage-run-open lands on the run with the Usage side tab selected', String(sel))
@@ -425,7 +425,7 @@ try {
   check((await T('usage-run-row').count()) >= 1, 'drilldown: All runs lists the narrowed project runs')
   if (await runOpen.count()) {
     await runOpen.click()
-    await page.waitForSelector('[data-testid=run-meta]', { timeout: 15_000 })
+    await page.waitForSelector('[data-testid=run-meta]', { timeout: t(15_000) })
     check((await T('side-tab-usage').getAttribute('aria-selected')) === 'true', 'drilldown: a run opened from All runs selects the Usage side tab')
     await page.locator('.sidebar [data-testid=nav-usage]').click()
     await settle()
@@ -931,7 +931,7 @@ try {
   await tbtn.click()
   check(await T('usage-copy-csv').isEnabled() && await T('usage-save-csv').isEnabled(), 'csv: Copy as CSV and Save CSV are enabled with runs in range')
   await T('usage-copy-csv').click()
-  await page.waitForFunction(() => /\S/.test(document.querySelector('[data-testid=usage-csv-status]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+  await page.waitForFunction(() => /\S/.test(document.querySelector('[data-testid=usage-csv-status]')?.textContent ?? ''), null, { timeout: t(8000) }).catch(() => {})
   const csvStatus = clean(await T('usage-csv-status').innerText())
   check(/cop|row|run/i.test(csvStatus) && (await T('usage-csv-status').getAttribute('class'))?.includes('failed') !== true, 'csv: Copy as CSV reports its result', csvStatus)
 
@@ -947,7 +947,7 @@ try {
 
   // Dashboard hand-off: the Your week figures open Usage on 7 days with that figure's metric pressed.
   await gotoProjects(page)
-  await page.waitForSelector('[data-testid=dash-stats]', { timeout: 15_000 }).catch(() => {})
+  await page.waitForSelector('[data-testid=dash-stats]', { timeout: t(15_000) }).catch(() => {})
   for (const [card, metric] of [['spend', 'cost'], ['runs', 'runs']]) {
     if (!(await T(`dash-stat-${card}`).count())) {
       skip(`dash-stat-${card}`, 'the card is not rendered')
@@ -993,7 +993,7 @@ try {
   await settle()
   check(await visible('[data-testid=usage-spend]') && (await T('usage-empty').count()) === 0, 'states: Use 30 days brings the panels back')
   await T('usage-kinds').click()
-  await T('usage-kinds-picker').waitFor({ timeout: 5000 })
+  await T('usage-kinds-picker').waitFor({ timeout: t(5000) })
   const chatOpt = T('usage-kind-option').filter({ hasText: /^\s*Chat\s*/ }).first()
   const kindOnly = T('usage-kinds-picker')
   // pick Chat only: clear the others through their checkboxes
@@ -1060,7 +1060,7 @@ try {
   await goUsage()
   await clearAll()
   await T('usage-kinds').click()
-  await T('usage-kinds-picker').waitFor({ timeout: 5000 })
+  await T('usage-kinds-picker').waitFor({ timeout: t(5000) })
   {
     const opts = T('usage-kinds-picker').locator('[data-testid=usage-kind-option] input[type=checkbox]')
     const n = await opts.count()

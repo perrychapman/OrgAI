@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
+import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const USE_SCRIPT = process.env.E2E_OUTPUTS_SCRIPT === '1'
@@ -129,7 +129,7 @@ page.setDefaultTimeout(8000)
 const snap = (name) => screenshot(page, `outputs-${name}`)
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await sleep(600)
 }
@@ -172,33 +172,33 @@ async function startRun(prompt = USE_SCRIPT ? 'Produce the deliverables' : 'Prod
   await projectTab(page, 'Live').click()
   if (!(await page.locator('.new-run').count())) {
     await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 8000 })
+    await page.locator('.new-run').waitFor({ timeout: t(8000) })
   }
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
 }
 
 /** The run's side panel open (a rail at 1024x640) on the Outputs tab. */
 async function openRunOutputsTab() {
   await projectTab(page, 'Live').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   const railed = page.locator('aside.side-panel[data-collapsed=true]')
   if (await railed.count()) {
     await railed.getByRole('button', { name: /^Show run panel/ }).click()
     await sleep(400)
   }
   const tab = page.locator('[data-testid=side-tab-outputs]')
-  await tab.waitFor({ state: 'visible', timeout: 8000 })
+  await tab.waitFor({ state: 'visible', timeout: t(8000) })
   if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click()
-  await page.locator('[data-testid=run-outputs-list], [data-testid=run-outputs-empty], [data-testid=output-detail]').first().waitFor({ timeout: 8000 })
+  await page.locator('[data-testid=run-outputs-list], [data-testid=run-outputs-empty], [data-testid=output-detail]').first().waitFor({ timeout: t(8000) })
   // A detail left open from an earlier visit (a narrow panel shows it instead of the list): back to the list.
   const back = page.locator('[data-testid=run-output-back]')
   if (await back.count()) {
     await back.click()
-    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: 5000 })
+    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: t(5000) })
   }
 }
 const runRow = (kind) => page.locator(`[data-testid=run-output-row][data-kind=${kind}]`)
@@ -208,7 +208,7 @@ async function showRunOutput(kind) {
   const back = page.locator('[data-testid=run-output-back]')
   if (await back.count()) {
     await back.click()
-    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: 5000 })
+    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: t(5000) })
   }
   if (!rowControlsChecked) {
     rowControlsChecked = true
@@ -219,7 +219,7 @@ async function showRunOutput(kind) {
     check(counts.length > 0 && counts.every((c) => c.show === 1 && c.extra <= 1), `run side tab rows carry at most one visible control besides the row itself`, JSON.stringify(counts))
   }
   await runRow(kind).locator('[data-testid=run-output-show]').click()
-  await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: 8000 })
+  await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: t(8000) })
 }
 const detail = () => page.locator('[data-testid=output-detail]').first()
 let hintChecked = false
@@ -227,9 +227,9 @@ let hintChecked = false
 /** Zoom of the diagram in `scope` (the detail, or the Larger view): buttons, keys, limits, drawing size. */
 async function zoomIn(scope, label) {
   const zoom = scope.locator('[data-testid=output-mermaid-zoom]')
-  await zoom.waitFor({ timeout: 8000 })
+  await zoom.waitFor({ timeout: t(8000) })
   const vp = scope.locator('[data-testid=diagram-viewport]').first()
-  await vp.waitFor({ timeout: 20_000 })
+  await vp.waitFor({ timeout: t(20_000) })
   const value = () => zoom.getAttribute('data-value')
   const k = async () => Number(await vp.getAttribute('data-k'))
   const drawn = () => scope.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.getBoundingClientRect().width)
@@ -284,7 +284,7 @@ async function largerViewChecks(label) {
   const inlineW = await detail().locator('[data-testid=diagram-viewport]').first().evaluate((el) => el.getBoundingClientRect().width)
   await btn.click()
   const dlg = page.locator('[data-testid=output-dialog]')
-  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.waitFor({ state: 'visible', timeout: t(5000) })
   // Visibility can precede the shared dialog's entry transform; measure its final geometry.
   await dlg.evaluate(async (el) => {
     await Promise.all(el.getAnimations().map((animation) => animation.finished))
@@ -296,7 +296,7 @@ async function largerViewChecks(label) {
   check(box.w >= box.vw - 64 && box.h >= box.vh - 64, `${label}: the Larger view fills the window`, JSON.stringify(box))
   check((await dlg.locator('h2').innerText()) === 'Architecture diagram' && (await dlg.locator('[data-testid=output-more]').count()) === 1, `${label}: the Larger view is titled by the output and offers its actions`)
   const dvp = dlg.locator('[data-testid=diagram-viewport]').first()
-  await dvp.waitFor({ timeout: 20_000 })
+  await dvp.waitFor({ timeout: t(20_000) })
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-viewport', 4000), `${label}: opening the Larger view lands focus on the drawing`)
   const dlgW = await dvp.evaluate((el) => el.getBoundingClientRect().width)
   check(dlgW > inlineW, `${label}: the diagram has more room in the Larger view`, `${inlineW} -> ${dlgW}`)
@@ -306,12 +306,12 @@ async function largerViewChecks(label) {
   await noScroll(`${label}: Larger view open`)
   await snap(`${label}-larger`)
   await page.keyboard.press('Escape')
-  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlg.waitFor({ state: 'hidden', timeout: t(5000) })
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-detail-expand'), `${label}: Esc closes the Larger view and focus returns to its button`)
   await btn.click()
-  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.waitFor({ state: 'visible', timeout: t(5000) })
   await dlg.getByRole('button', { name: 'Close dialog' }).click()
-  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlg.waitFor({ state: 'hidden', timeout: t(5000) })
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-detail-expand'), `${label}: the close button returns focus to Larger view too`)
 }
 
@@ -332,7 +332,7 @@ async function runSideChecks(label, wide) {
   // Document
   await showRunOutput('docx')
   const doc = detail().locator('[data-testid=output-doc]')
-  await doc.waitFor({ timeout: 8000 })
+  await doc.waitFor({ timeout: t(8000) })
   // The narrow-panel hint shows once, the first time a detail opens in a panel under 480 px.
   const hint = page.locator('[data-testid=output-wide-hint]')
   if (!hintChecked) {
@@ -352,7 +352,7 @@ async function runSideChecks(label, wide) {
   // Spreadsheet
   await showRunOutput('xlsx')
   const sheets = detail().locator('[data-testid=output-sheets]')
-  await sheets.waitFor({ timeout: 8000 })
+  await sheets.waitFor({ timeout: t(8000) })
   check((await detail().locator('[data-testid=output-sheet-tab]').count()) === 2, `${label}: the sheet view has two sheet tabs`)
   const cells = clean(await sheets.locator('[data-testid=output-sheet-table]').first().innerText()).replace(/,/g, '')
   check(/1200/.test(cells) && /3400/.test(cells) && /\b800\b/.test(cells), `${label}: the Cost cells read 1200, 3400 and 800`, cells.slice(0, 120))
@@ -383,7 +383,7 @@ async function runSideChecks(label, wide) {
   // Diagram
   await showRunOutput('mermaid')
   const svg = detail().locator('[data-testid=output-mermaid-svg] svg')
-  await svg.first().waitFor({ timeout: 20_000 })
+  await svg.first().waitFor({ timeout: t(20_000) })
   // The drawing lives in a shadow root (checked nodes imported, never parsed as text).
   const drawing = await detail().locator('[data-testid=output-mermaid-svg]').evaluate((el) => ({
     shadow: !!el.shadowRoot,
@@ -416,7 +416,7 @@ async function runSideChecks(label, wide) {
   // Markdown
   await showRunOutput('markdown')
   const md = detail().locator('[data-testid=output-md-rendered]')
-  await md.waitFor({ timeout: 8000 })
+  await md.waitFor({ timeout: t(8000) })
   check((await md.locator('h1, h2, h3, h4, h5, h6').count()) >= 1, `${label}: the Markdown output renders a heading`)
   await detail().locator('[data-testid=output-md-view]').getByText('Source', { exact: true }).click()
   const mdSrc = clean(await detail().locator('[data-testid=output-source]').first().innerText())
@@ -425,7 +425,7 @@ async function runSideChecks(label, wide) {
   // Image
   await showRunOutput('image')
   const img = detail().locator('img[data-testid=output-image]')
-  await img.waitFor({ timeout: 8000 })
+  await img.waitFor({ timeout: t(8000) })
   check(await until(async () => (await img.evaluate((el) => el.complete && el.naturalWidth > 0)) === true, 6000), `${label}: the image preview is loaded`)
   await noScroll(`${label}: image preview`)
 }
@@ -433,7 +433,7 @@ async function runSideChecks(label, wide) {
 /** Transcript rows: the refused register, and a Show link that lands on the item. */
 async function transcriptChecks(label) {
   await projectTab(page, 'Live').click()
-  await page.locator('.react-flow__node').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('.react-flow__node').first().waitFor({ state: 'visible', timeout: t(15_000) })
   await page.locator('.react-flow__node:has(.agent-node.is-root)').first().click()
   await sleep(300)
   const railed = page.locator('aside.side-panel[data-collapsed=true]')
@@ -443,7 +443,7 @@ async function transcriptChecks(label) {
   }
   const tTab = page.locator('[data-testid=side-tab-transcript]')
   if ((await tTab.getAttribute('aria-selected')) !== 'true') await tTab.click()
-  await page.locator('.side-run .transcript .entry').first().waitFor({ state: 'visible', timeout: 10_000 })
+  await page.locator('.side-run .transcript .entry').first().waitFor({ state: 'visible', timeout: t(10_000) })
   const rows = page.locator('[data-testid=output-write-row]')
   check(await until(async () => (await rows.count()) >= 5), `${label}: the transcript folds each produce / register call into one row`, String(await rows.count()))
   const states = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-state')))
@@ -469,7 +469,7 @@ async function transcriptChecks(label) {
 async function projectTabChecks(label) {
   await page.locator('[data-testid=tab-outputs]').click()
   const list = page.locator('[data-testid=outputs-list]')
-  await list.waitFor({ timeout: 10_000 })
+  await list.waitFor({ timeout: t(10_000) })
   const rows = page.locator('[data-testid=output-row]')
   check((await rows.count()) === 5, `${label}: the Outputs tab lists the same five outputs`, String(await rows.count()))
   const kinds = await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
@@ -585,7 +585,7 @@ async function keyboardChecks(label) {
 async function historyChecks(label) {
   await projectTab(page, 'History').click()
   const chip = page.locator('[data-testid=history-outputs]')
-  await chip.first().waitFor({ timeout: 10_000 })
+  await chip.first().waitFor({ timeout: t(10_000) })
   check((await chip.count()) === 1 && /^5 files$/.test(clean(await chip.first().innerText())), `${label}: History shows "5 files" on the row`, clean(await chip.first().innerText()))
   await noScroll(`${label}: History with the outputs chip`)
   await snap(`${label}-history`)
@@ -600,23 +600,23 @@ async function actionChecks(label) {
   const rows = page.locator('[data-testid=output-row]')
   const more = page.locator('[data-testid=outputs-detail] [data-testid=output-more]')
   await rows.filter({ hasText: 'Summary' }).first().click()
-  await more.first().waitFor({ timeout: 8000 })
+  await more.first().waitFor({ timeout: t(8000) })
   await more.first().click()
   const actions = page.locator('[data-testid=output-actions]')
-  await actions.waitFor({ state: 'visible', timeout: 5000 })
+  await actions.waitFor({ state: 'visible', timeout: t(5000) })
   const ids = ['output-open', 'output-reveal', 'output-save-as', 'output-copy-path', 'output-rename', 'output-forget', 'output-delete']
   const have = await Promise.all(ids.map(async (id) => (await actions.locator(`[data-testid=${id}]`).count()) > 0))
   check(have.every(Boolean), `${label}: a produced output's actions are Open, Show in folder, Save as, Copy path, Remove and Delete`, ids.filter((_, i) => !have[i]).join(','))
   await page.keyboard.press('Escape')
-  await actions.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+  await actions.waitFor({ state: 'hidden', timeout: t(5000) }).catch(() => {})
   // The registered PNG: no Delete.
   await rows.filter({ hasText: 'Logo' }).first().click()
-  await page.locator('[data-testid=output-detail][data-kind=image]').waitFor({ timeout: 8000 })
+  await page.locator('[data-testid=output-detail][data-kind=image]').waitFor({ timeout: t(8000) })
   await more.first().click()
-  await actions.waitFor({ state: 'visible', timeout: 5000 })
+  await actions.waitFor({ state: 'visible', timeout: t(5000) })
   check((await actions.locator('[data-testid=output-delete]').count()) === 1 && (await actions.locator('[data-testid=output-forget]').count()) === 1, `${label}: a registered file offers Remove from list and Delete (outputs 2)`)
   await page.keyboard.press('Escape')
-  await actions.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+  await actions.waitFor({ state: 'hidden', timeout: t(5000) }).catch(() => {})
 }
 
 async function removeChecks(label) {
@@ -624,17 +624,17 @@ async function removeChecks(label) {
   const rows = page.locator('[data-testid=output-row]')
   const more = page.locator('[data-testid=outputs-detail] [data-testid=output-more]')
   await rows.filter({ hasText: 'Summary' }).first().click()
-  await more.first().waitFor({ timeout: 8000 })
+  await more.first().waitFor({ timeout: t(8000) })
   await more.first().click()
   await page.locator('[data-testid=output-forget]').click()
   // The index entry cannot be brought back from the app, so Remove asks first and says where the file stays.
   const forgetDlg = page.locator('[data-testid=output-forget-confirm]')
-  await forgetDlg.waitFor({ timeout: 5000 })
+  await forgetDlg.waitFor({ timeout: t(5000) })
   const forgetText = clean(await page.locator('dialog[open]').innerText())
   check(/Remove .+ from OrgAI\?/.test(forgetText) && /The file stays at outputs\/.+ OrgAI's earlier versions and notes are deleted\./.test(forgetText), `${label}: the Remove confirm says the file stays and OrgAI's versions and notes go`, forgetText.slice(0, 200))
   check((await forgetDlg.innerText()).trim() === 'Remove', `${label}: the confirm's primary is Remove`)
   await page.keyboard.press('Escape')
-  await forgetDlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await forgetDlg.waitFor({ state: 'hidden', timeout: t(5000) })
   check((await rows.count()) === 5 && (await outputsOf()).length === 5, `${label}: cancelling the Remove confirm keeps the output`)
   await more.first().click()
   await page.locator('[data-testid=output-forget]').click()
@@ -647,7 +647,7 @@ async function removeChecks(label) {
   await noScroll(`${label}: after Remove`)
   // Delete file on the project tab: the confirm, the notice and the row going.
   await rows.filter({ hasText: 'Budget' }).first().click()
-  await more.first().waitFor({ timeout: 8000 })
+  await more.first().waitFor({ timeout: t(8000) })
   await more.first().click()
   await page.locator('[data-testid=output-delete]').click()
   await page.locator('[data-testid=output-delete-confirm]').click()
@@ -666,15 +666,15 @@ async function removeChecks(label) {
   check(await until(async () => /Deleted Architecture diagram\./.test(clean(await runNotice.innerText())), 3000), `${label}: the run side tab says "Deleted Architecture diagram."`, clean(await runNotice.innerText()))
   // Remove from inside the Larger view: the dialog closes, so the surface's own notice has to say it.
   await page.locator('[data-testid=tab-outputs]').click()
-  await rows.first().waitFor({ timeout: 8000 })
+  await rows.first().waitFor({ timeout: t(8000) })
   await rows.first().click()
   await page.locator('[data-testid=outputs-detail] [data-testid=output-detail-expand]').first().click()
   const dlg = page.locator('[data-testid=output-dialog]')
-  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.waitFor({ state: 'visible', timeout: t(5000) })
   await dlg.locator('[data-testid=output-more]').click()
   await page.locator('[data-testid=output-forget]').click()
   await page.locator('[data-testid=output-forget-confirm]').click()
-  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlg.waitFor({ state: 'hidden', timeout: t(5000) })
   check(await until(async () => /^Removed .+ from the list\.$/.test(clean(await notice.innerText())), 3000), `${label}: a Remove from inside the Larger view is still announced in the surface's notice`, clean(await notice.innerText()))
 }
 
@@ -710,10 +710,10 @@ async function showByTitle(title) {
   const back = page.locator('[data-testid=run-output-back]')
   if (await back.count()) {
     await back.click()
-    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: 5000 })
+    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: t(5000) })
   }
   await page.locator('[data-testid=run-output-row]').filter({ hasText: title }).first().locator('[data-testid=run-output-show]').click()
-  await page.locator('[data-testid=output-detail-heading]', { hasText: title }).first().waitFor({ timeout: 8000 })
+  await page.locator('[data-testid=output-detail-heading]', { hasText: title }).first().waitFor({ timeout: t(8000) })
 }
 const rectOf = (loc) => loc.evaluate((el) => {
   const r = el.getBoundingClientRect()
@@ -746,7 +746,7 @@ async function diagramChecks(label, full) {
   // Large diagram: Fit shows all of it, the note names it.
   await showByTitle('Large system map')
   const vp = detail().locator('[data-testid=diagram-viewport]').first()
-  await vp.waitFor({ timeout: 30_000 })
+  await vp.waitFor({ timeout: t(30_000) })
   await sleep(300)
   const shapes = Number(await vp.getAttribute('data-shapes'))
   check(shapes >= 80, `${label}: the large diagram counts its shapes`, String(shapes))
@@ -820,7 +820,7 @@ async function diagramChecks(label, full) {
   // A tiny diagram opens fitted (contain, at most 200%: lib/outputZoom DIAGRAM_OPEN_MAX), never below 100%, centred.
   await showByTitle('Tiny map')
   const tvp = detail().locator('[data-testid=diagram-viewport]').first()
-  await tvp.waitFor({ timeout: 20_000 })
+  await tvp.waitFor({ timeout: t(20_000) })
   await sleep(300)
   const tv = await vAttr(tvp)
   f = await fitFacts(detail())
@@ -853,9 +853,9 @@ async function diagramChecks(label, full) {
   await showByTitle('Tiny map')
   await detail().locator('[data-testid=output-detail-expand]').click()
   const dlg = page.locator('[data-testid=output-dialog]')
-  await dlg.waitFor({ state: 'visible', timeout: 5000 })
+  await dlg.waitFor({ state: 'visible', timeout: t(5000) })
   const dvp = dlg.locator('[data-testid=diagram-viewport]').first()
-  await dvp.waitFor({ timeout: 20_000 })
+  await dvp.waitFor({ timeout: t(20_000) })
   check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-viewport', 4000), `${label}: Larger view lands focus on the drawing`)
   const db = await rectOf(dvp)
   const k0 = (await vAttr(dvp)).k
@@ -878,7 +878,7 @@ async function diagramChecks(label, full) {
   // Split: live preview of scratch edits; a broken edit keeps the last good drawing.
   await dlg.locator('[data-testid=diagram-mode]').getByText('Split', { exact: true }).click()
   const ta = dlg.locator('[data-testid=diagram-source]')
-  await ta.waitFor({ timeout: 5000 })
+  await ta.waitFor({ timeout: t(5000) })
   const shadowText = () => dlg.locator('[data-testid=output-mermaid-svg]').first().evaluate((el) => el.shadowRoot?.textContent ?? '')
   await ta.fill('flowchart TD\n  A[Start] --> Z[Zed]\n')
   check(await until(async () => (await shadowText()).includes('Zed'), 8000), `${label}: Split redraws the edited source`)
@@ -908,7 +908,7 @@ async function diagramChecks(label, full) {
   await noScroll(`${label}: Larger view with Split`)
   await snap(`${label}-split`)
   await dlg.getByRole('button', { name: 'Close dialog' }).click()
-  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlg.waitFor({ state: 'hidden', timeout: t(5000) })
 }
 
 // ---------- grid, thumbnails, select mode and bulk delete (docs/design/outputs-2.md sections 5 and 6) ----------
@@ -943,12 +943,12 @@ const viewRadio = (name) => page.locator('[data-testid=outputs-view-switch]').ge
 /** Grid view: switch, persistence, cards, thumbnails, two-dimensional keys. */
 async function gridChecks(label) {
   await page.locator('[data-testid=tab-outputs]').click()
-  await page.locator('[data-testid=outputs-list]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=outputs-list]').waitFor({ timeout: t(10_000) })
   const total = (await outputsOf()).length
   check((await page.locator('[data-testid=outputs-view-switch] input[type=radio]').count()) === 2, `${label}: the view switch offers List and Grid`)
   await viewRadio('Grid').check()
   const grid = page.locator('[data-testid=outputs-grid]')
-  await grid.waitFor({ timeout: 8000 })
+  await grid.waitFor({ timeout: t(8000) })
   check((await page.locator('[data-testid=outputs-list]').count()) === 0, `${label}: Grid replaces the list`)
   const cards = page.locator('[data-testid=output-card]')
   check(await until(async () => (await cards.count()) === total), `${label}: one card per output`, `${await cards.count()} of ${total}`)
@@ -999,7 +999,7 @@ async function gridChecks(label) {
   await page.locator('[data-testid=tab-outputs]').click()
   check(await until(async () => (await page.locator('[data-testid=outputs-grid]').count()) === 1, 5000), `${label}: the grid is still chosen after leaving the tab`)
   await viewRadio('List').check()
-  await page.locator('[data-testid=outputs-list]').waitFor({ timeout: 8000 })
+  await page.locator('[data-testid=outputs-list]').waitFor({ timeout: t(8000) })
 }
 
 /** Select mode by keyboard, no delete: checkboxes, Space, the bulk bar, Select all shown, Esc. */
@@ -1008,7 +1008,7 @@ async function selectChecks(label, grid) {
   await (grid ? viewRadio('Grid') : viewRadio('List')).check()
   const item = grid ? '[data-testid=output-card]' : '[data-testid=output-row]'
   const items = page.locator(item)
-  await items.first().waitFor({ timeout: 8000 })
+  await items.first().waitFor({ timeout: t(8000) })
   const toggle = page.locator('[data-testid=outputs-select-toggle]')
   await toggle.click()
   check((await toggle.getAttribute('aria-pressed')) === 'true', `${label}: Select is pressed`)
@@ -1045,7 +1045,7 @@ async function selectChecks(label, grid) {
 /** A second run: a new version of an output still listed gets "New" and a spoken update, never moves its row; then bulk delete. */
 async function secondRunChecks(label) {
   await page.locator('[data-testid=tab-outputs]').click()
-  await page.locator('[data-testid=outputs-list], [data-testid=outputs-empty]').first().waitFor({ timeout: 8000 })
+  await page.locator('[data-testid=outputs-list], [data-testid=outputs-empty]').first().waitFor({ timeout: t(8000) })
   const before = await outputsOf()
   const plan = before.find((o) => o.title === 'Project plan')
   if (!plan) {
@@ -1102,7 +1102,7 @@ async function secondRunChecks(label) {
   await page.keyboard.press('Space')
   await page.locator('[data-testid=outputs-bulk-delete]').click()
   const confirm = page.locator('[data-testid=output-delete-confirm]')
-  if (!(await confirm.waitFor({ timeout: 4000 }).then(() => true, () => false))) {
+  if (!(await confirm.waitFor({ timeout: t(4000) }).then(() => true, () => false))) {
     console.log('SKIP bulk delete: the confirm never opened (the delete seam is still the stub)')
     await page.keyboard.press('Escape')
     await page.locator('[data-testid=outputs-select-cancel]').click().catch(() => {})

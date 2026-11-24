@@ -6,7 +6,7 @@
 // Pause all (banner, a due slot is recorded as skipped and does not start, Run now still works) and persistence (restart
 // on the same data dir: schedules and history are back, no slot fires twice). Waits on conditions, not fixed sleeps.
 // A check on a known integration defect logs KNOWN: and is skipped so the rest still runs.
-import { TMP, check, createProject, endSession, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, createProject, endSession, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 process.env.ORGAI_SCHEDULE_TEST_TICK_MS = '200'
@@ -55,7 +55,7 @@ const list = () => page.evaluate(() => window.orgai.schedules.list())
 const history = (id) => page.evaluate((i) => window.orgai.schedules.history(i), id)
 const goSchedules = async () => {
   await T('nav-schedules').click()
-  await T('schedules-view').waitFor({ timeout: 10_000 })
+  await T('schedules-view').waitFor({ timeout: t(10_000) })
   await until(async () => (await T('schedules-loading').count()) === 0, 10_000)
 }
 const menu = (id) =>
@@ -83,10 +83,10 @@ async function stopScheduledRuns() {
 /** A fresh Chat, the prompt sent. */
 async function startChat(prompt) {
   await menu('ask-about-orgai')
-  await T('assistant-start-quick').waitFor({ timeout: 10_000 })
+  await T('assistant-start-quick').waitFor({ timeout: t(10_000) })
   await startField().fill(prompt)
   await startField().press('Enter')
-  await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 })
+  await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: t(20_000) })
 }
 
 /**
@@ -98,7 +98,7 @@ async function awaitSchedulesCard(ms = 40_000) {
   await T('proposal-schedules').waitFor({ state: 'attached', timeout: ms }).catch(() => {})
   const toggle = page.locator('.decision-card[data-kind=proposal] .decision-details').first()
   if ((await toggle.count()) > 0 && (await toggle.isVisible()) && (await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
-  await T('proposal-schedules').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+  await T('proposal-schedules').waitFor({ state: 'visible', timeout: t(5000) }).catch(() => {})
   if (await visible('[data-testid=proposal-schedules]')) return
   const diag = await page
     .evaluate(async () => {
@@ -114,7 +114,7 @@ async function awaitSchedulesCard(ms = 40_000) {
 /** Open the editor, fill the common fields. */
 async function openEditor() {
   await T('schedules-new').click()
-  await T('schedule-editor').waitFor({ timeout: 10_000 })
+  await T('schedule-editor').waitFor({ timeout: t(10_000) })
 }
 async function fillBasics(name, prompt) {
   await T('schedule-field-name').fill(name)
@@ -141,7 +141,7 @@ try {
   // ---------- 2. Form create and validation ----------
   await openEditor()
   await T('schedule-save').click()
-  await T('schedule-error-name').waitFor({ timeout: 5000 }).catch(() => {})
+  await T('schedule-error-name').waitFor({ timeout: t(5000) }).catch(() => {})
   check(clean(await T('schedule-error-name').innerText().catch(() => '')) === 'Give the schedule a name.', '2 an empty name is refused with a visible message')
   check(/Say what the schedule should do/.test(await T('schedule-error-prompt').innerText().catch(() => '')), '2 an empty prompt is refused with a visible message')
   check(await visible('[data-testid=schedule-editor]'), '2 the editor stays open after a refused save')
@@ -150,7 +150,7 @@ try {
   await fillBasics('E2E nightly team', 'Check the repository and report what needs attention.')
   await T('schedule-field-preset').selectOption('custom')
   await T('schedule-field-cron').fill('*/5 * * * *')
-  await T('schedule-error-timing').waitFor({ timeout: 5000 }).catch(() => {})
+  await T('schedule-error-timing').waitFor({ timeout: t(5000) }).catch(() => {})
   const cronMsg = clean(await T('schedule-error-timing').innerText().catch(() => ''))
   check(/apart.*shortest allowed gap is 15 minutes/.test(cronMsg), '2 a cron firing every 5 minutes shows the 15 minute rule at once', cronMsg)
   await T('schedule-save').click()
@@ -172,9 +172,9 @@ try {
   check(projChosen === PROJECT, '2 the mock project is selected', String(projChosen))
   await shot('editor-filled')
   await T('schedule-save').click()
-  await T('schedule-editor').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await T('schedule-editor').waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   const rowA = row('E2E nightly team')
-  await rowA.waitFor({ timeout: 10_000 }).catch(() => {})
+  await rowA.waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await rowA.count()) === 1, '2 the row appears after Save')
   check((await rowA.getAttribute('data-state')) === 'Active', '2 the row state is Active', String(await rowA.getAttribute('data-state')))
   check(clean(await rowA.locator('[data-testid=schedule-state]').innerText()) === 'Active', '2 the state chip reads Active')
@@ -205,7 +205,7 @@ try {
   if ((await cost.getAttribute('data-known')) === 'false') check(!/\$0\.00/.test(clean(await cost.innerText())), '3 an unknown cost is not drawn as $0')
   check((await rowA.locator('[data-testid=schedule-runbars]').count()) === 1, '3 the row has a last-runs readout')
   await rowA.locator('[data-testid=schedule-history-toggle]').click()
-  await rowA.locator('[data-testid=schedule-history-row]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await rowA.locator('[data-testid=schedule-history-row]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
   const hrow = rowA.locator('[data-testid=schedule-history-row]').first()
   check((await hrow.getAttribute('data-result')) === 'started', '3 the history row is a started row', String(await hrow.getAttribute('data-result')))
   check(/Run now/.test(await hrow.innerText()), '3 the history row reads trigger "Run now"', clean(await hrow.innerText()))
@@ -219,7 +219,7 @@ try {
   }
   check(/Finished|Stopped|Needs you|Failed/.test(clean(await rowA.locator('[data-testid=schedule-last]').innerText())) || true, '3 (info) last result: ' + clean(await rowA.locator('[data-testid=schedule-last]').innerText()))
   await rowA.locator('[data-testid=schedule-history-open]').first().click()
-  await page.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
+  await page.waitForSelector('[data-testid=run-meta]', { timeout: t(20_000) }).catch(() => {})
   check(await visible('[data-testid=run-meta]'), '3 Open run opens the run view')
   const metaLabel = clean(await (await metaChip('run-meta-scheduled')).innerText().catch(() => ''))
   await closeMetaMenu()
@@ -228,7 +228,7 @@ try {
   check(runSummaryA?.summary?.scheduleId === idA && runSummaryA.summary.scheduleName === 'E2E nightly team', '3 the run summary carries scheduleId and scheduleName', JSON.stringify({ id: runSummaryA?.summary?.scheduleId, name: runSummaryA?.summary?.scheduleName }))
   await shot('scheduled-run')
   await (await metaChip('run-meta-scheduled')).click()
-  await T('schedules-view').waitFor({ timeout: 10_000 }).catch(() => {})
+  await T('schedules-view').waitFor({ timeout: t(10_000) }).catch(() => {})
   check(await visible('[data-testid=schedules-view]'), '3 the run meta label opens the Schedules page')
   const focusedRow = await until(async () => page.evaluate(() => document.activeElement?.closest('[data-testid=schedule-row]')?.getAttribute('data-schedule-id')), 5000)
   check(focusedRow === idA, '3 focus lands on that schedule row', String(focusedRow))
@@ -255,14 +255,14 @@ try {
 
   const beforeNext = clean(await rowA.locator('[data-testid=schedule-next]').innerText())
   await rowA.locator('[data-testid=schedule-edit]').click()
-  await T('schedule-editor').waitFor({ timeout: 10_000 })
+  await T('schedule-editor').waitFor({ timeout: t(10_000) })
   // The editor fills its fields in an effect after it opens: wait for the stored values before reading them.
   await until(async () => (await T('schedule-field-name').inputValue()) === 'E2E nightly team' && (await T('schedule-field-time').inputValue()) === '09:30', 10_000, 100)
   check((await T('schedule-field-name').inputValue()) === 'E2E nightly team', '4 Edit loads the stored name')
   check((await T('schedule-field-time').inputValue()) === '09:30', '4 Edit loads the stored time')
   await T('schedule-field-time').fill('21:45')
   await T('schedule-save').click()
-  await T('schedule-editor').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await T('schedule-editor').waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   await until(async () => /21:45/.test(await rowA.locator('[data-testid=schedule-timing]').innerText()), 10_000)
   const afterNext = clean(await rowA.locator('[data-testid=schedule-next]').innerText())
   check(/Every day at 21:45/.test(await rowA.locator('[data-testid=schedule-timing]').innerText()), '4 Edit changes the timing text to 21:45')
@@ -275,7 +275,7 @@ try {
   await until(async () => (await row('E2E throwaway').count()) === 1, 10_000)
   check((await row('E2E throwaway').count()) === 1, '4 a second schedule shows in the list (live push or reload)')
   await row('E2E throwaway').locator('[data-testid=schedule-delete]').click()
-  await T('schedule-delete-confirm').waitFor({ timeout: 5000 })
+  await T('schedule-delete-confirm').waitFor({ timeout: t(5000) })
   check(await visible('[data-testid=schedule-delete-confirm]'), '4 Delete asks for confirmation')
   check((await row('E2E throwaway').count()) === 1, '4 the row stays until the confirm')
   await T('schedule-delete-confirm').click()
@@ -293,9 +293,9 @@ try {
   await T('schedule-field-time').fill('08:15')
   check(!(await visible('[data-testid=schedule-field-project]')), '5 the project picker is hidden for a Chat target')
   await T('schedule-save').click()
-  await T('schedule-editor').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await T('schedule-editor').waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   const rowB = row('E2E chat ask')
-  await rowB.waitFor({ timeout: 10_000 }).catch(() => {})
+  await rowB.waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await rowB.count()) === 1 && (await rowB.getAttribute('data-state')) === 'Active', '5 the Chat schedule row appears Active')
   check(/Chat/.test(await rowB.locator('[data-testid=schedule-target]').innerText()), '5 the row target reads Chat', clean(await rowB.locator('[data-testid=schedule-target]').innerText()))
   const idB = (await list()).find((s) => s.name === 'E2E chat ask')?.id
@@ -307,9 +307,9 @@ try {
     const rec = await page.evaluate((rid) => window.orgai.runs.get(rid), startedB.runId)
     check(!!rec?.summary?.quick && rec.summary.scheduleId === idB, '5 the started run is a Chat (quick) run carrying the scheduleId', JSON.stringify({ quick: !!rec?.summary?.quick, sid: rec?.summary?.scheduleId }))
     await rowB.locator('[data-testid=schedule-history-toggle]').click()
-    await rowB.locator('[data-testid=schedule-history-open]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+    await rowB.locator('[data-testid=schedule-history-open]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
     await rowB.locator('[data-testid=schedule-history-open]').first().click()
-    await page.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
+    await page.waitForSelector('[data-testid=run-meta]', { timeout: t(20_000) }).catch(() => {})
     const chatChip = await metaChip('run-meta-scheduled')
     check(await chatChip.isVisible().catch(() => false), '5 the Chat run meta shows the Scheduled label (in the row or its "more" menu)')
     check(/Scheduled: E2E chat ask/.test(clean(await chatChip.innerText().catch(() => ''))), '5 the label names the Chat schedule')
@@ -345,7 +345,7 @@ try {
   check(nightly?.createdBy === 'agent', '6 an approved proposal is createdBy agent', String(nightly?.createdBy))
   check(nightly?.target.kind === 'ask', '6 from Chat the target is ask', JSON.stringify(nightly?.target))
   await goSchedules()
-  await row('Nightly PR monitor').waitFor({ timeout: 10_000 }).catch(() => {})
+  await row('Nightly PR monitor').waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await row('Nightly PR monitor').count()) === 1, '6 the Schedules page lists "Nightly PR monitor"')
   await until(async () => /Added from a chat/.test(await row('Nightly PR monitor').innerText()), 10_000, 100)
   check(/Added from a chat/.test(await row('Nightly PR monitor').innerText().catch(() => '')), '6 the row says it was added from a chat')
@@ -372,7 +372,7 @@ try {
   await goSchedules()
   check(!(await visible('[data-testid=schedules-paused-banner]')), '8 no banner before Pause all')
   await T('schedules-pause-all').click()
-  await T('schedules-paused-banner').waitFor({ timeout: 10_000 }).catch(() => {})
+  await T('schedules-paused-banner').waitFor({ timeout: t(10_000) }).catch(() => {})
   check(await visible('[data-testid=schedules-paused-banner]'), '8 the Pause all switch shows the banner')
   check(/All schedules are paused/.test(await T('schedules-paused-banner').innerText().catch(() => '')), '8 the banner explains the pause')
   check((await page.evaluate(() => window.orgai.settings.get())).schedulesPaused === true, '8 the pause is saved in settings (schedulesPaused)')
@@ -455,11 +455,11 @@ try {
       await window.orgai.projects.save({ ...p, permissionMode: 'acceptEdits' })
     }, PROJECT)
     await page.reload()
-    await page.waitForSelector('.sidebar', { timeout: 60_000 })
+    await page.waitForSelector('.sidebar', { timeout: t(60_000) })
     await openProject(page, PROJECT)
     await projectTab(page, 'Live').click()
     if (!(await page.locator('.new-run').count())) await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 10_000 })
+    await page.locator('.new-run').waitFor({ timeout: t(10_000) })
     const longPrompt = 'Go through every open pull request in this repository and write a short summary of what changed in each one, grouped by area.\nSecond line that must not be in the name.'
     await page.locator('.composer textarea').fill(longPrompt)
     const chooseMode = async (mode) => {
@@ -472,11 +472,11 @@ try {
     await chooseMode('plan')
     await NRT('new-run-limit').fill('0.75')
     await NRT('new-run-schedule').click()
-    await NRT('schedule-editor').waitFor({ timeout: 10_000 })
+    await NRT('schedule-editor').waitFor({ timeout: t(10_000) })
     // The editor fills its form from the seed in one update (name, limit and mode together). That used to be a passive effect
     // after the first paint, so a read right after the editor appeared saw an empty name and limit on CI (the mode, read
     // later, was there). It is a layout effect now; the wait on the populated state stays as the check's own precondition.
-    const seeded = () => page.waitForFunction(() => (document.querySelector('[data-testid=schedule-field-name]')?.value ?? '') !== '', null, { timeout: 10_000 })
+    const seeded = () => page.waitForFunction(() => (document.querySelector('[data-testid=schedule-field-name]')?.value ?? '') !== '', null, { timeout: t(10_000) })
     await seeded()
     const nm = await NRT('schedule-field-name').inputValue()
     check(nm.length > 0 && nm.length <= 49 && nm.endsWith('…') && !nm.includes('Second line'), '8b the editor opens with a short clamped name from the first line', nm)
@@ -486,18 +486,18 @@ try {
     check(/cannot hold effort or goal|always starts with the whole team/.test(note), '8b the note names what a schedule cannot hold', note)
     await shot('new-run-seed')
     await NRT('schedule-cancel').click()
-    await NRT('schedule-editor').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    await NRT('schedule-editor').waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
     // Bypass is never carried, and the note says why.
     await chooseMode('bypassPermissions')
     await NRT('new-run-schedule').click()
-    await NRT('schedule-editor').waitFor({ timeout: 10_000 })
+    await NRT('schedule-editor').waitFor({ timeout: t(10_000) })
     await seeded()
     const bypass =await NRT('schedule-field-permission').inputValue()
     const note2 = clean(await NRT('schedule-not-kept-note').innerText())
     check(bypass !== 'bypassPermissions' && bypass === '', '8b Bypass is never carried into the schedule', bypass)
     check(/permission mode that asks less/.test(note2), '8b the note says the wider permission mode was not carried', note2)
     await NRT('schedule-cancel').click()
-    await NRT('schedule-editor').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    await NRT('schedule-editor').waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
     check(!(await list()).some((s) => s.name === nm), '8b cancelling saves no schedule')
   }
 
@@ -519,7 +519,7 @@ try {
   ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'schedules-restart' }))
   page.setDefaultTimeout(10_000)
   await goSchedules()
-  await row('E2E nightly team').waitFor({ timeout: 10_000 }).catch(() => {})
+  await row('E2E nightly team').waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await row('E2E nightly team').count()) === 1 && (await row('E2E chat ask').count()) === 1, '9 after a restart the schedules are listed')
   await sleep(3000) // ~15 scheduler ticks; the boot catch-up delay is 30 s, but no slot is due anyway
   const after = await snap()
@@ -530,7 +530,7 @@ try {
   const onceDone = Object.values(after).filter((v) => v.state === 'done').length
   check(onceDone >= 1, '9 the Done once schedule is still Done', String(onceDone))
   await row('E2E nightly team').locator('[data-testid=schedule-history-toggle]').click()
-  await row('E2E nightly team').locator('[data-testid=schedule-history-row]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await row('E2E nightly team').locator('[data-testid=schedule-history-row]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await row('E2E nightly team').locator('[data-testid=schedule-history-row]').count()) >= 2, '9 the history table still shows its rows after the restart')
   // A run that was live at quit: its outcome must not be left "Running" forever.
   const stuck = Object.keys(after).length ? await (async () => { for (const s of await list()) for (const h of await history(s.id)) if (h.result === 'started' && !h.outcome) return `${s.name}:${h.id}`; return null })() : null
