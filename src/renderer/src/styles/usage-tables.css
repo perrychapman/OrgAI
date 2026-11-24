@@ -53,6 +53,11 @@
   text-align: right;
   white-space: nowrap;
 }
+/* Text columns (project, result, when, kind, models) read from the left; only the figures are right-aligned. The
+   generic `.usage-table-wrap td:not(:first-child)` rule right-aligned every column after the first. */
+.usage-table-wrap .usage-tbl :is(th, td):not(.num):not(:first-child) {
+  text-align: start;
+}
 .usage-tbl .nowrap {
   white-space: nowrap;
 }
@@ -226,8 +231,12 @@
   font-weight: var(--weight-semibold);
   letter-spacing: -0.01em;
 }
+/* Tags sit flush left when they wrap onto their own line, and keep their gap on the right instead of a left indent. */
 .usage-wasteful-table .usage-run-cell .usage-tag {
-  margin-inline-start: var(--space-2);
+  margin-inline: 0 var(--space-1h);
+}
+.usage-wasteful-table .usage-run-cell .usage-status-word {
+  margin-inline-end: var(--space-2);
 }
 
 /* ---------- All runs ---------- */

@@ -130,6 +130,11 @@
 .schedule-chip.is-off {
   opacity: 0.45;
 }
+/* A slot earlier than now is quieter and has a dotted edge, so this morning's 09:00 is not read as still to come. */
+.schedule-chip.is-past:not(.is-off) {
+  opacity: 0.7;
+  border-left-style: dotted;
+}
 .schedule-chip-time {
   flex: none;
   color: var(--text-tertiary);

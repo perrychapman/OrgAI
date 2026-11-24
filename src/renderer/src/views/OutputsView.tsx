@@ -1,5 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FileText, SearchX } from 'lucide-react'
 import type { Project, RunOutput } from '@shared/types'
 import { runName } from '@shared/view/runLabels'
 import { overlayOwnsEscape } from '../lib/outputToolbar'
@@ -392,10 +393,11 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
         {!loaded ? (
           <p className="panel-note outputs-loading">Looking…</p>
         ) : empty ? (
-          <EmptyState compact testId="outputs-empty" title="No files yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
+          <EmptyState compact icon={FileText} testId="outputs-empty" title="No files yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
         ) : noMatch ? (
           <EmptyState
             compact
+            icon={SearchX}
             testId="outputs-empty-filter"
             title="No files match."
             actions={
