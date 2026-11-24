@@ -18,6 +18,7 @@ import ConnectorDialog from './ConnectorDialog'
 import PresetForm from './PresetForm'
 import { useConnectors } from './useConnectors'
 import { useRovingFocus } from './useRovingFocus'
+import { focusAfterUnlessMoved } from '../../lib/laterFocus'
 
 /** Scroll to the Custom servers section below the gallery and put focus on its first button. */
 function goToCustomServers(): void {
@@ -302,7 +303,7 @@ export function ConnectorGallery(): ReactElement {
               const id = editing.id
               setEditing(null)
               // The dialog gave up focus when it closed; put it back on the tile's button.
-              window.setTimeout(() => sectionsRef.current?.querySelector<HTMLElement>(`[data-testid=connector-tile][data-connector="${id}"] [data-testid=connector-action]`)?.focus(), 60)
+              focusAfterUnlessMoved(() => sectionsRef.current?.querySelector<HTMLElement>(`[data-testid=connector-tile][data-connector="${id}"] [data-testid=connector-action]`), 60)
             }}
             onSaved={(def) => {
               setAnnounce(`Saved ${def.name}`)

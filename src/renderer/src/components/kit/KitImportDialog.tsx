@@ -5,6 +5,7 @@ import { CircleAlert, CircleDot, Equal, KeyRound, TriangleAlert } from 'lucide-r
 import { cleanIpcError } from '../../lib/ipcError'
 import { clampLabel } from '../../lib/clampLabel'
 import { hasHidden, showHidden } from '../../lib/hiddenChars'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import { kitApi, type KitAction, type KitApplyResult, type KitImportPreview, type KitPreviewItem, type KitRoleElevatedTool } from '../../lib/kitApi'
 import {
   choicesFromRows,
@@ -42,7 +43,7 @@ function isStale(message: string): boolean {
 }
 
 function focusLater(selector: string): void {
-  requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus()))
+  focusLaterUnlessMoved(() => document.querySelector<HTMLElement>(selector), 2)
 }
 
 /** The kit preview: one row per item with a choice, then the apply (engagement-2 section 8). */

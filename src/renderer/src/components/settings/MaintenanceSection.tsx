@@ -17,6 +17,7 @@ import { clearCountsLine } from '../../lib/knowledge'
 import { MAINTENANCE_ENGAGEMENT_LINE } from '../../lib/settingsCopy'
 import { useOrgChange } from '../team/useOrgChange'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 
 /** The Maintenance notice after knowledge:clear (docs/design/knowledge.md section 9). */
 export const KNOWLEDGE_CLEARED_NOTICE = 'Cleared everything the team recorded.'
@@ -87,7 +88,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
       confirmTestId: 'knowledge-clear-confirm'
     })
     if (!ok) {
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
+      focusLaterUnlessMoved(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]'))
       return
     }
     setBusy('knowledge-clear')
@@ -99,7 +100,7 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
       setNoticeFocus((n) => n + 1)
     } catch (e) {
       setNotice({ ok: false, message: cleanIpcError(e) })
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]')?.focus())
+      focusLaterUnlessMoved(() => document.querySelector<HTMLElement>('[data-testid=knowledge-clear]'))
     } finally {
       setBusy(null)
     }
@@ -221,10 +222,10 @@ export function MaintenanceSection({ project }: { project: Project }): ReactElem
     const out = await forget(project, openRuns)
     setBusy(null)
     if (out.status === 'cancelled') {
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=forget-engagement]')?.focus())
+      focusLaterUnlessMoved(() => document.querySelector<HTMLElement>('[data-testid=forget-engagement]'))
     } else if (out.status === 'error') {
       setForgetError(out.message)
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid=forget-engagement]')?.focus())
+      focusLaterUnlessMoved(() => document.querySelector<HTMLElement>('[data-testid=forget-engagement]'))
     }
     else {
       // Done: the store already left this project for the Dashboard, where the notice shows (its Banner is the live region).

@@ -253,6 +253,32 @@ async function textFlow(label) {
   await page.keyboard.press('Escape')
   await composer().waitFor({ state: 'hidden' })
   check(await addBtn().evaluate((el) => document.activeElement === el), `${label}: Esc closes the composer and focus returns to Add note`)
+  // The hand-back after Esc runs on a timer. A busy or throttled window (CI windows-latest: the composer opened again with
+  // focus on Add note, not in its field) runs it late, after the person has already reopened the composer and started to
+  // type: the late focus must not pull them out of the field. Timers of 100 ms or less are held for 1.5 s here, so the
+  // order (Esc, reopen, the late hand-back) is the same on every machine.
+  await page.locator(src).focus()
+  check(await selectText(src, 'quick brown fox'), `${label}: (late hand-back) selected again`)
+  await page.keyboard.press('Control+Shift+m')
+  await composer().waitFor({ state: 'visible' })
+  await page.evaluate(() => {
+    const real = window.setTimeout.bind(window)
+    window.__realSetTimeout = real
+    window.setTimeout = (cb, ms, ...rest) => real(cb, (ms ?? 0) <= 100 ? 1500 : ms, ...rest)
+  })
+  await page.keyboard.press('Escape')
+  await composer().waitFor({ state: 'hidden' })
+  await page.locator(src).focus()
+  check(await selectText(src, 'quick brown fox'), `${label}: (late hand-back) selected once more`)
+  await page.keyboard.press('Control+Shift+m')
+  await composer().waitFor({ state: 'visible' })
+  await sleep(2000)
+  check(await composer().locator('textarea').evaluate((el) => document.activeElement === el), `${label}: a late hand-back after Esc does not pull focus out of the reopened composer`, await page.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.getAttribute('data-testid') ?? ''}`))
+  await page.evaluate(() => {
+    window.setTimeout = window.__realSetTimeout
+  })
+  await page.keyboard.press('Escape')
+  await composer().waitFor({ state: 'hidden' })
   // Ctrl+Shift+M from the preview.
   await page.locator(src).focus()
   check(await selectText(src, 'quick brown fox'), `${label}: reselected`)

@@ -49,7 +49,7 @@ import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
 import { SecretNotices } from '../components/dashboard/SecretNotices'
 import AppNavigateBanner from '../components/AppNavigateBanner'
-import { focusLaterUnlessMoved } from '../lib/laterFocus'
+import { focusLaterUnlessMoved, mayRestoreFocus } from '../lib/laterFocus'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
@@ -199,13 +199,20 @@ export default function DashboardView(): ReactElement {
     updateLayout((l) => setMotionPaused(l, paused))
     say(paused ? 'Motion paused.' : 'Motion resumed.')
   }
+  // The button gets focus back a frame later, unless the person has already moved on (a busy window runs the frame late).
+  const focusCustomise = (): void => {
+    const from = document.activeElement
+    requestAnimationFrame(() => {
+      if (mayRestoreFocus(from, document.activeElement, document.body)) customiseRef.current?.focus({ preventScroll: true })
+    })
+  }
   const leaveCustomise = (): void => {
     setCustomising(false)
-    requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
+    focusCustomise()
   }
   const openCustomise = (): void => {
     setCustomising(true)
-    requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
+    focusCustomise()
   }
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (!customising || e.key !== 'Escape' || e.defaultPrevented) return

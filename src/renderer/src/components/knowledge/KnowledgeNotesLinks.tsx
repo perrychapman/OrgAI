@@ -4,6 +4,7 @@ import { Link2, Unlink } from 'lucide-react'
 import type { EngagementNote, KnowledgeNode } from '@shared/types'
 import { KNOWLEDGE_NODE_NOTES_MAX } from '@shared/types'
 import { noteCandidates } from '../../lib/knowledgeList'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import { Button } from '../ui/Button'
 import { IconButton } from '../ui/IconButton'
 import { Input } from '../ui/Input'
@@ -44,7 +45,7 @@ export function KnowledgeNotesLinks({
   }, [query])
   if (notes.length === 0) return null
   const focusLinkAdd = (): void => {
-    requestAnimationFrame(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-note-link-add]')?.focus())
+    focusLaterUnlessMoved(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-note-link-add]'))
   }
   const save = async (ids: string[], done: string): Promise<void> => {
     const problem = await onSaveNoteIds(ids)

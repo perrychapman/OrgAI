@@ -83,6 +83,7 @@ import TeamProvenance from '../components/team/TeamProvenance'
 import { projectKindOf } from '@shared/defaults'
 import { Icon } from '../components/ui/Icon'
 import { duplicateName } from '../lib/roleOps'
+import { focusLaterUnlessMoved } from '../lib/laterFocus'
 import { serverGranted, teamGroupCount } from '../lib/roleCapabilities'
 
 const nodeTypes = { role: RoleNode }
@@ -353,7 +354,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }, [])
   const startFromTrigger = (): HTMLElement | null => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-start-from]') ?? null
   const focusStartFrom = (): void => {
-    window.requestAnimationFrame(() => startFromTrigger()?.focus())
+    focusLaterUnlessMoved(startFromTrigger)
   }
   const closeTemplateDialog = (): void => {
     setTemplateDialog(null)
@@ -409,7 +410,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     void filesActions.commit().then(({ ok, count }) => {
       if (ok && count > 0) post({ key: 'saved:files', kind: 'saved', text: `Committed ${count} team ${count === 1 ? 'file' : 'files'}.` }, SHORT_NOTICE_MS)
       // The popover that held the button is closed: focus returns to the chip that opened it.
-      window.requestAnimationFrame(() => chipRef.current?.focus())
+      focusLaterUnlessMoved(() => chipRef.current)
     })
   }
 

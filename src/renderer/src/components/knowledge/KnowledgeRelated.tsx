@@ -5,6 +5,7 @@ import type { KnowledgeGraph, KnowledgeNode } from '@shared/types'
 import { normalizeKnowledgeKey } from '@shared/knowledge'
 import { keyWords, relatedRows } from '../../lib/knowledge'
 import { relationCandidates, relationsInUse } from '../../lib/knowledgeList'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { useConfirm } from '../ui/ConfirmDialog'
@@ -47,7 +48,7 @@ export function KnowledgeRelated({
   const [adding, setAdding] = useState(false)
   const sectionRef = useRef<HTMLElement>(null)
   const focusAdd = (): void => {
-    requestAnimationFrame(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-relation-add]')?.focus())
+    focusLaterUnlessMoved(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-relation-add]'))
   }
   const run = async (fn: () => Promise<unknown>, done: string): Promise<void> => {
     try {

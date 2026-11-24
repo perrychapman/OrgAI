@@ -20,6 +20,7 @@ import {
   sessionEditsAccepted,
   wideningConfirmOptions
 } from '../../lib/runSettings'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import '../../styles/run-settings.css'
 
 interface Note {
@@ -95,7 +96,7 @@ export function LivePermissionMode({ run, project, onRunChanged }: { run: RunSum
   if (choices.length === 0) return null
 
   const focusChip = (): void => {
-    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[data-testid="run-settings"][data-surface="live"] [data-testid="run-permission-change"]`)?.focus())
+    focusLaterUnlessMoved(() => document.querySelector<HTMLButtonElement>(`[data-testid="run-settings"][data-surface="live"] [data-testid="run-permission-change"]`))
   }
 
   const record = (target: PermissionMode, result: Awaited<ReturnType<typeof window.orgai.runs.setPermissionMode>>, tried: boolean, covered: PermissionMode): void => {

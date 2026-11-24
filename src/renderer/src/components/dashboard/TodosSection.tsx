@@ -11,6 +11,7 @@ import { Button } from '../ui/Button'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { Icon } from '../ui/Icon'
 import { DashSection, useDashboard } from './DashboardContext'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import { ProjectBadge } from './ProjectBadge'
 import { afterFirstPaint } from './projectQueue'
 
@@ -76,7 +77,7 @@ export function TodosSection(): ReactElement | null {
     const ok = await startSessionFromTodo(row.item, confirm)
     if (!ok) {
       // A declined confirm leaves focus where it was: put it back on this row's button.
-      requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>(`[data-testid="dash-today-todo"][data-id="${CSS.escape(row.item.id)}"] [data-testid="dash-today-start"]`)?.focus())
+      focusLaterUnlessMoved(() => rootRef.current?.querySelector<HTMLElement>(`[data-testid="dash-today-todo"][data-id="${CSS.escape(row.item.id)}"] [data-testid="dash-today-start"]`))
     }
   }
 
@@ -115,7 +116,7 @@ export function TodosSection(): ReactElement | null {
             onClick={() => {
               const collapsing = more
               setMore(!more)
-              if (collapsing) requestAnimationFrame(() => moreRef.current?.focus())
+              if (collapsing) focusLaterUnlessMoved(() => moreRef.current)
             }}
           >
             {more ? 'Show fewer' : `Show ${hidden} more`}

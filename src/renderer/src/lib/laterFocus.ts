@@ -11,6 +11,18 @@ export function mayRestoreFocus(from: { isConnected: boolean } | null, active: u
   return from !== null && !from.isConnected
 }
 
+/**
+ * The same guard for a hand-back that runs on a timer (`setTimeout`): `focus()` on what `find` returns after `ms`, unless the
+ * person moved focus elsewhere in the meantime (a window that runs timers late has often let them reopen the thing they
+ * closed and start typing in it). `from` is taken when this is called, so call it where the handler runs.
+ */
+export function focusAfterUnlessMoved(find: () => HTMLElement | null | undefined, ms = 0): void {
+  const from = document.activeElement
+  window.setTimeout(() => {
+    if (mayRestoreFocus(from, document.activeElement, document.body)) find()?.focus()
+  }, ms)
+}
+
 /** `focus()` on what `find` returns after `frames` animation frames, unless the person moved focus elsewhere in the meantime. */
 export function focusLaterUnlessMoved(find: () => HTMLElement | null | undefined, frames = 1): void {
   const from = document.activeElement

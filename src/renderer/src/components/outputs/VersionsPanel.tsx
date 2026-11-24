@@ -10,6 +10,7 @@ import { VERSIONS_FIRST_TEXT, VERSIONS_PRUNED_TEXT, VERSION_NAME_MAX, openNotesT
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { useOutputRevisions } from './useOutputData'
+import { mayRestoreFocus } from '../../lib/laterFocus'
 import { useOutputDetail, type OutputDetailValue } from './outputDetailContext'
 import '../../styles/outputs-versions.css'
 
@@ -77,7 +78,10 @@ export default function VersionsPanel(): ReactElement | null {
   const togglePick = (n: number): void => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n].slice(-2)))
   // After the name field closes (Save or Esc) focus goes back to that row's Name… button (spec 14.3).
   const refocusName = (n: number): void => {
-    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid=output-version-row][data-n="${n}"] [data-testid=output-version-name]`)?.focus({ preventScroll: true }))
+    const from = document.activeElement
+    requestAnimationFrame(() => {
+      if (mayRestoreFocus(from, document.activeElement, document.body)) document.querySelector<HTMLElement>(`[data-testid=output-version-row][data-n="${n}"] [data-testid=output-version-name]`)?.focus({ preventScroll: true })
+    })
   }
   const saveName = async (v: OutputVersion): Promise<void> => {
     setError('')
