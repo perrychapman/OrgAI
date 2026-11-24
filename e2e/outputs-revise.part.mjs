@@ -69,6 +69,11 @@ export default async function (ctx) {
   // token the request is answered on the mock's own clock and the old read is all there is.)
   const held = mockHasReviseHold
   await t('output-revise-text').fill(held ? `Tighten the first paragraph. ${REVISE_HOLD_TOKEN}` : 'Tighten the first paragraph.')
+  await page.evaluate(() => {
+    window.__reviseFocusLog = []
+    window.__reviseFocusFn = (e) => window.__reviseFocusLog.push(e.target?.getAttribute?.('data-testid') || e.target?.tagName || '')
+    document.addEventListener('focusin', window.__reviseFocusFn, true)
+  })
   await t('output-revise-send').click()
   await dialog.waitFor({ state: 'detached', timeout: scaled(6000) }).catch(() => {})
   const closed = !(await dialog.count()) || !(await dialog.isVisible())
@@ -81,10 +86,13 @@ export default async function (ctx) {
   const pending = { seen: (await t('output-revision-pending').count()) > 0, visible: await t('output-revision-pending').first().isVisible().catch(() => false), text: await pendingText() }
   check(pending.seen && pending.visible, `${label}: the pending line shows`, JSON.stringify(pending))
   check(settled && /Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pending.text), `${label}: the pending line reads as the spec says`, pending.text)
-  // The hand-back comes when the dialog has left (after its exit), so wait for it instead of reading once.
-  await untilReady(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'output-more', 5000)
-  const inFocus = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
-  check(inFocus === 'output-more',`${label}: focus returns to the More button that opened Revise`, String(inFocus))
+  // The hand-back happens when the dialog has left. Read from the log kept since before Send (a focusin listener), not from
+  // where focus is a while later: with the hold the run's permission card arrives meanwhile and may take focus on its own.
+  const focusLog = await page.evaluate(() => {
+    document.removeEventListener('focusin', window.__reviseFocusFn, true)
+    return window.__reviseFocusLog ?? []
+  })
+  check(focusLog.includes('output-more'), `${label}: focus returns to the More button that opened Revise`, JSON.stringify(focusLog))
   const chip = t('run-meta-revision')
   if (await chip.count()) check(/Waiting for the team's version of /.test(await chip.first().innerText()), `${label}: the run chip names the output`)
   else skip('run-meta-revision (the run strip is not on screen here)')

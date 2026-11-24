@@ -4,7 +4,7 @@
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, projectTab, screenshot, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, projectTab, screenshot, showFinishedAgents, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -753,6 +753,9 @@ try {
       await page.locator('.new-run').waitFor({ timeout: t(5000) })
       await startOnPage(`Delegate the work ${marker}`)
       await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
+      // The badge sits on an agent's node, and a finished agent folds into its parent's "done" group 6 s after it ended, which
+      // takes the badge with it: a slow page that looks after that finds none (a loaded run waited its whole 90 s for it).
+      await showFinishedAgents(page).catch(() => {})
       await page.locator(`[data-testid=${badgeId}]`).first().waitFor({ state: 'attached', timeout: t(30_000) }).catch(() => {})
     }
     await delegationRun('[mock:delegation-skip]', 'agent-badge-delegation-failed')
@@ -986,13 +989,18 @@ try {
     const para = (i) => `Paragraph ${i}. ` + 'The quick brown fox jumps over the lazy dog. '.repeat(6)
     const rowsScript = Array.from({ length: 16 }, (_, i) => ({ type: 'text', text: para(i) }))
     let acc = ''
-    const chunks = Array.from({ length: 160 }, (_, i) => (acc += `Streaming sentence ${i} goes on for a while. `))
+    // The check "ten quiet seconds, then the NEXT streamed text brings the list back" needs the stream still going when the
+    // script gets there, and a slow runner (two cores, the renderer throttled four times: the run view opens a minute later)
+    // is far past a 25 s stream (160 chunks at 150 ms), which had ended by then and left no next text. The stream outlasts any
+    // such run (700 chunks at 150 ms, about 105 s; short sentences keep the cumulative partials small) and the end of the
+    // block ends the session. The checks do not depend on how long it lasts.
+    const chunks = Array.from({ length: 700 }, (_, i) => (acc += `Sentence ${i} goes on. `))
     fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 150, work: [...rowsScript, { type: 'text', text: acc, partials: chunks }] }))
     const LIST = '[data-testid=run-conversation] .conversation-list'
     const topOf = () => page.evaluate((sel) => document.querySelector(sel)?.scrollTop ?? null, LIST)
     const jump = () => page.locator('[data-testid=conversation-jump]').count()
     const jumpGone = () => page.waitForFunction(() => !document.querySelector('[data-testid=conversation-jump]'), null, { timeout: t(2000) }).then(() => true, () => false)
-    const waitDist = (max, ms = 3000) => page.waitForFunction(([sel, m]) => { const el = document.querySelector(sel); return !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= m }, [LIST, max], { timeout: ms }).then(() => true, () => false)
+    const waitDist = (max, ms = 3000) => page.waitForFunction(([sel, m]) => { const el = document.querySelector(sel); return !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= m }, [LIST, max], { timeout: t(ms) }).then(() => true, () => false)
     // Clicks, then reads the list two frames later (resize observers run after the first frame's callbacks and before its
     // paint, so the second frame sees what was painted); a later stream update would be too slow to repair it by then.
     const clickThenDist = (testId) => page.evaluate(([id, sel]) => new Promise((resolve) => {
@@ -1002,18 +1010,19 @@ try {
         resolve(el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : null)
       }))
     }), [testId, LIST])
-    // Samples the distance from the end once per frame until it is back (or 3 s pass).
-    const watchReturn = () => page.evaluate(([sel]) => new Promise((resolve) => {
+    // Samples the distance from the end once per frame until it is back (or the limit passes: 3 s, scaled; a renderer busy with
+    // two streams draws a frame a second or less, and the return starts with the next streamed text, so 3 s read 3 samples).
+    const watchReturn = () => page.evaluate(([sel, limit]) => new Promise((resolve) => {
       const el = document.querySelector(sel)
       const seen = []
       const start = performance.now()
       const tick = () => {
         seen.push(Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))
-        if ((seen.at(-1) <= 2 && seen.length > 1) || performance.now() - start > 3000) resolve(seen)
+        if ((seen.at(-1) <= 2 && seen.length > 1) || performance.now() - start > limit) resolve(seen)
         else requestAnimationFrame(tick)
       }
       tick()
-    }), [LIST])
+    }), [LIST, t(3000)])
     // A run's tab, from the strip or from the "+n" menu when many runs are open.
     const openRunTab = async (title) => {
       const tab = page.locator('.run-tablist [role="tab"]', { hasText: title })
@@ -1110,7 +1119,7 @@ try {
     // sample, which a list opened at the top (hundreds of px away) or one that lost the end would break, and it touched
     // the end (2 px) at least once.
     const panelWindow = await page.evaluate(
-      (sel) =>
+      ([sel, limit]) =>
         new Promise((resolve) => {
           const t0 = performance.now()
           let min = Infinity
@@ -1128,13 +1137,15 @@ try {
           read()
           const iv = setInterval(() => {
             read()
-            if (performance.now() - t0 > 1200) {
+            // 1.2 s of samples, and at least 8 of them: a renderer that is two frames a second (two streams, throttled) gives
+            // two samples in 1.2 s, which says nothing; it keeps sampling, up to the scaled limit, until it has some.
+            if ((performance.now() - t0 > 1200 && n >= 8) || performance.now() - t0 > limit) {
               clearInterval(iv)
               resolve({ min, max, n })
             }
           }, 30)
         }),
-      PANEL
+      [PANEL, t(8000)]
     )
     check(panelWindow.n >= 5 && panelWindow.min <= 2 && panelWindow.max <= 48, 'the side panel transcript opens at the newest message', JSON.stringify(panelWindow))
     await page.locator(PANEL).hover()

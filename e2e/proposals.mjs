@@ -586,9 +586,11 @@ try {
   await page.locator('.composer .composer-row .btn').click()
   const rosterCard = page.locator('.decision-card.kind-proposal')
   await rosterCard.waitFor({ timeout: t(30_000) })
-  // The tester folds into a "done" group 6 s after it ended and the node is read after it finished: turn the fold off first, so
-  // the node is there at any speed (the macOS CI run read the folded group: "the Roster Tester node shows its role name").
-  await showFinishedAgents(page)
+  // The tester folds into a "done" group 6 s after it ended and the node is read after it finished: turn the fold off, so the
+  // node is there at any speed (the macOS CI run read the folded group: "the Roster Tester node shows its role name"). The
+  // switch exists once a second agent does (after the approval below), and the fold preference is read when the view mounts,
+  // so it is also stored now.
+  await page.evaluate(() => localStorage.setItem('orgai.collapseFinished', 'off'))
   check(/Add a Roster Tester/.test(((await rosterCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')), 'the org chart card is titled "Add a Roster Tester"')
   const detailsBtn = page.locator('[data-testid=decision-details], .decision-details').first()
   if ((await detailsBtn.isVisible().catch(() => false)) && (await rosterCard.getAttribute('data-expanded')) !== 'true') await detailsBtn.click()
@@ -598,6 +600,7 @@ try {
   check(/spawns:[^]*Roster Tester/.test(rosterText), 'the card names Roster Tester as a spawn target', rosterText.slice(0, 400))
   await shot('org-change-live-card')
   await page.locator('[data-testid=proposal-approve]').click()
+  await showFinishedAgents(page)
   const testerNode = page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first()
   await testerNode.waitFor({ timeout: t(30_000) })
   check(true, 'an agent named Roster Tester appears in the live view after approval')

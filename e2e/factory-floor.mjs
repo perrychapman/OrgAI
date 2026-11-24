@@ -19,7 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio, domPollWaits } from './lib.mjs'
 // A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
 // two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
 // or ends such a run waits for the renderer to answer instead of timing out at the default.
@@ -56,6 +56,8 @@ const app = await electron.launch({
 scaleApp(app)
 const page = await app.firstWindow()
 scalePage(page)
+// The scene's software GL leaves the renderer a frame or two a second while it mounts, and Playwright's own waits poll by frame.
+domPollWaits(page)
 page.on('dialog', (d) => void d.accept())
 page.on('console', (m) => {
   if (m.type() === 'error') log('console.error:', m.text().slice(0, 200))

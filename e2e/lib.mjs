@@ -64,6 +64,45 @@ export function scalePage(page) {
 }
 
 /**
+ * Waits that do not need the renderer to draw frames. Playwright's `locator.waitFor()` and `page.waitForFunction()` poll with
+ * requestAnimationFrame, so a renderer that draws a frame every half second (the Factory Floor's software-GL scene mounting
+ * on two cores: 2 to 3 frames per 1.5 s for the first 45 s, measured) answers them late or not at all while the element has been
+ * there and visible all along (`isVisible()` true, the run header drawn; the same wait waited 300 s on windows-latest). Calling
+ * this once makes both of them poll by timer instead (every 100 / 250 ms): the same states, the same timeouts, no frames needed.
+ * Opt-in, for scripts that mount the 3D scene; changes nothing for the others. Actions (click, fill) are unchanged.
+ */
+export function domPollWaits(page) {
+  const locatorProto = Object.getPrototypeOf(page.locator('html'))
+  const pageProto = Object.getPrototypeOf(page)
+  if (!locatorProto.__orgaiPolled) {
+    locatorProto.__orgaiPolled = true
+    locatorProto.waitFor = async function waitFor(options = {}) {
+      const state = options.state ?? 'visible'
+      const limit = options.timeout === 0 ? Infinity : (options.timeout ?? t(30_000))
+      const end = Date.now() + limit
+      for (;;) {
+        const ok =
+          state === 'visible' ? await this.isVisible() : state === 'hidden' ? !(await this.isVisible()) : state === 'attached' ? (await this.count()) > 0 : (await this.count()) === 0
+        if (ok) return
+        if (Date.now() >= end) {
+          const err = new Error(`locator.waitFor: Timeout ${limit}ms exceeded.\nCall log:\n  - waiting for ${String(this)} to be ${state} (polled by timer, not by frames)`)
+          err.name = 'TimeoutError'
+          throw err
+        }
+        await sleep(100)
+      }
+    }
+  }
+  if (!pageProto.__orgaiPolled) {
+    pageProto.__orgaiPolled = true
+    const original = pageProto.waitForFunction
+    pageProto.waitForFunction = function waitForFunction(fn, arg, options = {}) {
+      return original.call(this, fn, arg, { polling: 250, ...options })
+    }
+  }
+}
+
+/**
  * Scale every window of an Electron app: those open now and any opened later (a run window, a second window), so no script
  * can miss one. launch() calls this; a script that starts Electron itself calls it right after electron.launch().
  */
