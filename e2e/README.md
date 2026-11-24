@@ -40,6 +40,14 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
   there, so a fast machine loses nothing. Do not wrap a sleep that orders two things in `t()`: wait on a standing state
   (a MutationObserver installed before the action, `settleUI`, `showFinishedAgents`, a mock hold such as
   `[mock:revise-hold]` or `[mock:model-switch-hold]`).
+- Review data (a tool, not a test; not in `e2e:free`): `E2E_DATA_DIR=<folder> node e2e/seed-review.mjs` fills a data folder with
+  five projects (code and engagements), runs in many states, outputs with versions and notes, knowledge, to-dos, schedules, a
+  Chat, pending decisions and a spending limit, token-free on the mock adapter, so the UI can be reviewed by hand. It refuses
+  to run without `E2E_DATA_DIR`, refuses a folder that already holds projects unless `--force`, never deletes anything, and
+  puts its throwaway repositories in `<folder>-work`. Run records are spread over two weeks (`--no-backdate` keeps them on
+  today). Open the folder afterwards with `ORGAI_MOCK=1` and `ORGAI_DATA_DIR=<folder>`. Runs that were live or waiting come
+  back ended and their cards are gone after a restart; `E2E_DATA_DIR=<folder> node e2e/seed-review.mjs --live` opens a seeded
+  folder, starts live, waiting and Chat runs again and keeps that window open until it is closed.
 - To try a slow runner on a fast machine: `E2E_CPU_THROTTLE=4` (CDP CPU throttling of the renderer), two cores
   (`cmd /c start /affinity 5 /wait /b node e2e/<script>.mjs` on Windows) and `E2E_TIME_SCALE=3`;
   `E2E_CLAMP_WINDOW=1024x656` opens the window as the macOS runner's small screen does.
