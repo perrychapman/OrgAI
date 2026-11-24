@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Inbox as InboxIcon } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { decisionFocus } from '../components/DecisionCard'
+import { keys } from '../lib/keysHeld'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import InboxHeader from '../components/inbox/InboxHeader'
@@ -177,20 +178,36 @@ export default function InboxView(): ReactElement {
   }, [selected])
   // Arrival: focus goes to the list's first row (the heading when empty), so J, K and Enter work at once. Never taken from
   // someone typing, from a dialog, or from a place inside the Inbox. The Enter (or Space) that activated the nav row may
-  // still be down: for a moment after arrival a fresh Enter on a row does nothing (its repeats are always swallowed).
-  const arrivedAt = useRef(0)
+  // still be down: while it is, a fresh Enter on a row does nothing (its repeats are always swallowed). The hold ends at the
+  // key-up of the opening key, not on a timer, so a deliberate Enter always works once the keys are up.
+  const openerHeld = useRef(false)
   useEffect(() => {
+    let release: (() => void) | undefined
+    // A key released in another window never sends a keyup here (the tracker clears on blur and then never calls back).
+    const onBlur = (): void => {
+      openerHeld.current = false
+    }
+    window.addEventListener('blur', onBlur)
     const frame = requestAnimationFrame(() => {
       const a = document.activeElement
       if (a && a !== document.body && (rootRef.current?.contains(a) || typingTarget(a))) return
       if (dialogOpen()) return
       const rows = listRef.current?.querySelectorAll<HTMLElement>('[data-testid=inbox-row]')
       const row = rows ? ([...rows].find((r) => r.tabIndex === 0) ?? rows[0]) : undefined
-      arrivedAt.current = Date.now()
+      if (keys.held()) {
+        openerHeld.current = true
+        release = keys.whenReleased(() => {
+          openerHeld.current = false
+        })
+      }
       if (row) row.focus()
       else rootRef.current?.querySelector<HTMLElement>('.inbox-title')?.focus()
     })
-    return () => cancelAnimationFrame(frame)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('blur', onBlur)
+      release?.()
+    }
   }, [])
   const choose = useCallback(
     (id: string | null): void => {
@@ -201,11 +218,28 @@ export default function InboxView(): ReactElement {
     [selected]
   )
 
+  // The row is already in the list (J / K / Esc only name rows that are drawn), so focus moves now. Waiting for the next
+  // animation frame left a window, as long as the frame took to arrive (a busy or hidden window delivers it late), in which
+  // the person's next key, an Enter on that row, ran first and was then undone by the late focus hand-back. Only a row that
+  // is not drawn yet (the list is changing) waits one frame.
   const focusRow = useCallback((id: string): void => {
+    const find = (): HTMLElement | undefined => [...(listRef.current?.querySelectorAll<HTMLElement>('[data-testid=inbox-row]') ?? [])].find((r) => r.getAttribute('data-id') === id)
+    const go = (row: HTMLElement): void => {
+      row.focus()
+      row.scrollIntoView?.({ block: 'nearest' })
+    }
+    const now = find()
+    if (now) {
+      go(now)
+      return
+    }
     requestAnimationFrame(() => {
-      const row = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-testid=inbox-row]') ?? [])].find((r) => r.getAttribute('data-id') === id)
-      row?.focus()
-      row?.scrollIntoView?.({ block: 'nearest' })
+      const row = find()
+      if (!row) return
+      // A late hand-back never takes focus from where the person has gone since.
+      const a = document.activeElement
+      if (a && a !== document.body && !rootRef.current?.contains(a)) return
+      go(row)
     })
   }, [])
 
@@ -306,8 +340,8 @@ export default function InboxView(): ReactElement {
           if (inList) e.preventDefault()
           return
         }
-        // The Enter that opened the Inbox from the sidebar may be doubled: it must not reach a row or a card.
-        if (inList && Date.now() - arrivedAt.current < ENTER_DWELL_MS) {
+        // The key that opened the Inbox from the sidebar is still down: it must not reach a row or a card.
+        if (inList && openerHeld.current) {
           e.preventDefault()
           return
         }

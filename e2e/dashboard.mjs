@@ -741,11 +741,31 @@ try {
   await startRun('First task')
   await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: 20_000 })
   await openProject(page, BUSY)
+  // The deep tree plays 12 steps at the script's pace (400 ms: about 5 s end to end). A slow runner needs longer than that
+  // between "Send" and the Home page drawing its rows, and the band then shows the tree already settled and folded
+  // ("3 done", run Idle). The script is read per run, so this run plays at 2 s a step (the working agents stay up for
+  // about 20 s) and the pace goes back once its agents are on the page.
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 2000 }))
   await startRun('Deep tree [mock:deep-tree]')
   // While the tree runs: working agent rows and breathing marks (A25: none of it animates under reduced motion).
   await gotoProjects(page)
   const workingEarly = await until(async () => (await page.locator('[data-testid=dash-now] [data-testid=dash-agent-row][data-state=working]').count()) >= 1, 15_000, 150)
-  check(!!workingEarly, 'RN Right now lists at least one working agent row while the deep tree runs')
+  check(
+    !!workingEarly,
+    'RN Right now lists at least one working agent row while the deep tree runs',
+    workingEarly
+      ? ''
+      : JSON.stringify(
+          await page.evaluate(() => ({
+            rows: [...document.querySelectorAll('[data-testid=dash-now] [data-testid^=dash-agent]')].map((r) => `${r.getAttribute('data-testid')}:${r.getAttribute('data-state') ?? r.getAttribute('data-count')}`),
+            runs: [...document.querySelectorAll('[data-testid=dash-now] [data-testid=dash-running-row]')].map((r) => `${r.getAttribute('data-status')}/${r.getAttribute('data-group')}`),
+            pulse: [...document.querySelectorAll('[data-testid=dash-pulse-node]')].map((n) => n.getAttribute('data-state')),
+            text: (document.querySelector('[data-testid=dash-now]')?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 300)
+          }))
+        )
+  )
+  // The run has started (its agents are on the page), so the adapter has read the script: back to the usual pace.
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
   // Team pulse: the live org chart in miniature (a picture with a caption; nothing in it takes focus).
   const pulseUp = await until(async () => (await T('dash-pulse-node').count()) >= 2, 15_000, 150)
   const pulse = await page.evaluate(() => {
@@ -1930,6 +1950,29 @@ async function setName(name) {
     await ip.keyboard.press('Escape')
     await sleep(200)
     check((await focusedRowId()) === ids0[0], 'IB IBH4 Esc returns to the row after the held-Enter test', String(await focusedRowId()))
+
+    // ---- A fresh Enter right after a move always goes into the card, however late the next animation frame is. On a busy
+    // or hidden window the frame can arrive after the person's next key; the move must not depend on it (CI saw Enter land
+    // on a row and then be undone by a late focus hand-back). The frame is held back 300 ms here to make that deterministic.
+    await rows().nth(1).click()
+    check((await selectedId()) === ids0[1] && (await focusedRowId()) === ids0[1], 'IB IBR1 (setup) the second row is selected and focused', `${await selectedId()} / ${await focusedRowId()}`)
+    await ip.evaluate(() => {
+      window.__rafReal = window.requestAnimationFrame
+      window.requestAnimationFrame = (cb) => window.setTimeout(() => cb(performance.now()), 300)
+    })
+    await ip.keyboard.press('ArrowUp')
+    await ip.keyboard.press('Enter')
+    const lateInCard = await focusIn('[data-testid=inbox-detail-pane]')
+    // Two held-back frames have run: whatever the move queued for the next frame has happened by now.
+    await ip.evaluate(() => new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve(null)))))
+    const lateStill = await focusIn('[data-testid=inbox-detail-pane]')
+    await ip.evaluate(() => {
+      window.requestAnimationFrame = window.__rafReal
+    })
+    check(lateInCard && lateStill && (await selectedId()) === ids0[0] && (await waitRows().count()) === heldBefore, 'IB IBR1 K then an immediate Enter moves focus into the card and a late animation frame does not undo it', JSON.stringify({ lateInCard, lateStill, selected: await selectedId(), left: await waitRows().count() }))
+    await ip.keyboard.press('Escape')
+    await ibUntil(async () => (await focusedRowId()) === ids0[0], 3000, 50)
+    check((await focusedRowId()) === ids0[0], 'IB IBR1 Esc returns to the row', String(await focusedRowId()))
 
     // ---- Chips and the project filter.
     const chipTexts = await I('inbox-chips').locator('button').evaluateAll((els) => els.map((e) => ({ label: (e.textContent ?? '').replace(/\s+/g, ' ').trim(), pressed: e.getAttribute('aria-pressed') })))

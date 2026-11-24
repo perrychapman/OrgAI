@@ -214,7 +214,7 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
         </section>
 
         {/* Model: the tier choice and one line naming the resolved model and connection (exact ids stay visible); everything else is behind "Choose an exact model". */}
-        <ModelSection project={project} role={role} headingId={id('model-title')} />
+        <ModelSection key={role.id} project={project} role={role} headingId={id('model-title')} />
 
         {ROLE_CONCURRENCY_SUPPORTED && (
           <section className="stack-2" data-testid="role-section-count" aria-label="How many at once">
@@ -438,12 +438,19 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
 /**
  * "Model": the tier segmented choice, the sentence that names the resolved model and connection, and a reveal
  * ("Choose an exact model") holding Runs on, the Model select with Inherit, the exact model, effort and Staffing details.
- * The reveal opens by itself when the role's connection is not connected, so the way to fix that is in sight.
+ * The reveal opens by itself when the role's connection is not connected, so the way to fix that is in sight. It never
+ * closes under the person: once it is open (by the rule or by them) it stays open until they close it or pick another
+ * role (the caller keys this section by role). Pinning a provider that is connected flips `notConnected` back to false
+ * while they are still using the "Runs on" select in it, and that must not fold it away.
  */
 function ModelSection({ project, role, headingId }: { project: Project; role: Role; headingId: string }): ReactElement {
   const connection = roleConnection(role, project)
   const list = useAppStore((s) => s.connections)
   const notConnected = list !== null && list.find((c) => c.connection.id === connection)?.status.state !== 'connected'
+  const [open, setOpen] = useState(notConnected)
+  useEffect(() => {
+    if (notConnected) setOpen(true)
+  }, [notConnected])
   return (
     <section className="re-model stack-2" aria-labelledby={headingId} data-testid="role-section-model">
       <h3 className="side-section-title ri-title" id={headingId}>
@@ -451,7 +458,7 @@ function ModelSection({ project, role, headingId }: { project: Project; role: Ro
       </h3>
       <RoleTierChoice project={project} role={role} />
       <RoleModelSentence project={project} role={role} />
-      <details className="re-fold re-exact" data-testid="role-model-advanced" open={notConnected}>
+      <details className="re-fold re-exact" data-testid="role-model-advanced" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>Choose an exact model</summary>
         <div className="stack-2 re-model-body">
           <RoleModelPicker project={project} role={role} />

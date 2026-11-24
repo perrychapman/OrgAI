@@ -473,6 +473,11 @@ try {
     await NRT('new-run-limit').fill('0.75')
     await NRT('new-run-schedule').click()
     await NRT('schedule-editor').waitFor({ timeout: 10_000 })
+    // The editor fills its form from the seed in one update (name, limit and mode together). That used to be a passive effect
+    // after the first paint, so a read right after the editor appeared saw an empty name and limit on CI (the mode, read
+    // later, was there). It is a layout effect now; the wait on the populated state stays as the check's own precondition.
+    const seeded = () => page.waitForFunction(() => (document.querySelector('[data-testid=schedule-field-name]')?.value ?? '') !== '', null, { timeout: 10_000 })
+    await seeded()
     const nm = await NRT('schedule-field-name').inputValue()
     check(nm.length > 0 && nm.length <= 49 && nm.endsWith('…') && !nm.includes('Second line'), '8b the editor opens with a short clamped name from the first line', nm)
     check((await NRT('schedule-field-budget').inputValue()) === '0.75', '8b the per-run limit is carried over', await NRT('schedule-field-budget').inputValue())
@@ -486,7 +491,8 @@ try {
     await chooseMode('bypassPermissions')
     await NRT('new-run-schedule').click()
     await NRT('schedule-editor').waitFor({ timeout: 10_000 })
-    const bypass = await NRT('schedule-field-permission').inputValue()
+    await seeded()
+    const bypass =await NRT('schedule-field-permission').inputValue()
     const note2 = clean(await NRT('schedule-not-kept-note').innerText())
     check(bypass !== 'bypassPermissions' && bypass === '', '8b Bypass is never carried into the schedule', bypass)
     check(/permission mode that asks less/.test(note2), '8b the note says the wider permission mode was not carried', note2)

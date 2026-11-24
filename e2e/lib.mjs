@@ -264,6 +264,14 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
   page.on('pageerror', (e) => log('pageerror:', e.message.slice(0, 200)))
   await page.waitForSelector('.sidebar', { timeout: 60_000 })
   await ensureDefaultViewport(app, page)
+  // E2E_CPU_THROTTLE=4 slows the renderer four times (CDP Emulation.setCPUThrottlingRate), to reproduce on a fast machine the
+  // races a slow CI runner shows. Opt-in; nothing changes without it.
+  const throttle = Number(process.env.E2E_CPU_THROTTLE)
+  if (throttle > 1) {
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: throttle })
+    log('cpu throttle', throttle)
+  }
   // A shared ORGAI_DATA_DIR (CI) keeps the renderer's localStorage between scripts, so an earlier script's UI choices
   // (orgai.sidebar, orgai.sidePanel.*, widths) would leak into this one. Start every script from auto state; projects
   // and runs live in the main process data and are untouched.
@@ -463,11 +471,11 @@ export async function deleteProject(page, name) {
   return tiles().count()
 }
 
-/** End a live session if the button is there. */
-export async function endSession(page) {
+/** End a live session if the button is there. `timeout` is for the click (a renderer busy with a very large run answers late). */
+export async function endSession(page, { timeout } = {}) {
   const end = page.getByRole('button', { name: 'End session' })
   if (await end.count()) {
-    await end.click()
+    await end.click(timeout ? { timeout } : undefined)
     await sleep(1500)
   }
 }

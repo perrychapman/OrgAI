@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PermissionMode, Schedule } from '@shared/types'
 import { SCHEDULE_NAME_MAX_CHARS, SCHEDULE_PROMPT_MAX_CHARS, isVirtualProjectId } from '@shared/types'
 import { describeScheduleTiming } from '@shared/schedule'
@@ -100,8 +100,9 @@ export default function ScheduleEditor({
   const uid = useId()
   const id = (name: string): string => `${uid}-${name}`
 
-  // A fresh form each time the dialog opens.
-  useEffect(() => {
+  // A fresh form each time the dialog opens. A layout effect: the form is filled before the browser paints the opened
+  // dialog, so no frame (and no read by a script or a screen reader) ever sees it empty before the seed from New run lands.
+  useLayoutEffect(() => {
     if (!open) return
     const t = Date.now()
     setNow(t)

@@ -36,37 +36,25 @@ const resize = async (w, h) => {
 async function selectReviewer() {
   await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().click()
   await teamPanelTab(page, 'Role').waitFor()
-  // The Model fold starts closed on short windows; re-open it if a re-render remounts the panel.
-  await page.waitForFunction(
-    () => {
-      // The Runs on select sits in the Model section's "Choose an exact model" reveal.
-      const fold = document.querySelector('[data-testid=role-model-advanced]')
-      if (fold && !fold.open) fold.open = true
-      const sel = document.querySelector('[data-testid=role-runs-on]')
-      return !!sel && sel.getClientRects().length > 0
-    },
-    undefined,
-    { timeout: 20_000, polling: 100 }
-  )
+  await openModelReveal()
 }
 
-/** Open the Model reveal if a re-render closed it and wait until the Runs on select has a box. */
-async function openRunsOn() {
-  const wasClosed = await page.evaluate(() => {
-    const fold = document.querySelector('[data-testid=role-model-advanced]')
-    return !!fold && !fold.open
-  })
-  if (wasClosed) log('the Model reveal was closed by a re-render; opening it again')
-  await page.waitForFunction(
-    () => {
-      const fold = document.querySelector('[data-testid=role-model-advanced]')
-      if (fold && !fold.open) fold.open = true
-      const sel = document.querySelector('[data-testid=role-runs-on]')
-      return !!sel && sel.getClientRects().length > 0
-    },
-    undefined,
-    { timeout: 20_000, polling: 100 }
-  )
+const modelFold = () => page.locator('[data-testid=role-model-advanced]')
+/**
+ * The Runs on select sits in the Model section's "Choose an exact model" reveal. It opens by itself only while the role's
+ * connection is not connected (CI has no login, so it does there); on a logged-in machine it starts closed and a person
+ * opens it with a click on its summary, as here. Once open it must stay open: nothing below re-opens it.
+ */
+async function openModelReveal() {
+  await modelFold().waitFor({ state: 'attached', timeout: 20_000 })
+  if (!(await modelFold().evaluate((d) => d.open))) await modelFold().locator('summary').first().click()
+  await page.locator('[data-testid=role-runs-on]').waitFor({ state: 'visible', timeout: 20_000 })
+}
+/** The reveal is still open, and the Runs on select is on screen, with nothing having re-opened it. */
+async function revealStillOpen(what) {
+  const open = await modelFold().evaluate((d) => d.open).catch(() => false)
+  check(open, `the Model reveal stays open ${what}`)
+  await page.locator('[data-testid=role-runs-on]').waitFor({ state: 'visible', timeout: 20_000 })
 }
 
 /** Pin the Reviewer of `name` to `id` through the Runs on select; returns the stored role. */
@@ -135,31 +123,32 @@ try {
   const describedBy = await page.locator('[data-testid=role-runs-on]').getAttribute('aria-describedby')
   check(!!describedBy && (await page.locator(`[id="${describedBy}"]`).count()) === 1, 'Runs on keeps aria-describedby on the hint', String(describedBy))
   check((await page.locator('[data-testid=role-section-model] [data-testid=role-model-sentence]').count()) === 1, 'one Model and effort sentence')
-  // Keyboard: Runs on is a focusable native select. It sits in the "Choose an exact model" reveal, which RoleInspector opens
-  // by itself only while the role's connection is not connected (open={notConnected}). On macOS CI the select was "not
-  // visible" here and in the selectOption calls below, so the reveal had closed after selectReviewer opened it (a flip of
-  // that prop when the pinned proxy is connected would do it; not reproduced on Windows, where the log line below never
-  // appears). Open it again, as selectReviewer does, before touching the select; the log line says when that was needed.
-  await openRunsOn()
+  // Keyboard: Runs on is a focusable native select in the "Choose an exact model" reveal. The reveal opens by itself while
+  // the role's connection is not connected (CI) and used to fold away when pinning a connected provider flipped that rule
+  // (macOS CI: "not visible" below). It must now stay open under the person once opened, so nothing re-opens it here.
+  await revealStillOpen('after pinning a connected provider')
   await page.locator('[data-testid=role-runs-on]').focus()
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'role-runs-on'), 'Runs on takes keyboard focus')
   await shot('team-pinned')
 
   // Project default clears the pin, then pin again.
-  await openRunsOn()
+  await revealStillOpen('on the keyboard step')
   await page.locator('[data-testid=role-runs-on]').selectOption('')
   await sleep(900)
   const said = await page.evaluate(() => [...document.querySelectorAll('[role=status]')].map((e) => e.textContent).join(' | '))
   check(/Runs on the project default/.test(said), 'changing Runs on is announced through a polite status region', said.slice(0, 200))
   check((await findProject(page, M)).roles.find((r) => r.name === 'Reviewer')?.connection === undefined, '"Project default" clears Role.connection')
-  await openRunsOn()
+  await revealStillOpen('after "Project default" clears the pin')
   await page.locator('[data-testid=role-runs-on]').selectOption(proxyId)
   await sleep(900)
+  await revealStillOpen('after pinning the provider again')
 
   // The root has no Runs on; its Model section says where it runs.
   await page.locator('.react-flow__node', { hasText: 'Orchestrator' }).first().click()
   await page.waitForFunction(() => !!document.querySelector('[data-testid=role-section-model]'), undefined, { timeout: 10_000 })
-  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-model-advanced]'); if (f) f.open = true })
+  // Another role opens its own reveal (a person clicks the summary when it starts closed).
+  await modelFold().waitFor({ state: 'attached', timeout: 10_000 })
+  if (!(await modelFold().evaluate((d) => d.open))) await modelFold().locator('summary').first().click()
   const rootLine = page.locator('[data-testid=role-runs-on-root]')
   await rootLine.waitFor({ timeout: 10_000 })
   check(/The orchestrator runs on the project's connection \(.+\); change it in Project settings > Connection\./.test((await rootLine.textContent()) ?? ''), 'the root role shows its one quiet "runs on" line', (await rootLine.textContent()) ?? '')
