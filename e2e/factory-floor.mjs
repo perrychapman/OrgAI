@@ -19,7 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio } from './lib.mjs'
 // A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
 // two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
 // or ends such a run waits for the renderer to answer instead of timing out at the default.
@@ -561,7 +561,7 @@ try {
   await section.waitFor({ timeout: t(10_000) })
   const radio = section.locator('[data-testid=canvas-presentation-factory-floor]')
   check((await radio.count()) === 1, 'settings offer the Factory Floor presentation')
-  await radio.check({ force: true })
+  await checkRadio(radio, 'the Factory Floor presentation')
   await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'factory-floor', null, { timeout: t(10_000) }).catch(() => {})
   check((await html('data-canvas-presentation')) === 'factory-floor', 'choosing Factory Floor sets the presentation')
   const saved = await page.evaluate(async () => (await window.orgai.settings.get()).appearance.canvas.presentation)

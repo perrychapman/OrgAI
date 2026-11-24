@@ -1,15 +1,18 @@
 // Revise part (docs/design/outputs-2.md 7, 11.4). Called at the end of e2e/outputs-notes.mjs with a project that has a finished
 // run that produced a markdown and a docx output. ctx: { app, page, project, label, size: [w,h], theme, check, sleep }.
 import { readFileSync } from 'node:fs'
-import { t as scaled } from './lib.mjs'
+import { t as scaled, until as untilReady } from './lib.mjs'
 
-const mockHasRevise = (() => {
+const mockSource = (() => {
   try {
-    return readFileSync(new URL('../src/main/runtime/mock.ts', import.meta.url), 'utf8').includes('The user wrote (request')
+    return readFileSync(new URL('../src/main/runtime/mock.ts', import.meta.url), 'utf8')
   } catch {
-    return false
+    return ''
   }
 })()
+const mockHasRevise = mockSource.includes('The user wrote (request')
+const REVISE_HOLD_TOKEN = '[mock:revise-hold]'
+const mockHasReviseHold = mockSource.includes(REVISE_HOLD_TOKEN)
 
 export default async function (ctx) {
   const { page, label, check, sleep } = ctx
@@ -59,42 +62,25 @@ export default async function (ctx) {
   check(await dialog.isVisible(), `${label}: the dialog stays open on a problem`)
 
   // Send a whole-output request.
-  await t('output-revise-text').fill('Tighten the first paragraph.')
-  // The mock answers on its own clock, so the pending line can come and go between any two reads (CI macOS: the line was
-  // gone 300 ms after the dialog closed, in two runs). Record it where it cannot be missed: an observer installed before
-  // Send notes whether the line ever drew (a mutation callback runs before the next paint) and the text it last drew with
-  // while it was there (the run tag reads "R?" for a moment before the run index has it, so the first text is not the settled one).
-  await page.evaluate(() => {
-    const SEL = '[data-testid=output-revision-pending]'
-    const rec = { seen: false, text: '', visibleAtFirst: false }
-    window.__revisionPending = rec
-    const look = () => {
-      const el = document.querySelector(SEL)
-      if (!el) return
-      if (!rec.seen) {
-        rec.seen = true
-        const r = el.getBoundingClientRect()
-        rec.visibleAtFirst = r.width > 0 && r.height > 0
-      }
-      rec.text = (el.textContent ?? '').trim()
-    }
-    const obs = new MutationObserver(look)
-    window.__revisionPendingObs = obs
-    obs.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
-    look()
-  })
+  // The mock answers on its own clock, so the pending line used to come and go between any two reads, and on a slow renderer
+  // the answer was applied in the same paint as the request, so the line was never drawn (CI macOS: seen false in three of
+  // four passes). REVISE_HOLD_TOKEN makes the mock ask one permission card before it revises: the request stays pending, the
+  // line is a standing state, and this script releases the answer by answering that card. (Without a mock that knows the
+  // token the request is answered on the mock's own clock and the old read is all there is.)
+  const held = mockHasReviseHold
+  await t('output-revise-text').fill(held ? `Tighten the first paragraph. ${REVISE_HOLD_TOKEN}` : 'Tighten the first paragraph.')
   await t('output-revise-send').click()
   await dialog.waitFor({ state: 'detached', timeout: scaled(6000) }).catch(() => {})
   const closed = !(await dialog.count()) || !(await dialog.isVisible())
   check(closed, `${label}: the dialog closes after sending`)
   if (!closed) return
-  await sleep(300)
-  const pending = await page.evaluate(() => {
-    window.__revisionPendingObs?.disconnect()
-    return window.__revisionPending
-  })
-  check(pending.seen && pending.visibleAtFirst, `${label}: the pending line shows`, JSON.stringify(pending))
-  check(/Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pending.text), `${label}: the pending line reads as the spec says`, pending.text)
+  // The pending line stays up while the card is open. The run tag reads "R?" for a moment before the run index has it, so
+  // wait for the settled text, not just for the line.
+  const pendingText = async () => ((await t('output-revision-pending').first().innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+  const settled = await untilReady(async () => /Sent to R\d+ at \d\d:\d\d\./.test(await pendingText()), 15_000)
+  const pending = { seen: (await t('output-revision-pending').count()) > 0, visible: await t('output-revision-pending').first().isVisible().catch(() => false), text: await pendingText() }
+  check(pending.seen && pending.visible, `${label}: the pending line shows`, JSON.stringify(pending))
+  check(settled && /Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pending.text), `${label}: the pending line reads as the spec says`, pending.text)
   const inFocus = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
   check(inFocus === 'output-more', `${label}: focus returns to the More button that opened Revise`, String(inFocus))
   const chip = t('run-meta-revision')
@@ -105,6 +91,24 @@ export default async function (ctx) {
   if (!mockHasRevise) {
     skip('the mock does not answer revise requests in this build (arrival, answered line and Compare)')
     return
+  }
+  if (held) {
+    // Release: answer the card the hold asked for (the run is live; its pending permission is the Bash `npm test`).
+    const released = await untilReady(
+      () =>
+        page.evaluate(async () => {
+          for (const r of await window.orgai.runs.listLive()) {
+            const card = (await window.orgai.runs.pendingCards(r.id)).permissions.find((c) => c.toolName === 'Bash')
+            if (card) {
+              await window.orgai.runs.decide({ runId: r.id, requestId: card.id, decision: { behavior: 'allow', scope: 'once' } })
+              return true
+            }
+          }
+          return false
+        }),
+      30_000
+    )
+    check(released, `${label}: the mock's hold card was there to answer`)
   }
   const answered = await t('output-revision-answered').first().waitFor({ timeout: scaled(25000) }).then(() => true, () => false)
   check(answered, `${label}: the team's new version is announced in the detail`)

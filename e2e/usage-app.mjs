@@ -4,7 +4,7 @@
 // one announcement per action), keyboard (spend plot, project rows, efficiency grid), states (filtered-empty, Kind chip),
 // layout at 1024x640 and 1600x1000 in both themes, and a live run with the page open. Seeds through the IPC
 // (runs.start / runs.startQuick), so it never drives the composer. A check that cannot be driven logs SKIP with a reason.
-import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep, pickSetup, t } from './lib.mjs'
+import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep, pickSetup, t, checkRadio } from './lib.mjs'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -143,7 +143,7 @@ async function createEngagement(name, dir) {
   await T('new-project').click()
   const form = page.locator('[data-testid=new-project-dialog] form')
   await form.waitFor({ timeout: t(10_000) })
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   await T('new-project-client').fill('Acme Corp')
   await form.getByLabel('Working folder', { exact: true }).fill(dir)

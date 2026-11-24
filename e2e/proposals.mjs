@@ -6,7 +6,7 @@
 // Scenario 5 ([mock:org-change]): an approved org chart is usable in the same run (roster shown by name, saved, survives reload).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, showFinishedAgents, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-proposals-script-')), 'script.json')
@@ -596,6 +596,9 @@ try {
   await page.locator('.composer .composer-row .btn').click()
   const rosterCard = page.locator('.decision-card.kind-proposal')
   await rosterCard.waitFor({ timeout: t(30_000) })
+  // The tester folds into a "done" group 6 s after it ended and the node is read after it finished: turn the fold off first, so
+  // the node is there at any speed (the macOS CI run read the folded group: "the Roster Tester node shows its role name").
+  await showFinishedAgents(page)
   check(/Add a Roster Tester/.test(((await rosterCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')), 'the org chart card is titled "Add a Roster Tester"')
   const detailsBtn = page.locator('[data-testid=decision-details], .decision-details').first()
   if ((await detailsBtn.isVisible().catch(() => false)) && (await rosterCard.getAttribute('data-expanded')) !== 'true') await detailsBtn.click()

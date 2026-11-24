@@ -25,7 +25,7 @@
 // New run from the menu, Enter on a band agent row opens the agent, both sizes and themes, relaunch with a run cut while waiting.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, sleep, t } from './lib.mjs'
+import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, sleep, t, checkRadio } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-dash-script-')), 'script.json')
@@ -333,10 +333,10 @@ try {
   const primaries = await page.locator('main .btn.primary:visible').count()
   check(primaries === 1, 'first launch has exactly one primary button', String(primaries))
   await shot('first-launch')
-  await T('dash-start-choice').getByRole('radio', { name: 'Chat now' }).check({ force: true })
+  await checkRadio(T('dash-start-choice').getByRole('radio', { name: 'Chat now' }), 'the Chat now choice')
   check(await visible('[data-testid=empty-chat-now]'), 'choosing Chat now shows the Chat now button')
   check((await page.locator('main .btn.primary:visible').count()) === 1, 'still exactly one primary with Chat now chosen')
-  await T('dash-start-choice').getByRole('radio', { name: 'Start a project' }).check({ force: true })
+  await checkRadio(T('dash-start-choice').getByRole('radio', { name: 'Start a project' }), 'the Start a project choice')
 
   // Walk 4 M2: on first launch a saved name shows in the greeting at once, and "Add your name" looks like a control.
   const addBox = await T('dash-name-add').evaluate((el) => {

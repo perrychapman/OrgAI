@@ -7,7 +7,7 @@
 // contrast of the resolved theme. Screenshots go to e2e/shots/neural/ (gitignored).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { SHOTS_DIR, TMP, check, findProject, finish, gotoProjects, launch, log, openProject, openProjectForm, projectTab, sleep, windowShift, pickSetup, t } from './lib.mjs'
+import { SHOTS_DIR, TMP, check, findProject, finish, gotoProjects, launch, log, openProject, openProjectForm, projectTab, sleep, windowShift, pickSetup, t, checkRadio } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-neural-'))
@@ -64,7 +64,7 @@ const activeTestId = () => page.evaluate(() => document.activeElement?.getAttrib
 async function createEngagement({ name, dir }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
   await pickSetup(form, true)

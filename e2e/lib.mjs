@@ -437,10 +437,32 @@ export async function pickSetup(form, skipSetup) {
   const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
   // The form's submit row is sticky: Playwright's own scroll can leave the last radio underneath it, and a forced click
   // then lands on "Create project" (it created the project with the Architect choice). Centre the radio first.
-  await radio.waitFor({ state: 'attached' })
-  await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }))
-  await radio.check({ force: true })
-  if (!(await radio.isChecked())) throw new Error(`could not pick the "${skipSetup ? 'default' : 'architect'}" setup choice`)
+  await checkRadio(radio, `the "${skipSetup ? 'default' : 'architect'}" setup choice`)
+}
+
+/**
+ * Choose a radio of a form so it stays chosen, on any speed of renderer. A forced click lands on whatever is on top at the
+ * radio's centre and the form's submit row is sticky, so the radio is centred first; Playwright then verifies the state right
+ * after the click, and a controlled radio whose re-render is a frame or more behind (a slow CI runner, or the first-launch
+ * form re-rendering under the click) reads "Clicking the checkbox did not change its state" although nothing is wrong. The
+ * locator is resolved again on each try, so a radio that was replaced by a re-render is found, and a try that finds it already
+ * chosen clicks nothing. Says so in the log when a second try was needed. (CI macOS 2026-11-24: self-help; two runs earlier:
+ * maintenance, on the "Existing code" radio.) Every script that picks a radio of the project form goes through this.
+ */
+export async function checkRadio(radio, what = 'radio') {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await radio.waitFor({ state: 'attached', timeout: t(10_000) })
+      await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: t(10_000) })
+      await radio.check({ force: true, timeout: t(10_000) })
+      if (await until(() => radio.isChecked(), 3000, 100)) return
+      throw new Error(`${what} did not stay chosen`)
+    } catch (e) {
+      if (attempt >= 3) throw e
+      log(`${what}: the choice did not stick (${String(e.message).split('\n')[0]}); choosing again`)
+      await sleep(500)
+    }
+  }
 }
 
 /**
@@ -459,10 +481,7 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   // stick, saying so in the log, instead of failing the whole script on one lost click.
   const kindRadio = form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]')
   const modeRadio = form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true })
-  const choose = async (radio) => {
-    await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: t(10_000) })
-    await radio.check({ force: true, timeout: t(10_000) })
-  }
+  const choose = (radio) => checkRadio(radio, 'create project: the kind / mode choice')
   for (let attempt = 0; ; attempt++) {
     try {
       await choose(kindRadio)
@@ -505,6 +524,20 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
     }
   }
   return await findProject(page, name)
+}
+
+/**
+ * Turn "Hide finished agents" off in the run view that is on screen. With it on (the default) a report folds into its parent's
+ * "done" group COLLAPSE_GRACE_MS (6 s) after it ended, so a check that reads an agent's node, its provider tag or its name at
+ * some later moment depends on how fast the machine got there: a quick one reads the node, a slow one (a CI runner) finds a
+ * group. A user looking for a named agent turns the fold off; with it off the node is there at any speed. Call it right after
+ * the run header is up, before the agents can finish. The choice is the renderer's own (localStorage orgai.collapseFinished).
+ */
+export async function showFinishedAgents(page) {
+  const fold = page.getByRole('switch', { name: 'Hide finished agents' })
+  await fold.waitFor({ state: 'attached', timeout: t(15_000) })
+  if ((await fold.getAttribute('aria-checked')) === 'true') await fold.click()
+  await until(async () => (await fold.getAttribute('aria-checked')) === 'false', 5000)
 }
 
 /** The project as the main process stores it, looked up by name. */

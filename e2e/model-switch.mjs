@@ -227,13 +227,28 @@ try {
         await view.locator('[data-testid=live-model-cancel]').click()
       }
       await choose(primary)
-      await page.evaluate((id) => window.orgai.runs.send({ runId: id, text: 'A long reply to interrupt. '.repeat(200) }), run.id)
+      // The token holds the mock's turn running until the interrupt below releases it. Without it the turn ended after a mock
+      // delay of its own and a slow renderer pressed "Interrupt and switch" on a run that had gone idle in between
+      // ("The session state changed (running to idle)", the picker stays open: macOS CI 2026-11-24).
+      await page.evaluate((id) => window.orgai.runs.send({ runId: id, text: `${'A long reply to interrupt. '.repeat(200)} [mock:model-switch-hold]` }), run.id)
       const interrupt = view.locator('[data-testid=live-model-apply]')
       await interrupt.filter({ hasText: 'Interrupt and switch' }).waitFor()
       await interrupt.focus()
       await view.keyboard.press('Enter')
       await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id)
-      await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden' })
+      // The switch closes the picker once the run is idle and main has applied the model (a bounded wait of 100 reads inside
+      // performModelSwitch). If it stays open say why (the line it shows, the run's status and selection), so a slow runner's
+      // failure is a finding and not a bare timeout (macOS CI 2026-11-24: 30 s, no reason kept).
+      await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden', timeout: t(60_000) }).catch(async (error) => {
+        const why = await view.evaluate(() => ({
+          error: document.querySelector('[data-testid=live-model-error]')?.textContent ?? null,
+          pending: document.querySelector('[data-testid=live-model-pending]')?.textContent ?? null,
+          busy: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('aria-busy') ?? null,
+          status: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('data-run-status') ?? null
+        })).catch(() => ({}))
+        log(`busy interrupt: the picker stayed open: ${JSON.stringify(why)}`)
+        throw error
+      })
       check(await view.locator('[data-testid=live-model-change]').evaluate((el) => el === document.activeElement), 'busy interrupt then Apply restores keyboard focus')
       check(await view.locator('.composer textarea').inputValue() === 'Keep this unsent message while changing models.', 'busy interrupt retains unsent draft')
     }

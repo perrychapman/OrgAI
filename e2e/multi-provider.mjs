@@ -10,7 +10,7 @@
 // Static checks run at 1024x640 and 1600x1000 in dark and light, with no page scroll.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, sleep, teamPanelTab, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, showFinishedAgents, sleep, teamPanelTab, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const M = 'E2E multi mock (orgai test)'
@@ -161,6 +161,8 @@ try {
   await ta.fill('Bridged check [mock:bridged]')
   await page.locator('.composer .btn.primary').click()
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
+  // The report folds into a done group 6 s after it ended; the tag is read from its node, so keep the node (a standing state).
+  await showFinishedAgents(page)
   const tag = page.locator(`.agent-node [data-testid=agent-connection][data-connection="${proxyId}"]`).first()
   await tag.waitFor({ timeout: t(30_000) }).catch(() => {})
   check((await tag.count()) === 1 && ((await tag.textContent()) ?? '').includes(PROXY), 'the bridged agent shows its provider tag on the canvas')

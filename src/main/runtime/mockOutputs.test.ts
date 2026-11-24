@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { OutputProduceInput, OutputRegisterInput, RunEvent, RunOutput } from '@shared/types'
+import type { OutputProduceInput, OutputRegisterInput, PermissionDecision, RunEvent, RunOutput } from '@shared/types'
 import { RunManager } from './runManager'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
@@ -27,7 +27,10 @@ import {
   MOCK_OUTPUT_LARGE_MAP,
   MOCK_OUTPUT_SEQUENCE,
   MOCK_OUTPUT_SVG,
+  MOCK_REVISE_START,
   MOCK_REVISE_UNPARSED,
+  MOCK_REVISE_UNREADABLE,
+  REVISE_HOLD_TOKEN,
   OUTPUTS_ALL_TOKEN,
   OUTPUTS_V2_TOKEN,
   isReviseMessage,
@@ -267,6 +270,60 @@ describe('mock Outputs 2 helpers', () => {
     await session.send(`The user wrote (request ${ID}):\n  but no output line`)
     await vi.waitFor(() => expect(rootTexts(ctx)).toContain(MOCK_REVISE_UNPARSED), { timeout: 5000 })
     expect(outputs.calls).toEqual([])
+    await session.stop()
+    await session.finished
+  })
+
+  it('[mock:revise-hold] asks one permission card first and revises only after it is answered; stop releases it', async () => {
+    const hold = async (answerIt: boolean) => {
+      const dir = tempProject()
+      const outputs = fakeOutputs(dir)
+      let answer: (() => void) | undefined
+      let holding = false
+      // The default script's own Edit is allowed at once; only the card the hold asks for (after `holding`) stays open.
+      const requestPermission = vi.fn((_req: { toolName: string }) => (holding ? new Promise<PermissionDecision>((resolve) => { answer = () => resolve({ behavior: 'allow' as const }) }) : Promise.resolve({ behavior: 'allow' as const })))
+      const ctx = fakeCtx({ autoContinue: false, prompt: 'Write the deliverables', project: project({ path: dir }), outputs, requestPermission: requestPermission as never })
+      const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+      const idles = (): number => ctx.events.filter((e) => e.type === 'run.status' && e.status === 'idle').length
+      await vi.waitFor(() => expect(idles()).toBeGreaterThan(0), { timeout: 5000 })
+      holding = true
+      const before = requestPermission.mock.calls.length
+      const text = composeReviseMessage({ requestId: ID, output: output(), version: 2, scope: 'whole', instruction: `Tighten it. ${REVISE_HOLD_TOKEN}` })
+      await session.send(text)
+      await vi.waitFor(() => expect(requestPermission.mock.calls.length).toBe(before + 1), { timeout: 5000 })
+      expect(requestPermission.mock.calls.at(-1)?.[0]).toMatchObject({ toolName: 'Bash' })
+      // Long against the mock's own steps (delayMs 0): an unheld mock has long since answered.
+      await new Promise((r) => setTimeout(r, 250))
+      expect(rootTexts(ctx)).toContain(MOCK_REVISE_START)
+      const answered = (): boolean => rootBlocks(ctx).some((b) => b.kind === 'tool_result' && b.content === 'ok')
+      expect(answered()).toBe(false)
+      expect(ctx.events.filter((e) => e.type === 'run.status').at(-1)).toMatchObject({ status: 'running' })
+      if (answerIt) {
+        answer?.()
+        await vi.waitFor(() => expect(answered()).toBe(true), { timeout: 5000 })
+        // Once released the revise goes on (the fake read returns nothing to revise, which the mock says).
+        await vi.waitFor(() => expect(rootTexts(ctx)).toContain(MOCK_REVISE_UNREADABLE), { timeout: 5000 })
+      }
+      await session.stop()
+      await session.finished
+      return rootTexts(ctx)
+    }
+    await hold(true)
+    // Stopped while held: the card never gets an answer and the revise never goes on.
+    expect(await hold(false)).not.toContain(MOCK_REVISE_UNREADABLE)
+  })
+
+  it('without [mock:revise-hold] the mock asks for no card', async () => {
+    const dir = tempProject()
+    const requestPermission = vi.fn(async () => ({ behavior: 'allow' as const }))
+    const ctx = fakeCtx({ autoContinue: false, prompt: 'Write the deliverables', project: project({ path: dir }), outputs: fakeOutputs(dir), requestPermission })
+    const session = await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)
+    const idles = (): number => ctx.events.filter((e) => e.type === 'run.status' && e.status === 'idle').length
+    await vi.waitFor(() => expect(idles()).toBeGreaterThan(0), { timeout: 5000 })
+    const before = requestPermission.mock.calls.length
+    await session.send(composeReviseMessage({ requestId: ID, output: output(), version: 2, scope: 'whole', instruction: 'Tighten it.' }))
+    await vi.waitFor(() => expect(rootTexts(ctx)).toContain(MOCK_REVISE_UNREADABLE), { timeout: 5000 })
+    expect(requestPermission.mock.calls.length).toBe(before)
     await session.stop()
     await session.finished
   })
