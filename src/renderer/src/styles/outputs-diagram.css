@@ -149,12 +149,14 @@
   flex: 1 1 320px;
   min-height: 200px;
 }
+/* The editor yields before the drawing does (at 1024x640 the panel has about 330 px for both): 200 px when there is room, 88 px at least. */
 .diagram-viewer[data-context='detail'] .diagram-pane-source {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
 }
 .diagram-viewer[data-context='detail'] .diagram-source {
   height: 200px;
-  flex: 0 0 auto;
+  flex: 0 1 200px;
+  min-height: 88px;
 }
 /* Larger view: Split stacks 60 / 40, or puts the editor on the left at 40% from 900 px of width. */
 .diagram-viewer[data-context='dialog'] .diagram-body[data-view='split'] .diagram-pane-view {

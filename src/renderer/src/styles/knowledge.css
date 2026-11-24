@@ -10,7 +10,9 @@
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) var(--side-panel-w, 360px);
+  /* The detail column yields with the main area (cqi of .main, as the run view does): 360 px when there is room, 280 px
+     when the sidebar is open at 1024, so the list never drops to a sliver. A dragged width (--side-panel-w) still wins. */
+  grid-template-columns: auto minmax(0, 1fr) var(--side-panel-w, clamp(280px, 38cqi, 360px));
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
     'toolbar toolbar toolbar'
@@ -214,7 +216,7 @@
 /* ---------- Filter band (Graph view, docs/design/knowledge-graph-2.md section 1.2) ---------- */
 /* The column becomes a band above the canvas: row 1 search and switches, row 2 the kind chips (two rows, then they scroll). */
 .knowledge[data-view='graph'] {
-  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, 360px);
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, clamp(280px, 38cqi, 360px));
   grid-template-areas:
     'toolbar toolbar'
     'filters side'
@@ -410,6 +412,12 @@
 }
 .knowledge-row-head .badge {
   flex: none;
+}
+/* A narrow list gives the name the room: the origin chip goes (the line below already says who recorded it). */
+@container knowledge (max-width: 860px) {
+  .knowledge-row-head .badge ~ .badge {
+    display: none;
+  }
 }
 .knowledge-row-excerpt {
   font-size: var(--text-small);
