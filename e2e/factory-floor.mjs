@@ -60,6 +60,13 @@ await page.addInitScript(() => {
   document.addEventListener('securitypolicyviolation', (e) => window.__cspViolations.push(`${e.violatedDirective} ${e.blockedURI}`))
 })
 await page.waitForSelector('.sidebar', { timeout: 60_000 })
+// E2E_CPU_THROTTLE=3 slows the renderer's main thread three times. The software GPU process is not slowed by it: to starve
+// that one too, run the script under `start /affinity 5 /wait /b node e2e/factory-floor.mjs` on Windows (two cores).
+if (Number(process.env.E2E_CPU_THROTTLE) > 1) {
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) })
+  log('cpu throttle', process.env.E2E_CPU_THROTTLE)
+}
 await page.evaluate(() => {
   for (const k of Object.keys(localStorage).filter((x) => x.startsWith('orgai.'))) localStorage.removeItem(k)
   window.__cspViolations = []
