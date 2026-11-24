@@ -3,7 +3,7 @@
 // the e2e data dir, because main refuses a clone inside OrgAI's own data folder (that refusal is driven below too).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, finish, findProject, gitSafe, gotoProjects, launch, log, openProjectForm, screenshot, sleep, pickSetup } from './lib.mjs'
+import { DATA_DIR, TMP, check, checkRadio, finish, findProject, gitSafe, gotoProjects, launch, log, openProjectForm, screenshot, sleep, pickSetup } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 delete process.env.ORGAI_MOCK_GH
@@ -30,8 +30,8 @@ async function size(w, h, theme) {
 async function openGithub() {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-  await form.getByRole('radio', { name: 'From GitHub', exact: true }).check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+  await checkRadio(form.getByRole('radio', { name: 'From GitHub', exact: true }), 'the From GitHub choice')
   await tid('repo-source').waitFor({ timeout: 10_000 })
   return form
 }
@@ -117,7 +117,7 @@ try {
   {
     await gotoProjects(page)
     const form = await openProjectForm(page)
-    await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
+    await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
     const seg = form.locator('.seg input[type=radio]')
     check((await seg.count()) === 3, 'three segments')
     await form.getByRole('radio', { name: 'New idea', exact: true }).focus()
@@ -520,8 +520,8 @@ try {
   {
     await gotoProjects(page)
     const form = await openProjectForm(page)
-    await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-    await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+    await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+    await checkRadio(form.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
     const folder = form.locator('input[placeholder*="repo"]')
     await folder.fill('git@github.com:octocat/hello-world.git')
     await tid('repo-bridge').waitFor({ timeout: 5_000 })
@@ -537,7 +537,7 @@ try {
     check((await tid('repo-source').inputValue()) === 'octocat/hello-world', 'the source is filled in')
     check((await activeTestId()) === 'repo-source', 'focus lands on Repository', String(await activeTestId()))
     check(await form.getByRole('radio', { name: 'From GitHub', exact: true }).isChecked(), 'the segment switched')
-    await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+    await checkRadio(form.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
     await folder.fill(base)
     await sleep(600)
     check((await tid('repo-bridge').count()) === 0, 'a real path offers nothing')

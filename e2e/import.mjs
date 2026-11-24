@@ -3,7 +3,7 @@
 // "Import agents" and "Export to repo" actions, and checks the repository stays untouched except for the export.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProjectForm, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, checkRadio, cleanup, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProjectForm, removeFixture, sleep, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E import (orgai test)'
@@ -22,8 +22,8 @@ try {
   if (size) await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [Number(size[1]), Number(size[2])])
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-  await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+  await checkRadio(form.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
   await form.locator('input[placeholder*="repo"]').fill(repo)
   await form.locator('input[placeholder*="Defaults to the folder name"]').fill(NAME)
   const found = form.locator('[data-testid=agents-found]')

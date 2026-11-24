@@ -4,7 +4,7 @@
 // Revoke, the stale-digest path, the 'changed' state, the "Not used" ignored-rules group and the keyboard path.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, finish, findProject, gotoProjects, launch, openProjectForm, projectTab, runRecordsDir, screenshot, sleep, t } from './lib.mjs'
+import { DATA_DIR, TMP, check, checkRadio, finish, findProject, gotoProjects, launch, openProjectForm, projectTab, runRecordsDir, screenshot, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 delete process.env.ORGAI_MOCK_GH
@@ -119,8 +119,8 @@ try {
   // ---- Clone and create ----
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-  await form.getByRole('radio', { name: 'From GitHub', exact: true }).check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+  await checkRadio(form.getByRole('radio', { name: 'From GitHub', exact: true }), 'the From GitHub choice')
   await tid('repo-source').fill('mock-org/with-agents')
   await tid('repo-parent').fill(base)
   await tid('repo-folder').fill(FOLDER)

@@ -5,7 +5,7 @@
 // The full flow runs at 1600x1000 dark; layout checks repeat at the other size / theme combinations.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, deleteProject, findProject, finish, gotoProjects, launch, openAppSettings, openProject, openProjectForm, openTeam, projectTab, sleep, windowShift, pickSetup, t } from './lib.mjs'
+import { TMP, check, checkRadio, deleteProject, findProject, finish, gotoProjects, launch, openAppSettings, openProject, openProjectForm, openTeam, projectTab, sleep, windowShift, pickSetup, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-eng2-'))
@@ -70,7 +70,7 @@ const inView = (sel) =>
 async function createEngagement({ name, dir, template = false }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
   if (template) {
