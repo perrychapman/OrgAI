@@ -109,6 +109,10 @@ h3 {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+/* A box that scrolls on both axes has a corner; unstyled it is a white square in the dark theme. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 /* Visible keyboard focus on everything interactive. */
 :focus-visible {

@@ -53,7 +53,6 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       waitingSince={question.createdAt}
       helper={
         <>
-          {clipped && <span className="question-full">{question.question} </span>}
           {who} is waiting for your answer. {question.allowMultiple ? 'Pick one or more.' : 'Pick one.'}
         </>
       }
@@ -64,6 +63,12 @@ export default function QuestionCard({ runId, question, who, onAnswer }: Props):
       }
     >
       <div className="stack-3">
+        {/* The title clips a long question; its whole text leads the body, above the options it is about. */}
+        {clipped && (
+          <p className="question-full" data-testid="question-full">
+            {question.question}
+          </p>
+        )}
         <div className="question-options" role={question.allowMultiple ? 'group' : 'radiogroup'} aria-label={oneLine(question.question, 300)}>
           {question.options.map((o) => {
             const checked = selected.includes(o.label)

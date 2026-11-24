@@ -66,8 +66,12 @@
   appearance: none;
   border: 0;
   background: transparent;
-  padding: var(--space-0h) var(--space-1);
-  margin: calc(var(--space-0h) * -1) calc(var(--space-1) * -1);
+  /* A 24 px+ target (the text is 18 px tall); the negative margin keeps the section header's height. */
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-sm);
+  padding: 0 var(--space-1);
+  margin: calc((var(--control-sm) - var(--text-small-lh)) / -2) calc(var(--space-1) * -1);
   border-radius: var(--radius-sm);
   color: var(--accent-text);
   font: inherit;

@@ -645,7 +645,8 @@
   display: block;
   max-height: none;
 }
-.frame-tray[data-compact='true'] .decision-card[data-inline='true'][data-expanded='false'] .decision-helper {
+.frame-tray[data-compact='true'] .decision-card[data-inline='true'][data-expanded='false'] .decision-helper,
+.frame-tray[data-compact='true'] .decision-card[data-inline='true'][data-expanded='false'] .question-full {
   display: none;
 }
 .frame-tray[data-compact='true'] .decision-card[data-inline='true'][data-expanded='true'] .decision-helper {
@@ -656,7 +657,8 @@
     display: block;
     max-height: none;
   }
-  .decision-card[data-inline='true'][data-expanded='false'] .decision-helper {
+  .decision-card[data-inline='true'][data-expanded='false'] .decision-helper,
+  .decision-card[data-inline='true'][data-expanded='false'] .question-full {
     display: none;
   }
   .decision-card[data-inline='true'][data-expanded='true'] .decision-helper {
@@ -691,6 +693,11 @@
   .decision-card[data-inline='true'] .decision-body {
     min-height: 80px;
   }
+}
+/* A question's options are the action: a taller body than a permission's, so six options and the note field are not
+   cut mid-field by the cap (the scroller stays for longer lists). */
+.decision-card.kind-question .decision-body {
+  max-height: min(55cqh, 480px);
 }
 /* A question keeps its whole text in the title: up to two lines. */
 .decision-card.kind-question .decision-title {

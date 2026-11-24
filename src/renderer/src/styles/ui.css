@@ -228,6 +228,16 @@
   background: var(--accent);
   border-color: var(--accent);
 }
+/* The drawn track is 20 px tall; the pointer target around it is 24 px (invisible, the track is not redrawn). */
+.switch::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 24px;
+  margin-top: -12px;
+}
 .switch-thumb {
   position: absolute;
   top: 50%;

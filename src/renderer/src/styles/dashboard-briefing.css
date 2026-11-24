@@ -57,6 +57,14 @@
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
+/* A short window (1024x640): the first-launch greeting takes a third of the height, so the steps and their Back and
+   Continue buttons sat half under the bottom edge. One size down keeps it the page's largest line. */
+@media (max-height: 720px) {
+  .dash-salutation {
+    font-size: var(--text-display);
+    line-height: var(--text-display-lh);
+  }
+}
 .dash-name-add-row {
   display: flex;
   align-items: center;
