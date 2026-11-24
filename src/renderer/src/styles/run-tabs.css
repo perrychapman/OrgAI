@@ -112,7 +112,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-1h);
-  padding: 0 var(--space-2);
+  /* The close button is drawn over the tab's right end (selected and hovered tabs): the title ends before it, so its ellipsis shows. */
+  padding: 0 calc(var(--control-sm) + var(--space-1)) 0 var(--space-2);
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -149,12 +150,12 @@
 .run-tab-close {
   position: absolute;
   top: 50%;
-  right: var(--space-1);
+  right: var(--space-0h);
   transform: translateY(-50%);
   display: inline-grid;
   place-items: center;
-  width: var(--icon-lg);
-  height: var(--icon-lg);
+  width: var(--control-sm);
+  height: var(--control-sm);
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);

@@ -60,7 +60,7 @@
   white-space: nowrap;
 }
 /* The toolbar row keeps room for status, cost and "more": the canvas chrome next to it gives way first (it clips). */
-@container frame (min-width: 680px) {
+@container frame (min-width: 740px) {
   .frame-toolbar-dense > .run-meta {
     flex: 1 0 calc(var(--space-16) * 4);
   }
