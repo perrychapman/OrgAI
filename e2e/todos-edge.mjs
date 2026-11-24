@@ -5,7 +5,7 @@
 // and a keyboard-only pass. Waits on conditions, not fixed sleeps.
 import fs from 'node:fs'
 import path from 'node:path'
-import { DATA_DIR, check, createProject, deleteProject, endSession, finish, launch, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, check, createProject, deleteProject, endSession, finish, launch, makeFixtureRepo, openProject, removeFixture, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -20,7 +20,7 @@ page.setDefaultTimeout(10_000)
 
 const T = (id) => page.locator(`[data-testid=${id}]`)
 async function until(fn, ms = 15_000, every = 200) {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   for (;;) {
     const v = await fn().catch(() => null)
     if (v) return v

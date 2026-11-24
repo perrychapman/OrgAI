@@ -4,7 +4,7 @@
 // Send the run is linked to the item with a run link and the item stays open), the same on Chat, an item the assistant adds
 // (`[mock:todo]`, source label and link, no toast) and persistence (restart on the same data dir keeps both lists and
 // statuses). Waits on conditions, not fixed sleeps.
-import { check, createProject, endSession, finish, launch, log, makeFixtureRepo, openProject, relaunch, removeFixture, sleep } from './lib.mjs'
+import { check, createProject, endSession, finish, launch, log, makeFixtureRepo, openProject, relaunch, removeFixture, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -21,7 +21,7 @@ const T = (id) => page.locator(`[data-testid=${id}]`)
 const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await page.locator(sel).first().isVisible())
 /** Poll `fn` until it returns a truthy value (returned) or the deadline passes (null). */
 async function until(fn, ms = 20_000, every = 250) {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   for (;;) {
     const v = await fn().catch(() => null)
     if (v) return v
