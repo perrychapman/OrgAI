@@ -135,10 +135,11 @@ function ThemeList({ close }: { close: () => void }): ReactElement {
  * group writes it. The Live view is the one place that mounts it (scenes are Live only). Replaces the presentation
  * radio group in CanvasStyleButton's popover (pass `withPresentation={false}` there).
  */
-export function CanvasThemeMenu({ testId = 'canvas-theme-menu', triggerTestId = 'canvas-theme-trigger' }: { testId?: string; triggerTestId?: string }): ReactElement {
+export function CanvasThemeMenu({ testId = 'canvas-theme-menu', triggerTestId = 'canvas-theme-trigger', compact = false }: { testId?: string; triggerTestId?: string; compact?: boolean }): ReactElement {
   const canvas = useCanvasOptions()
   const themes = useMemo(canvasThemes, [])
   const current = themes.find((t) => t.value === (canvas.presentation ?? 'graph')) ?? themes[0]
+  // The scene switch of the run toolbar: the swatch and the scene's name (the name drops out in a narrow row, but stays in the accessible name).
   return (
     <Popover
       label="Canvas theme"
@@ -146,12 +147,12 @@ export function CanvasThemeMenu({ testId = 'canvas-theme-menu', triggerTestId = 
       placement="bottom-start"
       className="canvas-theme-panel"
       triggerClassName="canvas-chrome-btn canvas-theme-trigger"
-      triggerTitle="Canvas theme"
+      triggerLabel={`Canvas theme: ${current.name}`}
+      triggerTitle={`Canvas theme: ${current.name}`}
       trigger={
         <>
           <span className="canvas-theme-swatch" aria-hidden="true" style={swatchStyle(current.swatch)} />
-          <span className="canvas-theme-label">Theme</span>
-          <span className="canvas-theme-current">{current.name}</span>
+          {!compact && <span className="canvas-theme-current">{current.name}</span>}
           <Icon icon={ChevronDown} size="sm" />
         </>
       }

@@ -605,11 +605,35 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
  * the run header is up, before the agents can finish. The choice is the renderer's own (localStorage orgai.collapseFinished).
  */
 export async function showFinishedAgents(page, show = true) {
-  const fold = page.getByRole('switch', { name: 'Hide finished agents' })
-  await fold.waitFor({ state: 'attached', timeout: t(15_000) })
+  // The switch lives in the run toolbar's View menu and appears once the run has a second agent: open the menu until it is there.
   const want = show ? 'false' : 'true'
-  if ((await fold.getAttribute('aria-checked')) !== want) await fold.click()
-  await until(async () => (await fold.getAttribute('aria-checked')) === want, 5000)
+  const done = await until(async () => {
+    const panel = await openViewMenu(page)
+    const fold = panel.getByRole('switch', { name: 'Hide finished agents' })
+    if ((await fold.count()) === 0) {
+      await page.keyboard.press('Escape')
+      return false
+    }
+    if ((await fold.getAttribute('aria-checked')) !== want) await fold.click()
+    return (await fold.getAttribute('aria-checked')) === want
+  }, 15_000, 400)
+  await page.keyboard.press('Escape')
+  await until(async () => (await page.locator('.run-body [data-testid=canvas-style-button]').getAttribute('aria-expanded')) !== 'true', 3000)
+  if (!done) throw new Error('showFinishedAgents: the Hide finished agents switch did not reach the wanted state')
+}
+
+/**
+ * Open the run view's View menu, the canvas toolbar's one popover for the options it has no room for in the row: Hide finished
+ * agents, the Show filter and zoom steps in a narrow frame, the layout toggle while the dock is hidden, Canvas style and the
+ * legend. Its trigger keeps the test id `canvas-style-button`, its panel `canvas-style-popover`. Idempotent; returns the panel.
+ */
+export async function openViewMenu(page) {
+  const trigger = page.locator('.run-body [data-testid=canvas-style-button]')
+  await trigger.waitFor({ state: 'visible', timeout: t(5000) })
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click()
+  const panel = page.locator('.run-body [data-testid=canvas-style-popover]')
+  await panel.waitFor({ state: 'visible', timeout: t(5000) })
+  return panel
 }
 
 /** The project as the main process stores it, looked up by name. */

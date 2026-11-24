@@ -632,9 +632,7 @@ try {
   // report ended about as long ago as the steps since (Team tab, reload, reopen) take: a quick machine opened the run inside
   // the grace period and saw the node, a slower one (macOS CI) saw only the group, so this check depended on speed. Turn the
   // fold off, as a user looking for a named agent would, and the node is there at any speed.
-  const foldSwitch = page.getByRole('switch', { name: 'Hide finished agents' })
-  await foldSwitch.waitFor({ timeout: t(15_000) })
-  if (await foldSwitch.isChecked()) await foldSwitch.click()
+  await showFinishedAgents(page)
   await page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: t(20_000) })
   check(true, 'after a reload the finished run still shows Roster Tester by name')
   await shot('org-change-reloaded')

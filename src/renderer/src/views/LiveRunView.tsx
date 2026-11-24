@@ -20,7 +20,8 @@ import { factoryAgent } from '../lib/factory/agentView'
 import { officeAgentView } from '../lib/office/agentView'
 import { runRoleColor } from '../lib/runRoster'
 import { withOfficeDepartments } from '../lib/office/departments'
-import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
+import { CanvasViewMenu } from '../components/canvas/CanvasViewMenu'
+import { planToolbar, type ToolbarInput } from '../lib/canvasToolbar'
 import { CanvasThemeMenu } from '../components/canvas/CanvasThemeMenu'
 import { AgentFilter } from '../components/canvas/AgentFilter'
 import { PlanStrip } from '../components/canvas/PlanStrip'
@@ -47,7 +48,7 @@ import ChatStartPage from '../components/assistants/ChatStartPage'
 import McpAssistantStartPage from '../components/assistants/McpAssistantStartPage'
 import SkillAssistantStartPage from '../components/assistants/SkillAssistantStartPage'
 import McpInstallCard from '../components/McpInstallCard'
-import { Bell, CircleCheck, CircleHelp, Maximize, MessageSquare, Network, Search, TriangleAlert, ZoomIn, ZoomOut } from 'lucide-react'
+import { Maximize, MessageSquare, Network, Search, ZoomIn, ZoomOut } from 'lucide-react'
 import { Banner } from '../components/ui/Banner'
 import { IconButton } from '../components/ui/IconButton'
 import PermissionCard from '../components/PermissionCard'
@@ -56,9 +57,6 @@ import DecisionTray, { type DecisionItem } from '../components/DecisionTray'
 import { oneLine, permissionTitle, proposalKindLabel } from '../lib/decisionTitle'
 import { projectKindOf } from '@shared/defaults'
 import { defaultDecisionIndex } from '../lib/needsYou'
-import { Icon } from '../components/ui/Icon'
-import { Popover } from '../components/ui/Popover'
-import { Switch } from '../components/ui/Switch'
 import RunActions from '../components/RunActions'
 import RunMeta from '../components/RunMeta'
 import ProposalNextNote from '../components/proposals/ProposalNextNote'
@@ -982,6 +980,22 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const reducedRef = useRef(reducedMotion)
   const refitPending = useRef(false)
   reducedRef.current = reducedMotion
+  // The frame's width in 8 px steps decides which form each toolbar control takes (lib/canvasToolbar.ts). Read before the
+  // first paint, so the toolbar never draws one form and then another.
+  const [frameWidth, setFrameWidth] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const el = canvasRef.current
+    if (!el) return undefined
+    const read = (w: number): void => setFrameWidth(Math.round(w / 8) * 8)
+    read(el.getBoundingClientRect().width)
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.borderBoxSize?.[0]
+      read(box ? box.inlineSize : el.getBoundingClientRect().width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   useEffect(() => {
     const el = canvasRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
@@ -1282,6 +1296,35 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const orgChangeRun = isOrgChangeRun(run.summary)
   const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={stageThinking} />
 
+  // Which toolbar controls show, and in what form (lib/canvasToolbar.ts); everything not drawn in the row is in the View menu.
+  const toolbarInput: ToolbarInput = {
+    scene: isScenePresentation(options.presentation),
+    conversation,
+    agentView: !!focusAgentId,
+    agentCount: counts.all,
+    dockClosed,
+    earlierToLoad,
+    canFold: agents.length > 1 || chain.earlier.length > 0,
+    frameWidth
+  }
+  const toolbar = planToolbar(toolbarInput)
+  const loadEarlier = (): void => {
+    if (loadingEarlier) return
+    setLoadingEarlier(true)
+    void loadEarlierSessions(runId).finally(() => {
+      setLoadingEarlier(false)
+      requestAnimationFrame(() => {
+        if (factoryModeRef.current) { focusFactoryEntry(); return }
+        const person = bodyRef.current?.querySelector<HTMLElement>('[data-office-worker-id]')
+        if (person) { person.focus(); return }
+        const directoryTarget = bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')
+        const directory = directoryTarget?.closest('details')
+        if (directory) directory.open = true
+        directoryTarget?.focus()
+      })
+    })
+  }
+
   return (
     <div className="run-view" data-kind={projectKindOf(project) === 'engagement' ? 'engagement' : undefined}>
       {setupDone && (
@@ -1311,76 +1354,64 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         <CanvasFrame frameRef={canvasRef} announcement={arrival}>
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
-            {!conversation && !focusAgentId && (
+            {toolbar.scene !== 'none' && (
               <div className="canvas-chrome-start">
-                <CanvasThemeMenu />
-                {!isScenePresentation(options.presentation) && (
-                  <>
-                    <Button size="sm" variant="ghost" icon={Search} testId="find-agent" onClick={() => openAgentFinder()}>
-                      Find an agent
-                    </Button>
-                    {counts.all > 1 && <AgentFilter value={agentFilter} onChange={changeAgentFilter} counts={counts} />}
-                  </>
-                )}
+                <CanvasThemeMenu compact={toolbar.scene === 'compact'} />
+                {toolbar.find === 'inline' && <IconButton icon={Search} label="Find an agent" size="sm" testId="find-agent" onClick={() => openAgentFinder()} />}
+                {toolbar.filter === 'inline' && <AgentFilter value={agentFilter} onChange={changeAgentFilter} counts={counts} />}
               </div>
             )}
             <div className="frame-toolbar-end">
-              {!conversation && !isScenePresentation(options.presentation) && (agents.length > 1 || chain.earlier.length > 0) && (
-                <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
-                  <Switch
-                    checked={collapseFinished}
-                    onChange={toggleCollapse}
-                    label="Hide finished agents"
-                    title={collapseFinished && finishedCount ? `Hide finished agents (${finishedCount} hidden)` : 'Hide finished agents'}
+              {toolbar.zoom !== 'none' && <CanvasZoom steps={toolbar.zoom === 'steps'} />}
+              {toolbar.loadEarlier && (
+                <Button size="sm" loading={loadingEarlier} onClick={loadEarlier}>Load earlier sessions ({earlierToLoad})</Button>
+              )}
+              {toolbar.view !== 'none' && (
+                <CanvasViewMenu
+                  plan={toolbar}
+                  nodeStyle={options.nodeStyle}
+                  counts={counts}
+                  agentFilter={agentFilter}
+                  onAgentFilter={changeAgentFilter}
+                  onFind={() => openAgentFinder()}
+                  fold={{ checked: collapseFinished, hidden: finishedCount, onChange: toggleCollapse }}
+                  zoom={{ onOut: () => zoomOutCanvas({ zoomOut }, reducedMotion), onIn: () => zoomInCanvas({ zoomIn }, reducedMotion) }}
+                  layout={{ conversation, onToggle: toggleRunLayout }}
+                />
+              )}
+              {toolbar.dockShow !== 'none' && (
+                <>
+                  <span className="toolbar-sep" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="btn sm dock-show"
+                    data-testid="dock-show"
+                    data-unread={dockUnread ? 'true' : undefined}
+                    data-form={toolbar.dockShow}
+                    aria-expanded={false}
+                    aria-label={toolbar.dockShow === 'icon' ? (dockUnread ? 'Conversation (new)' : 'Conversation') : undefined}
+                    title={toolbar.dockShow === 'icon' ? 'Show the conversation' : undefined}
+                    onClick={(e) => showDock(e.detail === 0)}
+                  >
+                    {dockUnread && <span className="dock-unread motion-breathe" aria-hidden="true" />}
+                    <MessageSquare size={14} aria-hidden="true" />
+                    {toolbar.dockShow === 'label' && 'Conversation'}
+                    {toolbar.dockShow === 'label' && dockUnread && <span className="sr-only"> (new)</span>}
+                  </button>
+                </>
+              )}
+              {toolbar.layoutToggle === 'inline' && (
+                <>
+                  {toolbar.dockShow === 'none' && (toolbar.view !== 'none' || toolbar.zoom !== 'none') && <span className="toolbar-sep" aria-hidden="true" />}
+                  <IconButton
+                    icon={conversation ? Network : MessageSquare}
+                    label={conversation ? 'Show agents' : 'Show conversation'}
+                    size="sm"
+                    testId="run-layout-toggle"
+                    onClick={toggleRunLayout}
                   />
-                  <span className="fold-label" aria-hidden="true">
-                    <span className="fold-long">Hide finished agents</span>
-                    <span className="fold-short">Hide finished</span>
-                    {collapseFinished && finishedCount ? ` (${finishedCount})` : ''}
-                  </span>
-                </span>
+                </>
               )}
-              {!conversation && (isScenePresentation(options.presentation) ? <CanvasStyleButton testId="canvas-style-button" withPresentation={false} /> : <CanvasTools />)}
-              {!conversation && isScenePresentation(options.presentation) && earlierToLoad > 0 && (
-                <Button size="sm" loading={loadingEarlier} onClick={() => {
-                  if (loadingEarlier) return
-                  setLoadingEarlier(true)
-                  void loadEarlierSessions(runId).finally(() => {
-                    setLoadingEarlier(false)
-                    requestAnimationFrame(() => {
-                      if (factoryModeRef.current) { focusFactoryEntry(); return }
-                      const person = bodyRef.current?.querySelector<HTMLElement>('[data-office-worker-id]')
-                      if (person) { person.focus(); return }
-                      const directoryTarget = bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')
-                      const directory = directoryTarget?.closest('details')
-                      if (directory) directory.open = true
-                      directoryTarget?.focus()
-                    })
-                  })
-                }}>Load earlier sessions ({earlierToLoad})</Button>
-              )}
-              {dockClosed && (
-                <button
-                  type="button"
-                  className="btn sm dock-show"
-                  data-testid="dock-show"
-                  data-unread={dockUnread ? 'true' : undefined}
-                  aria-expanded={false}
-                  onClick={(e) => showDock(e.detail === 0)}
-                >
-                  {dockUnread && <span className="dock-unread motion-breathe" aria-hidden="true" />}
-                  <MessageSquare size={14} aria-hidden="true" />
-                  Conversation
-                  {dockUnread && <span className="sr-only"> (new)</span>}
-                </button>
-              )}
-              <IconButton
-                icon={conversation ? Network : MessageSquare}
-                label={conversation ? 'Show agents' : 'Show conversation'}
-                size="sm"
-                testId="run-layout-toggle"
-                onClick={toggleRunLayout}
-              />
             </div>
           </FrameToolbar>
           <FrameStage>
@@ -1562,81 +1593,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   )
 }
 
-/** Zoom out, zoom in, fit and the legend: the canvas controls, in the toolbar so nothing sits on the canvas. */
-function CanvasTools(): ReactElement {
+/** Zoom out, zoom in and Fit (zoom out and in only when `steps`; otherwise the View menu has them): in the toolbar so nothing sits on the canvas. */
+function CanvasZoom({ steps }: { steps: boolean }): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow()
   const reduced = useReducedMotion()
-  const options = useCanvasOptions()
-  const station = options.nodeStyle === 'station'
   const stageShown = (): boolean => (document.querySelector('.frame-stage')?.clientHeight ?? 1) >= 8
   return (
     <span className="canvas-tools">
       <span className="zoom-group" role="group" aria-label="Canvas zoom">
-        <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => zoomOutCanvas({ zoomOut }, reduced)} />
-        <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => zoomInCanvas({ zoomIn }, reduced)} />
+        {steps && <IconButton icon={ZoomOut} label="Zoom out" size="sm" onClick={() => zoomOutCanvas({ zoomOut }, reduced)} />}
+        {steps && <IconButton icon={ZoomIn} label="Zoom in" size="sm" onClick={() => zoomInCanvas({ zoomIn }, reduced)} />}
         <IconButton icon={Maximize} label="Fit to view" size="sm" onClick={() => stageShown() && fitCanvas({ fitView }, reduced)} />
       </span>
-      <CanvasStyleButton testId="canvas-style-button" withPresentation={false} />
-      <Popover
-        label="Canvas legend"
-        placement="bottom-end"
-        triggerClassName="icon-btn size-sm"
-        triggerLabel="Canvas legend"
-        trigger={<Icon icon={CircleHelp} size="sm" />}
-        testId="canvas-legend"
-        triggerTestId="canvas-legend-trigger"
-      >
-        <ul className="legend-list">
-          <li>
-            <span className="legend-shape">
-              <span className="legend-ring" />
-            </span>
-            Working
-          </li>
-          <li>
-            <span className="legend-shape legend-warn">
-              <Icon icon={Bell} size="sm" />
-            </span>
-            Needs you
-          </li>
-          <li>
-            <span className="legend-shape legend-ok">
-              {station ? <span className="legend-dot" aria-hidden="true" /> : <Icon icon={CircleCheck} size="sm" />}
-            </span>
-            Finished
-          </li>
-          <li>
-            <span className="legend-shape legend-bad">
-              <Icon icon={TriangleAlert} size="sm" />
-            </span>
-            Failed
-          </li>
-          <li>
-            <span className="legend-shape">
-              <span className="legend-selected" />
-            </span>
-            Selected
-          </li>
-          <li>
-            <span className="legend-shape legend-wide">
-              <span className="legend-folded" data-style={options.nodeStyle} aria-hidden="true">3 done</span>
-            </span>
-            Folded finished agents
-          </li>
-          <li>
-            <span className="legend-shape legend-wide">
-              <span className={station ? 'legend-report legend-report-station' : 'legend-report'} />
-            </span>
-            {station ? "Reporting line (the lead's colour)" : 'Reporting line'}
-          </li>
-          <li>
-            <span className="legend-shape legend-wide">
-              <span className="legend-line" />
-            </span>
-            Message between agents
-          </li>
-        </ul>
-      </Popover>
     </span>
   )
 }

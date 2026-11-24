@@ -1,7 +1,7 @@
-import type { ReactElement } from 'react'
-import { useRef } from 'react'
-import { Palette } from 'lucide-react'
-import { applyCanvasStyle, isScenePresentation, styleLabel, useCanvasOptions, type CanvasStyleId } from '../../lib/canvas'
+import type { ReactElement, ReactNode } from 'react'
+import { useId, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Palette } from 'lucide-react'
+import { applyCanvasStyle, isScenePresentation, shownStyle, styleLabel, useCanvasOptions, usesScenePalette, type CanvasStyleId } from '../../lib/canvas'
 import { canvasAnnouncement, presentationLabel, saveCanvas, SCENE_PALETTE_OPTIONS } from '../../lib/canvasSettings'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
@@ -13,7 +13,34 @@ import '../../styles/canvas-settings.css'
 import { CanvasPresetGroup } from './CanvasPresetGroup'
 import { CanvasPresentationChoices } from './CanvasPresentationChoices'
 
-function StylePanel({ close, withPresentation }: { close: () => void; withPresentation: boolean }): ReactElement {
+/** The View menu's one-row form of the graph styles: the current style's name, and the radio group below once opened. */
+function StyleDisclosure({ canvas, onPick }: { canvas: ReturnType<typeof useCanvasOptions>; onPick: (id: CanvasStyleId) => void }): ReactElement {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  const shown = shownStyle(canvas)
+  return (
+    <div className="view-styles">
+      <button type="button" className="view-legend-trigger" data-testid="canvas-style-disclosure" aria-expanded={open} aria-controls={id} onClick={() => setOpen((o) => !o)}>
+        <Icon icon={Palette} size="sm" />
+        <span>Canvas style</span>
+        <span className="view-styles-current">{(shown && styleLabel(shown)) ?? 'Custom'}</span>
+        <Icon icon={open ? ChevronDown : ChevronRight} size="sm" />
+      </button>
+      {open && (
+        <div id={id}>
+          <p>Applies across the app, including Live and Team.</p>
+          <CanvasPresetGroup canvas={canvas} onPick={onPick} variant="compact" label="Graph style" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The body of the style popover. The Live run's View menu (CanvasViewMenu) reuses it: `heading` renames it, `lead` adds
+ * the view options above the style choices and `tail` adds the legend below them.
+ */
+export function StylePanel({ close, withPresentation, heading = 'Canvas style', lead, tail, foldStyles = false }: { close: () => void; withPresentation: boolean; heading?: string; lead?: ReactNode; tail?: ReactNode; foldStyles?: boolean }): ReactElement {
   const canvas = useCanvasOptions()
   const announce = useFrameAnnounce()
   const root = useRef<HTMLDivElement>(null)
@@ -28,16 +55,23 @@ function StylePanel({ close, withPresentation }: { close: () => void; withPresen
       // Popover moves focus after placement. Redirect only that first entry, never later user navigation.
       if (focused.current) return
       focused.current = true
+      // With view options above (the Live View menu) focus starts on the first of them, not on the palette below.
+      if (lead) return
       root.current?.querySelector<HTMLInputElement>('[data-testid="canvas-presentation"] input:checked, [data-testid="canvas-scene-palette"] input:checked')?.focus()
     }}>
-      <h3 className="canvas-style-popover-heading">Canvas style</h3>
+      <h3 className="canvas-style-popover-heading">{heading}</h3>
+      {lead}
+      {foldStyles && usesScenePalette(canvas.presentation) && <h4>Canvas style</h4>}
       <CanvasPresentationChoices hidePresentation={!withPresentation} canvas={canvas} onPresentation={(presentation) => {
         void saveCanvas((c) => ({ ...c, presentation })).then(() => announce?.(`Canvas presentation: ${presentationLabel(presentation)}.`), () => announce?.('Could not save canvas presentation.'))
       }} onPalette={(scenePalette) => {
         void saveCanvas((c) => ({ ...c, scenePalette })).then(() => announce?.(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`), () => announce?.('Could not save office palette.'))
       }} />
-      <p>Applies across the app, including Live and Team.</p>
-      {!isScenePresentation(canvas.presentation) && <><h4>Graph styles</h4><CanvasPresetGroup canvas={canvas} onPick={pick} variant="compact" label="Graph style" /></>}
+      {/* In the Live View menu the seven graph styles fold behind one row (a menu of 450 px would cover the minimap and scroll at 640 px). */}
+      {!isScenePresentation(canvas.presentation) && foldStyles && <StyleDisclosure canvas={canvas} onPick={pick} />}
+      {(!foldStyles || isScenePresentation(canvas.presentation)) && <p>Applies across the app, including Live and Team.</p>}
+      {!isScenePresentation(canvas.presentation) && !foldStyles && <><h4>Graph styles</h4><CanvasPresetGroup canvas={canvas} onPick={pick} variant="compact" label="Graph style" /></>}
+      {tail}
       <div className="canvas-style-popover-foot">
         <Button
           variant="ghost"

@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, openViewMenu, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -424,9 +424,10 @@ try {
       check((await page.locator('.react-flow__controls').count()) === 0, `React Flow controls are gone from the canvas at ${w}x${h} ${theme}`)
       check((await page.locator('[data-testid=run-strip] .btn:visible').first().evaluate((el) => el.getBoundingClientRect().height).catch(() => 28)) <= 36, `strip buttons fit the 40 px strip at ${w}x${h} ${theme}`)
       log(`chrome above canvas at ${w}x${h} ${theme}:`, m.stage ? Math.round(m.stage.t) : '?', 'px; stage', m.stage ? `${Math.round(m.stage.r - m.stage.l)}x${Math.round(m.stage.b - m.stage.t)}` : '?')
-      // The legend lives behind the toolbar "?" popover: a shape plus a word per state.
+      // The legend lives in the toolbar's View menu: a shape plus a word per state.
       // An ended single-agent run opens as the conversation under 1100 px; the legend belongs to the agents layout.
-      if ((await page.locator('[data-testid=canvas-legend-trigger]').count()) === 0) await page.locator('[data-testid=run-layout-toggle]').click()
+      if ((await page.locator('.run-body [data-testid=canvas-style-button]').count()) === 0) await page.locator('[data-testid=run-layout-toggle]').click()
+      await openViewMenu(page)
       const legendBtn = page.locator('[data-testid=canvas-legend-trigger]')
       await legendBtn.click()
       await sleep(250)
@@ -440,7 +441,13 @@ try {
       await sleep(150)
       check((await page.locator('.frame-footer').count()) === 0, `no legend row under the canvas at ${w}x${h} ${theme}`)
       const zoomBefore = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform ?? '')
-      await page.getByRole('button', { name: 'Zoom in', exact: true }).click()
+      // Zoom in is in the row in a roomy frame and in the View menu in a narrow one; it is one control either way.
+      const rowZoomIn = page.locator('.frame-toolbar').getByRole('button', { name: 'Zoom in', exact: true })
+      if (await rowZoomIn.count()) await rowZoomIn.click()
+      else {
+        await (await openViewMenu(page)).getByRole('button', { name: 'Zoom in', exact: true }).click()
+        await page.keyboard.press('Escape')
+      }
       await sleep(350)
       const zoomAfter = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform ?? '')
       check(zoomBefore !== zoomAfter, `the toolbar Zoom in button zooms the canvas at ${w}x${h} ${theme}`, `${zoomBefore} -> ${zoomAfter}`)
