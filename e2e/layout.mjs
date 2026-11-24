@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, checkRadio, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -78,8 +78,8 @@ try {
     const before = await countProjects()
     await gotoProjects(page)
     const form = await openProjectForm(page)
-    await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-    await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+    await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+    await checkRadio(form.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
     await form.locator('input[placeholder*="repo"]').fill(repo)
     const fieldset = form.locator('[data-testid=setup-choice]')
     await fieldset.or(form.locator('[data-testid=architect-setup]')).first().waitFor({ timeout: 30_000 })

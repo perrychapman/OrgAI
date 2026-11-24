@@ -6,7 +6,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TMP, check, createProject, deleteProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, removeFixture, sleep, windowShift, pickSetup, t } from './lib.mjs'
+import { TMP, check, checkRadio, createProject, deleteProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, removeFixture, sleep, windowShift, pickSetup, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-knowledge-'))
@@ -80,7 +80,7 @@ const todayText = new Date().toLocaleDateString('en-GB', { day: 'numeric', month
 async function createEngagement({ name, client, dir }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   if (client) await form.locator('[data-testid=new-project-client]').fill(client)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
