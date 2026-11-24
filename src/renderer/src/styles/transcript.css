@@ -8,6 +8,14 @@
   font-size: var(--text-body);
   line-height: var(--text-body-lh);
 }
+/* Rows never shrink: .transcript is a flex column AND the bounded scroller (the dock's tab panel), so once the feed is taller
+   than the panel every flex item may shrink to its min-height. Rows with an explicit min-height (the avatar row's 24 px) did,
+   and the text of a taller row was drawn over the next message. The panel scrolls instead. */
+.transcript > *,
+.conversation-newest > *,
+.conversation-earlier > * {
+  flex-shrink: 0;
+}
 /* Entries are not boxes by default: assistant text flows, only the user's messages and cross-run notes are bubbles. */
 .entry {
   white-space: pre-wrap;
