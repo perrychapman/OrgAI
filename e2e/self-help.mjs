@@ -7,7 +7,7 @@
 // shows the Done line. A `[mock:self-config-project]` run proposes a $5 cap on a mock project: the card names the
 // project, Approve, then Project settings > Limits shows 5. 1024x640 and 1600x1000, dark and light, keyboard steps.
 // Needs the mock markers (src/main/runtime/mock.ts on dev at e2deb561); without them the run checks SKIP.
-import { check, createProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep, t } from './lib.mjs'
+import { check, createProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, setThemeAndWait, setWindowSize, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -17,17 +17,8 @@ const repo = makeFixtureRepo('self-help')
 const { app, page, shot } = await launch({ shotPrefix: 'self-help' })
 page.setDefaultTimeout(8000)
 
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await sleep(400)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await page.waitForFunction((t) => document.documentElement.getAttribute('data-theme') === t, theme, { timeout: t(5000) }).catch(() => {})
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 400)
+const setTheme = (theme) => setThemeAndWait(page, theme, 0)
 const menu = (id) =>
   app.evaluate(({ Menu }, itemId) => {
     const item = Menu.getApplicationMenu()?.getMenuItemById(itemId)

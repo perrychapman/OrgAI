@@ -137,6 +137,19 @@ export function check(ok, what, detail = '') {
   return ok
 }
 
+/**
+ * An error as one detail line for check(): the first line of its message, the last lines of Playwright's call log (what the
+ * action waited on, and what stood in its way) and the script line that made the call. A bare "Timeout 8000ms exceeded" tells
+ * nothing about which click it was, and a CI run cannot be repeated to find out.
+ */
+export function errDetail(e) {
+  const text = String(e?.message ?? e)
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  const callLog = lines.slice(1).filter((l) => !/^Call log:/.test(l)).slice(-4)
+  const at = String(e?.stack ?? '').split('\n').find((l) => /e2e[\\/][^\\/]+\.mjs:\d+/.test(l))?.trim()
+  return [lines[0] ?? '', ...callLog, at].filter(Boolean).join(' | ').slice(0, 700)
+}
+
 /** Print the summary and set the exit code. */
 export function finish(name) {
   if (failures.length) {
@@ -718,6 +731,39 @@ export async function setReduceMotion(page, mode) {
   await page
     .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: t(5000) })
     .catch(() => {})
+}
+
+/**
+ * Let the renderer catch up after a change the script made: wait at least `minMs`, then until the finite animations are done
+ * and two frames have been drawn (a layout, a theme or a resize handler that was queued behind a busy main thread has run by
+ * then). A fixed sleep alone is a guess that a slow runner loses; this never waits less than the sleep it replaces and never
+ * more than a few scaled seconds. Takes the page whose renderer is read.
+ */
+export async function settleUI(page, minMs = 300) {
+  await sleep(minMs)
+  await settleMotion(page, t(1500))
+  await Promise.race([
+    page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))),
+    sleep(t(3000))
+  ]).catch(() => {})
+}
+
+/** Resize the window to a content size and wait until the renderer has it and has settled (see settleUI). */
+export async function setWindowSize(app, page, w, h, minMs = 500) {
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+  await settleUI(page, minMs)
+}
+
+/** Save the theme in settings and wait until <html data-theme> follows and the renderer has settled (see settleUI). */
+export async function setThemeAndWait(page, theme, minMs = 500) {
+  await page.evaluate(async (th) => {
+    const s = await window.orgai.settings.get()
+    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: th } })
+  }, theme)
+  await page.waitForFunction((th) => document.documentElement.getAttribute('data-theme') === th, theme, { timeout: t(5000) }).catch(() => {})
+  await settleUI(page, minMs)
 }
 
 /** Shortcut: reduced motion on. */

@@ -6,7 +6,7 @@
 // Scenario 5 ([mock:org-change]): an approved org chart is usable in the same run (roster shown by name, saved, survives reload).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, showFinishedAgents, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, setThemeAndWait, setWindowSize, showFinishedAgents, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-proposals-script-')), 'script.json')
@@ -21,18 +21,8 @@ makeFixtureRepo('proposals', { at: repo })
 
 const { app, page, shot } = await launch({ shotPrefix: 'proposals' })
 page.setDefaultTimeout(8000)
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
-  await sleep(600)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(500)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 600)
+const setTheme = (theme) => setThemeAndWait(page, theme, 500)
 const SERVER = (id, name, roles, pkg) => ({
   id,
   name,

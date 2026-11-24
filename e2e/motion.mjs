@@ -4,7 +4,7 @@
 // focus; with Reduce motion on every animation on a dialog / popover is ~0 ms, the motion distance is 0px and every
 // working canvas node breathes at --dur-pulse (at most 12) and stops. 1024x640 and 1600x1000, dark and light. Never
 // waits on an animation to finish.
-import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openProject, removeFixture, setReduceMotion, sleep, t } from './lib.mjs'
+import { check, cleanup, createProject, finish, launch, makeFixtureRepo, openProject, removeFixture, setReduceMotion, setThemeAndWait, setWindowSize, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 
@@ -14,18 +14,8 @@ const repo = makeFixtureRepo('motion')
 const { app, page, shot } = await launch({ shotPrefix: 'motion' })
 page.setDefaultTimeout(8000)
 
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await sleep(300)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    const { dataDir: _d, appVersion: _v, ...rest } = s
-    await window.orgai.settings.set({ ...rest, appearance: { ...rest.appearance, theme: t } })
-  }, theme)
-  await page.waitForFunction((t) => document.documentElement.getAttribute('data-theme') === t, theme, { timeout: t(5000) }).catch(() => {})
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 300)
+const setTheme = (theme) => setThemeAndWait(page, theme, 0)
 const menu = (id) =>
   app.evaluate(({ Menu }, itemId) => {
     const item = Menu.getApplicationMenu()?.getMenuItemById(itemId)

@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, openProject, projectTab, screenshot, settleMotion, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, openProject, projectTab, screenshot, setThemeAndWait, setWindowSize, settleMotion, sleep, t, errDetail } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E versions (orgai test)'
@@ -55,19 +55,8 @@ const scriptFile = (v) => {
 let { app, page } = await launch({ shotPrefix: 'outputs-versions' })
 page.setDefaultTimeout(8000)
 const snap = (name) => screenshot(page, `outputs-versions-${name}`)
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(600)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(500)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 600)
+const setTheme = (theme) => setThemeAndWait(page, theme, 500)
 const until = async (fn, ms = 10_000) => {
   const end = Date.now() + t(ms)
   while (Date.now() < end) {
@@ -379,14 +368,14 @@ try {
     try {
       await versionChecks(label, c.w >= 1100)
     } catch (e) {
-      check(false, `${label}: version checks`, e.message.split('\n')[0])
+      check(false, `${label}: version checks`, errDetail(e))
     }
     await runParts(label, [c.w, c.h], c.theme)
   }
   try {
     await mutatingChecks('1024x640 light')
   } catch (e) {
-    check(false, 'mutating checks', e.message.split('\n')[0])
+    check(false, 'mutating checks', errDetail(e))
   }
 } finally {
   await deleteProject(page, NAME_PARTS).catch(() => {})

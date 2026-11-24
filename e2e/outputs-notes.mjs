@@ -8,7 +8,7 @@
 // The Notes tab and the toolbar mount come from the detail shell; the revise dialog is asserted only if it renders.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, setThemeAndWait, setWindowSize, settleMotion, sleep, t, errDetail } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E notes (orgai test)'
@@ -50,19 +50,8 @@ await app.evaluate((_e, file) => {
   process.env.ORGAI_MOCK_SCRIPT = file
 }, scriptFile)
 
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(600)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(500)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 600)
+const setTheme = (theme) => setThemeAndWait(page, theme, 500)
 const until = async (fn, ms = 10_000) => {
   const end = Date.now() + t(ms)
   while (Date.now() < end) {
@@ -145,9 +134,9 @@ async function show(kind) {
  * note tools live on Preview; the list, its filter, Resolve, Edit, Delete and "Revise with notes" on Notes.
  */
 async function toTab(which) {
-  const t = detail().locator(`[data-testid=output-tab-${which}]`)
-  if (!(await t.count())) return
-  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click()
+  const tab = detail().locator(`[data-testid=output-tab-${which}]`)
+  if (!(await tab.count())) return
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click()
   await detail()
     .locator(which === 'notes' ? '[data-testid=output-notes]' : '[data-testid=output-preview]')
     .first()
@@ -535,7 +524,7 @@ try {
       try {
         await fn(label)
       } catch (e) {
-        check(false, `${label}: ${name} notes`, e.message.split('\n')[0])
+        check(false, `${label}: ${name} notes`, errDetail(e))
       }
     }
   }

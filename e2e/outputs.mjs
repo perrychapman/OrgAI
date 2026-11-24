@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep, t } from './lib.mjs'
+import { APP_DIR, TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, setThemeAndWait, setWindowSize, settleMotion, sleep, t, errDetail } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const USE_SCRIPT = process.env.E2E_OUTPUTS_SCRIPT === '1'
@@ -127,19 +127,8 @@ let { app, page } = await launch({ shotPrefix: 'outputs' })
 page.setDefaultTimeout(8000)
 
 const snap = (name) => screenshot(page, `outputs-${name}`)
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(600)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(500)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 600)
+const setTheme = (theme) => setThemeAndWait(page, theme, 500)
 const until = async (fn, ms = 10_000) => {
   const end = Date.now() + t(ms)
   while (Date.now() < end) {
@@ -1149,13 +1138,13 @@ try {
     try {
       await runSideChecks(label, c.w >= 1100)
     } catch (e) {
-      check(false, `${label}: run side tab checks`, e.message.split('\n')[0])
+      check(false, `${label}: run side tab checks`, errDetail(e))
     }
     if (i === 0 || i === 3) {
       try {
         await transcriptChecks(label)
       } catch (e) {
-        check(false, `${label}: transcript checks`, e.message.split('\n')[0])
+        check(false, `${label}: transcript checks`, errDetail(e))
       }
     }
     try {
@@ -1169,21 +1158,21 @@ try {
         await historyChecks(label)
       }
     } catch (e) {
-      check(false, `${label}: project tab checks`, e.message.split('\n')[0])
+      check(false, `${label}: project tab checks`, errDetail(e))
     }
   }
   // Last: Remove from list drops the item from both lists.
   if (process.env.E2E_DIAGRAMS_ONLY !== '1') try {
     await removeChecks('1024x640 light')
   } catch (e) {
-    check(false, 'remove checks', e.message.split('\n')[0])
+    check(false, 'remove checks', errDetail(e))
   }
   if (process.env.E2E_DIAGRAMS_ONLY !== '1') {
     // Once only: a second identical run adds a version once. It runs at the last combo's size and theme (1024x640 light).
     try {
       await secondRunChecks('1024x640 light second run')
     } catch (e) {
-      check(false, 'second run checks', e.message.split('\n')[0])
+      check(false, 'second run checks', errDetail(e))
     }
   }
   // The diagram viewer on its own project, driven by a script set in main for that run only.
@@ -1213,11 +1202,11 @@ try {
       try {
         await diagramChecks(label, i === 0 || i === 3)
       } catch (e) {
-        check(false, `${label}: diagram checks`, e.message.split('\n')[0])
+        check(false, `${label}: diagram checks`, errDetail(e))
       }
     }
   } catch (e) {
-    check(false, 'diagram viewer checks', e.message.split('\n')[0])
+    check(false, 'diagram viewer checks', errDetail(e))
   }
 } finally {
   if (project2 && page && !page.isClosed()) await deleteProject(page, NAME2).catch(() => {})

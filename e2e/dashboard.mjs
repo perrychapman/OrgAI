@@ -25,7 +25,7 @@
 // New run from the menu, Enter on a band agent row opens the agent, both sizes and themes, relaunch with a run cut while waiting.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, sleep, t, checkRadio } from './lib.mjs'
+import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, setThemeAndWait, setWindowSize, sleep, t, checkRadio } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-dash-script-')), 'script.json')
@@ -69,19 +69,8 @@ const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await p
 const text = async (id) => clean(await T(id).first().innerText().catch(() => ''))
 const tileOf = (name) => page.locator(`[data-testid=project-tile][data-name="${name}"]`)
 const live = () => text('dashboard-live')
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: t(10_000) }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(500)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(600)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 500)
+const setTheme = (theme) => setThemeAndWait(page, theme, 600)
 /** Merge a patch into the saved settings through settings:set (the broadcast re-applies it). */
 const setSettings = async (patch) => {
   await page.evaluate(async (p) => {
@@ -1778,19 +1767,8 @@ async function setName(name) {
     }
     const startViaIpc = (projectId, prompt) => ip.evaluate(({ id, p }) => window.orgai.runs.start({ projectId: id, prompt: p }), { id: projectId, p: prompt })
     const runStatus = (runId) => ip.evaluate((id) => window.orgai.runs.get(id).then((r) => r?.summary?.status ?? null), runId)
-    const setSize = async (w, h) => {
-      await ibApp.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-      await ip.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: t(10_000) }).catch(() => {})
-      await ip.evaluate(() => window.dispatchEvent(new Event('resize')))
-      await sleep(500)
-    }
-    const setTheme = async (theme) => {
-      await ip.evaluate(async (t) => {
-        const s = await window.orgai.settings.get()
-        await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-      }, theme)
-      await sleep(600)
-    }
+    const setSize = (w, h) => setWindowSize(ibApp, ip, w, h, 500)
+    const setTheme = (theme) => setThemeAndWait(ip, theme, 600)
     const overflowX = () => ip.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
 
     // ---- Empty first: nothing waits, nothing is working.

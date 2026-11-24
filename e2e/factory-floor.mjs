@@ -977,11 +977,11 @@ try {
   }
   /** Switch to the conversation and back through the run layout toggle (the scene unmounts and mounts again). */
   const viaConversation = async () => {
-    const t = page.locator('[data-testid=run-layout-toggle]')
-    await t.click()
+    const toggle = page.locator('[data-testid=run-layout-toggle]')
+    await toggle.click()
     await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
     await page.locator('[data-testid=run-conversation]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
-    await t.click()
+    await toggle.click()
     await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live', 20_000)
   }

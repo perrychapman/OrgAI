@@ -10,7 +10,7 @@
 // Static checks run at 1024x640 and 1600x1000 in dark and light, with no page scroll.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, showFinishedAgents, sleep, teamPanelTab, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, setWindowSize, showFinishedAgents, sleep, teamPanelTab, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const M = 'E2E multi mock (orgai test)'
@@ -29,8 +29,7 @@ const noOverflow = async (what) => {
   check(ov.sw <= ov.cw && ov.sh <= ov.ch + 1, `no page scroll or overflow: ${what}`, JSON.stringify(ov))
 }
 const resize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await sleep(400)
+  await setWindowSize(app, page, w, h, 400)
 }
 
 async function selectReviewer() {
