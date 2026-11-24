@@ -212,6 +212,21 @@ describe('re-entering a project', () => {
     expect(s.activeRunByProject.p1).toBeUndefined()
   })
 
+  it('openProjectHome shows Home and restores the live run behind it; openRun then shows that run', async () => {
+    useAppStore.setState({ projects: [{ id: 'p1', name: 'P', roles: [] }] as never, selectedProjectId: null, view: 'projects', runs: { a: run('a', 'p1', 'running', 1) } as never })
+    useAppStore.getState().openProjectHome('p1')
+    expect(useAppStore.getState().view).toBe('home')
+    await vi.waitFor(() => expect(useAppStore.getState().activeRunByProject.p1).toBe('a'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(useAppStore.getState().view).toBe('home')
+    await useAppStore.getState().openRun('a')
+    expect(useAppStore.getState().view).toBe('run')
+    // From a run, the name goes back to Home without picking another run.
+    useAppStore.getState().openProjectHome('p1')
+    expect(useAppStore.getState().view).toBe('home')
+    expect(useAppStore.getState().activeRunByProject.p1).toBe('a')
+  })
+
   it('a hidden run is skipped by the fallbacks but a run that needs you still opens', async () => {
     const { defaultRunToOpen } = await import('../../../shared/view/needsYou')
     const live = [run('a', 'p1', 'running', 1), run('b', 'p1', 'running', 2)] as never[]

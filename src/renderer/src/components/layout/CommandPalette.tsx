@@ -105,8 +105,7 @@ function run(target: PaletteTarget): void {
       void s.openAssistant(target.id)
       return
     case 'project':
-      void s.openProject(target.projectId)
-      if (!PROJECT_VIEWS.includes(s.view)) s.setView('run')
+      s.openProjectHome(target.projectId)
       return
     case 'tab':
       s.setView(target.view as View)
