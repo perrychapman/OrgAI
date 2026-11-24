@@ -1102,9 +1102,41 @@ try {
     const PANEL = '.side-run [role=tabpanel].transcript'
     const panelDist = () => page.evaluate((sel) => { const el = document.querySelector(sel); return el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : null }, PANEL)
     await page.locator(PANEL).waitFor({ timeout: 10_000 })
-    await sleep(400)
-    const pd = await panelDist()
-    check(pd !== null && pd <= 2, 'the side panel transcript opens at the newest message', String(pd))
+    // The run is still streaming here (the panel's list grows by a line about every 150 ms), and the follow glides to a moving
+    // end: the list is at the end after each glide and up to a line short of it between a growth and the next frame (a CI
+    // trace read 0..24 px, never drifting). One read at one instant therefore says nothing (it read 14 and 11 on slow
+    // runners). What "opens at the newest message and follows it" means is read over the first 1.2 s after the panel
+    // draws: the list was never further than the follow's own "at the end" band (STICK_PX, 48 px) from the end in any
+    // sample, which a list opened at the top (hundreds of px away) or one that lost the end would break, and it touched
+    // the end (2 px) at least once.
+    const panelWindow = await page.evaluate(
+      (sel) =>
+        new Promise((resolve) => {
+          const t0 = performance.now()
+          let min = Infinity
+          let max = -Infinity
+          let n = 0
+          const read = () => {
+            const e = document.querySelector(sel)
+            if (e) {
+              const d = Math.round(e.scrollHeight - e.scrollTop - e.clientHeight)
+              min = Math.min(min, d)
+              max = Math.max(max, d)
+              n++
+            }
+          }
+          read()
+          const iv = setInterval(() => {
+            read()
+            if (performance.now() - t0 > 1200) {
+              clearInterval(iv)
+              resolve({ min, max, n })
+            }
+          }, 30)
+        }),
+      PANEL
+    )
+    check(panelWindow.n >= 5 && panelWindow.min <= 2 && panelWindow.max <= 48, 'the side panel transcript opens at the newest message', JSON.stringify(panelWindow))
     await page.locator(PANEL).hover()
     await page.mouse.wheel(0, -300)
     await sleep(300)
