@@ -69,7 +69,9 @@ jobs:
     # 110 (2026-11-24): after the UI overhaul the full chain takes about 65 minutes on macos-15 and about 70 on
     # windows-latest (run 45326760834: macOS passed in 65 min; Windows was cancelled by the 80 minute limit 68 minutes into
     # the e2e step, 12 minutes after the job started its unit tests). Windows passed the same chain on the three runs before.
-    timeout-minutes: 110
+    # 140: the Factory Floor script alone took its whole 15 minute budget on windows-latest (run 45364861814, chain 77.8 min)
+    # and now gets 35 (scripts/e2e-select.mjs), so a slow runner can need about 91 minutes of e2e after 12 of unit tests.
+    timeout-minutes: 140
     strategy:
       fail-fast: false
       matrix:
