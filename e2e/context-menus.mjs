@@ -370,6 +370,7 @@ try {
   await dismissCustom()
   await navRow.click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
+  await page.locator('[data-testid=tab-live]').click()
   const composer = page.locator('.composer textarea, textarea').first()
   await composer.fill('ctx probe text')
   await probeReset()

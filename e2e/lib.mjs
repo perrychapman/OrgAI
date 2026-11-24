@@ -618,10 +618,11 @@ export async function findProject(page, name) {
   return list.find((p) => p.name === name)
 }
 
-/** Open a project from the sidebar. */
+/** Open a project from the sidebar and land on its Live tab. The name row itself opens the project's Home. */
 export async function openProject(page, name) {
   await page.locator(`.sidebar [data-testid=nav-project][data-name="${name.replace(/"/g, '\\"')}"]`).first().click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: t(10_000) })
+  await page.locator('[data-testid=tab-live]').click()
 }
 
 /** Delete every project tile with this name. Returns how many tiles remain (0 on success). */
