@@ -28,6 +28,7 @@ import { ProjectTile, type PinSource, type TileModel } from './ProjectTile'
 import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, pinnedFirst, SEARCH_AFTER, tileChips, tileStatusKind, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
 import { projectSpark } from '../../lib/projectSparkline'
 import { isWorkingAgent } from '../../lib/agentActivity'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 
 /** The tile model of one project from its live runs and saved history. */
 function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined, pinned: boolean): TileModel {
@@ -93,8 +94,9 @@ function focusHeadingIfIdle(): void {
   )
 }
 
+/** Two frames after React has committed, unless the person has moved focus on in the meantime (a throttled window runs these late). */
 function focusLater(find: () => HTMLElement | null | undefined): void {
-  requestAnimationFrame(() => requestAnimationFrame(() => find()?.focus()))
+  focusLaterUnlessMoved(find, 2)
 }
 
 const tileSelector = (id: string): string => `[data-testid=project-tile][data-id="${CSS.escape(id)}"]`

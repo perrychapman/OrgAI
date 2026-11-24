@@ -1,3 +1,4 @@
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import type { EngagementNote, EngagementNoteSaveInput, KnowledgeEdge, KnowledgeEdgeSaveInput, KnowledgeNode, KnowledgeNodeSaveInput } from '@shared/types'
 
 /**
@@ -14,7 +15,11 @@ export interface KnowledgeWrites {
   removeNote(noteId: string): Promise<void>
 }
 
-/** Two animation frames: after React has committed and the browser has laid out (hidden -> shown panel bodies). */
+/**
+ * Two animation frames: after React has committed and the browser has laid out (hidden -> shown panel bodies). Not when the
+ * person has put focus somewhere else in those frames (they clicked a row and went straight to the search box: the late
+ * hand-back to the detail heading took focus out from under their typing), see `mayRestoreFocus`.
+ */
 export function focusLater(find: () => HTMLElement | null | undefined): void {
-  requestAnimationFrame(() => requestAnimationFrame(() => find()?.focus()))
+  focusLaterUnlessMoved(find, 2)
 }
