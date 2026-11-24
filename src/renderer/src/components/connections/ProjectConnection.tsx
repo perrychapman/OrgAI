@@ -187,7 +187,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
         <p className="pconn-line" data-testid="project-connection-line">
           <span>Default connection for roles: {info ? connectionWithAuth(info) : connectionLabel(current)}.</span>
           <button type="button" className="link-btn" onClick={openConnections}>
-            App settings &gt; Connections
+            App settings &gt; AI providers
           </button>
         </p>
         {ownCount > 0 && (
@@ -253,7 +253,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
           {defaultConnection && defaultConnection !== current ? `App default for new projects: ${connectionLabel(defaultConnection)}. ` : ''}
           Sign-in and keys are set in{' '}
           <button type="button" className="link-btn" onClick={openConnections}>
-            App settings &gt; Connections
+            App settings &gt; AI providers
           </button>
           .
         </>
@@ -325,7 +325,7 @@ export default function ProjectConnection({ project }: { project: Project }): Re
       {connections && !mock && disconnected(target) && (
         <Banner
           tone="warning"
-          actions={<Button size="sm" onClick={openConnections}>Open connections</Button>}
+          actions={<Button size="sm" onClick={openConnections}>Open AI providers</Button>}
         >
           {targetInfo ? `${targetName} is not connected. Connect it to run this project.` : "This project's connection was removed. Choose another one below."}
         </Banner>

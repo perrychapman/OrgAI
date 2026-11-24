@@ -129,7 +129,7 @@ export function BranchRulesSection({ project, patch }: { project: Project; patch
           id={row('cmd')}
           title="Test command"
           description={project.requireTestsPass && !command.trim() ? 'Add a command: while this is empty, merges are refused because there is nothing to run.' : 'One line, run in the finished copy, for example npm test.'}
-          width="select"
+          width="full"
           control={
             <Input
               id={`${uid}-cmd`}
