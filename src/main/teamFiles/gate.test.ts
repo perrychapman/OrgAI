@@ -504,7 +504,9 @@ describe('security review fixes', () => {
       ['inherit', (d) => ((dev(d).tier = undefined), (dev(d).model = 'inherit')), true],
       ['effort raised', (d) => (lead(d).effort = 'max'), true],
       ['effort lowered', (d) => (lead(d).effort = 'low'), false],
-      ['effort set over unset', (d) => (dev(d).effort = 'low'), true]
+      ['effort set to low over unset', (d) => (dev(d).effort = 'low'), false],
+      ['effort set to medium over unset', (d) => (dev(d).effort = 'medium'), false],
+      ['effort set above default over unset', (d) => (dev(d).effort = 'high'), true]
     ]
     for (const [label, mutate, pends] of cases) {
       const r = gate(mutate)

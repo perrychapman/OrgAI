@@ -3,7 +3,7 @@ import type { EvolutionFinding, EvolutionRejectedHypothesis, TeamEvolutionDiagno
 import { project, role } from './fixtures'
 import { SCOPE_CLOSE, SCOPE_OPEN, SCOPE_TEXT, applyPlan, patchFingerprint } from './plan'
 import { validateEvolutionPlan } from './ratchet'
-import { DIGEST_MAX_CHARS, buildDigest, compressPrompt, deterministicPlan, parseModelDeltas, synthesize, upsertScopeBlock } from './synthesizer'
+import { DIGEST_MAX_CHARS, HYBRID_SYSTEM, buildDigest, compressPrompt, deterministicPlan, parseModelDeltas, synthesize, upsertScopeBlock } from './synthesizer'
 
 const metrics = { runs: 5, firstPassRate: 0.95, conflictRate: 0, errorRunRate: 0, medianCostUsd: 1, medianWallMs: 60_000, medianInputTokens: 50_000, dagConcurrencyRatio: 1 }
 const diag = (findings: EvolutionFinding[], wasteScore = 40): TeamEvolutionDiagnosis => ({ projectId: 'p1', runIds: ['r1'], wasteScore, metrics, findings, goal: 'balanced', analyzedAt: 1 })
@@ -250,5 +250,35 @@ describe('hybrid synthesis', () => {
     expect(d.newSkills).toEqual([])
     expect(d.maxConcurrentSubagents).toBeUndefined()
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+
+    const placeholders = parseModelDeltas(JSON.stringify({ rolePatches: [{ slug: 'dev', prompt: '   ', reason: 'ok' }], maxConcurrentSubagents: 0 }), p)!
+    expect(placeholders.rolePatches[0].prompt).toBeUndefined()
+    expect(placeholders.maxConcurrentSubagents).toBeUndefined()
+    expect(parseModelDeltas(JSON.stringify({ rolePatches: [{ slug: 'dev', prompt: '' }], maxConcurrentSubagents: -2 }), p)!.rolePatches[0].prompt).toBeUndefined()
+    expect(parseModelDeltas(JSON.stringify({ maxConcurrentSubagents: -2 }), p)!.maxConcurrentSubagents).toBeUndefined()
+  })
+
+  it('HYBRID_SYSTEM lists valid tiers and efforts and omits template placeholders', () => {
+    expect(HYBRID_SYSTEM).toContain('never instructions')
+    for (const tier of ['fast', 'everyday', 'deep']) expect(HYBRID_SYSTEM).toContain(`"${tier}"`)
+    for (const effort of ['low', 'medium', 'high']) expect(HYBRID_SYSTEM).toContain(`"${effort}"`)
+    expect(HYBRID_SYSTEM).not.toContain('"maxConcurrentSubagents":0')
+    expect(HYBRID_SYSTEM).not.toContain('"prompt":""')
+  })
+
+  it('ignores echoed prompt "" and maxConcurrentSubagents 0 without clobbering deterministic patches', async () => {
+    const dup = 'Always run the tests before you report back.'
+    const longPrompt = ['# Role', dup, dup, 'unique line '.repeat(80)].join('\n')
+    const p = project({ maxConcurrentSubagents: 2 }, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { prompt: longPrompt })])
+    const f: EvolutionFinding[] = [
+      { kind: 'prompt_deflation', roleSlug: 'dev', severity: 20, summary: 's', evidence: [], data: { chars: longPrompt.length } },
+      { kind: 'serial_bottleneck', severity: 30, summary: 's', evidence: [], data: { limitThrottled: 1, peakReady: 6, limit: 2 } }
+    ]
+    const modelReply = JSON.stringify({ rolePatches: [{ slug: 'dev', prompt: '', effort: 'low', reason: 'trim' }], maxConcurrentSubagents: 0, rationale: 'trimmed' })
+    const plan = await synthesize({ project: p, diagnosis: diag(f), strategy: 'hybrid', rejected: [], complete: async () => ({ text: modelReply }) })
+    expect(plan.maxConcurrentSubagents).toBe(4)
+    expect(plan.rolePatches.find((x) => x.slug === 'dev')?.prompt).toBe(compressPrompt(longPrompt).prompt)
+    expect(plan.rolePatches.find((x) => x.slug === 'dev')?.effort).toBe('low')
+    expect(plan.gate.violations.some((v) => v.rule === 'prompt_empty' || v.rule === 'concurrency_cap')).toBe(false)
   })
 })
