@@ -632,9 +632,20 @@ try {
   const runRow = page.locator(`[data-testid=dash-resume-row][data-run="${rosterRunId}"] [data-testid=dash-resume-main]`)
   await runRow.waitFor({ timeout: 15_000 })
   await runRow.click()
+  // "Hide finished agents" is on by default and folds a report into a group node COLLAPSE_GRACE_MS (6 s) after it ended. The
+  // report ended about as long ago as the steps since (Team tab, reload, reopen) take: a quick machine opened the run inside
+  // the grace period and saw the node, a slower one (macOS CI) saw only the group, so this check depended on speed. Turn the
+  // fold off, as a user looking for a named agent would, and the node is there at any speed.
+  const foldSwitch = page.getByRole('switch', { name: 'Hide finished agents' })
+  await foldSwitch.waitFor({ timeout: 15_000 })
+  if (await foldSwitch.isChecked()) await foldSwitch.click()
   await page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 20_000 })
   check(true, 'after a reload the finished run still shows Roster Tester by name')
   await shot('org-change-reloaded')
+} catch (e) {
+  // Recorded as a failed check (and a screenshot), so the run does not print "all checks passed" and then die on the throw.
+  check(false, 'proposals e2e ran without throwing', e.stack ?? String(e))
+  await shot('error').catch(() => {})
 } finally {
   await cleanup(app, page, NAME)
   finish('proposals')

@@ -320,6 +320,10 @@ try {
   // ---------- 3. Drilldowns ----------
   const drill = async (name, act, expectKind) => {
     await clearAll()
+    // The page says at most one thing per 2 s (ANNOUNCE_GAP_MS) and joins what arrives inside the gap into one later
+    // message. The step before (a chip added, then "Filters cleared") can still have its joined message waiting: on a slow
+    // runner it landed after watchLive() and was counted as this step's announcement (macOS CI). Let the gap pass first.
+    await sleep(2300)
     await watchLive()
     await act()
     await sleep(3000)

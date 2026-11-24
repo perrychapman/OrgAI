@@ -761,9 +761,11 @@
   display: none;
 }
 
-/* The sticky submit row never covers a setup choice: anything inside the form's options scrolls clear of it (focus,
-   scrollIntoView and keyboard moves all honour scroll-margin). --form-submit-h is measured in NewProjectForm. */
-.project-form.in-panel .form-options :is(input, select, label, .hint, .import-choice),
-.project-form.in-dialog .form-options :is(input, select, label, .hint, .import-choice) {
+/* The sticky submit row never covers a control: anything inside the form's options, the kind cards, the Project type
+   choice and the fields scrolls clear of it (focus, scrollIntoView and keyboard moves all honour scroll-margin). On a
+   short window the kind and Project type radios sat under the row when focused or scrolled to (macOS CI, 1024x684).
+   --form-submit-h is measured in NewProjectForm. */
+.project-form.in-panel :is(.form-options, .project-kind, .repo-lock, .field) :is(input, select, textarea, label, .hint, .import-choice),
+.project-form.in-dialog :is(.form-options, .project-kind, .repo-lock, .field) :is(input, select, textarea, label, .hint, .import-choice) {
   scroll-margin-bottom: calc(var(--form-submit-h, calc(var(--space-8) + var(--space-3))) + var(--space-3));
 }

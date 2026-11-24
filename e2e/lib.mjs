@@ -215,6 +215,35 @@ export function removeFixture(root) {
 
 // ---------- App ----------
 
+/** The content size the app's default window has on a normal screen (1440x920 window: 1424x881 inside its frame on Windows). */
+export const DEFAULT_CONTENT = { width: 1424, height: 881 }
+
+/**
+ * Give every script the window a normal screen gives it. The macOS CI runner has a 1024x684 work area, and the window opens
+ * clamped to it (ORGAI_WINDOW_LARGER_THAN_SCREEN only lets a later setContentSize exceed the screen): the sidebar is then
+ * the rail (no Inbox badge, only its rail count), the run frame is compact (a shell permission lands on Details, not on
+ * Allow) and the project form folds, so a script that reads the default window measured another layout than on Windows.
+ * Scripts that test a size call setContentSize themselves; this only widens a window that is smaller than the default,
+ * so on a normal screen nothing changes.
+ */
+export async function ensureDefaultViewport(app, page) {
+  // E2E_CLAMP_WINDOW=1024x656 makes the window open at that size, as the macOS CI runner's 1024x684 work area does (a titled
+  // window's content is shorter than the work area), so this widening can be tried on any machine.
+  const clamp = /^(\d+)x(\d+)$/.exec(process.env.E2E_CLAMP_WINDOW ?? '')
+  if (clamp) {
+    await app.evaluate(({ BrowserWindow }, [nw, nh]) => BrowserWindow.getAllWindows()[0].setContentSize(nw, nh), [Number(clamp[1]), Number(clamp[2])])
+    await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, Number(clamp[1]), { timeout: 10_000 }).catch(() => {})
+  }
+  const [cw, ch] = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
+  if (cw >= DEFAULT_CONTENT.width && ch >= DEFAULT_CONTENT.height) return
+  const w = Math.max(cw, DEFAULT_CONTENT.width)
+  const h = Math.max(ch, DEFAULT_CONTENT.height)
+  log(`window opened at ${cw}x${ch}; widening to ${w}x${h} (a small screen clamps the default window)`)
+  await app.evaluate(({ BrowserWindow }, [nw, nh]) => BrowserWindow.getAllWindows()[0].setContentSize(nw, nh), [w, h])
+  await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+}
+
 /**
  * Launch the built app and wait until the renderer is up. Returns { app, page, shot }.
  * Dialogs (confirm()) are accepted automatically; renderer console errors are logged.
@@ -234,6 +263,7 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
   })
   page.on('pageerror', (e) => log('pageerror:', e.message.slice(0, 200)))
   await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  await ensureDefaultViewport(app, page)
   // A shared ORGAI_DATA_DIR (CI) keeps the renderer's localStorage between scripts, so an earlier script's UI choices
   // (orgai.sidebar, orgai.sidePanel.*, widths) would leak into this one. Start every script from auto state; projects
   // and runs live in the main process data and are untouched.
@@ -350,8 +380,31 @@ export async function pickSetup(form, skipSetup) {
 export async function createProject(page, { mode = 'existing', path: dir, name, brief = '', skipSetup = true, useMock = true }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-  await form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true }).check({ force: true })
+  // Two radios: what the project is for (code) and how it starts. A forced click lands on whatever is on top at the radio's
+  // centre, and the form's submit row is sticky, so centre each radio first, as pickSetup does. The macOS CI run failed on
+  // the second one with "Clicking the checkbox did not change its state" (click performed, nothing changed): either the
+  // click did not reach the radio or the first-launch form re-rendered over it, as the submit click below also guards
+  // against. Neither reproduced on Windows (also at a 1024x656 window), so verify the pair and choose again if it did not
+  // stick, saying so in the log, instead of failing the whole script on one lost click.
+  const kindRadio = form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]')
+  const modeRadio = form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true })
+  const choose = async (radio) => {
+    await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: 10_000 })
+    await radio.check({ force: true, timeout: 10_000 })
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await choose(kindRadio)
+      await choose(modeRadio)
+      await sleep(250)
+      if ((await kindRadio.isChecked()) && (await modeRadio.isChecked())) break
+      throw new Error('the kind and mode radios did not both stay checked')
+    } catch (e) {
+      if (attempt >= 3) throw e
+      log(`create project: the kind / mode choice did not stick (${String(e.message).split('\n')[0]}); choosing again`)
+      await sleep(500)
+    }
+  }
   if (mode === 'new') {
     await form.locator('input[placeholder="My app"]').fill(name)
     await form.locator('textarea').first().fill(brief)

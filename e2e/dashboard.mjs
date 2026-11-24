@@ -1718,8 +1718,9 @@ async function setName(name) {
     const waitRows = () => ip.locator('[data-testid=inbox-row][data-group=waiting]')
     const rowIds = () => rows().evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
     const selectedId = () => ip.evaluate(() => document.querySelector('[data-testid=inbox-row][aria-current=true]')?.getAttribute('data-id') ?? null)
-    const badge = async () => Number(ibClean(await I('nav-inbox-count').first().innerText().catch(() => '0')) || 0)
-    const bell = async () => Number(/Needs you · (\d+)/.exec(ibClean(await I('needs-you-row').first().innerText().catch(() => '')))?.[1] ?? 0)
+    // A short timeout: an absent badge (no waiting decision, or the rail, which has only nav-rail-count) is 0 at once, not after the 30 s default.
+    const badge = async () => Number(ibClean(await I('nav-inbox-count').first().innerText({ timeout: 1500 }).catch(() => '0')) || 0)
+    const bell = async () => Number(/Needs you · (\d+)/.exec(ibClean(await I('needs-you-row').first().innerText({ timeout: 1500 }).catch(() => '')))?.[1] ?? 0)
     const summary = async () => ({
       waiting: Number(await I('inbox-summary').getAttribute('data-waiting')),
       finished: Number(await I('inbox-summary').getAttribute('data-finished')),
@@ -1821,7 +1822,10 @@ async function setName(name) {
     await sleep(200)
     check((await waitRows().count()) === waitingBeforeHeld && !(await focusIn('[data-testid=inbox-detail-pane]')), 'IB M5 the held Enter that opened the Inbox answered nothing and did not enter a card', `${await waitRows().count()} of ${waitingBeforeHeld}`)
     await ip.keyboard.press('j')
-    check((await selectedId()) === ids0[1] && (await focusedRowId()) === ids0[1], 'IB M5 J works straight after arriving by keyboard (no click first)', String(await selectedId()))
+    // The selection changes with the key; the row takes focus on the next animation frame (InboxView focusRow), which a busy
+    // runner can deliver a moment after press() returns. Wait for the pair, bounded, instead of reading it in the same tick.
+    const jLanded = await ibUntil(async () => (await selectedId()) === ids0[1] && (await focusedRowId()) === ids0[1], 3000, 50)
+    check(!!jLanded, 'IB M5 J works straight after arriving by keyboard (no click first)', `selected ${await selectedId()}, focused ${await focusedRowId()}, expected ${ids0[1]}`)
     await ip.keyboard.press('k')
     check((await selectedId()) === ids0[0], 'IB M5 K works straight after arriving by keyboard')
     await ip.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
