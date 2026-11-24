@@ -263,6 +263,7 @@ describe('hybrid synthesis', () => {
     for (const tier of ['fast', 'everyday', 'deep']) expect(HYBRID_SYSTEM).toContain(`"${tier}"`)
     for (const effort of ['low', 'medium', 'high']) expect(HYBRID_SYSTEM).toContain(`"${effort}"`)
     expect(HYBRID_SYSTEM).toContain('fewer than 3 measured runs')
+    expect(HYBRID_SYSTEM).toContain('tier "fast" or effort "low"')
     expect(HYBRID_SYSTEM).not.toContain('"maxConcurrentSubagents":0')
     expect(HYBRID_SYSTEM).not.toContain('"prompt":""')
   })
