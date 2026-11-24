@@ -19,7 +19,12 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, setReduceMotion, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, setReduceMotion, sleep } from './lib.mjs'
+// A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
+// two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
+// or ends such a run waits for the renderer to answer instead of timing out at the default.
+const BUSY_CLICK_MS = 150_000
+const endSession = (page) => endSessionLib(page, { timeout: BUSY_CLICK_MS })
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-factory-script-')), 'script.json')
@@ -455,7 +460,8 @@ async function checkWorker(label, st, id, want) {
     chk3(ok, `${label}: ${id} ${k} is ${Array.isArray(exp) ? exp.join(' or ') : exp}`, have)
   }
   chk3(typeof w.statusWord === 'string' && w.statusWord.length > 0, `${label}: ${id} has a status word`, have)
-  const m = await mirrorOf(id)
+  // A snapshot taken inside the page carries the mirror hooks read in the same tick; a live read is for everything else.
+  const m = st.__mirrors?.[id] ?? (await mirrorOf(id))
   chk3(!!m && m.lamp === w.lamp && m.pose === w.pose && m.status === w.statusWord && m.fenced === String(!!w.fenced) && (m.crate ?? null) === (w.crate ?? null), `${label}: ${id} mirror hooks agree with the state`, { mirror: m && { ...m, desc: undefined }, state: have })
   chk3(!!m && m.name.includes(`, ${w.statusWord}`), `${label}: ${id} accessible name ends ", {status word}"`, m?.name)
 }
@@ -638,6 +644,36 @@ try {
 
   // 40 agents: the mock's [mock:factory-floor] tour (root, 3 leads, 9 sub-leads, 27 workers; ff-w333 removed). Invariants, not a table.
   writeScript(null)
+  // The tour's last tool step holds ff-w111 at its machine for 5 s of the main process's clock, and a loaded runner shows the
+  // renderer's state late: the hold reached the page as a window of about a second, which polling the state over CDP from
+  // here missed twice (CI windows-latest; a two-core, 3x throttled run here read the page's own samples: the "machine" pose
+  // stood for 1.3 s, at the 32nd second of the run, 6 s after this script had started polling). So the snapshot is taken
+  // inside the page, on a 40 ms tick that starts before the run does: the first state in which every READY condition holds
+  // and ff-w111 is at its machine is kept whole, with every worker's mirror hooks read in the same tick, and read here
+  // whenever the runner lets this script get to it.
+  await page.evaluate(() => {
+    window.__ffReady = null
+    window.clearInterval(window.__ffReadyTimer)
+    window.__ffReadyTimer = window.setInterval(() => {
+      if (window.__ffReady) return
+      try {
+        const el = document.querySelector('[data-testid=factory-state]')
+        if (!el) return
+        const s = JSON.parse(el.textContent || el.value || '{}')
+        const w = (id) => (s.workers ?? []).find((x) => x.id === id)
+        if (!(s.mode === 'live' && w('ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && w('ff-w211')?.lamp === 'needs-you' && w('ff-w111')?.pose === 'machine')) return
+        const mirrors = {}
+        for (const b of document.querySelectorAll('[data-testid=factory-worker]')) {
+          const d = b.dataset
+          const desc = (b.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean).map((i) => document.getElementById(i)?.textContent ?? '').join(' ')
+          mirrors[b.getAttribute('data-factory-worker-id')] = { state: d.state, lamp: d.lamp, pose: d.pose, status: d.status, fenced: d.fenced, crate: d.crate ?? null, steps: d.steps ?? '', name: b.getAttribute('aria-label') ?? b.textContent ?? '', desc }
+        }
+        window.__ffReady = { state: s, mirrors }
+      } catch {
+        // a half-written state: the next tick reads it again
+      }
+    }, 40)
+  })
   await startLiveRun('Factory floor forty agents [mock:factory-floor]')
   const s40 = await waitForFloor(39, (s) => s.vacant === 1)
   check(!!s40, '40 agents: 39 stations stand and the removed ff-w333 is one vacant slot', JSON.stringify(s40 && { n: s40.workers.length, vacant: s40.vacant }))
@@ -646,8 +682,14 @@ try {
     // Slice 3, per-state cues. ff-w111 is in `tool` for 5 s after MOCK_FACTORY_FLOOR_READY: catch it first and read promptly.
     // READY follows the plan update (p2 blocked), ff-w111's tool steps and ff-w211's background card, so key the snapshot on
     // all three: ff-w123 failing alone comes before the plan update and before the tool hold (first slice 3 run).
-    const ready = (s) => s.mode === 'live' && wOf(s, 'ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && wOf(s, 'ff-w211')?.lamp === 'needs-you'
-    const snap = await untilState((s) => ready(s) && wOf(s, 'ff-w111')?.pose === 'machine', 25_000)
+    // The wait is on that page-side snapshot (a state, not a sleep); its budget covers a runner that shows the whole tour a
+    // minute and a half late.
+    const captured = await page
+      .waitForFunction(() => window.__ffReady, null, { timeout: 150_000, polling: 250 })
+      .then((h) => h.jsonValue())
+      .catch(() => null)
+    await page.evaluate(() => window.clearInterval(window.__ffReadyTimer))
+    const snap = captured?.state ? Object.assign(captured.state, { __mirrors: captured.mirrors }) : null
     chk3(!!snap, 'MOCK_FACTORY_FLOOR_READY is reached (plan blocked, ff-w211 card pending, ff-w111 at its machine)', wOf(await state(), 'ff-w111'))
     if (snap) {
       await checkWorker('tool', snap, 'ff-w111', { lamp: 'running', pose: 'machine', fenced: true, shutter: false, barrier: false })
@@ -659,7 +701,7 @@ try {
       // Leads are 'delegating' only while a spawn is in flight; by READY the mock has moved some of them on (ff-l1 reads
       // 'thinking'). So the pose is checked against the state the mirror reports: delegating -> dispatch, thinking -> console.
       for (const [label, id] of [['lead', 'ff-l1'], ['sub-lead', 'ff-s11'], ['lead', 'ff-l2'], ['sub-lead', 'ff-s21']]) {
-        const st = (await mirrorOf(id))?.state
+        const st = (bootS.__mirrors?.[id] ?? (await mirrorOf(id)))?.state
         const pose = st === 'delegating' ? 'dispatch' : st === 'thinking' || st === 'starting' ? 'console' : null
         if (pose) await checkWorker(`${st} ${label}`, bootS, id, { pose })
         else log(`skip ${id} pose check: state ${st}`)
@@ -825,7 +867,9 @@ try {
   }
 
   await startLiveRun('Factory floor paused [mock:factory-floor-pause]')
-  const paused = await untilState((s) => s.hall === 'paused', 60_000)
+  // The tour is the 40-agent tour again, then a usage limit: on windows-latest the renderer showed it 80 s late (the 39
+  // stations alone took 84 s), so the wait for the paused hall is as long as that run can take, not 60 s.
+  const paused = await untilState((s) => s.hall === 'paused', 180_000)
   chk3(!!paused, '[mock:factory-floor-pause]: the hall is paused', await state().then((s) => s.hall).catch(() => null))
   chk3((await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall')) === 'paused', 'factory-scene data-hall is paused', await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall'))
   // ---------- Slice 4: cues and motion (sections 1.4, 5, 6.5, 6.7, 7.5, 9.1, 10.3, 10.4) ----------
@@ -888,7 +932,7 @@ try {
   const allowGate = async () => {
     const allow = page.locator('.decision-card .decision-footer .btn.primary').first()
     await allow.waitFor({ timeout: 20_000 })
-    await allow.click()
+    await allow.click({ timeout: BUSY_CLICK_MS })
   }
   /** Start a gated run and return the state read while it waits at the gate (the scene is mounted, nothing has happened). */
   const startGated = async (label, work, delayMs) => {

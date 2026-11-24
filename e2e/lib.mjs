@@ -471,11 +471,11 @@ export async function deleteProject(page, name) {
   return tiles().count()
 }
 
-/** End a live session if the button is there. */
-export async function endSession(page) {
+/** End a live session if the button is there. `timeout` is for the click (a renderer busy with a very large run answers late). */
+export async function endSession(page, { timeout } = {}) {
   const end = page.getByRole('button', { name: 'End session' })
   if (await end.count()) {
-    await end.click()
+    await end.click(timeout ? { timeout } : undefined)
     await sleep(1500)
   }
 }
