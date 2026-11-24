@@ -119,7 +119,7 @@ export function spendRises(x: Spend, y: Spend): Clause[] {
     if (compareEffort(y.most, x.most) > 0) out.push(x.fixed ? 'auto' : 'most')
     if (!y.fixed && compareEffort(y.nopick, x.nopick) > 0) out.push('nopick')
   }
-  if (y.floor !== undefined && (x.floor === undefined || compareTier(y.floor, x.floor) > 0)) out.push('floor')
+  if (y.floor !== undefined && compareTier(y.floor, x.floor ?? 'fast') > 0) out.push('floor')
   return out.map((kind) => ({ kind, x, y }))
 }
 

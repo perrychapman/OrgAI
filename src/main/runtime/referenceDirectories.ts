@@ -221,7 +221,13 @@ function shellGlobGroup(pattern: string, allowSimple: boolean, budget: ShellGlob
     if (ch === '[') {
       const cls = parseGlobBracketClass(pattern, i)
       if (cls) {
-        if (cls.unclosed) return 'unreadable'
+        if (cls.unclosed) {
+          if (pattern[i + 1] === ']') {
+            i++
+            continue
+          }
+          return 'unreadable'
+        }
         budget.work += cls.end - i
         if (budget.work > MAX_SHELL_GLOB_PARSE_WORK) return 'unreadable'
         i = cls.end
@@ -249,7 +255,13 @@ function shellGlobGroup(pattern: string, allowSimple: boolean, budget: ShellGlob
       if (inner === '[') {
         const cls = parseGlobBracketClass(pattern, j)
         if (cls) {
-          if (cls.unclosed) return 'unreadable'
+          if (cls.unclosed) {
+            if (pattern[j + 1] === ']') {
+              j++
+              continue
+            }
+            return 'unreadable'
+          }
           budget.work += cls.end - j
           if (budget.work > MAX_SHELL_GLOB_PARSE_WORK) return 'unreadable'
           j = cls.end

@@ -74,6 +74,19 @@ describe('spendRaisesOf', () => {
     expect(heldUp.held.map((h) => h.field)).toEqual(['effort'])
     expect(heldUp.plan.empty).toBe(true)
   })
+  it('allows setting minTier fast over unset without a spend raise, and holds everyday', () => {
+    const p = proj()
+    expect(spendRaisesOf(p, { rolePatches: [{ slug: 'dev', staffing: { mode: 'auto', minTier: 'fast' }, reason: 'r' }] })).toEqual([])
+    const fastPlan = validateEvolutionPlan(p, raw([{ slug: 'dev', tier: 'fast', staffing: { mode: 'auto', minTier: 'fast', maxEffort: 'high' }, reason: 'r' }]), { diagnosis: { findings: [] } })
+    expect(spendRaisesOf(p, fastPlan)).toEqual([])
+    expect(holdSpendRaises(p, fastPlan, { diagnosis: { findings: [] } }).held).toEqual([])
+
+    const lead = proj().roles[0]
+    const deepRole = { ...lead, slug: 'worker', id: 'r_worker', reportsTo: 'r_lead', canSpawn: false, spawnable: [], tier: 'deep' as const, model: 'deep' }
+    const p2 = project({}, [lead, deepRole])
+    const up = validateEvolutionPlan(p2, raw([{ slug: 'worker', staffing: { mode: 'auto', minTier: 'everyday' }, reason: 'r' }]), { diagnosis: under('worker') })
+    expect(spendRaisesOf(p2, up).map((r) => r.field)).toEqual(['staffing'])
+  })
 })
 
 describe('holdSpendRaises', () => {

@@ -32,4 +32,17 @@ describe('settleSpend on a Role (the CLI role editor reads the team files gate r
     expect(toHigh.held.map((h) => h.summary)).toEqual(["Dev's reasoning effort is raised and may spend more."])
     expect(toHigh.apply).toEqual([])
   })
+
+  it('setting a fast floor over unset applies cleanly; everyday over unset or fast is held', () => {
+    const fastFloor = settleSpend(base, { ...base, staffing: { mode: 'auto', minTier: 'fast' } }, [undefined], 'Dev')
+    expect(fastFloor.held).toEqual([])
+    expect(fastFloor.apply).toEqual(['staffing'])
+
+    const everydayFloor = settleSpend(base, { ...base, staffing: { mode: 'auto', minTier: 'everyday' } }, [undefined], 'Dev')
+    expect(everydayFloor.held.map((h) => h.summary)).toEqual(['Dev gets a lowest tier of everyday. This may spend more.'])
+    expect(everydayFloor.apply).toEqual([])
+
+    const raised = settleSpend({ ...base, staffing: { mode: 'auto', minTier: 'fast' } }, { ...base, staffing: { mode: 'auto', minTier: 'everyday' } }, [undefined], 'Dev')
+    expect(raised.held.map((h) => h.summary)).toEqual(["Dev's lowest tier is raised from fast to everyday. This may spend more."])
+  })
 })
