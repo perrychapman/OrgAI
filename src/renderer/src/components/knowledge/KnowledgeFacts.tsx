@@ -142,6 +142,7 @@ function FactRow({
           invalid={!!error}
           aria-describedby={error ? `${uid}-err` : undefined}
           autoComplete="off"
+          title={draft.length > 36 ? draft : undefined}
           data-testid="knowledge-fact-input"
           onChange={(v) => {
             setDraft(v)

@@ -24,7 +24,7 @@ export default function WeekStrip({ list, now, globalPaused }: { list: readonly 
             </div>
             <ul className="schedule-day-chips" aria-hidden="true">
               {d.chips.map((c) => (
-                <li key={`${c.scheduleId}-${c.at}`} className={`schedule-chip${c.off ? ' is-off' : ''}`} style={{ '--schedule-colour': scheduleColour(list, c.scheduleId) } as CSSProperties} title={`${showHidden(c.name)} at ${c.time}${c.off ? ' (off)' : ''}`}>
+                <li key={`${c.scheduleId}-${c.at}`} className={`schedule-chip${c.off ? ' is-off' : ''}${c.at < now ? ' is-past' : ''}`} style={{ '--schedule-colour': scheduleColour(list, c.scheduleId) } as CSSProperties} title={`${showHidden(c.name)} at ${c.time}${c.off ? ' (off)' : c.at < now ? ' (already past)' : ''}`}>
                   <span className="schedule-chip-time">{c.time}</span>
                   <span className="schedule-chip-name">{showHidden(c.name)}</span>
                 </li>

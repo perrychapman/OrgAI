@@ -247,6 +247,17 @@
 .knowledge-filters[data-layout='band'] .knowledge-origins {
   flex: none;
 }
+/* In the column the three segments are stacked (label left, count right): side by side they wrap into two rows. */
+.knowledge-filters:not([data-layout='band']) .knowledge-origin-seg {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-self: stretch;
+  flex: 1 1 100%;
+}
+.knowledge-filters:not([data-layout='band']) .knowledge-origin-seg .seg-item {
+  justify-content: space-between;
+}
 .knowledge-inline-switch {
   flex: none;
 }

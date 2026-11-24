@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Archive, Network, Plus, SearchX } from 'lucide-react'
 import type { EngagementNote, EngagementNoteContent, KnowledgeGraph as KnowledgeGraphData, KnowledgeInferredResult, KnowledgeNode, Project } from '@shared/types'
 import { ENGAGEMENT_NOTES_MAX, KNOWLEDGE_NODES_MAX } from '@shared/types'
 import { emptyKnowledgeGraph } from '@shared/knowledge'
@@ -702,13 +702,14 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
         ) : empty === 'none' || empty === 'none-runs' ? (
           <EmptyState
             compact
+            icon={Network}
             testId={empty === 'none' ? 'knowledge-empty' : 'knowledge-empty-runs'}
             title={empty === 'none' ? 'Nothing recorded yet' : 'The team has not recorded anything yet'}
             description={empty === 'none' ? 'Add a note for the team, or run the team and it records people, systems, decisions and risks here as it works.' : 'Notes you add here are read at the start of every run.'}
             actions={addButtons}
           />
         ) : empty === 'retired' ? (
-          <EmptyState compact testId="knowledge-empty-retired" title="Only retired items." description="Show retired to see them." />
+          <EmptyState compact icon={Archive} testId="knowledge-empty-retired" title="Only retired items." description="Show retired to see them." />
         ) : onlyNotes ? (
           <EmptyState
             compact
@@ -764,6 +765,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
         ) : empty === 'filter' ? (
           <EmptyState
             compact
+            icon={SearchX}
             testId="knowledge-empty-filter"
             title={filter.query.trim() ? `No items match ${filter.query.trim()}.` : 'No items match these filters.'}
             actions={
