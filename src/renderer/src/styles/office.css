@@ -60,12 +60,13 @@
 .office-directory[open] > .office-chip { color: var(--text-primary); background: var(--glass-strong); }
 .office-show { display: inline-flex; padding: 2px; border-radius: var(--radius-lg); }
 .office-show .seg { padding: 0; border: 0; background: transparent; }
-.office-show .seg-item { padding: var(--space-1) var(--space-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.office-show .seg-item { min-height: var(--space-6); padding: var(--space-1) var(--space-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .office-show .seg-item.on { background: var(--field-bg); box-shadow: none; font-weight: var(--weight-semibold); }
 .office-show .seg-item:last-child { color: var(--warning-text); }
 
 /* The stage is a native scroller over the run view's stage; the building is centred in it when smaller. */
 .office-stage-wrap { position: relative; flex: 1 1 auto; display: flex; min-height: 100px; }
+.office-stage::-webkit-scrollbar-corner { background: transparent; }
 .office-stage { position: relative; flex: 1 1 auto; min-width: 0; min-height: 100px; overflow: auto; background: transparent; border-radius: var(--radius-lg); cursor: grab; user-select: none; }
 .office-stage[data-dragging='true'] { cursor: grabbing; }
 .office-stage:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }

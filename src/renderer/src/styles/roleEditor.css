@@ -63,6 +63,19 @@
   -webkit-line-clamp: 2;
   line-clamp: 2;
 }
+/* A short window (1024x640): the sticky header is about a fifth of the panel with a two-line name, so the name takes one
+   line there (still in its title) and the header gives back about 40 px to the sections. */
+@media (max-height: 760px) {
+  .role-inspector .ri-header {
+    padding-block: var(--space-3) var(--space-2);
+  }
+  .role-inspector .ri-heading h2 {
+    font-size: var(--text-title);
+    line-height: var(--text-title-lh);
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+}
 .ri-subline {
   overflow-wrap: anywhere;
   font-size: var(--text-caption);
@@ -485,4 +498,17 @@
 }
 .rd-other-body {
   min-width: 0;
+}
+
+/* Polish pass (UX walk, target size): the text links and colour swatches in the Team panels were 19 to 22 px high. They
+   keep their look and reach 24 px, so a pointer or a finger lands on them. */
+.team-editor .link-btn,
+.team-editor .mcp-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--space-6);
+}
+.team-editor .swatch {
+  width: var(--space-6);
+  height: var(--space-6);
 }

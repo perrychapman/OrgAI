@@ -265,6 +265,11 @@
   .import-aside {
     position: sticky;
     top: 0;
+    /* A sticky card taller than the dialog body would hide its last lines (the team size, the notes) until the very end
+       of the list: it scrolls inside instead. The dialog is at most the window high, minus its head and foot. */
+    max-height: calc(100vh - 14rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 }
 
@@ -526,9 +531,11 @@
 }
 .import-chip {
   display: inline-flex;
-  align-items: center;
+  /* A long name wraps: the "+" stays on the first line (baseline), not in the middle of the chip. */
+  align-items: baseline;
   min-height: var(--space-6);
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  line-height: var(--text-caption-lh);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   font-size: var(--text-caption);

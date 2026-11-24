@@ -155,9 +155,9 @@ function ImportRow({
       </div>
       {(item.modelReason === 'default' || item.modelReason === 'inherit' || (item.tier && item.modelReason === 'tier') || spend) && (
         <p className="hint import-hints">
-          {item.modelReason === 'default' && <span>Not recognised, so the Standard model was used.</span>}
+          {item.modelReason === 'default' && <span>Not recognised, so the Standard model was used. </span>}
           {item.modelReason === 'inherit' && <span>Inherit means it uses its parent&apos;s model. </span>}
-          {item.tier && item.modelReason === 'tier' && <span>Mapped to your {PLAIN_TIER_WORD[item.tier]} model.</span>}
+          {item.tier && item.modelReason === 'tier' && <span>Mapped to your {PLAIN_TIER_WORD[item.tier]} model. </span>}
           {spend && <span data-testid="import-spend">{spend}</span>}
         </p>
       )}
