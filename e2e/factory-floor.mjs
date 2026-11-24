@@ -226,9 +226,15 @@ const startLiveRun = async (prompt, metaTimeout = 15_000) => {
   await ta.waitFor({ timeout: 10_000 })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: metaTimeout }).catch(async (error) => {
+  const metaFrom = Date.now()
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: metaTimeout }).then(() => {
+    if (Date.now() - metaFrom > 15_000) log(`startLiveRun(${JSON.stringify(prompt)}): the run view took ${Math.round((Date.now() - metaFrom) / 1000)} s to show`)
+  }).catch(async (error) => {
     // What the page showed when the run never appeared (CI windows-latest timed out here after the stress phase).
     const seen = await page.evaluate(() => ({
+      metas: [...document.querySelectorAll('[data-testid=run-meta]')].map((m) => (m.getClientRects().length ? 'shown' : 'hidden')),
+      workers: document.querySelectorAll('[data-testid=factory-worker]').length,
+      scenes: document.querySelectorAll('[data-testid=factory-scene]').length,
       newRun: !!document.querySelector('.new-run'),
       draft: document.querySelector('.composer textarea')?.value ?? null,
       endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
@@ -1133,7 +1139,7 @@ try {
   chk4(!!burstBase, 'burst run: the scene is mounted at the gate', null)
   const bcol = collector()
   await allowGate()
-  const burstDone = await watch((s) => s.mode === 'live' && workers.every((w) => wOf(s, w)?.shutter) && s.workers[0]?.lamp === 'off', 120_000, bcol.each)
+  const burstDone = await watch((s) => s.mode === 'live' && workers.every((w) => wOf(s, w)?.shutter) && s.workers[0]?.lamp === 'off', 240_000, bcol.each)
   chk4(!!burstDone, 'burst run: every station finished', await state().then((s) => ({ n: s.workers.length, shutters: s.workers.filter((w) => w.shutter).length })).catch(() => null))
   const bst = burstDone ?? (await state())
   const pk = bst.cuePeaks
@@ -1257,7 +1263,7 @@ try {
     }
     requestAnimationFrame(step)
   })
-  const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 120_000, sampleStress)
+  const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 300_000, sampleStress)
   chk6(!!stressRun, '40-agent stress: all 40 agents are on the floor and the six merged crates reached the dock', await state().then((s) => ({ n: s.workers.length, cues: s.cues.length })).catch(() => null))
   const sst = stressRun ?? (await state())
   // What the page read on its own writes (see above) joins what the polls saw; each figure is a peak, so the larger one stands.
@@ -1434,9 +1440,11 @@ try {
     // After the 40-agent stress and the cue phases a SwiftShader runner can take longer to end the last session and show
     // the new run (CI windows-latest hit the 15 s default here twice): this one start waits longer. 45 s was not enough
     // either: on 2026-11-23 three windows-latest runs timed out here with the run already on screen and idle (tab
-    // "R14 Factory floor large team Idle", End session shown) but its run-meta not drawn yet, so the wait is 120 s.
-    await startLiveRun('Factory floor large team', 120_000)
-    const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 150_000)
+    // "R14 Factory floor large team Idle", End session shown) but its run-meta not drawn yet, so the wait was 120 s. The
+    // renderer applies 121 spawns a render at a time: on two cores at a 6x throttle the run view took 113 s to show (and a
+    // first try at 120 s failed once), and the stress phase before it took windows-latest 203 s, so the waits follow the renderer.
+    await startLiveRun('Factory floor large team', 300_000)
+    const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 240_000)
     chk6(!!bigState, `large team: ${LARGE + 1} agents (root and ${LARGE} spawns) are on the floor`, await state().then((s) => s.workers.length).catch(() => null))
     if (bigState) {
       const n = bigState.workers.length

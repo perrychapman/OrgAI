@@ -377,12 +377,14 @@ export const SCRIPT_TIMEOUT_MS = 10 * 60 * 1000
  * Scripts that need more than the default. factory-floor runs a SwiftShader WebGL2 scene with a 40-agent stress and a
  * 121-agent case on windows-latest (the 2026-11-23 push run 45208950226 spent 600 s there and was killed in its leak phase,
  * after every check had passed); macOS skips the WebGL2 phases. The rest keep the default.
- * 30 minutes since run 45364861814 (2026-11-24, windows-latest): it needed 15.6 minutes to reach the end of the stress
- * run's ambient window, of which 2.5 were a wait that could not succeed (fixed), and the phases behind that window (near
- * zoom, the 121-agent team, the leak and sample checks) took 0.75 to 0.95 times as long again as everything before it in
- * every local run (7.0 minutes on a desktop, 9.5 on two cores at 3x throttle): about 24 minutes there. The e2e job has 110.
+ * 35 minutes since run 45364861814 (2026-11-24, windows-latest): it needed 15.6 minutes to reach the end of the stress
+ * run's ambient window, of which about 2.5 were a wait that could not succeed (fixed), and the phases behind that window
+ * (near zoom, the 121-agent team, the leak and sample checks) took 0.75 times as long again as everything before it on a
+ * desktop (7.0 minutes in all), 0.95 on two cores at 3x throttle (9.5 to 10 minutes) and 1.1 on two cores at 6x (11
+ * minutes; the 121-agent run view alone took 113 s to show). Applied to the runner's 13 minutes that is 23 to 28 minutes.
+ * The e2e job has 110 minutes; the chain without this script took 63.
  */
-export const SCRIPT_TIMEOUTS_MS = { 'factory-floor': 30 * 60 * 1000 }
+export const SCRIPT_TIMEOUTS_MS = { 'factory-floor': 35 * 60 * 1000 }
 /** The wall-clock budget of one script: E2E_SCRIPT_TIMEOUT_MS wins, then the per-script entry, then the default. */
 export function scriptTimeoutMs(name, env = process.env) {
   return Number(env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUTS_MS[name] || SCRIPT_TIMEOUT_MS
