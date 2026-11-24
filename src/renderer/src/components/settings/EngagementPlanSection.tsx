@@ -14,11 +14,12 @@ import { Textarea } from '../ui/Textarea'
 import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 
 const REVIEW_PROMPT = 'Review the engagement plan with me and propose changes.'
 
 function focusLater(selector: string): void {
-  requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus()))
+  focusLaterUnlessMoved(() => document.querySelector<HTMLElement>(selector), 2)
 }
 
 /**

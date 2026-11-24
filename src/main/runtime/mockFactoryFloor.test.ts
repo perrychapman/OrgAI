@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, AgentMessage, PermissionDecision, RunEvent, RunPlan } from '@shared/types'
 import { defaultRoles } from '@shared/defaults'
-import { FACTORY_FLOOR_IDS, FACTORY_FLOOR_PAUSE_TOKEN, FACTORY_FLOOR_TOKEN, MOCK_FACTORY_FLOOR_READY, MockAdapter, factoryFloorSteps } from './mock'
+import { FACTORY_FLOOR_IDS, FACTORY_FLOOR_PAUSE_TOKEN, FACTORY_FLOOR_TOKEN, MOCK_FACTORY_FLOOR_READY, MockAdapter, factoryFloorSteps, type MockStep } from './mock'
 import { ROOT_AGENT_ID } from './types'
 import { fakeCtx, project } from './testHelpers'
 
@@ -107,6 +107,53 @@ describe('mock [mock:factory-floor]', () => {
     expect(steps.at(-1)).toMatchObject({ type: 'rateLimit' })
     expect(factoryFloorSteps('a', 'b').some((s) => s.type === 'rateLimit')).toBe(false)
     expect(FACTORY_FLOOR_PAUSE_TOKEN).not.toContain(FACTORY_FLOOR_TOKEN)
+  })
+
+  it('the plain tour holds ff-w111 at its machine until the card is answered; the -pause tour holds it for the time only', () => {
+    const held = (pause: boolean) => factoryFloorSteps('a', 'b', pause).find((s) => s.type === 'tool' && s.holdMs)
+    expect(held(false)).toMatchObject({ agent: 'ff-w111', holdUntilAnswered: true })
+    expect(held(true)).not.toHaveProperty('holdUntilAnswered')
+  })
+
+  const heldScript = (): { ctx: ReturnType<typeof fakeCtx>; answer: () => void; said: () => boolean; work: MockStep[] } => {
+    let answerCard: (() => void) | undefined
+    const ctx = fakeCtx({
+      autoContinue: false,
+      prompt: 'x',
+      requestPermission: vi.fn(() => new Promise<PermissionDecision>((resolve) => { answerCard = () => resolve({ behavior: 'allow' as const }) }))
+    })
+    const work: MockStep[] = [
+      { type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true, background: true, result: 'ok' },
+      { type: 'tool', name: 'Read', input: { file_path: 'a' }, holdMs: 20, holdUntilAnswered: true },
+      { type: 'text', text: 'AFTER THE HOLD' }
+    ]
+    const said = (): boolean => ctx.events.some((e) => e.type === 'transcript' && e.entry.block.kind === 'text' && e.entry.block.text === 'AFTER THE HOLD')
+    return { ctx, answer: () => answerCard?.(), said, work }
+  }
+
+  it('a step with holdUntilAnswered stays in state tool long after its time until the background card is answered', async () => {
+    const { ctx, answer, said, work } = heldScript()
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    await vi.waitFor(() => expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).toBe('tool'))
+    // Fifteen times the hold: a timed hold would be over.
+    await new Promise((r) => setTimeout(r, 300))
+    expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).toBe('tool')
+    expect(said()).toBe(false)
+    answer()
+    await vi.waitFor(() => expect(said()).toBe(true))
+    expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).not.toBe('tool')
+    await session.stop()
+    await session.finished
+  })
+
+  it('stop releases a step that holds until the card is answered', async () => {
+    const { ctx, said, work } = heldScript()
+    const session = await new MockAdapter({ script: { delayMs: 0, work } }).start(ctx)
+    await vi.waitFor(() => expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).toBe('tool'))
+    await new Promise((r) => setTimeout(r, 100))
+    await session.stop()
+    await session.finished
+    expect(said()).toBe(false)
   })
 
   it('a tool step with holdMs keeps the agent in state tool until the hold ends', async () => {

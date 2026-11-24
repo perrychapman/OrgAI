@@ -53,6 +53,7 @@ import { revealOutputsTab } from './outputs/revealOutputsTab'
 import ReviseDialog from './outputs/ReviseDialog'
 import { canRevise } from '../lib/outputRevise'
 import { collapseOutputCalls, matchOutputId, producedSentence, registeredSentence, type OutputWriteRow } from '../lib/outputsRun'
+import { focusLaterUnlessMoved } from '../lib/laterFocus'
 
 interface Props {
   /** The run this panel shows. */
@@ -269,7 +270,7 @@ function OutputWriteRowView({ row, body, runId, tabRunId, arrive }: { arrive?: b
                 output={matched}
                 onClose={() => {
                   setRevising(false)
-                  requestAnimationFrame(() => reviseBtn.current?.focus())
+                  focusLaterUnlessMoved(() => reviseBtn.current)
                 }}
               />
             )}

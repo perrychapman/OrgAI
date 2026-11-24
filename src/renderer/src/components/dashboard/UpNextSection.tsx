@@ -9,6 +9,7 @@ import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { saveSchedulesPaused, useSchedules } from '../schedules/useSchedules'
 import { focusAfterRemoval } from './AttentionSection'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import { DashSection, useDashboard } from './DashboardContext'
 import { useNow } from './useDashboardData'
 
@@ -129,7 +130,7 @@ export function UpNextSection(): ReactElement | null {
               onClick={() => {
                 const collapsing = more
                 setMore(!more)
-                if (collapsing) requestAnimationFrame(() => moreRef.current?.focus())
+                if (collapsing) focusLaterUnlessMoved(() => moreRef.current)
               }}
             >
               {more ? 'Show fewer' : `Show ${hidden} more`}
