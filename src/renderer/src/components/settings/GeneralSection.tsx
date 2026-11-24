@@ -96,13 +96,13 @@ export function GeneralSection({ project, patch }: { project: Project; patch: (p
         </p>
         <SettingRow
           title="Name"
-          width="select"
+          width="full"
           control={<Input id={`${uid}-name`} aria-label="Name" value={project.name} onChange={(v) => patch({ name: v })} />}
         />
         {kind === 'engagement' && (
           <SettingRow
             title="Who or what it is for"
-            width="select"
+            width="full"
             control={<ClientField id={`${uid}-client`} project={project} patch={patch} />}
           />
         )}

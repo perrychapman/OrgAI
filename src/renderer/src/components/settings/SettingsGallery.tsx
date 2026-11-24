@@ -1,6 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ArrowUp } from 'lucide-react'
 import { Chip } from '../ui/Chip'
+import { Icon } from '../ui/Icon'
 import { useRovingFocus } from '../connectors/useRovingFocus'
 import { scrollContainerOf, scrollWithin } from '../../lib/scrollWithin'
 
@@ -76,6 +78,31 @@ export function revealAside(el: Element | null | undefined): void {
   const view = box ? box.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
   const at = el.getBoundingClientRect()
   if (at.top > view.bottom - 120 || at.bottom < view.top + 40) scrollWithin(el, 'start')
+}
+
+/**
+ * "Back to the list" at the top of a detail panel. It only shows where the panel is stacked below the grid (narrow
+ * windows, CSS decides), where a click on a tile jumps down to the panel and the list is far above: this scrolls the
+ * selected tile back into view and puts focus on it, so picking the next one is one step.
+ */
+export function DetailBack({ label = 'Back to the list' }: { label?: string }): ReactElement {
+  return (
+    <button
+      type="button"
+      className="settings-detail-back"
+      data-testid="gallery-detail-back"
+      onClick={(e) => {
+        const root = e.currentTarget.closest('.settings-gallery')
+        const tile = root?.querySelector<HTMLElement>('.settings-gallery-pick[aria-pressed="true"], .connector-tile.is-selected [data-testid=connector-action]')
+        if (!tile) return
+        scrollWithin(tile, 'center')
+        tile.focus({ preventScroll: true })
+      }}
+    >
+      <Icon icon={ArrowUp} size="sm" />
+      {label}
+    </button>
+  )
 }
 
 export function SettingsGallery({
@@ -243,6 +270,7 @@ export function SettingsGallery({
           aria-label={`${label}: ${current.name}`}
           data-testid={testId ? `${testId}-detail` : undefined}
         >
+          <DetailBack />
           {renderDetail(current)}
         </aside>
       )}

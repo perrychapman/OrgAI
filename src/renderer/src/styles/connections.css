@@ -272,8 +272,16 @@
 }
 @container settings-col (min-width: 720px) {
   .conn-fields {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
+}
+/* In the detail panel (about 300 to 400 px wide) the fields always stack: two columns cut the second one off at the
+   panel's edge, because the container query above measures the settings column, not the panel. */
+.settings-gallery-aside .conn-fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+.conn-fields > * {
+  min-width: 0;
 }
 .radio-list {
   display: flex;
@@ -312,10 +320,16 @@
   font-size: var(--text-small);
   cursor: pointer;
 }
-.seg-item.on {
-  background: var(--surface-3);
+.seg-item:not(.on):hover {
+  background: var(--surface-2);
   color: var(--text-primary);
-  box-shadow: var(--inset-border-strong);
+}
+/* The chosen option reads at a glance (it was a grey fill one step from the track, hard to tell in dark): an accent wash
+   and an accent edge, which is a shape change as well as a colour one. */
+.seg-item.on {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-soft-border);
 }
 .seg-item input {
   position: absolute;

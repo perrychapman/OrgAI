@@ -43,22 +43,28 @@ function UsdInput({ id, label, describedBy, testId, value, onCommit }: { id: str
     setDraft(null)
   }
   return (
-    <Input
-      id={id}
-      aria-label={label}
-      aria-describedby={describedBy}
-      data-testid={testId}
-      type="number"
-      min={0}
-      step={0.5}
-      value={draft ?? (value ?? '')}
-      placeholder="No limit"
-      onChange={setDraft}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') commit()
-      }}
-    />
+    // The dollar sign is drawn beside the number (decorative: the label already says it is an amount in USD).
+    <span className="usd-field">
+      <span className="usd-sign" aria-hidden="true">
+        $
+      </span>
+      <Input
+        id={id}
+        aria-label={label}
+        aria-describedby={describedBy}
+        data-testid={testId}
+        type="number"
+        min={0}
+        step={0.5}
+        value={draft ?? (value ?? '')}
+        placeholder="No limit"
+        onChange={setDraft}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+        }}
+      />
+    </span>
   )
 }
 

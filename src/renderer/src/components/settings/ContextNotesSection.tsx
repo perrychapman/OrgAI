@@ -9,6 +9,7 @@ import { knowledgeSummaryLine } from '../../lib/knowledge'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
 import { Banner } from '../ui/Banner'
+import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 
 /**
@@ -69,24 +70,26 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
           {error}
         </Banner>
       )}
-      <p className="settings-card-note knowledge-summary-line">
-        <span data-testid="knowledge-summary">{error ? 'Could not read what the team recorded' : summary === null ? 'Looking…' : summary || 'Nothing recorded yet'}</span>
-        {' · '}
-        <button type="button" className="link-btn" data-testid="knowledge-open" onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
-          Open Knowledge
-        </button>
-      </p>
-      <SettingRow
-        id="knowledge-auto-context-title"
-        title="Add known items to what agents receive"
-        description="When a message or brief names an item you added yourself, OrgAI adds a short note about it. This adds a little text to agents' messages."
-        control={<Switch checked={knowledgeAutoContextOn(project)} onChange={setAutoContext} label="Add known items to what agents receive" describedBy={settingDescId('knowledge-auto-context-title')} testId="knowledge-auto-context" />}
-      />
-      {autoError && (
-        <p className="field-msg error" role="alert" data-testid="knowledge-auto-context-error">
-          {autoError}
+      <SettingsCard>
+        <p className="settings-card-note knowledge-summary-line">
+          <span data-testid="knowledge-summary">{error ? 'Could not read what the team recorded' : summary === null ? 'Looking…' : summary || 'Nothing recorded yet'}</span>
+          {' · '}
+          <button type="button" className="link-btn" data-testid="knowledge-open" onClick={() => useAppStore.getState().openKnowledgeItem({ projectId: project.id })}>
+            Open Knowledge
+          </button>
         </p>
-      )}
+        <SettingRow
+          id="knowledge-auto-context-title"
+          title="Add known items to what agents receive"
+          description="When a message or brief names an item you added yourself, OrgAI adds a short note about it. This adds a little text to agents' messages."
+          control={<Switch checked={knowledgeAutoContextOn(project)} onChange={setAutoContext} label="Add known items to what agents receive" describedBy={settingDescId('knowledge-auto-context-title')} testId="knowledge-auto-context" />}
+        />
+        {autoError && (
+          <p className="field-msg error" role="alert" data-testid="knowledge-auto-context-error">
+            {autoError}
+          </p>
+        )}
+      </SettingsCard>
     </SettingsSection>
   )
 }

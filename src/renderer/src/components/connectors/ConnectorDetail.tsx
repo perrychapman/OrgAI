@@ -7,7 +7,7 @@ import { mcpServersForRole } from '@shared/defaults'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { CATEGORY_LABELS, stateChip, tileAction } from '../../lib/connectors'
-import { DetailActions, DetailChips, DetailHeader, DetailList, DetailNote, revealAside, type GalleryTone } from '../settings/SettingsGallery'
+import { DetailActions, DetailBack, DetailChips, DetailHeader, DetailList, DetailNote, revealAside, type GalleryTone } from '../settings/SettingsGallery'
 import { ConnectorLogo } from './ConnectorLogo'
 import { toolCapabilities, variantOf } from './toolCapabilities'
 
@@ -68,6 +68,7 @@ export function ConnectorDetail({ info, onOpen }: { info: ConnectorInfo; onOpen:
 
   return (
     <aside ref={asideRef} className="settings-gallery-aside glass" aria-label={`Selected service: ${def.name}`} data-testid="connector-detail" data-connector={def.id}>
+      <DetailBack />
       <DetailHeader mark={<ConnectorLogo def={def} />} name={def.name} tag={`${CATEGORY_LABELS[def.category]} · ${scope}`} />
       <DetailNote tone={TONE[info.state]} testId="connector-detail-note">
         {note}

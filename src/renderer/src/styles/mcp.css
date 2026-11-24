@@ -274,6 +274,8 @@
 }
 .mcp-link {
   max-width: 100%;
+  /* 24 px target (WCAG 2.2): the link row's own height was 20 to 21 px. */
+  min-height: 24px;
 }
 .mcp-link-text {
   min-width: 0;

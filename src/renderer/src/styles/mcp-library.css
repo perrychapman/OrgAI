@@ -289,3 +289,20 @@
   white-space: nowrap;
   color: var(--text-secondary);
 }
+
+/* ---------- Polish: library rows have no leading switch, so nothing hangs 32 px in from the row's text ---------- */
+.mcp-lib-row .mcp-menu,
+.mcp-lib-row .mcp-row-error,
+.mcp-lib-row .mcp-row-note {
+  padding-left: 0;
+}
+.mcp-lib-row .mcp-test-result,
+.mcp-lib-row .mcp-per-project {
+  margin-left: 0;
+}
+/* A failed or unauthorised test is a Banner already: its own frame is the only one (no box inside a box). */
+.mcp-test-result[data-ok='false'] {
+  border-color: transparent;
+  background: transparent;
+  padding: var(--space-1) 0 0;
+}
