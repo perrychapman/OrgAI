@@ -19,7 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, setReduceMotion, sleep, t } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t } from './lib.mjs'
 // A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
 // two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
 // or ends such a run waits for the renderer to answer instead of timing out at the default.
@@ -53,7 +53,9 @@ const app = await electron.launch({
   timeout: t(60_000),
   env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR }
 })
+scaleApp(app)
 const page = await app.firstWindow()
+scalePage(page)
 page.on('dialog', (d) => void d.accept())
 page.on('console', (m) => {
   if (m.type() === 'error') log('console.error:', m.text().slice(0, 200))
@@ -227,22 +229,42 @@ const startLiveRun = async (prompt, metaTimeout = 15_000) => {
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
   const metaFrom = Date.now()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: metaTimeout }).then(() => {
-    if (Date.now() - metaFrom > 15_000) log(`startLiveRun(${JSON.stringify(prompt)}): the run view took ${Math.round((Date.now() - metaFrom) / 1000)} s to show`)
-  }).catch(async (error) => {
-    // What the page showed when the run never appeared (CI windows-latest timed out here after the stress phase).
-    const seen = await page.evaluate(() => ({
-      metas: [...document.querySelectorAll('[data-testid=run-meta]')].map((m) => (m.getClientRects().length ? 'shown' : 'hidden')),
-      workers: document.querySelectorAll('[data-testid=factory-worker]').length,
-      scenes: document.querySelectorAll('[data-testid=factory-scene]').length,
-      newRun: !!document.querySelector('.new-run'),
-      draft: document.querySelector('.composer textarea')?.value ?? null,
-      endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
-      tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
-    })).catch(() => ({}))
-    log(`startLiveRun(${JSON.stringify(prompt)}) found no run-meta after ${metaTimeout} ms: ${JSON.stringify(seen)}`)
-    throw error
-  })
+  // The ready state is the run header MOUNTED for the new run (the composer is gone and a run-meta is in the DOM), read by
+  // interval polling inside the page. It used to be Playwright's "visible" wait on run-meta, which (a) polls with
+  // requestAnimationFrame, so a renderer that draws a frame every few hundred ms (a software GPU under 122 agents) answers
+  // late or not at all, and (b) is false by design while the frame is narrower than 340 px (layout.css hides .run-meta there,
+  // and the header folds chips into its "more" menu), so a layout state looked like "the run never started". CI windows-latest
+  // 2026-11-24 waited 300 s with the run on screen (122 workers, tab Idle) and a run-meta the page counted as shown.
+  await page
+    .waitForFunction(() => !document.querySelector('.new-run') && !!document.querySelector('[data-testid=run-meta]'), null, { timeout: t(metaTimeout), polling: 250 })
+    .then(() => {
+      if (Date.now() - metaFrom > 15_000) log(`startLiveRun(${JSON.stringify(prompt)}): the run view took ${Math.round((Date.now() - metaFrom) / 1000)} s to show`)
+    })
+    .catch(async (error) => {
+      // What the page showed when the run never appeared.
+      const seen = await page
+        .evaluate(() => {
+          const m = document.querySelector('[data-testid=run-meta]')
+          const box = m?.getBoundingClientRect()
+          return {
+            metas: [...document.querySelectorAll('[data-testid=run-meta]')].map((x) => (x.getClientRects().length ? 'shown' : 'hidden')),
+            metaBox: box ? [Math.round(box.width), Math.round(box.height)] : null,
+            metaVisibility: m ? getComputedStyle(m).visibility : null,
+            frameWidth: Math.round(document.querySelector('.canvas-frame')?.getBoundingClientRect().width ?? 0),
+            window: [innerWidth, innerHeight],
+            hidden: document.hidden,
+            workers: document.querySelectorAll('[data-testid=factory-worker]').length,
+            scenes: document.querySelectorAll('[data-testid=factory-scene]').length,
+            newRun: !!document.querySelector('.new-run'),
+            draft: document.querySelector('.composer textarea')?.value ?? null,
+            endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
+            tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
+          }
+        })
+        .catch(() => ({}))
+      log(`startLiveRun(${JSON.stringify(prompt)}) found no run header after ${t(metaTimeout)} ms: ${JSON.stringify(seen)}`)
+      throw error
+    })
 }
 /** Wait until the mirror has `n` workers and the scene has a readable state of that size. */
 const waitForFloor = async (n, extra = () => true, timeout = Number(process.env.E2E_FACTORY_WAIT_MS) || 90_000) => {
