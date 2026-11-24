@@ -23,11 +23,17 @@ const T = (id) => page.locator(`[data-testid=${id}]`)
 const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await page.locator(sel).first().isVisible())
 // A run header chip that is a button may sit in the header's "more" menu (RunMeta folds what does not fit); the menu item
 // carries the same test id and does the same thing. Returns the visible one, opening the menu first when the chip is folded.
+// The chip can arrive after the header (it renders once the run's summary is in) and the menu's list mounts a moment after
+// the click, so wait for the chip instead of reading it in the same tick: on a slow runner (macOS CI) the single look found
+// nothing. The menu is opened once; a second click would close it again.
 const metaChip = async (id) => {
   const chip = page.locator(`[data-testid=${id}]:visible`)
-  if ((await chip.count()) === 0) {
-    const more = T('run-meta-more')
-    if (await more.isVisible().catch(() => false)) await more.click()
+  const more = T('run-meta-more')
+  const end = Date.now() + 8000
+  while (Date.now() < end) {
+    if ((await chip.count()) > 0) break
+    if ((await more.isVisible().catch(() => false)) && (await more.getAttribute('aria-expanded').catch(() => null)) !== 'true') await more.click().catch(() => {})
+    await sleep(150)
   }
   return chip.first()
 }

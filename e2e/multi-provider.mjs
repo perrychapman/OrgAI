@@ -10,7 +10,7 @@
 // Static checks run at 1024x640 and 1600x1000 in dark and light, with no page scroll.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, sleep, teamPanelTab } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, sleep, teamPanelTab } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const M = 'E2E multi mock (orgai test)'
@@ -40,6 +40,25 @@ async function selectReviewer() {
   await page.waitForFunction(
     () => {
       // The Runs on select sits in the Model section's "Choose an exact model" reveal.
+      const fold = document.querySelector('[data-testid=role-model-advanced]')
+      if (fold && !fold.open) fold.open = true
+      const sel = document.querySelector('[data-testid=role-runs-on]')
+      return !!sel && sel.getClientRects().length > 0
+    },
+    undefined,
+    { timeout: 20_000, polling: 100 }
+  )
+}
+
+/** Open the Model reveal if a re-render closed it and wait until the Runs on select has a box. */
+async function openRunsOn() {
+  const wasClosed = await page.evaluate(() => {
+    const fold = document.querySelector('[data-testid=role-model-advanced]')
+    return !!fold && !fold.open
+  })
+  if (wasClosed) log('the Model reveal was closed by a re-render; opening it again')
+  await page.waitForFunction(
+    () => {
       const fold = document.querySelector('[data-testid=role-model-advanced]')
       if (fold && !fold.open) fold.open = true
       const sel = document.querySelector('[data-testid=role-runs-on]')
@@ -116,17 +135,24 @@ try {
   const describedBy = await page.locator('[data-testid=role-runs-on]').getAttribute('aria-describedby')
   check(!!describedBy && (await page.locator(`[id="${describedBy}"]`).count()) === 1, 'Runs on keeps aria-describedby on the hint', String(describedBy))
   check((await page.locator('[data-testid=role-section-model] [data-testid=role-model-sentence]').count()) === 1, 'one Model and effort sentence')
-  // Keyboard: Runs on is a focusable native select.
+  // Keyboard: Runs on is a focusable native select. It sits in the "Choose an exact model" reveal, which RoleInspector opens
+  // by itself only while the role's connection is not connected (open={notConnected}). On macOS CI the select was "not
+  // visible" here and in the selectOption calls below, so the reveal had closed after selectReviewer opened it (a flip of
+  // that prop when the pinned proxy is connected would do it; not reproduced on Windows, where the log line below never
+  // appears). Open it again, as selectReviewer does, before touching the select; the log line says when that was needed.
+  await openRunsOn()
   await page.locator('[data-testid=role-runs-on]').focus()
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'role-runs-on'), 'Runs on takes keyboard focus')
   await shot('team-pinned')
 
   // Project default clears the pin, then pin again.
+  await openRunsOn()
   await page.locator('[data-testid=role-runs-on]').selectOption('')
   await sleep(900)
   const said = await page.evaluate(() => [...document.querySelectorAll('[role=status]')].map((e) => e.textContent).join(' | '))
   check(/Runs on the project default/.test(said), 'changing Runs on is announced through a polite status region', said.slice(0, 200))
   check((await findProject(page, M)).roles.find((r) => r.name === 'Reviewer')?.connection === undefined, '"Project default" clears Role.connection')
+  await openRunsOn()
   await page.locator('[data-testid=role-runs-on]').selectOption(proxyId)
   await sleep(900)
 
