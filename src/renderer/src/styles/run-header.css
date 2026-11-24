@@ -60,7 +60,9 @@
   white-space: nowrap;
 }
 /* The toolbar row keeps room for status, cost and "more": the canvas chrome next to it gives way first (it clips). */
-@container frame (min-width: 740px) {
+/* From 800 px: the end group (352) + the Theme menu with its word (115) + padding and gaps (72) + this 256 need about 795, so
+   the 256 floor starts at 780 and below that the meta shrinks (and folds into "more") instead of clipping the Theme button. */
+@container frame (min-width: 800px) {
   .frame-toolbar-dense > .run-meta {
     flex: 1 0 calc(var(--space-16) * 4);
   }

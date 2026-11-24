@@ -504,9 +504,12 @@
     clip-path: inset(50%);
   }
 }
-/* The end group (fold, zoom, style, legend) is 352 px and the meta keeps its 256: with the "Theme" word the row needs about
-   770 px, so under 780 the word goes (it was 680, and the menu button was clipped to a sliver in a 690 px frame). */
-@container frame (max-width: 780px) {
+/* The meta no longer holds 256 px under 800 px (run-header.css), and the three groups sit 8 px apart instead of 12 there: in a
+   688 px frame (a 1024 px window with the dock open) the meta lost its last chip to a 10 px clip, and the Theme button to a sliver. */
+@container frame (max-width: 800px) {
+  .frame-toolbar.frame-toolbar-dense { gap: var(--space-2); }
+}
+@container frame (max-width: 680px) {
   .canvas-chrome-start .canvas-theme-label { display: none; }
 }
 @container frame (max-width: 520px) {
