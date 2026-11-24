@@ -186,8 +186,10 @@ fixes that change the notes above".
   `.run-meta-next-list` rule.
 - **Home "Start run"** still opens New run with the text and never sends. "Save as a schedule" carries what a schedule can hold
   (model, permission mode except Bypass, limit, single) and names what it could not carry (`scheduleSeed`,
-  `schedule-not-kept-note`); the Inbox focuses its first row on arrival (J / K work) with a dwell that swallows the opening Enter and
-  names the teams with a run going when empty; Home "Your week" says "No prior data" instead of growth from zero; History
+  `schedule-not-kept-note`); the Inbox focuses its first row on arrival (J / K work); a fresh Enter on a row always moves focus into the card, except
+  while the key that opened the Inbox is still down (the hold ends at its key-up through `keys.whenReleased`, not on a timer; a
+  held key's repeats are always swallowed), and J / K / Esc move row focus at once (a pending animation frame once undid a fast
+  Enter; checked by `e2e/dashboard.mjs` IBR1 with the frame held back 300 ms, which failed before). It names the teams with a run going when empty; Home "Your week" says "No prior data" instead of growth from zero; History
   has separate "Run it again" (opens New run) and "Try again" (continues a failed run, confirms first) with a line under each.
 - **Team tab.** The selected-role toolbar stays inside the visible chart and is the next Tab stop after its role; a new role
   is panned into view; Add group opens "Add group lead"; the header shows the Theme control compactly at 1024; the zoom
