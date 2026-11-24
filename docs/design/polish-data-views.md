@@ -39,7 +39,7 @@ Severity: High (broken or unusable), Medium (clearly wrong, seen by everyone), L
 | 18 | History Trends: the per-day bars have no value axis or readout (only the first and last date), and the By role table is 1300 px wide with the figures far from the names | History > Trends | Low | Left: needs a chart design (axis, hover readout). The table is available under "Show as table" |
 | 19 | Schedules rows say "No runs yet." and "Not run yet" and "Weekly cost unknown" for a schedule that has never run: three lines for one fact | Schedules rows | Low | Left: the words live in `lib/schedulesBoard.ts` and are checked by e2e/schedules.mjs; needs a copy decision |
 | 20 | At 1024 the History filter selects wrap onto a second row, so the list shows about three and a half rows | History at 1024 | Low | Left: no room in one row; a menu for the two selects is a design change |
-| 21 | Expanded sidebar (a saved choice) at 1024 leaves the Knowledge detail column squeezed to a sliver with a sideways scrollbar | Knowledge list view with the sidebar open at 1024 | Medium | Left: needs the Knowledge grid to fold the detail pane below a width; I did not change layout rules here since the auto sidebar collapses at 1024. Reported for the owner |
+| 21 | Expanded sidebar (a saved choice) at 1024 leaves the Knowledge detail column squeezed to a sliver with a sideways scrollbar | Knowledge list view with the sidebar open at 1024 | Medium | Fixed in part two (23). Was: needs the Knowledge grid to fold the detail pane below a width; I did not change layout rules here since the auto sidebar collapses at 1024. Reported for the owner |
 | 22 | Large diagram fits at 2%: the drawing is a thin strip, the note says "Zoom in to read, or open the larger view" | Files, diagram preview | Low | Left: by design, the text says what to do |
 
 Checked and fine: both themes keep a visible glass edge on every panel I opened; the preview and detail panes are in
@@ -67,3 +67,32 @@ behaviour was not re-checked (no motion was added).
 ## Checks
 
 See the report that came with this change for the commands run and their results.
+
+## Part two
+
+Second pass over what part one did not look at: Files compare (Side by side, Changes, Rendered, Drawings) for markdown, CSV,
+JSON, Word, Excel and diagram; the in-app editors (markdown, CSV grid, JSON, diagram); the Revise dialog; Usage "Where it
+went" in Model, Role and Connection modes; Knowledge at 1024 with the sidebar open. Mock data, throwaway data dir, 1024x640
+and 1600x1000, dark and light.
+
+| # | What | Where | Sev | Status |
+| --- | --- | --- | --- | --- |
+| 23 | Finding 21 fixed: with the sidebar open at 1024 the list column was 184 px (names cut to one letter) beside a 360 px detail | Knowledge list view (`knowledge.css`) | Medium | Fixed: the detail column is `clamp(280px, 38cqi, 360px)` (cqi of `.main`, as the run view does), so the list keeps 243 px at 1024 with the sidebar open and 360 px stays for wide windows; a dragged width still wins. Same rule in the Graph view band layout |
+| 24 | In that narrow list the origin chip ("Agent") shared the row with the kind chip and left names of 2 to 4 letters ("Ac...") | Knowledge rows | Low | Fixed: below 860 px of tab width the second chip is hidden (provenance is on the line below) |
+| 25 | The diagram editor in the detail panel at 1024x640: the 200 px source box did not shrink, so the drawing painted over it and the source text was hidden | Files, diagram Edit, Split | Medium | Fixed (`outputs-diagram.css`: the source box shrinks to 88 px before the drawing's 200 px floor, which e2e asserts, gives way). Margin is about 1 px at 1024x640 |
+| 26 | The Revise dialog's target read "R2 (still running) (still running)": main already tags the label and the renderer added the words again | Files, Revise dialog | Low | Fixed in `lib/outputRevise.ts` (the tag is dropped once; unit test added) |
+| 27 | Usage "Where it went" in a narrow card (1024): the count after the cost was cut ("11 r...", "1 re...") and names to 7 characters | Usage, Project / Model / Role / Connection ranked rows | Medium | Fixed: below 560 px of card width a row takes two lines (name and cost, bar and counts) |
+| 28 | Compare: the "with" picker wraps under "Compare" at 1024 and starts left of the first select's edge (labels differ in width) | Files, compare head | Low | Left: a fixed label column or a stacked pair is a layout decision for the head |
+| 29 | The markdown editor's source box sits flush under the tab strip (no gap) | Files, markdown Edit | Low | Left: shared `output-edit` spacing, one pixel row, no overlap |
+| 30 | Role breakdown table lists "Orchestrator" twice (two projects) with the project column hidden when the card is narrow | Usage, Role, Show as table at 1024 | Low | Left: the optional project column is dropped by design; the ranked list above names the project |
+| 31 | Connection mode with one connection leaves the card mostly empty beside the taller spend card | Usage at 1600 | Low | Left: expected for one row; no filler wanted |
+| 32 | Sidebar usage meter | Sidebar footer | n/a | Not reachable on the mock adapter: the footer shows only "Mock adapter" with no plan or spend figure, so it was not seen |
+
+Checked and fine: compare in Changes and Side by side for text, grids and drawings in both themes (focus ring on the select
+is visible); the editors for markdown, CSV and JSON; Revise dialog layout and focus; Usage Model, Role and Connection ranked
+rows and tables; light-theme contrast of chips and tabs. To-dos and the schedule editor were already covered in part one and
+were not re-walked.
+
+Left for the owner: the compare head layout (28), the Role table's project column (30). Not verified by eye after the
+changes: Knowledge Graph band at 1024 (the grid column rule is shared; the e2e band checks pass), a schedule or to-do at
+other sizes.

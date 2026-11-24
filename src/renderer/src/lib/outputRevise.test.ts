@@ -43,6 +43,10 @@ describe('targets', () => {
       'A new run'
     ])
   })
+  it('does not repeat the state words main already put in a label', () => {
+    const tagged = { runs: [{ runId: 'r2', label: 'R2 (still running)', state: 'live' as const, madeCurrent: true }], newRunAllowed: false }
+    expect(targetOptions(tagged).map((o) => o.label)).toEqual(['R2 (still running)'])
+  })
   it('defaults to the first run that is not held', () => {
     expect(defaultTarget(targetOptions(opts))).toBe('run:r2')
     expect(defaultTarget(targetOptions({ runs: [{ runId: 'r3', label: 'R3', state: 'held', madeCurrent: true }], newRunAllowed: true }))).toBe('new')
