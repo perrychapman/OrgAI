@@ -40,6 +40,10 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
   there, so a fast machine loses nothing. Do not wrap a sleep that orders two things in `t()`: wait on a standing state
   (a MutationObserver installed before the action, `settleUI`, `showFinishedAgents`, a mock hold such as
   `[mock:revise-hold]` or `[mock:model-switch-hold]`).
+- "Hide finished agents" (View menu in the run toolbar) is the renderer's own `localStorage['orgai.collapseFinished']`, read
+  when a run view mounts. `showFinishedAgents(page, show)` clicks the switch and throws with the page state if it never
+  reaches the wanted value, so do not `.catch(() => {})` it away; `resetFinishedAgentsChoice(page)` restores the default (on)
+  through the key, for the next run or a reload, when a script needs a known start without another menu interaction.
 - Review data (a tool, not a test; not in `e2e:free`): `E2E_DATA_DIR=<folder> node e2e/seed-review.mjs` fills a data folder with
   five projects (code and engagements), runs in many states, outputs with versions and notes, knowledge, to-dos, schedules, a
   Chat, pending decisions and a spending limit, token-free on the mock adapter, so the UI can be reviewed by hand. It refuses

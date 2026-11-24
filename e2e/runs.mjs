@@ -4,7 +4,7 @@
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, openViewMenu, projectTab, screenshot, showFinishedAgents, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, openViewMenu, projectTab, resetFinishedAgentsChoice, screenshot, showFinishedAgents, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -755,7 +755,7 @@ try {
       await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
       // The badge sits on an agent's node, and a finished agent folds into its parent's "done" group 6 s after it ended, which
       // takes the badge with it: a slow page that looks after that finds none (a loaded run waited its whole 90 s for it).
-      await showFinishedAgents(page).catch(() => {})
+      await showFinishedAgents(page).catch((e) => log('delegation run: could not turn Hide finished off:', e.message))
       await page.locator(`[data-testid=${badgeId}]`).first().waitFor({ state: 'attached', timeout: t(30_000) }).catch(() => {})
     }
     await delegationRun('[mock:delegation-skip]', 'agent-badge-delegation-failed')
@@ -768,8 +768,11 @@ try {
     const fixNodes = await page.locator('.react-flow__node .agent-node').count()
     check(fixNodes >= 4, 'the corrected run shows the lead, the manager and its two worker nodes', String(fixNodes))
     await shot('run-delegation-fix')
-    // The choice is the user's own and stays (localStorage): give the later fold checks the default back.
-    await showFinishedAgents(page, false).catch(() => {})
+    // The choice is the user's own and stays (localStorage): give the later fold checks the default back. This was a View menu
+    // click whose failure was swallowed: on windows-latest (CI run 45484286401) it spent its whole 45 s budget, the choice stayed
+    // off and the deep-tree fold check below found four agents and no group. The key is what a run view reads when it mounts
+    // (the next run, the reload below), so reset it directly; the menu switch itself is exercised by the checks further down.
+    await resetFinishedAgentsChoice(page)
     await endSession(page)
     await page.evaluate((p) => window.orgai.projects.save(p), before)
   }
@@ -928,7 +931,9 @@ try {
     counts: await page.locator('[data-testid=done-group]').evaluateAll((els) => els.map((e) => e.getAttribute('data-count'))),
     // No group on the canvas (Hide finished off) is a valid shape: do not let innerText wait out the 30 s default.
     text: ((await page.locator('[data-testid=done-group]').first().innerText({ timeout: t(1500) }).catch(() => '')) || '').replace(/\s+/g, ' '),
-    edges: await page.locator('.react-flow__edge').count()
+    edges: await page.locator('.react-flow__edge').count(),
+    // The stored choice rides in the failure detail: "off" here means the fold was left off, not that it did not run.
+    pref: await page.evaluate(() => localStorage.getItem('orgai.collapseFinished'))
   })
   await page.locator('[data-testid=done-group]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
   await sleep(800)
