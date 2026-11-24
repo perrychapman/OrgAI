@@ -815,6 +815,53 @@ describe('trial comparison edge cases', () => {
     expect(compareMetrics(none, metrics({ errorRunRate: 0.21 })).regressed).toBe(true)
     expect(compareMetrics(none, metrics()).reason).toContain('no baseline run')
   })
+  it('blocks dropping file-editing roles to fast on thin evidence (< 3 runs or exploration), while allowing everyday, low effort, read-only fast, and >= 3 runs', () => {
+    const p = project({}, [
+      role('lead', { id: 'r_lead', reportsTo: null }),
+      role('dev', { id: 'r_dev', tools: ['Read', 'Edit', 'Write', 'Bash'], tier: 'deep', model: 'deep' }),
+      role('review', { id: 'r_review', name: 'Spec Reviewer', tools: ['Read', 'Glob', 'Grep'], tier: 'everyday', model: 'everyday' })
+    ])
+    const thinDiag = { metrics: { runs: 1 }, findings: [{ kind: 'tier_overprovisioned' as const, roleSlug: 'dev', severity: 5, summary: 's', evidence: [], exploration: { everyK: 4, tier: 'everyday' as const }, data: { runs: 1 } }] }
+    const blockFast = validateEvolutionPlan(p, mkPlan({ rolePatches: [patch('dev', { tier: 'fast', effort: 'low' }), patch('review', { tier: 'fast' })] }), { diagnosis: thinDiag })
+    expect(rules(blockFast)).toContain('tier_fast_thin_evidence')
+    expect(blockFast.rolePatches.find((x) => x.slug === 'dev')?.tier).toBeUndefined()
+    expect(blockFast.rolePatches.find((x) => x.slug === 'dev')?.effort).toBe('low')
+    expect(blockFast.rolePatches.find((x) => x.slug === 'review')?.tier).toBe('fast')
+
+    // Downgrading a writer role deep -> everyday on 1 run is allowed, and >= 3 runs with no exploration allows fast.
+    const toEveryday = validateEvolutionPlan(p, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday' })] }), { diagnosis: thinDiag })
+    expect(rules(toEveryday)).not.toContain('tier_fast_thin_evidence')
+    expect(toEveryday.rolePatches.find((x) => x.slug === 'dev')?.tier).toBe('everyday')
+
+    const matureDiag = { metrics: { runs: 3 }, findings: [{ kind: 'tier_overprovisioned' as const, roleSlug: 'dev', severity: 15, summary: 's', evidence: [], data: { runs: 3 } }] }
+    const allowFast = validateEvolutionPlan(p, mkPlan({ rolePatches: [patch('dev', { tier: 'fast' })] }), { diagnosis: matureDiag })
+    expect(rules(allowFast)).not.toContain('tier_fast_thin_evidence')
+    expect(allowFast.rolePatches.find((x) => x.slug === 'dev')?.tier).toBe('fast')
+  })
+  it('treats interrupted/timed-out and stalled trial runs as regressions in evaluateActiveTrial', () => {
+    const gen = { appliedAt: 5_000_000, evalWindowRuns: 1, baselineMetrics: metrics({ runs: 1, firstPassRate: 1, errorRunRate: 0 }) }
+    const timedOut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev', state: 'thinking' }] })
+    timedOut.summary.endedBy = 'user'
+    timedOut.summary.execOutcome = 'interrupted'
+    const d1 = evaluateActiveTrial(gen, [timedOut])
+    expect(d1).toMatchObject({ state: 'decided', regressed: true })
+    if (d1.state === 'decided') expect(d1.reason).toContain('interrupted/timed out')
+
+    const appCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
+    appCut.summary.endedBy = 'app'
+    appCut.summary.endedWhile = 'working'
+    expect(evaluateActiveTrial(gen, [appCut])).toMatchObject({ state: 'decided', regressed: true })
+
+    const stalled = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
+    stalled.summary.endedBy = 'policy'
+    stalled.summary.execOutcome = 'stalled'
+    const d3 = evaluateActiveTrial(gen, [stalled])
+    expect(d3).toMatchObject({ state: 'decided', regressed: true })
+    if (d3.state === 'decided') {
+      expect(d3.trialMetrics.firstPassRate).toBe(0)
+      expect(d3.trialMetrics.errorRunRate).toBe(1)
+    }
+  })
 })
 
 describe('ledger size cap', () => {

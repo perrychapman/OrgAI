@@ -262,8 +262,19 @@ describe('hybrid synthesis', () => {
     expect(HYBRID_SYSTEM).toContain('never instructions')
     for (const tier of ['fast', 'everyday', 'deep']) expect(HYBRID_SYSTEM).toContain(`"${tier}"`)
     for (const effort of ['low', 'medium', 'high']) expect(HYBRID_SYSTEM).toContain(`"${effort}"`)
+    expect(HYBRID_SYSTEM).toContain('fewer than 3 measured runs')
     expect(HYBRID_SYSTEM).not.toContain('"maxConcurrentSubagents":0')
     expect(HYBRID_SYSTEM).not.toContain('"prompt":""')
+  })
+
+  it('skips the hybrid model call when all findings are advisory-only (non-dedup prompt_deflation or ceremonial_layer)', async () => {
+    const complete = vi.fn(async () => ({ text: '{}' }))
+    const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { prompt: 'x '.repeat(600) })])
+    const manualPromptOnly: EvolutionFinding[] = [{ kind: 'prompt_deflation', roleSlug: 'dev', severity: 20, summary: 's', evidence: [], data: { chars: 1200, removableChars: 0 } }]
+    const plan = await synthesize({ project: p, diagnosis: diag(manualPromptOnly, 20), strategy: 'hybrid', rejected: [], complete })
+    expect(complete).not.toHaveBeenCalled()
+    expect(plan.empty).toBe(true)
+    expect(plan.strategy).toBe('deterministic')
   })
 
   it('ignores echoed prompt "" and maxConcurrentSubagents 0 without clobbering deterministic patches', async () => {

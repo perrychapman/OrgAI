@@ -22,8 +22,16 @@ export const MIN_WASTE_DEFAULT = 15
 
 /** Tools that write files or run commands. Never added by a plan. */
 export const WRITE_EXEC_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'Bash', 'PowerShell', 'NotebookEdit'])
+/** File-editing tools that identify a coding/writing role (never dropped to `fast` on thin evidence). */
+export const CODE_WRITE_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+/** Fewest measured runs a file-editing role needs before an evolution may lower it to the `fast` tier. */
+export const MIN_RUNS_FOR_WRITER_FAST = 3
 /** The only tools a plan may add: read-only or bookkeeping tools. */
 export const SAFE_ADD_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>(['Read', 'Glob', 'Grep', 'TodoWrite', 'ListAgents'])
+
+export function isWriterRole(r: Pick<Role, 'tools'>): boolean {
+  return r.tools.some((t) => CODE_WRITE_TOOLS.has(t))
+}
 
 export const effectiveConcurrency = (p: Pick<Project, 'maxConcurrentSubagents'>): number => {
   const n = p.maxConcurrentSubagents

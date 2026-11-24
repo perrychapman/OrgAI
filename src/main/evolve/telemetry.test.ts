@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PlanStep, SkillFinding } from '../../shared/types'
 import { agent, entry, project, role, run } from './fixtures'
-import { classifyError, diagnose, measure, planWidth, safeLine, wasteScoreOf } from './telemetry'
+import { classifyError, diagnose, isInterruptedTrialRun, isMeasuredRun, isTrialRun, measure, planWidth, safeLine, wasteScoreOf } from './telemetry'
 
 const NOW = 1_700_000_000_000
 const steps = (n: number, after: (i: number) => string[] = () => []): PlanStep[] => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, title: `s${i}`, status: 'done' as const, after: after(i) }))
@@ -192,10 +192,50 @@ describe('diagnose findings', () => {
     expect(d.findings.find((f) => f.kind === 'prompt_deflation' && !f.roleSlug)?.data?.neverLoaded).toBe('s1')
   })
 
-  it('prompt_deflation: a prompt over 900 characters', () => {
-    const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null, prompt: 'x '.repeat(700) }), role('dev')])
+  it('prompt_deflation: a prompt over 900 characters reports removableChars and honest summary', () => {
+    const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null, prompt: 'x '.repeat(700) }), role('dev', { prompt: 'Unique line.\n' + 'x '.repeat(500) })])
     const d = diagnose({ project: p, runs: [run({ agents: [{ slug: 'dev' }] })], now: NOW })
-    expect(d.findings.find((f) => f.kind === 'prompt_deflation' && f.roleSlug === 'lead')?.data?.chars).toBe(1400)
+    const leadF = d.findings.find((f) => f.kind === 'prompt_deflation' && f.roleSlug === 'lead')
+    expect(leadF?.data?.chars).toBe(1400)
+    expect(leadF?.data?.removableChars).toBe(0)
+    expect(leadF?.summary).toContain('shorten manually')
+
+    const dup = 'Always run the full test suite before reporting back.'
+    const pDup = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { prompt: [dup, dup, 'Unique detail. '.repeat(70)].join('\n') })])
+    const dDup = diagnose({ project: pDup, runs: [run({ agents: [{ slug: 'dev' }] })], now: NOW })
+    const devF = dDup.findings.find((f) => f.kind === 'prompt_deflation' && f.roleSlug === 'dev')
+    expect(Number(devF?.data?.removableChars)).toBeGreaterThan(0)
+    expect(devF?.summary).toContain('trimmed automatically')
+  })
+
+  it('keeps interrupted/timed-out runs out of normal diagnosis while marking them as interrupted trial runs and failed exec outcomes in measure()', () => {
+    const timedOut = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    timedOut.summary.endedBy = 'user'
+    timedOut.summary.execOutcome = 'interrupted'
+    expect(isMeasuredRun(timedOut)).toBe(false)
+    expect(isInterruptedTrialRun(timedOut)).toBe(true)
+    expect(isTrialRun(timedOut)).toBe(true)
+
+    const appCutWorking = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    appCutWorking.summary.endedBy = 'app'
+    appCutWorking.summary.endedWhile = 'working'
+    expect(isMeasuredRun(appCutWorking)).toBe(false)
+    expect(isInterruptedTrialRun(appCutWorking)).toBe(true)
+
+    const mTrial = measure([timedOut, run({ agents: [{ slug: 'dev' }] })], 8, { includeInterrupted: true })
+    expect(mTrial.runs).toBe(2)
+    expect(mTrial.firstPassRate).toBe(0.5)
+    expect(mTrial.errorRunRate).toBe(0.5)
+
+    for (const execOutcome of ['stalled', 'budget-exceeded', 'incomplete-plan'] as const) {
+      const r = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+      r.summary.endedBy = execOutcome === 'budget-exceeded' ? 'budget' : 'policy'
+      r.summary.execOutcome = execOutcome
+      const m = measure([r])
+      expect(m.runs).toBe(1)
+      expect(m.firstPassRate).toBe(0)
+      expect(m.errorRunRate).toBe(1)
+    }
   })
 
   it('ceremonial_layer: a mid-level spawner with fan-out <= 1 and heavy input', () => {

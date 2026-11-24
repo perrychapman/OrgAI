@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toRoles, type DraftPayload, type DraftRole } from './draft'
+import { DRAFT_SYSTEM, toRoles, type DraftPayload, type DraftRole } from './draft'
 
 function draft(name: string, over: Partial<DraftRole> = {}): DraftRole {
   return {
@@ -136,5 +136,12 @@ describe('toRoles', () => {
     expect(a.position).toEqual({ x: -150, y: 210 })
     expect(b.position).toEqual({ x: 150, y: 210 })
     expect(c.position).toEqual({ x: 0, y: 420 })
+  })
+
+  it('instructs 1-2 roles with root Edit/Write/Bash for small/single-file tasks and concise prompts under 900 chars', () => {
+    expect(DRAFT_SYSTEM).toContain('Small / single-file / 1-2 module task: use 1 to 2 roles total')
+    expect(DRAFT_SYSTEM).toContain('Give the root role Edit, Write and Bash')
+    expect(DRAFT_SYSTEM).toContain('3 to 6 focused specialist roles')
+    expect(DRAFT_SYSTEM).toContain('under 900 characters')
   })
 })

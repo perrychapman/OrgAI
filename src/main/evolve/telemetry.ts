@@ -14,7 +14,7 @@ import type {
   TeamEvolutionDiagnosis
 } from '../../shared/types'
 import { redactEvidence } from '../skills/suggest'
-import { PROMPT_BUDGET_PER_ROLE, effectiveConcurrency, stepTier } from './plan'
+import { PROMPT_BUDGET_PER_ROLE, compressPrompt, effectiveConcurrency, isGuardRole, stepTier } from './plan'
 
 /**
  * The zero-token analyzer: reads finished work runs as stored and produces a waste score, fitness metrics and typed
@@ -72,6 +72,34 @@ export function safeLine(s: string, max = EVIDENCE_LINE_MAX): string {
 
 const safeName = (s: unknown, max = 40): string => String(s ?? '').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, max)
 
+/** True when a work run belongs to this project's team (not setup, quick/Chat, or single-assistant). */
+export function isTeamWorkRun(r: Pick<RunRecord, 'summary'>): boolean {
+  const s = r.summary
+  return s.kind === 'work' && !s.quick && s.projectId !== QUICK_PROJECT_ID && s.team !== 'single'
+}
+
+/** True when an exec run ended without completing (e.g. stalled, budget-exceeded, incomplete-plan, interrupted, failed). */
+export function isFailedExecOutcome(outcome: RunRecord['summary']['execOutcome']): boolean {
+  return outcome !== undefined && outcome !== 'completed' && outcome !== 'completed-unplanned'
+}
+
+/**
+ * True when a team work run was cut short by an interrupt/timeout (headless exec SIGTERM/SIGINT -> execOutcome
+ * 'interrupted', or killed mid-work when the host exited -> endedBy 'app' with endedWhile 'working'). Excluded from
+ * normal diagnosis (isMeasuredRun), but counted as an incomplete/errored run when evaluating an active trial.
+ */
+export function isInterruptedTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
+  const s = r.summary
+  if (!isTeamWorkRun(r)) return false
+  if (s.status !== 'finished' && s.status !== 'error') return false
+  return s.execOutcome === 'interrupted' || (s.endedBy === 'app' && s.endedWhile === 'working')
+}
+
+/** Runs eligible to count in an active trial window (measured runs plus interrupted/timed-out trial runs). */
+export function isTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
+  return isMeasuredRun(r) || isInterruptedTrialRun(r)
+}
+
 /**
  * Finished work runs the engine measures: kind 'work', not a Chat (quick) or single-assistant run, ended finished or
  * error (or paused on a usage limit), and not cut short by the user or by quitting (that says nothing about the team).
@@ -79,7 +107,7 @@ const safeName = (s: unknown, max = 40): string => String(s ?? '').replace(/[^A-
 export function isMeasuredRun(r: Pick<RunRecord, 'summary'>): boolean {
   const s = r.summary
   if (s.endedBy === 'user' || s.endedBy === 'app') return false
-  return s.kind === 'work' && !s.quick && s.projectId !== QUICK_PROJECT_ID && s.team !== 'single' && (s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && s.pausedUntil !== undefined))
+  return isTeamWorkRun(r) && (s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && s.pausedUntil !== undefined))
 }
 
 /** The newest `max` measured runs, newest first. */
@@ -194,21 +222,22 @@ function firstPassOf(a: AgentInstance, run: RunRecord, escalatedAgents: Set<stri
 const escalatedAgentIds = (r: RunRecord): Set<string> => new Set((r.staffing?.assignments ?? []).filter((x) => x.source === 'escalated' && x.agentId).map((x) => x.agentId as string))
 
 /** Fitness of a set of measured runs. Pure. */
-export function measure(runs: RunRecord[], _limit = 8): EvolutionMetrics {
-  const work = runs.filter(isMeasuredRun)
+export function measure(runs: RunRecord[], _limit = 8, opts?: { includeInterrupted?: boolean }): EvolutionMetrics {
+  const work = runs.filter(opts?.includeInterrupted ? isTrialRun : isMeasuredRun)
   let reports = 0
   let passed = 0
   let conflicted = 0
   let errored = 0
   const ratios: number[] = []
   for (const r of work) {
-    // A run paused on a usage limit (status 'paused' with pausedUntil) never finished its work: it counts as not first pass.
+    // A run paused on a usage limit or ended incomplete/interrupted never finished its work: it counts as not first pass.
     const paused = r.summary.status === 'paused'
-    if (r.summary.status === 'error' || paused) errored++
+    const incomplete = paused || isFailedExecOutcome(r.summary.execOutcome) || isInterruptedTrialRun(r)
+    if (r.summary.status === 'error' || incomplete) errored++
     const esc = escalatedAgentIds(r)
     const rep = reportsOf(r)
-    reports += paused ? Math.max(1, rep.length) : rep.length
-    if (!paused) for (const a of rep) if (firstPassOf(a, r, esc)) passed++
+    reports += incomplete ? Math.max(1, rep.length) : rep.length
+    if (!incomplete) for (const a of rep) if (firstPassOf(a, r, esc)) passed++
     if (rep.some((a) => a.worktree?.status === 'conflict')) conflicted++
     const d = dagRatio(r)
     if (d) ratios.push(d.ratio)
@@ -447,7 +476,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
         estSavingsTokens: Math.round((g.outTokens / n) * 0.15),
         estSavingsMs: Math.round((g.wallMs / n) * 0.15),
         ...(thin ? { exploration: { everyK: 4, ...(runtimeTier && stepTier(runtimeTier, -1) ? { tier: stepTier(runtimeTier, -1) } : {}) } } : {}),
-        data: { agents: g.agents, tier: runtimeTier ?? '' }
+        data: { agents: g.agents, runs: g.runs.size, tier: runtimeTier ?? '' }
       })
     }
   }
@@ -542,14 +571,20 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     const chars = role.prompt?.length ?? 0
     if (chars <= PROMPT_BUDGET_PER_ROLE) continue
     const spawns = Math.max(1, (aggs.get(role.slug)?.agents ?? n) / n)
+    const protectedRole = role.reportsTo === null || isGuardRole(role, project.roles)
+    const removableChars = protectedRole ? 0 : chars - compressPrompt(role.prompt ?? '').prompt.length
+    const summary =
+      removableChars > 0
+        ? `${role.name}'s prompt is ${chars} characters (over ${PROMPT_BUDGET_PER_ROLE}); ${removableChars} characters of exact duplicate lines can be trimmed automatically.`
+        : `${role.name}'s prompt is ${chars} characters (over ${PROMPT_BUDGET_PER_ROLE}); no exact duplicate lines to auto-trim (shorten manually if desired).`
     findings.push({
       kind: 'prompt_deflation',
       roleSlug: role.slug,
       severity: clamp(3 + Math.round((chars - PROMPT_BUDGET_PER_ROLE) / 100), 0, 20),
-      summary: safeLine(`${role.name}'s prompt is ${chars} characters (over ${PROMPT_BUDGET_PER_ROLE}); duplicated and filler lines cost tokens on every spawn.`, FINDING_SUMMARY_MAX),
+      summary: safeLine(summary, FINDING_SUMMARY_MAX),
       evidence: [`${chars} characters`, `about ${Math.round(spawns * 10) / 10} spawns per run`],
       estSavingsTokens: Math.round(((chars - PROMPT_BUDGET_PER_ROLE) / 4) * spawns * 0.2),
-      data: { chars }
+      data: { chars, removableChars }
     })
   }
 

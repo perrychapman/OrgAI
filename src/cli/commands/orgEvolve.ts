@@ -279,6 +279,29 @@ async function reviewAndApply(ctx: CliContext, client: HostClient, project: Proj
   const base: { [k: string]: Json } = { project: projectJson(project), diagnosis: analysis.diagnosis as unknown as Json, analysisPlan: plan as unknown as Json, spendRaises: raises as unknown as Json }
 
   if (plan.empty || !plan.gate.ok) {
+    // An active trial whose window filled still needs applyCore to settle (promote or roll back) it on a no-op pass.
+    const history = await hostCall<EvolutionHistory>(client, EVOLVE_IPC.orgEvolveHistory, [{ projectId: project.id }])
+    if (history.trialId) {
+      const res = await hostCall<EvolveApplyResult>(
+        client,
+        EVOLVE_IPC.orgEvolveApply,
+        [{ ...analyzeIn, strategy: 'deterministic', expectedFingerprint: plan.fingerprint }],
+        { timeoutMs: EVOLVE_CALL_TIMEOUT_MS }
+      )
+      emit(
+        ctx,
+        {
+          ...base,
+          applied: false,
+          reason: res.reason ?? (plan.empty ? 'nothing to change' : 'the safety gate refused the plan'),
+          generation: null,
+          teamFilesSynced: res.teamFilesSynced,
+          heldSpendRaises: []
+        },
+        () => [...shown, '', res.reason ? safeLine(res.reason) : 'Nothing would be applied.']
+      )
+      return EXIT.ok
+    }
     emit(ctx, { ...base, applied: false, reason: plan.empty ? 'nothing to change' : 'the safety gate refused the plan', generation: null, teamFilesSynced: false, heldSpendRaises: [] }, () => [...shown, '', 'Nothing would be applied.'])
     return EXIT.ok
   }

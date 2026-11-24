@@ -240,13 +240,22 @@ describe('org evolve --apply', () => {
     expect(f.out()).toContain('Nothing was applied')
   })
 
-  it('an empty or gate-refused plan never reaches apply, with or without --yes', async () => {
+  it('an empty or gate-refused plan never reaches apply when no trial is active, with or without --yes', async () => {
     for (const plan of [{ ...PLAN, empty: true }, { ...PLAN, gate: { ok: false, violations: [] } }]) {
       const { f, client } = flow(plan)
       expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
       expect(client.callsOf('org:evolveApply')).toHaveLength(0)
       expect(f.out()).toContain('Nothing would be applied.')
     }
+  })
+
+  it('when a trial is active and analyze proposes nothing new, --apply settles the trial via deterministic org:evolveApply', async () => {
+    const emptyPlan = { ...PLAN, rolePatches: [], newSkills: [], pruneSkillIds: [], empty: true }
+    const settled = { applied: false, reason: 'Generation gen_1 finished its trial and was promoted (first-pass 1 to 1, errors 0 to 0). No new change was applied.', project: P, diagnosis: DIAGNOSIS, plan: emptyPlan, teamFilesSynced: false }
+    const { f, client } = setup({ 'org:evolveAnalyze': () => analysisOf(emptyPlan), 'org:evolveHistory': () => HISTORY, 'org:evolveApply': () => settled })
+    expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
+    expect(client.callsOf('org:evolveApply')).toEqual([[{ projectId: 'p1', strategy: 'deterministic', expectedFingerprint: emptyPlan.fingerprint }]])
+    expect(f.out()).toContain('Generation gen_1 finished its trial and was promoted')
   })
 
   it('a fingerprint mismatch refusal reads as nothing applied and the plan changed', async () => {
@@ -380,7 +389,7 @@ describe('org retro --unattended', () => {
 
   const RAISE: EvolutionSpendRaise = { roleSlug: 'researcher', field: 'tier', summary: `researcher may cost more ${'r'.repeat(250)} END` }
   const retroApply = (plan: EvolutionPlan = PLAN, result: unknown = { applied: true, generation: GEN, project: P, diagnosis: DIAGNOSIS, plan, teamFilesSynced: false }, tty = false) =>
-    setup({ ...base, 'org:evolveAnalyze': () => ({ diagnosis: DIAGNOSIS, plan, digest: 'd' }), 'org:evolveHistory': () => HISTORY, 'org:evolveApply': () => result }, { tty })
+    setup({ ...base, 'org:evolveAnalyze': () => ({ diagnosis: DIAGNOSIS, plan, digest: 'd' }), 'org:evolveHistory': () => ({ ...HISTORY, trialId: undefined }), 'org:evolveApply': () => result }, { tty })
 
   it('--unattended --apply --yes analyzes then applies the reviewed fingerprint without allowSpendRaise; --apply alone is a usage error; a virtual run is refused', async () => {
     const { f, client } = retroApply({ ...PLAN, spendRaises: [RAISE] }, { applied: true, generation: GEN, project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false, heldSpendRaises: [RAISE] })
