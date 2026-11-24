@@ -473,6 +473,10 @@ try {
     await NRT('new-run-limit').fill('0.75')
     await NRT('new-run-schedule').click()
     await NRT('schedule-editor').waitFor({ timeout: 10_000 })
+    // The editor draws first and fills its form from the seed in the effect that follows its opening (name, limit and mode
+    // in one update): read the fields only once the seed has landed. Reading at once saw an empty name and limit on CI.
+    const seeded = () => page.waitForFunction(() => (document.querySelector('[data-testid=schedule-field-name]')?.value ?? '') !== '', null, { timeout: 10_000 })
+    await seeded()
     const nm = await NRT('schedule-field-name').inputValue()
     check(nm.length > 0 && nm.length <= 49 && nm.endsWith('…') && !nm.includes('Second line'), '8b the editor opens with a short clamped name from the first line', nm)
     check((await NRT('schedule-field-budget').inputValue()) === '0.75', '8b the per-run limit is carried over', await NRT('schedule-field-budget').inputValue())
@@ -486,7 +490,8 @@ try {
     await chooseMode('bypassPermissions')
     await NRT('new-run-schedule').click()
     await NRT('schedule-editor').waitFor({ timeout: 10_000 })
-    const bypass = await NRT('schedule-field-permission').inputValue()
+    await seeded()
+    const bypass =await NRT('schedule-field-permission').inputValue()
     const note2 = clean(await NRT('schedule-not-kept-note').innerText())
     check(bypass !== 'bypassPermissions' && bypass === '', '8b Bypass is never carried into the schedule', bypass)
     check(/permission mode that asks less/.test(note2), '8b the note says the wider permission mode was not carried', note2)
