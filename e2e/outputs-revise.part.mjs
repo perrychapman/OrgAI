@@ -59,19 +59,41 @@ export default async function (ctx) {
 
   // Send a whole-output request.
   await t('output-revise-text').fill('Tighten the first paragraph.')
+  // The mock answers on its own clock, so the pending line can come and go between any two reads (CI macOS: the line was
+  // gone 300 ms after the dialog closed, in two runs). Record it where it cannot be missed: an observer installed before
+  // Send notes whether the line ever drew (a mutation callback runs before the next paint) and the text it last drew with
+  // while it was there (the run tag reads "R?" for a moment before the run index has it, so the first text is not the settled one).
+  await page.evaluate(() => {
+    const SEL = '[data-testid=output-revision-pending]'
+    const rec = { seen: false, text: '', visibleAtFirst: false }
+    window.__revisionPending = rec
+    const look = () => {
+      const el = document.querySelector(SEL)
+      if (!el) return
+      if (!rec.seen) {
+        rec.seen = true
+        const r = el.getBoundingClientRect()
+        rec.visibleAtFirst = r.width > 0 && r.height > 0
+      }
+      rec.text = (el.textContent ?? '').trim()
+    }
+    const obs = new MutationObserver(look)
+    window.__revisionPendingObs = obs
+    obs.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
+    look()
+  })
   await t('output-revise-send').click()
   await dialog.waitFor({ state: 'detached', timeout: 6000 }).catch(() => {})
   const closed = !(await dialog.count()) || !(await dialog.isVisible())
   check(closed, `${label}: the dialog closes after sending`)
   if (!closed) return
   await sleep(300)
-  check(await t('output-revision-pending').first().isVisible().catch(() => false), `${label}: the pending line shows`)
-  // Read without waiting: a waiting innerText hangs for the 8 s default when the mock's answer replaces the line between
-  // the check above and this read (CI macOS: shown 15:54:53, failed 15:55:01). If the line is gone because the answer
-  // already landed, skip; an empty line with no answer still fails.
-  const pendingText = await page.evaluate(() => document.querySelector('[data-testid=output-revision-pending]')?.textContent ?? '')
-  if (!pendingText && (await t('output-revision-answered').count())) skip(`${label}: the pending line text (the answer replaced it before it was read)`)
-  else check(/Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pendingText.trim()), `${label}: the pending line reads as the spec says`, pendingText)
+  const pending = await page.evaluate(() => {
+    window.__revisionPendingObs?.disconnect()
+    return window.__revisionPending
+  })
+  check(pending.seen && pending.visibleAtFirst, `${label}: the pending line shows`, JSON.stringify(pending))
+  check(/Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pending.text), `${label}: the pending line reads as the spec says`, pending.text)
   const inFocus = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
   check(inFocus === 'output-more', `${label}: focus returns to the More button that opened Revise`, String(inFocus))
   const chip = t('run-meta-revision')

@@ -573,6 +573,28 @@ try {
   await until(async () => (await activeInfo()).testid === 'project-tile-pin', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-pin'), 'A20 focus stays on the pin toggle after pinning', JSON.stringify(await activeInfo()))
 
+  // The focus a pin hands back runs two animation frames later. A busy or throttled window (the macOS CI runner: the focus
+  // landed on the pin after the check had moved on to Move up) runs those frames late; the person has moved on by then and
+  // must not be pulled back. Hold the frames for a second, unpin, move to Move up, wait the frames out, pin again.
+  await page.evaluate(() => {
+    const real = window.requestAnimationFrame.bind(window)
+    window.__realRaf = real
+    window.requestAnimationFrame = (cb) => real(() => void setTimeout(() => real(cb), 1000))
+  })
+  await pinBtn.focus()
+  await page.keyboard.press('Enter')
+  await ctl('week', 'dash-section-up').focus()
+  await sleep(2600)
+  const lateFocus = await activeInfo()
+  check(lateFocus.testid === 'dash-section-up' && lateFocus.section === 'week', 'PR a pin\'s late focus hand-back does not pull focus off the control the person moved to', JSON.stringify(lateFocus))
+  await page.evaluate(() => {
+    window.requestAnimationFrame = window.__realRaf
+  })
+  await pinBtn.focus()
+  await page.keyboard.press('Enter')
+  await sleep(300)
+  check((await layoutOf())?.pinned?.join() === `${pinId},${waitId}`, 'PR the pin is back after the late-focus check', JSON.stringify((await layoutOf())?.pinned))
+
   // Keyboard-only path: Tab from the Customise button to Reset, then the first section's controls.
   await customise.focus()
   const tabPath = []
