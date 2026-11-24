@@ -406,6 +406,10 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+/* The one toggle over the file list sits at the start of the column like the text above it (it centred itself). */
+.trust-board .trust-files-toggle {
+  align-self: flex-start;
+}
 .trust-board .trust-item {
   background: var(--glass);
   border-color: var(--glass-line);
