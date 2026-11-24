@@ -473,8 +473,9 @@ try {
     await NRT('new-run-limit').fill('0.75')
     await NRT('new-run-schedule').click()
     await NRT('schedule-editor').waitFor({ timeout: 10_000 })
-    // The editor draws first and fills its form from the seed in the effect that follows its opening (name, limit and mode
-    // in one update): read the fields only once the seed has landed. Reading at once saw an empty name and limit on CI.
+    // The editor fills its form from the seed in one update (name, limit and mode together). That used to be a passive effect
+    // after the first paint, so a read right after the editor appeared saw an empty name and limit on CI (the mode, read
+    // later, was there). It is a layout effect now; the wait on the populated state stays as the check's own precondition.
     const seeded = () => page.waitForFunction(() => (document.querySelector('[data-testid=schedule-field-name]')?.value ?? '') !== '', null, { timeout: 10_000 })
     await seeded()
     const nm = await NRT('schedule-field-name').inputValue()
