@@ -216,6 +216,11 @@ export type MockStep =
       onDeny?: string
       /** Stay in state 'tool' for this many ms (cut short by interrupt and stop), so a test can observe it. */
       holdMs?: number
+      /**
+       * After `holdMs`, stay in state 'tool' until every background permission card of this run has been answered (stop
+       * releases it): a test that must read the state on a slow machine releases it by answering the card.
+       */
+      holdUntilAnswered?: boolean
     }
   /** Set an agent's state (and activity) as written, for states a script cannot otherwise rest in (starting, idle, error). */
   | { type: 'agentState'; agent: string; state: AgentInstance['state']; activity?: string }
@@ -995,7 +1000,7 @@ export const FACTORY_FLOOR_IDS = {
  * agents, three finished sub-trees' workers, then every state left standing at the same time: ff-w121 starting, ff-w122
  * idle, ff-w123 error, ff-w131/2/3 and ff-s13 done, ff-w211 waiting (a background permission card the user answers),
  * leads and sub-leads delegating, and ff-w111 in state 'tool' for FACTORY_FLOOR_TOOL_HOLD_MS after MOCK_FACTORY_FLOOR_READY
- * (its toolCalls rises by one per Read). Worktree records (no git): ff-w111 active, ff-w112 merging, ff-w113 merged into
+ * and, without `pause`, until ff-w211's card is answered (its toolCalls rises by one per Read). Worktree records (no git): ff-w111 active, ff-w112 merging, ff-w113 merged into
  * main, ff-w131 merged into its parent ff-s13, ff-w132 review, ff-w133 held, ff-w211 empty, ff-w212 conflict, ff-w213
  * removed, ff-s13 waiting-children. Messages: lead to sub-lead, worker to the user, worker to an unknown handle. ff-w333 is
  * removed (agent.remove). With `pause` the turn ends at a usage limit (RunManager pauses the run).
@@ -1048,7 +1053,11 @@ export function factoryFloorSteps(leadSlug: string, reportSlug: string, pause = 
   steps.push(
     { type: 'tool', agent: 'ff-w211', name: 'Bash', input: { command: 'npm test' }, ask: true, background: true, result: 'ok' },
     { type: 'text', text: MOCK_FACTORY_FLOOR_READY },
-    { type: 'tool', agent: 'ff-w111', name: 'Read', input: { file_path: 'src/last.ts' }, result: '// last\n', holdMs: FACTORY_FLOOR_TOOL_HOLD_MS },
+    // The hold ends when the user answers ff-w211's card (plain [mock:factory-floor]; the -pause tour never has it answered and
+    // ends at its usage limit): a renderer that is a minute behind still shows ff-w111 at its machine whenever it gets there,
+    // where a timed hold shows nothing once the later event has already arrived (the page applies a backlog without a render
+    // in between). FACTORY_FLOOR_TOOL_HOLD_MS is the least it holds, as before.
+    { type: 'tool', agent: 'ff-w111', name: 'Read', input: { file_path: 'src/last.ts' }, result: '// last\n', holdMs: FACTORY_FLOOR_TOOL_HOLD_MS, ...(pause ? {} : { holdUntilAnswered: true }) },
     { type: 'text', text: MOCK_FACTORY_FLOOR_DONE }
   )
   if (pause) steps.push({ type: 'rateLimit', untilInMs: 60 * 60 * 1000 })
@@ -1631,6 +1640,8 @@ export class MockSession implements RuntimeSession {
   private continueTurns: MockStep[][]
   private continuation: ContinuationDriver
   private wake: (() => void) | null = null
+  /** The background permission asks (tool steps with `ask` and `background`), each settled once the user has answered. */
+  private backgroundAnswers: Promise<void>[] = []
   private stopped = false
   private ended = false
   private interrupted = false
@@ -2772,6 +2783,7 @@ export class MockSession implements RuntimeSession {
     countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
     if (step.holdMs) await this.pause(step.holdMs)
+    if (step.holdUntilAnswered && (await this.untilStopped(Promise.all(this.backgroundAnswers))) === STOPPED) return
     // Same self-control gate as the Claude adapter's PreToolUse (cli-spec 3.4(1)), before every other check, rule and
     // mode: the orgai command and OrgAI's control files are refused outright.
     const selfDenial = this.selfControlDenial(agentId, step.name, input)
@@ -2821,13 +2833,15 @@ export class MockSession implements RuntimeSession {
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
-      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input), ...refField }).then((decision) => {
+      const answered = this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input), ...refField }).then((decision) => {
         if (this.stopped) return
         const denied = decision.behavior === 'deny'
         this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: denied ? decision.message : step.result ?? 'ok', isError: denied })
         const a = this.agents.get(agentId)
         if (a && a.state === 'waiting') this.setState(agentId, 'thinking', 'Thinking…')
       })
+      this.backgroundAnswers.push(answered.then(() => undefined, () => undefined))
+      void answered
       return
     }
     if (step.ask || ref?.forced) {

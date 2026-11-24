@@ -460,8 +460,7 @@ async function checkWorker(label, st, id, want) {
     chk3(ok, `${label}: ${id} ${k} is ${Array.isArray(exp) ? exp.join(' or ') : exp}`, have)
   }
   chk3(typeof w.statusWord === 'string' && w.statusWord.length > 0, `${label}: ${id} has a status word`, have)
-  // A snapshot taken inside the page carries the mirror hooks read in the same tick; a live read is for everything else.
-  const m = st.__mirrors?.[id] ?? (await mirrorOf(id))
+  const m = await mirrorOf(id)
   chk3(!!m && m.lamp === w.lamp && m.pose === w.pose && m.status === w.statusWord && m.fenced === String(!!w.fenced) && (m.crate ?? null) === (w.crate ?? null), `${label}: ${id} mirror hooks agree with the state`, { mirror: m && { ...m, desc: undefined }, state: have })
   chk3(!!m && m.name.includes(`, ${w.statusWord}`), `${label}: ${id} accessible name ends ", {status word}"`, m?.name)
 }
@@ -644,52 +643,21 @@ try {
 
   // 40 agents: the mock's [mock:factory-floor] tour (root, 3 leads, 9 sub-leads, 27 workers; ff-w333 removed). Invariants, not a table.
   writeScript(null)
-  // The tour's last tool step holds ff-w111 at its machine for 5 s of the main process's clock, and a loaded runner shows the
-  // renderer's state late: the hold reached the page as a window of about a second, which polling the state over CDP from
-  // here missed twice (CI windows-latest; a two-core, 3x throttled run here read the page's own samples: the "machine" pose
-  // stood for 1.3 s, at the 32nd second of the run, 6 s after this script had started polling). So the snapshot is taken
-  // inside the page, on a 40 ms tick that starts before the run does: the first state in which every READY condition holds
-  // and ff-w111 is at its machine is kept whole, with every worker's mirror hooks read in the same tick, and read here
-  // whenever the runner lets this script get to it.
-  await page.evaluate(() => {
-    window.__ffReady = null
-    window.clearInterval(window.__ffReadyTimer)
-    window.__ffReadyTimer = window.setInterval(() => {
-      if (window.__ffReady) return
-      try {
-        const el = document.querySelector('[data-testid=factory-state]')
-        if (!el) return
-        const s = JSON.parse(el.textContent || el.value || '{}')
-        const w = (id) => (s.workers ?? []).find((x) => x.id === id)
-        if (!(s.mode === 'live' && w('ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && w('ff-w211')?.lamp === 'needs-you' && w('ff-w111')?.pose === 'machine')) return
-        const mirrors = {}
-        for (const b of document.querySelectorAll('[data-testid=factory-worker]')) {
-          const d = b.dataset
-          const desc = (b.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean).map((i) => document.getElementById(i)?.textContent ?? '').join(' ')
-          mirrors[b.getAttribute('data-factory-worker-id')] = { state: d.state, lamp: d.lamp, pose: d.pose, status: d.status, fenced: d.fenced, crate: d.crate ?? null, steps: d.steps ?? '', name: b.getAttribute('aria-label') ?? b.textContent ?? '', desc }
-        }
-        window.__ffReady = { state: s, mirrors }
-      } catch {
-        // a half-written state: the next tick reads it again
-      }
-    }, 40)
-  })
   await startLiveRun('Factory floor forty agents [mock:factory-floor]')
-  const s40 = await waitForFloor(39, (s) => s.vacant === 1)
+  // The 39 stations took 94 s to show on windows-latest (the default wait is 90 s); a wait that passes costs only what it takes.
+  const s40 = await waitForFloor(39, (s) => s.vacant === 1, 150_000)
   check(!!s40, '40 agents: 39 stations stand and the removed ff-w333 is one vacant slot', JSON.stringify(s40 && { n: s40.workers.length, vacant: s40.vacant }))
   if (s40) {
     const booth = await boothOf()
-    // Slice 3, per-state cues. ff-w111 is in `tool` for 5 s after MOCK_FACTORY_FLOOR_READY: catch it first and read promptly.
+    // Slice 3, per-state cues. The mock holds ff-w111 in state tool after MOCK_FACTORY_FLOOR_READY until the card of ff-w211 is
+    // answered (below), not for a fixed time: a runner that shows the tour a minute late applies the whole backlog without a
+    // render in between, so a 5 s hold was never shown (CI windows-latest, and a two-core, 6x throttled run here: the state
+    // went from ff-w111 thinking to the plan blocked and the card pending in one write, and never showed the machine). Every
+    // READY condition is now a standing state, so reading it from here whenever the runner gets to it is enough.
     // READY follows the plan update (p2 blocked), ff-w111's tool steps and ff-w211's background card, so key the snapshot on
     // all three: ff-w123 failing alone comes before the plan update and before the tool hold (first slice 3 run).
-    // The wait is on that page-side snapshot (a state, not a sleep); its budget covers a runner that shows the whole tour a
-    // minute and a half late.
-    const captured = await page
-      .waitForFunction(() => window.__ffReady, null, { timeout: 150_000, polling: 250 })
-      .then((h) => h.jsonValue())
-      .catch(() => null)
-    await page.evaluate(() => window.clearInterval(window.__ffReadyTimer))
-    const snap = captured?.state ? Object.assign(captured.state, { __mirrors: captured.mirrors }) : null
+    const ready = (s) => s.mode === 'live' && wOf(s, 'ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && wOf(s, 'ff-w211')?.lamp === 'needs-you' && wOf(s, 'ff-w111')?.pose === 'machine'
+    const snap = await untilState(ready, 150_000)
     chk3(!!snap, 'MOCK_FACTORY_FLOOR_READY is reached (plan blocked, ff-w211 card pending, ff-w111 at its machine)', wOf(await state(), 'ff-w111'))
     if (snap) {
       await checkWorker('tool', snap, 'ff-w111', { lamp: 'running', pose: 'machine', fenced: true, shutter: false, barrier: false })
@@ -701,7 +669,7 @@ try {
       // Leads are 'delegating' only while a spawn is in flight; by READY the mock has moved some of them on (ff-l1 reads
       // 'thinking'). So the pose is checked against the state the mirror reports: delegating -> dispatch, thinking -> console.
       for (const [label, id] of [['lead', 'ff-l1'], ['sub-lead', 'ff-s11'], ['lead', 'ff-l2'], ['sub-lead', 'ff-s21']]) {
-        const st = (bootS.__mirrors?.[id] ?? (await mirrorOf(id)))?.state
+        const st = (await mirrorOf(id))?.state
         const pose = st === 'delegating' ? 'dispatch' : st === 'thinking' || st === 'starting' ? 'console' : null
         if (pose) await checkWorker(`${st} ${label}`, bootS, id, { pose })
         else log(`skip ${id} pose check: state ${st}`)
@@ -1240,11 +1208,46 @@ try {
     }
     if (++tick % 3 === 0) mx.plates = Math.max(mx.plates, await shownPlates())
   }
+  // The burst can leave the renderer busy for minutes (CI windows-latest: the stress run took 203 s and a poll from here read
+  // one state with perf data in all that time: every CDP read waited behind the renderer's own work). So the budgets are
+  // also read inside the page, on every write of the test state (a MutationObserver sees each one, whatever the main thread
+  // was doing in between), and merged below with what the polls from here saw.
+  await page.evaluate(() => {
+    const mx = { reads: 0, calls: 0, shadow: 0, tris: 0, plates: 0, animated: 0, frameP95: 0, intervalP95: 0, qualities: [] }
+    window.__ffMx = mx
+    window.__ffMxFrom = performance.now()
+    window.__ffMxObserver?.disconnect()
+    const el = document.querySelector('[data-testid=factory-state]')
+    if (!el) return
+    let tick = 0
+    window.__ffMxObserver = new MutationObserver(() => {
+      try {
+        const s = JSON.parse(el.textContent || '{}')
+        if (s.quality && !mx.qualities.includes(s.quality)) mx.qualities.push(s.quality)
+        if (s.renderer !== 'webgl2' || !s.perf) return
+        const p = s.perf
+        mx.reads++
+        mx.calls = Math.max(mx.calls, p.drawCalls)
+        mx.shadow = Math.max(mx.shadow, p.shadowCalls)
+        mx.tris = Math.max(mx.tris, p.triangles)
+        if ((s.cues ?? []).length > 0 && performance.now() - window.__ffMxFrom > 1000) {
+          mx.animated++
+          mx.frameP95 = Math.max(mx.frameP95, p.frameP95Ms)
+          mx.intervalP95 = Math.max(mx.intervalP95, p.intervalP95Ms)
+        }
+        if (++tick % 3 === 0) mx.plates = Math.max(mx.plates, document.querySelectorAll('[data-testid=factory-nameplate][data-shown="true"]').length)
+      } catch {
+        // a half-written state: the next write is read again
+      }
+    })
+    window.__ffMxObserver.observe(el, { childList: true, characterData: true, subtree: true })
+  })
   burstFrom = Date.now()
   await allowGate()
   // Section 9.1's method for the frame interval: rAF timestamps over 5 s from the start of the burst (once the gate is
   // released, so no pre-burst idle frames dilute it), in the page.
   await page.evaluate(() => {
+    window.__ffMxFrom = performance.now()
     const ts = []
     window.__ffRaf = ts
     const end = performance.now() + 5000
@@ -1257,6 +1260,15 @@ try {
   const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 120_000, sampleStress)
   chk6(!!stressRun, '40-agent stress: all 40 agents are on the floor and the six merged crates reached the dock', await state().then((s) => ({ n: s.workers.length, cues: s.cues.length })).catch(() => null))
   const sst = stressRun ?? (await state())
+  // What the page read on its own writes (see above) joins what the polls saw; each figure is a peak, so the larger one stands.
+  const pm = await page.evaluate(() => (window.__ffMxObserver?.disconnect(), window.__ffMx ?? null)).catch(() => null)
+  if (pm) {
+    log('stress burst reads: polled', mx.reads, 'in the page', pm.reads, `(${pm.animated} with a cue in flight)`)
+    mx.reads = Math.max(mx.reads, pm.reads)
+    mx.animated = Math.max(mx.animated, pm.animated)
+    for (const k of ['calls', 'shadow', 'tris', 'plates', 'frameP95', 'intervalP95']) mx[k] = Math.max(mx[k], pm[k])
+    for (const q of pm.qualities) mx.qualities.add(q)
+  }
   const spk = sst.cuePeaks
   log('stress burst peaks:', JSON.stringify(spk), 'cuesStarted', sst.cuesStarted, 'looping seen', scol.maxLooping, 'renderer', sst.renderer, 'quality', sst.qualityStart, '->', sst.quality)
   chk6(spk.carriers <= 6 && spk.perSender <= 2 && spk.parts <= 12 && spk.crates <= 4 && spk.arrivalsPerSecond <= 12, '40-agent stress: carriers 6 (2 per sender), parts 12, crates 4 and arrivals 12 per second are never exceeded', spk)

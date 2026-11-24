@@ -950,15 +950,20 @@ script (set `ORGAI_MOCK_SCRIPT` to `{"delayMs": 50}` only; a custom `work` array
   `ff-s13` done, `ff-w211` waiting (a background Bash card the e2e answers; it then goes thinking), most leads and
   sub-leads delegating (not all: `ff-l1` reads `thinking` by READY, seen in the slice 3 e2e; a parent is set to
   `delegating` per spawn and moves on), the root thinking. READY also follows the plan update, so key a READY snapshot on
-  the plan (`board.blocked` 1) and the pending card, not on `ff-w123` failing (which comes earlier). `ff-w111` is in state `tool` for `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY, then
-  `MOCK_FACTORY_FLOOR_DONE`; the run goes idle. `usage.toolCalls` of `ff-w111` goes 1, 2, 3, 4 (counted when a tool step
+  the plan (`board.blocked` 1) and the pending card, not on `ff-w123` failing (which comes earlier). `ff-w111` is in state `tool` for at least `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY and, in
+  plain `[mock:factory-floor]`, until the card of `ff-w211` is answered (step flag `holdUntilAnswered`; `-pause` keeps
+  the timed hold, it never has the card answered), then `MOCK_FACTORY_FLOOR_DONE`; the run goes idle. The timed hold alone was not
+  readable on a slow machine: a renderer a minute behind applies the tool event and the one 5 s later without a render
+  in between (reproduced under two cores and 6x throttle: the state went from `thinking` to plan blocked plus card pending
+  and never showed the machine), so a standing hold is what a test can wait for. `usage.toolCalls` of `ff-w111` goes 1, 2, 3, 4 (counted when a tool step
   starts, in the same upsert that sets `tool`).
 - Worktree records are synthetic (no git, `agent.upsert` only): `ff-w111` active, `ff-w112` merging, `ff-w113` merged
   (main), `ff-w131` merged (parent `ff-s13`), `ff-w132` review, `ff-w133` held, `ff-w211` empty, `ff-w212` conflict, `ff-w213`
   removed, `ff-s13` waiting-children. A real fixture repo is not needed.
 - Messages: `ff-l1` -> `ff-s11`, `ff-w111` -> `user` (to null), `ff-w112` -> `nobody-here` (to null). Plan: p1 owner
   `ff-l1` in_progress, p2 owner `ff-w111` blocked, p3 pending (plan status stays active; `[mock:exec-blocked]` gives a blocked plan).
-- New generic steps, usable in any custom script: tool `holdMs` (stay in `tool`), `agentState`, `worktree`, `remove`.
+- New generic steps, usable in any custom script: tool `holdMs` (stay in `tool`) with `holdUntilAnswered` (then until every
+  background card is answered; stop releases it), `agentState`, `worktree`, `remove`.
 - Slice 4 e2e (`e2e/factory-floor.mjs`, section "Slice 4"): custom `work` scripts with a gate. The first step is a root
   `tool` with `ask: true` (a Bash card), so the run stands still, the scene mounts and the test state is read at the gate,
   and the e2e answers the card (`.decision-card .decision-footer .btn.primary`) to release the events: no sleeps decide

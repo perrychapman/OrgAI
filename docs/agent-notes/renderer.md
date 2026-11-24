@@ -469,6 +469,19 @@ entry/reopen, Usage Projects-to-Kinds light dismissal and Add Service custom-dia
 focus handoff remain root QA checks, not locally verified claims.
 Live providers, screen-reader speech, zoom and cross-platform behavior are unverified.
 
+## Late focus hand-backs (2026-11-24)
+
+A focus call that runs a frame or a timer after the handler (`requestAnimationFrame`, `setTimeout`) runs late on a busy or
+throttled window, after the person has moved on. A hand-back to the control that opened something (Esc or Cancel on a
+composer or dialog, Done on an editor, a declined confirm, Show fewer) must go through `lib/laterFocus.ts`:
+`focusLaterUnlessMoved` (frames) or `focusAfterUnlessMoved` (timer). Both take `from` when called and focus only if focus is
+still there, fell to the page or `from` left the page. Moving focus forward to something that has just mounted (a new
+field, the heading of the next item, an error summary) stays a plain call. The note composer's Esc hand-back was unguarded:
+Esc, reopen at once and type could land the keys on the opener (reproduced by holding timers of 100 ms or less for 1.5 s in
+`e2e/outputs-notes.mjs`, all four size and theme passes failed before the guard). Guarded: NoteComposer, NotesPanel,
+OutputsView, VersionsPanel, ExternalEditStatus, KitImportDialog, EngagementPlanSection, TeamView, DashboardView, TodosSection,
+UpNextSection, ConnectorGallery, the three knowledge sections, LivePermissionMode, MaintenanceSection, TranscriptPanel.
+
 ## Unified proxy setup (2026-11-10)
 
 `AddProxyDialog` has one setup without a Kind selector. New records use
