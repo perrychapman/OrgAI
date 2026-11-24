@@ -115,6 +115,8 @@ html[data-resizing] .app {
   outline-offset: 2px;
 }
 .sidebar-search-btn .nav-text {
+  /* .nav-text is a flex column elsewhere; text-overflow only works on a block, so the narrowest sidebar ends in an ellipsis. */
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -276,7 +278,9 @@ html[data-resizing] .app {
 .sidebar-projects {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* Only down: a row that is wider than the list is clipped and ellipsised, never a sideways scrollbar (the rail showed one). */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .sidebar-empty {
   padding: var(--space-1h) var(--space-3);
@@ -295,7 +299,8 @@ html[data-resizing] .app {
 /* The open-runs disclosure trails the row (the dot leads, like the board). */
 .nav-chevron {
   flex: none;
-  width: var(--space-5);
+  /* 24 px wide, the minimum pointer target (it was 20). */
+  width: max(var(--space-6), 24px);
   height: var(--control-sm);
 }
 .nav-chevron {
@@ -556,6 +561,11 @@ html[data-resizing] .app {
 .sidebar[data-collapsed='true'] .nav-split .nav-item.needs-row {
   width: 100%;
 }
+/* The bell button lives in the Popover's wrapper; the wrapper is the one that must fill the rail, else the button is 16 px wide. */
+.sidebar[data-collapsed='true'] .nav-split > .popover-wrap {
+  width: 100%;
+  display: flex;
+}
 .nav-initials {
   position: relative;
   display: inline-grid;
@@ -711,7 +721,7 @@ html[data-resizing] .app {
   /* The name keeps up to 220 px and gives way after the folder and chip, but never below 64 px: the tabs and the
      Settings button must stay on screen. The full name is the title. */
   flex: 0 1 auto;
-  min-width: 64px;
+  min-width: var(--name-min, 64px);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -754,6 +764,10 @@ html[data-resizing] .app {
   white-space: nowrap;
 }
 .kind-chip > svg {
+  flex: none;
+}
+/* "Code project" is a fixed word: it keeps its width (the name and the folder give way first) and never clips mid-letter. */
+.kind-chip[data-kind='code'] {
   flex: none;
 }
 .kind-chip[data-kind='engagement'] {
@@ -811,6 +825,10 @@ html[data-resizing] .app {
 }
 .topbar-needs {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  /* The badge is 21 px tall; the button is the 24 px target around it. */
+  min-height: var(--control-sm);
   padding: 0;
   border: 0;
   border-radius: var(--radius-full);

@@ -61,13 +61,22 @@
   color: var(--success-text);
 }
 
+/* Dot and words share the first row, the action sits under them (in the 240 to 360 px aside the old wrap left the
+   dot alone on a row above its title). */
 .welcome-connect {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
+}
+.welcome-connect > .btn {
+  grid-column: 2;
+  justify-self: start;
+}
+.welcome-connect-dot {
+  margin-top: var(--space-1h);
 }
 .welcome-connect-dot {
   flex: none;
@@ -207,6 +216,9 @@
   column-gap: var(--space-3);
   row-gap: var(--space-1);
   align-items: start;
+  /* The card stretches to its row's tallest card; the extra height must not be shared out between the title and
+     the description (it pushed a short description away from its title). */
+  align-content: start;
   padding: var(--space-4);
   border-radius: var(--radius-lg);
   cursor: pointer;

@@ -253,7 +253,10 @@ export default function App(): ReactElement {
           ) : (
             <>
               <div className="topbar project-topbar">
-                <h1 title={isVirtual ? undefined : project.name}>{selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project.name}</h1>
+                {/* --name-min: the 64 px floor only for a name long enough to need it; "A" must not sit in a 64 px box. */}
+                <h1 title={isVirtual ? undefined : project.name} style={{ ['--name-min' as string]: `${Math.min(64, project.name.length * 11)}px` }}>
+                  {selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project.name}
+                </h1>
                 {!isVirtual && (
                   <span className="kind-chip" data-testid="project-kind-chip" data-kind={engagement ? 'engagement' : 'code'} title={engagement ? `Engagement${project.client?.trim() ? ` · ${project.client.trim()}` : ''}` : 'Code project'}>
                     <Icon icon={engagement ? Briefcase : Code} size="xs" />

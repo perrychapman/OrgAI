@@ -104,6 +104,16 @@
 .perm-settings-link {
   margin-top: var(--space-2);
   font-size: var(--text-small);
+  /* A text link on its own line: a 24 px tall target (it measured 17). */
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-sm);
+}
+/* The disclosures inside a decision ("Command", "Show details") are targets too. */
+.decision-body summary {
+  /* Stays a list-item so the disclosure marker survives; padding makes the 24 px target (it measured 17). */
+  padding-block: var(--space-1);
+  cursor: pointer;
 }
 /* The folder's own settings are ignored: one quiet line with a Review link, visible in compact mode too. */
 .perm-trust-line {

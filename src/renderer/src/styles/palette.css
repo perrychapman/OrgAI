@@ -118,7 +118,8 @@
   color: var(--text-primary);
 }
 .palette-option-hint {
-  flex: 0 1 auto;
+  /* The project name beside a run gives way first: the run's own title keeps its words. */
+  flex: 0 100 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

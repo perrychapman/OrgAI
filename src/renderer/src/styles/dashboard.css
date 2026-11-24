@@ -566,6 +566,8 @@
   column-gap: var(--space-2);
   row-gap: var(--space-1);
   align-items: start;
+  /* Both cards stretch to the taller one; the spare height stays at the bottom, not between title and text. */
+  align-content: start;
   padding: var(--space-3);
   background: var(--surface-1);
   border: 1px solid var(--border-default);
@@ -589,6 +591,8 @@
   outline-offset: 2px;
 }
 .project-kind-title {
+  /* The mono (Code) and serif (Engagement) titles differ in size: one row height keeps both texts on one line. */
+  min-height: var(--text-title-sm-lh);
   font-size: var(--text-body);
   font-weight: var(--weight-semibold);
 }
