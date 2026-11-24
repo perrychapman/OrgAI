@@ -121,7 +121,7 @@ function backdateRuns(sourceIds, offsetsDays) {
 const seedRun = async (projectId, prompt) => {
   const run = await page.evaluate((i) => window.orgai.runs.start(i), { projectId, prompt })
   const id = run.id ?? run.runId ?? run.summary?.id
-  const end = Date.now() + 15_000
+  const end = Date.now() + t(15_000)
   while (Date.now() < end) {
     const r = (await page.evaluate((pid) => window.orgai.runs.list(pid), projectId)).find((x) => x.id === id)
     if (r && r.usage && Object.keys(r.usage.models ?? {}).length + (r.usage.models?.length ?? 0) > 0 && r.status !== 'starting') break
@@ -129,7 +129,7 @@ const seedRun = async (projectId, prompt) => {
   }
   await sleep(800)
   await page.evaluate((r) => window.orgai.runs.stop(r), id)
-  const end2 = Date.now() + 15_000
+  const end2 = Date.now() + t(15_000)
   while (Date.now() < end2) {
     const r = (await page.evaluate((pid) => window.orgai.runs.list(pid), projectId)).find((x) => x.id === id)
     if (r && ['finished', 'error'].includes(r.status)) break
@@ -1241,7 +1241,7 @@ try {
   // Put focus on a stable element and note it
   await plot().focus()
   const focusBefore = await focusInfo()
-  const end = Date.now() + 40_000
+  const end = Date.now() + t(40_000)
   let note = false
   while (Date.now() < end) {
     if (await T('usage-live-note').count()) {

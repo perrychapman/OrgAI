@@ -69,7 +69,7 @@ const setTheme = async (theme) => {
   await sleep(500)
 }
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true

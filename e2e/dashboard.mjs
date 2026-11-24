@@ -101,7 +101,7 @@ const setAppearance = async (patch) => {
 }
 /** Poll `fn` until truthy (returned) or the deadline passes (null). */
 async function until(fn, ms = 20_000, every = 250) {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   for (;;) {
     const v = await fn().catch(() => null)
     if (v) return v
@@ -1741,7 +1741,7 @@ async function setName(name) {
   let ibApp
   const ibClean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
   const ibUntil = async (fn, ms = 20_000, every = 200) => {
-    const end = Date.now() + ms
+    const end = Date.now() + t(ms)
     for (;;) {
       const v = await fn().catch(() => null)
       if (v) return v

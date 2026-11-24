@@ -29,7 +29,7 @@ const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await p
 const metaChip = async (id) => {
   const chip = page.locator(`[data-testid=${id}]:visible`)
   const more = T('run-meta-more')
-  const end = Date.now() + 8000
+  const end = Date.now() + t(8000)
   while (Date.now() < end) {
     if ((await chip.count()) > 0) break
     if ((await more.isVisible().catch(() => false)) && (await more.getAttribute('aria-expanded').catch(() => null)) !== 'true') await more.click().catch(() => {})
@@ -43,7 +43,7 @@ const closeMetaMenu = async () => {
 const row = (name) => T('schedule-row').filter({ has: page.locator('.schedule-row-name', { hasText: name }) })
 /** Poll `fn` until it returns a truthy value (returned) or the deadline passes (null). */
 async function until(fn, ms = 20_000, every = 250) {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   for (;;) {
     const v = await fn().catch(() => null)
     if (v) return v

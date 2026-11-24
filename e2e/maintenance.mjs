@@ -50,7 +50,7 @@ const notice = page.locator('#settings-section-maintenance > .draft-box')
 
 /** Wait for the maintenance notice to match. */
 async function waitNotice(re, ms = 30_000) {
-  const until = Date.now() + ms
+  const until = Date.now() + t(ms)
   let text = ''
   while (Date.now() < until) {
     text = (await notice.innerText().catch(() => '')).trim()

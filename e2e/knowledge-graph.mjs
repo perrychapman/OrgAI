@@ -37,7 +37,7 @@ const setAppearance = async (patch) => {
 }
 const setTheme = (theme) => setAppearance({ theme })
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true

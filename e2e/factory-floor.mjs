@@ -152,7 +152,7 @@ const activeWorkerId = async () => {
 }
 /** Poll the test state until `pred(state)` holds (the state is written at most twice a second). Returns the state, or null on timeout. */
 const untilState = async (pred, timeout = 8000) => {
-  const end = Date.now() + timeout
+  const end = Date.now() + t(timeout)
   let st = null
   while (Date.now() < end) {
     st = await state().catch(() => null)
@@ -878,7 +878,7 @@ try {
   const cueDone = (s) => s.mode === 'live' && !!wOf(s, 'cq-b')?.shutter && wOf(s, 'cq-b')?.crate === 'dock' && !!wOf(s, 'cq-c')?.barrier && s.workers[0]?.lamp === 'off'
   /** Poll the state until `pred`; `each(state)` sees every state read. Returns the satisfying state or null. */
   const watch = async (pred, timeout, each = () => {}) => {
-    const end = Date.now() + timeout
+    const end = Date.now() + t(timeout)
     while (Date.now() < end) {
       const st = await state().catch(() => null)
       if (st) {
@@ -922,7 +922,7 @@ try {
    */
   const quiet = async (timeout = 20_000) => {
     const sig = (s) => JSON.stringify(s.workers.map((w) => [w.id, w.lamp, w.pose, w.shutter, w.barrier, w.crate ?? '', w.statusWord, w.fenced]))
-    const end = Date.now() + timeout
+    const end = Date.now() + t(timeout)
     let last = ''
     let since = Date.now()
     while (Date.now() < end) {
@@ -1177,7 +1177,7 @@ try {
   /** Frames per second from state reads: the time each distinct frame count was first seen, over `ms`. */
   const frameRate = async (ms) => {
     const seen = []
-    const end = Date.now() + ms
+    const end = Date.now() + ms // a sampling window, not a wait: never scaled
     while (Date.now() < end) {
       const s = await state().catch(() => null)
       if (s && (seen.length === 0 || seen[seen.length - 1].frames !== s.frames)) seen.push({ frames: s.frames, at: Date.now() })
