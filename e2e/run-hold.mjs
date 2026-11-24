@@ -10,6 +10,11 @@ const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-hold-'))
 const repo = path.join(base, 'repo')
 makeFixtureRepo('hold', { at: repo })
 
+// A script file the Find check at the end rewrites (seven agents); until then the mock keeps its default script.
+const scriptFile = path.join(base, 'script.json')
+fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
+process.env.ORGAI_MOCK_SCRIPT = scriptFile
+
 const { app, page, shot } = await launch({ shotPrefix: 'run-hold' })
 const start = async (text) => {
   const ta = page.locator('.composer textarea')
@@ -141,12 +146,8 @@ try {
   check((await geo()).dock === 'open', 'reduced motion: shown at once')
   await page.evaluate(() => document.documentElement.removeAttribute('data-reduce-motion'))
   await draft.fill('')
-  // The plan and Find reach their tabs even with the dock hidden.
-  await page.getByRole('button', { name: /^Hide run panel/ }).click()
-  await sleep(500)
-  await page.locator('[data-testid=find-agent]').click()
-  await sleep(700)
-  check((await geo()).dock === 'open', 'Find an agent shows a hidden dock')
+  // Find an agent is drawn only once the run has more than a handful of agents (checked with a seven-agent run at the end).
+  check((await page.locator('[data-testid=find-agent]').count()) === 0, 'a one-agent run has no Find an agent button')
 
   // ---- One-agent view.
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
@@ -239,6 +240,37 @@ try {
   await sleep(500)
   check((await dlg.count()) === 0 && (await limitHold.count()) === 1, 'a held Enter on Resume now cannot confirm: the hold stays')
   check((await resumeBtn.isEnabled()) && !(await resumeBtn.getAttribute('disabled')), 'the action button stays enabled (never a disabled button under focus)')
+
+  // ---- Find an agent (canvas toolbar): drawn with more than a handful of agents, and it shows a hidden dock.
+  const proj = await findProject(page, NAME)
+  const rootRole = proj.roles.find((r) => r.reportsTo === null)
+  const slug = (proj.roles.find((r) => rootRole.spawnable.includes(r.id)) ?? proj.roles.find((r) => r.reportsTo !== null)).slug
+  fs.writeFileSync(
+    scriptFile,
+    JSON.stringify({
+      delayMs: 150,
+      work: [
+        ...[1, 2, 3, 4, 5, 6].map((i) => ({ type: 'spawn', id: `find-${i}`, name: `find-${i}`, role: slug, description: `Report ${i}`, ...(i > 3 ? { parent: 'find-1' } : {}) })),
+        { type: 'text', text: 'Staffed.' },
+        { type: 'tool', agent: 'find-1', name: 'Read', input: { file_path: 'a.ts' }, result: 'x', holdMs: 120_000 }
+      ]
+    })
+  )
+  await page.keyboard.press('Control+t')
+  await page.locator('.new-run').waitFor({ timeout: 10_000 })
+  await start('Six reports to find')
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node').length >= 7, null, { timeout: 60_000, polling: 300 })
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [1600, 1000])
+  await sleep(800)
+  const findBtn = page.locator('[data-testid=find-agent]')
+  check((await findBtn.count()) === 1 && (await findBtn.getAttribute('aria-label')) === 'Find an agent', 'with seven agents the toolbar draws the Find an agent button')
+  // The hide button may be under the run panel's header at some sizes: hide with the dock's own button, then Find shows it again.
+  await page.getByRole('button', { name: /^Hide run panel/ }).click()
+  await sleep(600)
+  await findBtn.click()
+  await sleep(700)
+  check((await geo()).dock === 'open', 'Find an agent shows a hidden dock')
+  check(await page.evaluate(() => document.querySelector('.side-panel [role=tab][aria-selected=true]')?.textContent?.includes('Agents') ?? false), 'Find an agent opens the Agents tab', await page.evaluate(() => document.querySelector('.side-panel [role=tab][aria-selected=true]')?.textContent ?? ''))
   finish('run-hold')
 } finally {
   await cleanup(app, page, NAME)

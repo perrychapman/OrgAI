@@ -60,8 +60,8 @@
   white-space: nowrap;
 }
 /* The toolbar row keeps room for status, cost and "more": the canvas chrome next to it gives way first (it clips). */
-/* From 800 px: the end group (352) + the Theme menu with its word (115) + padding and gaps (72) + this 256 need about 795, so
-   the 256 floor starts at 780 and below that the meta shrinks (and folds into "more") instead of clipping the Theme button. */
+/* From 800 px the meta keeps a 256 px floor; below it the meta shrinks (and folds into "more"). The controls next to it are
+   planned against the same floors (lib/canvasToolbar.ts META_FLOOR / META_FLOOR_NARROW), so they give way first. */
 @container frame (min-width: 800px) {
   .frame-toolbar-dense > .run-meta {
     flex: 1 0 calc(var(--space-16) * 4);

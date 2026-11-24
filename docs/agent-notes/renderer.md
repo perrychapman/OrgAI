@@ -218,10 +218,24 @@ macOS, live providers.
   reply or decision that arrived while hidden. Chat, setup, Tools helper and Skills helper keep the conversation-first layout.
 - **Stage.** What stays on the stage under the canvas: the decision tray and `RunHoldCard` (dock shown or not) and the
   `PlanStrip` in the frame footer; compact tray threshold 570 px. The decision tray stays so a hidden dock never hides a card.
-- **CanvasThemeMenu.** Replaces the presentation radios (same `saveCanvas` setting), Live only. Toolbar fit by frame width:
-  Show filter hides under 1100, Find under 900, the theme name is clipped (kept in the accessible name) under 1000, the
-  "Theme" word under 680, the swatch under 340, the group under 320 (then App settings > Canvas). `impl-run.md` first said
-  520 for the name: the CSS (`canvas-chrome.css`) is the source.
+- **CanvasThemeMenu.** Replaces the presentation radios (same `saveCanvas` setting), Live only. It is the scene switch of
+  the canvas toolbar: swatch and the scene's name (the trigger's name is "Canvas theme: Org chart"), name dropped when the
+  plan says compact, the whole group hidden under 320 (then App settings > Canvas).
+- **Canvas toolbar declutter (2026-11-24, `docs/design/canvas-toolbar-declutter.md`).** `lib/canvasToolbar.ts`
+  (`planToolbar`, pure, `canvasToolbar.test.ts`) decides which controls the 32 px row draws and in what form; LiveRunView
+  measures the run frame (ResizeObserver, 8 px steps, read in a layout effect so no wrong form paints) and renders the plan.
+  Row: scene switch (CanvasThemeMenu), Find (icon button, only with more than 5 agents), the Show filter and Zoom out / Zoom in
+  (only from a 1100 px frame, else in the View menu), Fit, `CanvasViewMenu`, then after a separator the Conversation button
+  (`dock-show`, dock hidden or rail) or the layout toggle (`run-layout-toggle`; while the dock is hidden it sits in the View
+  menu, so there is one speech-bubble button, not two). **View menu** = the old Canvas style popover under the same test ids
+  (`canvas-style-button` trigger, `canvas-style-popover` panel, now named "View options") with rows above: Find, Show,
+  zoom steps, layout toggle, Hide finished agents (`view-fold-row`, label `view-fold-label` carries the count; the switch is
+  still the `Hide finished agents` switch), then a Canvas style row (`canvas-style-disclosure`, the seven presets fold behind
+  it), the legend (`canvas-legend-trigger` / `canvas-legend`, a disclosure now, not a popover) and More canvas settings.
+  Focus enters on the first row (`ViewRows`), not on the checked preset, so the rows are not scrolled out of sight. e2e:
+  `openViewMenu(page)` in `e2e/lib.mjs`; `showFinishedAgents` goes through it. A control is in exactly one place (unit
+  tested), and the View menu button and its zoom / Fit hide with the stage while an expanded proposal collapses it
+  (`layout.css`). Pause motion stays in the Pocket Office log head and the Factory floor control row (scene-owned).
 - **AgentFilter / Find / AgentList.** `AgentFilter` (All / Working / Waiting, counts, "N of M agents shown") dims other
   nodes with `.node-dim` (0.35 opacity), never hides. Find an agent opens the Agents tab (`openAgentFinder`): search, sort
   and the flat `AgentList` ("Showing 40 of 40" on the mock). Scenes keep their own Find and filter; the org-chart Show

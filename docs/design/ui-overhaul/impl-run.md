@@ -27,9 +27,10 @@ from the boards, and how it was checked.
   node. Escape or "Back to chart" closes it and focus returns to the opener (found again by test id when it re-mounted).
 - **Engagement.** `.run-view[data-kind='engagement']`: serif headings, coral selection and plan accents, neutral wording.
   No Context screen, no per-run source picker.
-- **Toolbar fit.** The chrome (Theme, Find, Show) shares the 32 px dense toolbar row; it drops Show under 1100 px of frame
-  width, Find under 900, the "Theme" word under 680, the theme name under 520, and hides under 320 (the theme is then set in
-  App settings > Canvas).
+- **Toolbar fit.** Superseded by `docs/design/canvas-toolbar-declutter.md`: `lib/canvasToolbar.ts` decides per run state and
+  frame width what the 32 px row draws (scene switch, Find and Show only with more than 5 agents, Fit, one View menu, the
+  conversation buttons); the rest moved into the View menu under their old test ids. Still hidden under 320 px (the theme is
+  then set in App settings > Canvas).
 - **Owed fixes.** Composer Enter guard and one-shot New run mode were already on dev. RunActions copy already used the
   current pane names. Usage kind names now read "Tools helper" and "Skills helper".
 

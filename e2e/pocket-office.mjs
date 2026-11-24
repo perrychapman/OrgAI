@@ -195,7 +195,8 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(liveRooms.length >= 4 && liveRooms.every(Boolean), 'Live roster rows carry data-office-room', JSON.stringify(liveRooms))
   check(!(await scene().evaluate(el => /\bfloors?\b/i.test(el.textContent) || el.hasAttribute('data-floor') || !!el.querySelector('[data-floor], [data-office-floor]'))), 'Live has no floor text or attribute')
   // The Canvas style popover (moved here from the Team tab, which no longer has one): Office offers palettes, never Graph presets.
-  const styleTrigger = page.locator('.run-body').getByRole('button', { name: 'Canvas style', exact: true })
+  // It is the View menu's panel now: the same button (test id canvas-style-button, named "View options") opens it.
+  const styleTrigger = page.locator('.run-body [data-testid=canvas-style-button]')
   await styleTrigger.click()
   const stylePanel = page.locator('[data-testid=canvas-style-popover]')
   await stylePanel.waitFor()
@@ -203,8 +204,8 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(await stylePanel.locator('[data-testid=canvas-preset]').count() === 0, 'Office toolbar does not offer accidental Graph preset switches')
   check(await stylePanel.locator('[data-testid=canvas-palette-choice]').count() === 3, 'toolbar offers the same visual Office palette choices')
   await page.keyboard.press('Escape')
-  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Canvas style' || document.activeElement?.textContent?.trim() === 'Canvas style')
-  check(await styleTrigger.evaluate(el => el === document.activeElement), 'Office style Escape returns focus to Canvas style')
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'canvas-style-button')
+  check(await styleTrigger.evaluate(el => el === document.activeElement), 'Office style Escape returns focus to the View button')
   // Pocket Office is a Live and App settings presentation only: with it on app-wide the Team tab still draws its chart.
   await openTeam(page)
   check((await page.locator('.editor [data-testid=office-scene], .editor [data-testid=canvas-style-button], .editor [data-testid=office-role-back]').count()) === 0, 'with Pocket Office on, the Team tab has no office scene, Canvas style button or Back to office')

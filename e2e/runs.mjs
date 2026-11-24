@@ -4,7 +4,7 @@
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, projectTab, screenshot, showFinishedAgents, sleep, t } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, openViewMenu, projectTab, screenshot, showFinishedAgents, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -935,7 +935,10 @@ try {
   const f1 = await foldShape()
   check(f1.agents === 1 && f1.groups === 1 && f1.counts[0] === '3' && /3 done/.test(f1.text), 'a finished subtree folds into one "3 done" group under the root', JSON.stringify(f1))
   check(f1.edges >= 1, 'the folded group has an edge to the root', String(f1.edges))
-  const toggleLabel = (await page.locator('.run-fold .fold-label').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  // The Hide finished switch and its count are a row of the toolbar's View menu.
+  await openViewMenu(page)
+  const toggleLabel = (await page.locator('[data-testid=view-fold-label]').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  await page.keyboard.press('Escape')
   check(/\(3\)/.test(toggleLabel), 'the Hide finished count matches the group count', toggleLabel)
   const rootBox = await nodeBox('.react-flow__node-agent')
   const groupBox = await nodeBox('.react-flow__node-done-group')
@@ -961,7 +964,7 @@ try {
   check((await page.locator('[data-testid="rf__edge-e-mock-lead-group:mock-lead"]').count()) === 1, 'the lead\'s group has an edge from the lead')
   await shot('fold-expanded')
   // Fold back: Hide finished off shows all 4 agents; on again folds everything into the one root group.
-  const foldSwitch = page.getByRole('switch', { name: 'Hide finished agents' })
+  const foldSwitch = { click: async () => { await (await openViewMenu(page)).getByRole('switch', { name: 'Hide finished agents' }).click(); await page.keyboard.press('Escape') } }
   await foldSwitch.click()
   await sleep(800)
   const f3 = await foldShape()
