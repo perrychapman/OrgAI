@@ -1,5 +1,6 @@
 // Token-free mock transcript media walkthrough. Run npm run build first.
 import { check, endSession, finish, launch, sleep } from './lib.mjs'
+import { checkTranscriptOverlap } from './transcript-overlap.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const { app, page, shot } = await launch({ shotPrefix: 'transcript-media' })
@@ -77,6 +78,8 @@ try {
   check(await historicalUserImage.count() >= 1, 'user image survives history reopen')
   check(await page.locator('[data-testid=transcript-media]').count() >= 1, 'assistant media survives history reopen')
   check(await page.locator('details > summary').filter({ hasText: /media item/i }).count() >= 2, 'paired tool media remains discoverable in history')
+  // Messages sent one after another never draw over each other (e2e/transcript-overlap.mjs).
+  await checkTranscriptOverlap({ app, page, shot })
 } catch (error) {
   check(false, 'transcript media walkthrough completed', error.stack ?? String(error))
   await shot('failure').catch(() => {})

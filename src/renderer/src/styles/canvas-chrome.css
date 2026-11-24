@@ -504,6 +504,11 @@
     clip-path: inset(50%);
   }
 }
+/* The meta no longer holds 256 px under 800 px (run-header.css), and the three groups sit 8 px apart instead of 12 there: in a
+   688 px frame (a 1024 px window with the dock open) the meta lost its last chip to a 10 px clip, and the Theme button to a sliver. */
+@container frame (max-width: 800px) {
+  .frame-toolbar.frame-toolbar-dense { gap: var(--space-2); }
+}
 @container frame (max-width: 680px) {
   .canvas-chrome-start .canvas-theme-label { display: none; }
 }
@@ -546,7 +551,22 @@
   border-radius: 50%;
   background: var(--warning);
 }
-/* The dock's own Hide button sits at the top right of the card. */
+/* The dock's own Hide button sits at the top right of the card, on the first line with "Open agent view" or the title instead
+   of a row of its own (that row cost 36 px of a 640 px window's feed). The header and the open row keep a gutter for it. */
 .run-body[data-dock='open'] > .side-panel > .side-panel-bar {
-  padding: var(--space-1h) var(--space-2) 0;
+  position: absolute;
+  top: var(--space-1h);
+  right: var(--space-2);
+  z-index: 3; /* above the panel header, a flex item with z-index 2 (it covered the button, and its clicks, below 2) */
+  padding: 0;
+}
+.run-body[data-dock='open'] > .side-panel .live-panel > .agent-focus-open-row {
+  padding-right: calc(var(--control-sm) + var(--space-3));
+}
+.run-body[data-dock='open'] > .side-panel .live-panel > .side-run > .side-header .side-title {
+  padding-right: calc(var(--control-sm) + var(--space-1));
+}
+/* With "Open agent view" above it the title line has the card's width again. */
+.run-body[data-dock='open'] > .side-panel .live-panel > .agent-focus-open-row ~ .side-run > .side-header .side-title {
+  padding-right: 0;
 }

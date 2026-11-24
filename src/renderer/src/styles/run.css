@@ -686,6 +686,11 @@
   box-shadow: none;
   padding: var(--space-1) var(--space-1h);
 }
+/* An empty field shows only its placeholder: when a compact tray or a narrow dock clamps the field to one line the placeholder is
+   cut at the box, not scrolled (a two-line placeholder in a 32 px field drew a scrollbar). Typed text scrolls as usual. */
+.composer-row textarea:placeholder-shown {
+  overflow: hidden;
+}
 .composer-row textarea:focus,
 .composer-row textarea:focus-visible {
   outline: none; /* the card draws the focus border (.composer:has(textarea:focus-visible)) */
@@ -1180,13 +1185,28 @@
   margin-left: var(--space-2);
 }
 
-/* In the dock the settings row is one scrolling line, so the feed keeps its height (the chips are still ordinary buttons in Tab order). */
+/* In the dock the settings row is one line, so the feed keeps its height (the chips are still ordinary buttons in Tab order).
+   The chips shrink (their values end in an ellipsis, the full text is in the title) down to a floor; only below that does the
+   row scroll, with the app's own slim scrollbar (a `scrollbar-width` here would bring back the arrowed system one). `position:
+   relative` holds the chips' screen-reader-only text inside the row: positioned against the region it widened the region's
+   scroll area and drew a second scrollbar along the card's bottom edge. */
 .run-body[data-dock='open'] .live-composer-bar .run-settings-row {
+  position: relative;
   flex-wrap: nowrap;
   overflow-x: auto;
-  scrollbar-width: thin;
   padding-bottom: var(--space-0h);
 }
 .run-body[data-dock='open'] .live-composer-bar .run-settings-row > * {
-  flex: 0 0 auto;
+  flex: 0 4 auto;
+  /* Never below what cannot shrink (icon, "Permission:", chevron): the value is what ends in an ellipsis. A fixed floor let
+     the label of a shorter chip draw over the next one. */
+  min-width: auto;
+}
+/* The model is the chip that matters most: it gives up room last, and keeps enough to name the model. */
+.run-body[data-dock='open'] .live-composer-bar .run-settings-row > .live-model-switch {
+  flex-shrink: 1;
+  min-width: calc(var(--space-16) * 2);
+}
+.run-body[data-dock='open'] .live-composer-bar .run-settings-row > .run-setting--permission {
+  flex-shrink: 2;
 }

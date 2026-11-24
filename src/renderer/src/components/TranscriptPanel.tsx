@@ -559,6 +559,11 @@ export default function TranscriptPanel({ runId, agent: agentProp, entries: ownE
               {agent.roleSlug}
             </span>
           )}
+          {agent && tab === 'transcript' && (
+            <span className="side-title-end">
+              <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
+            </span>
+          )}
         </div>
         <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
       </div>
@@ -599,11 +604,6 @@ export default function TranscriptPanel({ runId, agent: agentProp, entries: ownE
             <div data-testid="agent-staffing-model">Model: {agentStaffing.model}</div>
           </div>
         </details>
-      )}
-      {agent && tab === 'transcript' && (
-        <div className="transcript-bar">
-          <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
-        </div>
       )}
       {tab === 'transcript' && !(finished && !agent) && (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className={`transcript${agent && !isConversation ? ' timeline' : ''}`}>
