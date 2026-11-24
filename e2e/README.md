@@ -33,3 +33,13 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
 - Screenshots go to `e2e/shots/` (gitignored).
 - `lib.mjs` has the shared pieces: `launch`, `createProject`, `deleteProject`, `makeFixtureRepo`, `driveSetup`,
   `check`/`finish`, `screenshot`.
+- Slow runners: `E2E_TIME_SCALE=N` (default 1, 3 when `CI` is set; logged once at launch) stretches how long every WAIT may
+  take, never a sleep. It scales Playwright's default and navigation timeouts on every window the app opens, every
+  `page.setDefaultTimeout(ms)` a script calls and the shared helpers; scripts write their own explicit timeouts as
+  `{ timeout: t(8000) }` (`t` is exported by `lib.mjs`) and poll with `until(fn, ms)`. A wait ends the moment its state is
+  there, so a fast machine loses nothing. Do not wrap a sleep that orders two things in `t()`: wait on a standing state
+  (a MutationObserver installed before the action, `settleUI`, `showFinishedAgents`, a mock hold such as
+  `[mock:revise-hold]` or `[mock:model-switch-hold]`).
+- To try a slow runner on a fast machine: `E2E_CPU_THROTTLE=4` (CDP CPU throttling of the renderer), two cores
+  (`cmd /c start /affinity 5 /wait /b node e2e/<script>.mjs` on Windows) and `E2E_TIME_SCALE=3`;
+  `E2E_CLAMP_WINDOW=1024x656` opens the window as the macOS runner's small screen does.

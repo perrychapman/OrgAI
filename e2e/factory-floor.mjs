@@ -19,7 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, setReduceMotion, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio, domPollWaits } from './lib.mjs'
 // A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
 // two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
 // or ends such a run waits for the renderer to answer instead of timing out at the default.
@@ -50,10 +50,14 @@ const app = await electron.launch({
   executablePath: electronBinary(),
   args: ['--use-mock-keychain', ...(SWGL ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : []), APP_DIR],
   cwd: APP_DIR,
-  timeout: 60_000,
+  timeout: t(60_000),
   env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR }
 })
+scaleApp(app)
 const page = await app.firstWindow()
+scalePage(page)
+// The scene's software GL leaves the renderer a frame or two a second while it mounts, and Playwright's own waits poll by frame.
+domPollWaits(page)
 page.on('dialog', (d) => void d.accept())
 page.on('console', (m) => {
   if (m.type() === 'error') log('console.error:', m.text().slice(0, 200))
@@ -64,7 +68,7 @@ await page.addInitScript(() => {
   window.__cspViolations = []
   document.addEventListener('securitypolicyviolation', (e) => window.__cspViolations.push(`${e.violatedDirective} ${e.blockedURI}`))
 })
-await page.waitForSelector('.sidebar', { timeout: 60_000 })
+await page.waitForSelector('.sidebar', { timeout: t(60_000) })
 // E2E_CPU_THROTTLE=3 slows the renderer's main thread three times. The software GPU process is not slowed by it: to starve
 // that one too, run the script under `start /affinity 5 /wait /b node e2e/factory-floor.mjs` on Windows (two cores).
 if (Number(process.env.E2E_CPU_THROTTLE) > 1) {
@@ -79,13 +83,13 @@ await page.evaluate(() => {
 })
 if (PLAN) await page.evaluate((k) => localStorage.setItem(k, 'floor-plan'), KEY)
 await page.reload()
-await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
+await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: t(60_000) })
 let shots = 0
 const shot = (name) => page.screenshot({ path: path.join(SHOTS_DIR, `factory-floor-${String(++shots).padStart(2, '0')}-${name}.png`) }).catch(() => {})
 
 const resizeTo = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await sleep(500)
 }
@@ -113,15 +117,15 @@ const state = async () => JSON.parse((await page.locator('[data-testid=factory-s
 /** Remount the scene (graph, then back) so the developer key is read again. */
 const remount = async () => {
   await setCanvas({ presentation: 'graph' })
-  await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   await setCanvas({ presentation: 'factory-floor' })
 }
 const setKey = (v) => page.evaluate(([k, val]) => (val === null ? localStorage.removeItem(k) : localStorage.setItem(k, val)), [KEY, v])
 
 /** What every mounted scene must satisfy, whichever renderer it picked. Returns the renderer. */
 const checkMounted = async (mode, label) => {
-  await scene(mode).waitFor({ timeout: 20_000 })
-  await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: 20_000 })
+  await scene(mode).waitFor({ timeout: t(20_000) })
+  await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: t(20_000) })
   const renderer = await scene(mode).getAttribute('data-renderer')
   check(renderer === 'webgl2' || renderer === 'floor-plan', `${label}: scene mounts with a renderer`, String(renderer))
   const st = await state().catch(() => null)
@@ -131,7 +135,7 @@ const checkMounted = async (mode, label) => {
   check(/^Factory floor,/.test((await group.getAttribute('aria-label')) ?? ''), `${label}: the mirror's name starts "Factory floor,"`, String(await group.getAttribute('aria-label')))
   const canvases = page.locator('[data-testid=factory-canvas]')
   // The 3D path mounts its canvas once the lazy chunk has loaded, after data-renderer is set.
-  if (renderer === 'webgl2') await canvases.first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
+  if (renderer === 'webgl2') await canvases.first().waitFor({ state: 'attached', timeout: t(15_000) }).catch(() => {})
   if (await canvases.count()) {
     check((await canvases.first().getAttribute('aria-hidden')) === 'true', `${label}: the canvas is aria-hidden`)
     check(renderer === 'webgl2', `${label}: a canvas appears only on the 3D path`)
@@ -152,7 +156,7 @@ const activeWorkerId = async () => {
 }
 /** Poll the test state until `pred(state)` holds (the state is written at most twice a second). Returns the state, or null on timeout. */
 const untilState = async (pred, timeout = 8000) => {
-  const end = Date.now() + timeout
+  const end = Date.now() + t(timeout)
   let st = null
   while (Date.now() < end) {
     st = await state().catch(() => null)
@@ -221,33 +225,53 @@ const startLiveRun = async (prompt, metaTimeout = 15_000) => {
   if (runsStarted++ > 0 || (await page.getByRole('button', { name: 'End session' }).count())) await endSession(page)
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 8000 }).catch(() => {})
+  await page.locator('.new-run').waitFor({ timeout: t(8000) }).catch(() => {})
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
   const metaFrom = Date.now()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: metaTimeout }).then(() => {
-    if (Date.now() - metaFrom > 15_000) log(`startLiveRun(${JSON.stringify(prompt)}): the run view took ${Math.round((Date.now() - metaFrom) / 1000)} s to show`)
-  }).catch(async (error) => {
-    // What the page showed when the run never appeared (CI windows-latest timed out here after the stress phase).
-    const seen = await page.evaluate(() => ({
-      metas: [...document.querySelectorAll('[data-testid=run-meta]')].map((m) => (m.getClientRects().length ? 'shown' : 'hidden')),
-      workers: document.querySelectorAll('[data-testid=factory-worker]').length,
-      scenes: document.querySelectorAll('[data-testid=factory-scene]').length,
-      newRun: !!document.querySelector('.new-run'),
-      draft: document.querySelector('.composer textarea')?.value ?? null,
-      endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
-      tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
-    })).catch(() => ({}))
-    log(`startLiveRun(${JSON.stringify(prompt)}) found no run-meta after ${metaTimeout} ms: ${JSON.stringify(seen)}`)
-    throw error
-  })
+  // The ready state is the run header MOUNTED for the new run (the composer is gone and a run-meta is in the DOM), read by
+  // interval polling inside the page. It used to be Playwright's "visible" wait on run-meta, which (a) polls with
+  // requestAnimationFrame, so a renderer that draws a frame every few hundred ms (a software GPU under 122 agents) answers
+  // late or not at all, and (b) is false by design while the frame is narrower than 340 px (layout.css hides .run-meta there,
+  // and the header folds chips into its "more" menu), so a layout state looked like "the run never started". CI windows-latest
+  // 2026-11-24 waited 300 s with the run on screen (122 workers, tab Idle) and a run-meta the page counted as shown.
+  await page
+    .waitForFunction(() => !document.querySelector('.new-run') && !!document.querySelector('[data-testid=run-meta]'), null, { timeout: t(metaTimeout), polling: 250 })
+    .then(() => {
+      if (Date.now() - metaFrom > 15_000) log(`startLiveRun(${JSON.stringify(prompt)}): the run view took ${Math.round((Date.now() - metaFrom) / 1000)} s to show`)
+    })
+    .catch(async (error) => {
+      // What the page showed when the run never appeared.
+      const seen = await page
+        .evaluate(() => {
+          const m = document.querySelector('[data-testid=run-meta]')
+          const box = m?.getBoundingClientRect()
+          return {
+            metas: [...document.querySelectorAll('[data-testid=run-meta]')].map((x) => (x.getClientRects().length ? 'shown' : 'hidden')),
+            metaBox: box ? [Math.round(box.width), Math.round(box.height)] : null,
+            metaVisibility: m ? getComputedStyle(m).visibility : null,
+            frameWidth: Math.round(document.querySelector('.canvas-frame')?.getBoundingClientRect().width ?? 0),
+            window: [innerWidth, innerHeight],
+            hidden: document.hidden,
+            workers: document.querySelectorAll('[data-testid=factory-worker]').length,
+            scenes: document.querySelectorAll('[data-testid=factory-scene]').length,
+            newRun: !!document.querySelector('.new-run'),
+            draft: document.querySelector('.composer textarea')?.value ?? null,
+            endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
+            tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
+          }
+        })
+        .catch(() => ({}))
+      log(`startLiveRun(${JSON.stringify(prompt)}) found no run header after ${t(metaTimeout)} ms: ${JSON.stringify(seen)}`)
+      throw error
+    })
 }
 /** Wait until the mirror has `n` workers and the scene has a readable state of that size. */
 const waitForFloor = async (n, extra = () => true, timeout = Number(process.env.E2E_FACTORY_WAIT_MS) || 90_000) => {
   const st = await untilState((s) => s.mode === 'live' && s.workers.length === n && extra(s), timeout)
-  const mirrored = await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: 10_000 }).then(() => true).catch(() => false)
+  const mirrored = await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: t(10_000) }).then(() => true).catch(() => false)
   if (!st || !mirrored) {
     const ids = await page.evaluate(() => [...document.querySelectorAll('[data-testid=factory-worker]')].map((b) => b.getAttribute('data-factory-worker-id')))
     log(`waitForFloor(${n}) gave up: state workers ${st ? st.workers.length : 'unreadable'}, mirror ${ids.length}: ${ids.join(',')}`)
@@ -367,7 +391,7 @@ async function keyboardWalk(label, booth) {
   await workerBtn(last.id).focus()
   await page.keyboard.press('Enter')
   const back2 = page.locator('[data-testid=factory-agent-back]')
-  await back2.waitFor({ timeout: 8000 }).catch(() => {})
+  await back2.waitFor({ timeout: t(8000) }).catch(() => {})
   check((await back2.count()) === 1, `${label}: Enter selects and opens the live inspector (Back to floor exists)`)
   check((await workerBtn(last.id).getAttribute('aria-current')) === 'true', `${label}: the selected worker has aria-current`)
   check((await page.locator('[data-testid=factory-worker][tabindex="0"]').getAttribute('data-factory-worker-id')) === last.id, `${label}: the selected worker is the Tab stop`)
@@ -383,7 +407,7 @@ async function findWalk(label, st) {
   const input = page.locator('[data-testid=factory-find-input]')
   const results = page.locator('[data-testid=factory-find-result]')
   await findBtn.click()
-  await input.waitFor({ timeout: 5000 })
+  await input.waitFor({ timeout: t(5000) })
   check(true, `${label}: Find opens a search field`)
   const target = st.workers.find((w) => w.row >= 1) ?? st.workers[st.workers.length - 1]
   await input.fill(target.id.toUpperCase())
@@ -409,7 +433,7 @@ async function findWalk(label, st) {
   check((await workerBtn(target.id).getAttribute('aria-current')) === 'true', `${label}: the chosen worker is selected`)
   check((await page.locator('[data-testid=factory-agent-back]').count()) === 1, `${label}: the chosen worker's inspector opens`)
   await findBtn.click()
-  await input.waitFor({ timeout: 5000 })
+  await input.waitFor({ timeout: t(5000) })
   await page.keyboard.press('Escape')
   await sleep(300)
   check((await input.count()) === 0, `${label}: Escape closes Find`)
@@ -536,11 +560,11 @@ try {
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const section = page.locator('[data-testid=canvas-section]')
-  await section.waitFor({ timeout: 10_000 })
+  await section.waitFor({ timeout: t(10_000) })
   const radio = section.locator('[data-testid=canvas-presentation-factory-floor]')
   check((await radio.count()) === 1, 'settings offer the Factory Floor presentation')
-  await radio.check({ force: true })
-  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'factory-floor', null, { timeout: 10_000 }).catch(() => {})
+  await checkRadio(radio, 'the Factory Floor presentation')
+  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'factory-floor', null, { timeout: t(10_000) }).catch(() => {})
   check((await html('data-canvas-presentation')) === 'factory-floor', 'choosing Factory Floor sets the presentation')
   const saved = await page.evaluate(async () => (await window.orgai.settings.get()).appearance.canvas.presentation)
   check(saved === 'factory-floor', 'the presentation is saved in settings', String(saved))
@@ -549,7 +573,7 @@ try {
   await openProject(page, NAME)
   projectOpen = true
   await openTeam(page)
-  await page.locator('.react-flow').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await page.locator('.react-flow').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   check((await page.locator('.react-flow').count()) > 0, 'Team shows the Graph while Factory Floor is chosen')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'Team never mounts the factory scene')
   check((await page.locator('[data-testid=factory-pause-motion]').count()) === 0, '[slice4] Team has no Pause motion button (live only)')
@@ -557,10 +581,10 @@ try {
 
   await projectTab(page, 'Live').click()
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Factory floor check build')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   const liveRenderer = await checkMounted('live', 'Live')
   const liveName = await page.locator('[data-testid=factory-floor]').first().getAttribute('aria-label')
   check(/^Factory floor, \d+ workers?$/.test(liveName ?? ''), 'Live: the mirror says workers', String(liveName))
@@ -591,7 +615,7 @@ try {
     for (const theme of ['dark', 'light']) {
       await setAppearance({ theme })
       for (const mode of ['live']) {
-        await scene(mode).waitFor({ timeout: 15_000 })
+        await scene(mode).waitFor({ timeout: t(15_000) })
         const st = await state().catch(() => null)
         check(!!st && ['webgl2', 'floor-plan'].includes(st.renderer), `${mode} scene state readable at ${w}x${h} ${theme}`)
         if (st?.renderer === 'webgl2') check(st.engines === 1, `theme switch keeps one engine at ${w}x${h} ${theme} (${mode})`, String(st.engines))
@@ -721,10 +745,10 @@ try {
       // 3D-only labels (DOM overlay over the canvas).
       if (snap.renderer === 'webgl2') {
         // textContent: a label off-stage or skipped by the label budget is hidden, and innerText of a hidden node is ''.
-        const bl = ((await page.locator('[data-testid=factory-board-label]').first().textContent({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        const bl = ((await page.locator('[data-testid=factory-board-label]').first().textContent({ timeout: t(5000) }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
         chk3(bl === 'Plan · 0 of 3 done · 1 blocked', 'board label text', bl)
         const dk = page.locator('[data-testid=factory-dock]').first()
-        const dkText = ((await dk.textContent({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        const dkText = ((await dk.textContent({ timeout: t(5000) }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
         chk3(dkText === 'Main checkout · 1 merged' && (await dk.getAttribute('data-count').catch(() => null)) === '1', 'dock label text and data-count', dkText)
         const plates = page.locator('[data-testid=factory-nameplate][data-shown="true"]')
         const nShown = await plates.count()
@@ -762,7 +786,7 @@ try {
     await checkMirrorHooks('40 agents', s40, booth)
     // The tour's background permission ask (ff-w211) arrives after the removal; a new decision card takes focus on mount
     // (DecisionCard's existing auto-focus), so the keyboard walk starts only once the card is there.
-    const card = await page.locator('.decision-card').first().waitFor({ timeout: 20_000 }).then(() => true).catch(() => false)
+    const card = await page.locator('.decision-card').first().waitFor({ timeout: t(20_000) }).then(() => true).catch(() => false)
     check(card, '40 agents: the tour\'s permission card is in the tray before the keyboard walk')
     await sleep(400)
     // A pending card on a NON-root agent (ff-w211) is a needs-you cue on that worker.
@@ -878,7 +902,7 @@ try {
   const cueDone = (s) => s.mode === 'live' && !!wOf(s, 'cq-b')?.shutter && wOf(s, 'cq-b')?.crate === 'dock' && !!wOf(s, 'cq-c')?.barrier && s.workers[0]?.lamp === 'off'
   /** Poll the state until `pred`; `each(state)` sees every state read. Returns the satisfying state or null. */
   const watch = async (pred, timeout, each = () => {}) => {
-    const end = Date.now() + timeout
+    const end = Date.now() + t(timeout)
     while (Date.now() < end) {
       const st = await state().catch(() => null)
       if (st) {
@@ -905,14 +929,14 @@ try {
   }
   const allowGate = async () => {
     const allow = page.locator('.decision-card .decision-footer .btn.primary').first()
-    await allow.waitFor({ timeout: 20_000 })
+    await allow.waitFor({ timeout: t(20_000) })
     await allow.click({ timeout: BUSY_CLICK_MS })
   }
   /** Start a gated run and return the state read while it waits at the gate (the scene is mounted, nothing has happened). */
   const startGated = async (label, work, delayMs) => {
     writeTimed([GATE, ...work], delayMs)
     await startLiveRun(`Factory floor cues ${label}`)
-    await page.locator('.decision-card').first().waitFor({ timeout: 30_000 })
+    await page.locator('.decision-card').first().waitFor({ timeout: t(30_000) })
     return untilState((s) => s.mode === 'live' && s.workers[0]?.lamp === 'needs-you', 40_000)
   }
   /**
@@ -922,7 +946,7 @@ try {
    */
   const quiet = async (timeout = 20_000) => {
     const sig = (s) => JSON.stringify(s.workers.map((w) => [w.id, w.lamp, w.pose, w.shutter, w.barrier, w.crate ?? '', w.statusWord, w.fenced]))
-    const end = Date.now() + timeout
+    const end = Date.now() + t(timeout)
     let last = ''
     let since = Date.now()
     while (Date.now() < end) {
@@ -955,12 +979,12 @@ try {
   }
   /** Switch to the conversation and back through the run layout toggle (the scene unmounts and mounts again). */
   const viaConversation = async () => {
-    const t = page.locator('[data-testid=run-layout-toggle]')
-    await t.click()
-    await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
-    await page.locator('[data-testid=run-conversation]').first().waitFor({ timeout: 10_000 }).catch(() => {})
-    await t.click()
-    await scene('live').waitFor({ timeout: 20_000 })
+    const toggle = page.locator('[data-testid=run-layout-toggle]')
+    await toggle.click()
+    await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
+    await page.locator('[data-testid=run-conversation]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
+    await toggle.click()
+    await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live', 20_000)
   }
   /** A fresh mount reads the events as baseline: nothing cues, nothing logs, the message cursor is set, and it stays so. */
@@ -1018,7 +1042,7 @@ try {
   await sleep(2500)
   await checkNoReplay('remount after events (presentation switch)', async () => {
     await remount()
-    await scene('live').waitFor({ timeout: 20_000 })
+    await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live' && wOf(s, 'cq-b'), 20_000)
   })
   const baseline = await state().catch(() => null)
@@ -1105,7 +1129,7 @@ try {
   await checkNoReplay('remount via the conversation', viaConversation, 'full')
   await checkNoReplay('remount via the presentation switch', async () => {
     await remount()
-    await scene('live').waitFor({ timeout: 20_000 })
+    await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live', 20_000)
   }, 'full')
 
@@ -1177,7 +1201,7 @@ try {
   /** Frames per second from state reads: the time each distinct frame count was first seen, over `ms`. */
   const frameRate = async (ms) => {
     const seen = []
-    const end = Date.now() + ms
+    const end = Date.now() + ms // a sampling window, not a wait: never scaled
     while (Date.now() < end) {
       const s = await state().catch(() => null)
       if (s && (seen.length === 0 || seen[seen.length - 1].frames !== s.frames)) seen.push({ frames: s.frames, at: Date.now() })
@@ -1363,7 +1387,7 @@ try {
       chk4(!!how, 'Pause motion is reachable by keyboard in the toolbar', how)
       if (!how) await pauseBtn.focus()
       await page.keyboard.press('Space')
-      await page.waitForFunction(() => document.querySelector('[data-testid=factory-pause-motion]')?.getAttribute('aria-pressed') === 'true', null, { timeout: 5000 }).catch(() => {})
+      await page.waitForFunction(() => document.querySelector('[data-testid=factory-pause-motion]')?.getAttribute('aria-pressed') === 'true', null, { timeout: t(5000) }).catch(() => {})
       chk4((await pressed()) === 'true', 'Pause motion pressed: aria-pressed true', await pressed())
       // Keyboard toggle both ways, then pressed again for the run.
       await page.keyboard.press('Space')
@@ -1407,9 +1431,9 @@ try {
     } else log(`skip ${mode} loop and frames checks: no 3D render loop on the floor plan`)
     if (mode === 'paused') {
       // Pause motion is remembered across remounts for the session (a module-level value).
-      for (const [label, via] of [['the conversation', viaConversation], ['the presentation switch', async () => { await remount(); await scene('live').waitFor({ timeout: 20_000 }); return untilState((s) => s.mode === 'live', 20_000) }]]) {
+      for (const [label, via] of [['the conversation', viaConversation], ['the presentation switch', async () => { await remount(); await scene('live').waitFor({ timeout: t(20_000) }); return untilState((s) => s.mode === 'live', 20_000) }]]) {
         await checkNoReplay(`paused, remount via ${label}`, via, 'paused')
-        await pauseBtn.waitFor({ timeout: 10_000 })
+        await pauseBtn.waitFor({ timeout: t(10_000) })
         chk4((await pressed()) === 'true', `paused, remount via ${label}: Pause motion is still pressed`, await pressed())
       }
     }
@@ -1448,9 +1472,9 @@ try {
     chk6(!!bigState, `large team: ${LARGE + 1} agents (root and ${LARGE} spawns) are on the floor`, await state().then((s) => s.workers.length).catch(() => null))
     if (bigState) {
       const n = bigState.workers.length
-      await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: 15_000 }).catch(() => {})
+      await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: t(15_000) }).catch(() => {})
       const notice = page.locator('[data-testid=factory-notice]').first()
-      await notice.waitFor({ timeout: 15_000 }).catch(() => {})
+      await notice.waitFor({ timeout: t(15_000) }).catch(() => {})
       const fin = (await untilState((s) => s.reason === 'too-many' && s.workers.length === n, 15_000)) ?? (await state())
       chk6(n > 120, 'large team: more than 120 agents', n)
       chk6(fin.renderer === 'floor-plan' && fin.reason === 'too-many', 'large team: the test state says floor-plan with reason too-many', { renderer: fin.renderer, reason: fin.reason })
@@ -1467,7 +1491,7 @@ try {
         await resizeTo(w, h)
         for (const theme of ['dark', 'light']) {
           await setAppearance({ theme })
-          await notice.waitFor({ timeout: 10_000 }).catch(() => {})
+          await notice.waitFor({ timeout: t(10_000) }).catch(() => {})
           chk6(await noPageScroll(), `large team: no page scroll at ${w}x${h} ${theme}`)
           await shot(`notice-large-team-${theme}-${w}x${h}`)
         }
@@ -1500,11 +1524,11 @@ try {
       }, presentation)
     /** The scene is mounted again: its renderer is chosen and (3D) the first frame's perf is in the state. */
     const mounted = async () => {
-      await scene('live').waitFor({ timeout: 20_000 })
-      await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: 20_000 })
+      await scene('live').waitFor({ timeout: t(20_000) })
+      await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: t(20_000) })
       const kind = await scene('live').getAttribute('data-renderer')
       if (kind === 'webgl2') {
-        await page.locator('[data-testid=factory-canvas]').first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
+        await page.locator('[data-testid=factory-canvas]').first().waitFor({ state: 'attached', timeout: t(15_000) }).catch(() => {})
         return untilPerf(15_000)
       }
       return untilState((s) => s.mode === 'live', 15_000)
@@ -1530,7 +1554,7 @@ try {
     const t0 = Date.now()
     for (let i = 1; i <= 20; i++) {
       await setPresentationFast('graph')
-      await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+      await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(15_000) }).catch(() => {})
       await setPresentationFast('factory-floor')
       const st = await mounted()
       const canvases = await page.locator('[data-testid=factory-canvas]').count()
@@ -1567,8 +1591,8 @@ try {
   // ---------- Forced floor plan, notices, Use Graph (Live scene, reads the key at mount) ----------
   await setKey('floor-plan')
   await remount()
-  await scene('live').waitFor({ timeout: 15_000 })
-  await page.waitForFunction(() => document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer') === 'floor-plan', null, { timeout: 10_000 }).catch(() => {})
+  await scene('live').waitFor({ timeout: t(15_000) })
+  await page.waitForFunction(() => document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer') === 'floor-plan', null, { timeout: t(10_000) }).catch(() => {})
   check((await scene('live').getAttribute('data-renderer')) === 'floor-plan', 'the developer key forces the floor plan')
   check((await scene('live').getAttribute('data-reason')) === 'forced', 'the forced floor plan reports reason forced')
   const forced = await state()
@@ -1587,8 +1611,8 @@ try {
   for (const [value, notice, retry] of [['no-webgl2', 'no-webgl2', false], ['chunk-failed', noWebgl2Here ? 'no-webgl2' : 'chunk-failed', !noWebgl2Here]]) {
     await setKey(value)
     await remount()
-    await scene('live').waitFor({ timeout: 15_000 })
-    await page.locator('[data-testid=factory-notice]').first().waitFor({ timeout: 15_000 }).catch(() => {})
+    await scene('live').waitFor({ timeout: t(15_000) })
+    await page.locator('[data-testid=factory-notice]').first().waitFor({ timeout: t(15_000) }).catch(() => {})
     const n = page.locator('[data-testid=factory-notice]').first()
     check((await n.count()) === 1 && (await n.getAttribute('data-notice')) === notice, `${value}: the ${notice} notice shows`, String(await n.getAttribute('data-notice').catch(() => null)))
     check((await scene('live').getAttribute('data-renderer')) === 'floor-plan' && (await scene('live').getAttribute('data-reason')) === notice, `${value}: the floor plan shows with reason ${notice}`)
@@ -1612,9 +1636,9 @@ try {
 
   // Use Graph returns to the graph canvas.
   await page.locator('[data-testid=factory-use-graph]').click()
-  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'graph', null, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'graph', null, { timeout: t(10_000) }).catch(() => {})
   check((await html('data-canvas-presentation')) === 'graph', 'Use Graph sets the presentation back to Graph')
-  await page.locator('.react-flow').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('.react-flow').first().waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await page.locator('.react-flow').count()) > 0, 'the graph canvas shows after Use Graph')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'the scene is gone after Use Graph')
 
@@ -1626,7 +1650,7 @@ try {
 
   // ---------- Pocket Office is still selectable ----------
   await setCanvas({ presentation: 'pocket-office' })
-  await page.locator('[data-testid=office-scene]').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await page.locator('[data-testid=office-scene]').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   check((await page.locator('[data-testid=office-scene]').count()) > 0, 'Pocket Office still mounts afterwards')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'no factory scene beside Pocket Office')
   await setCanvas({ presentation: 'graph' })
@@ -1638,7 +1662,7 @@ try {
   await setCanvas({ presentation: 'factory-floor' })
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
-  await page.locator('[data-testid=canvas-section]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=canvas-section]').waitFor({ timeout: t(10_000) })
   const readSamples = () =>
     page.evaluate(() =>
       [...document.querySelectorAll('[data-testid=factory-sample]')].map((el) => {
@@ -1657,7 +1681,7 @@ try {
     )
   for (const theme of ['dark', 'light']) {
     await setAppearance({ theme })
-    await page.waitForFunction((t) => { const i = document.querySelector('[data-testid=factory-sample-image]'); return !!i && i.getAttribute('data-sample-theme') === t && i.complete && i.naturalWidth > 0 }, theme, { timeout: 8000 }).catch(() => {})
+    await page.waitForFunction((t) => { const i = document.querySelector('[data-testid=factory-sample-image]'); return !!i && i.getAttribute('data-sample-theme') === t && i.complete && i.naturalWidth > 0 }, theme, { timeout: t(8000) }).catch(() => {})
     check((await html('data-theme')) === theme, `[slice6 sample] the app theme is ${theme}`, String(await html('data-theme')))
     const samples = await readSamples()
     check(samples.length >= 1 && samples.some((s) => s.preview), `[slice6 sample] ${theme}: the settings page shows the sample (the preview with Factory Floor chosen, and the thumbnail)`, `${samples.length} samples, ${samples.filter((s) => s.preview).length} previews`)

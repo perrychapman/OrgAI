@@ -2,6 +2,7 @@
 // markdown, csv, json, docx, xlsx and mermaid output is open on its Outputs tab (or a run's Outputs side tab):
 //   await compare({ app, page, project, label, size: [w, h], theme, check, sleep })
 // Steps whose test ids the shell does not render yet log SKIP. `check` is lib.mjs check(ok, what, detail).
+import { t } from './lib.mjs'
 const KINDS = ['markdown', 'csv', 'json', 'docx', 'xlsx', 'mermaid']
 
 export default async function compare(ctx) {
@@ -31,7 +32,7 @@ export default async function compare(ctx) {
     const btn = q('output-version-compare-current').first()
     if (!(await btn.count())) return skip(`no Compare with current on a ${kind} version`), false
     await btn.click()
-    await page.waitForSelector('[data-testid="output-compare"][data-state="ready"], [data-testid="output-compare"][data-state="error"]', { timeout: 15000 }).catch(() => undefined)
+    await page.waitForSelector('[data-testid="output-compare"][data-state="ready"], [data-testid="output-compare"][data-state="error"]', { timeout: t(15000) }).catch(() => undefined)
     // Always the two versions the runs made (v1 and v2): an earlier pass's edit part saved more versions with only additions.
     const a = q('output-compare-a')
     const b = q('output-compare-b')
@@ -43,7 +44,7 @@ export default async function compare(ctx) {
       if (ok) {
         await a.selectOption('1')
         await b.selectOption('2')
-        await page.waitForSelector('[data-testid="output-compare"][data-state="ready"]', { timeout: 15000 }).catch(() => undefined)
+        await page.waitForSelector('[data-testid="output-compare"][data-state="ready"]', { timeout: t(15000) }).catch(() => undefined)
       }
     }
     return true

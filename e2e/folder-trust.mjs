@@ -4,7 +4,7 @@
 // Revoke, the stale-digest path, the 'changed' state, the "Not used" ignored-rules group and the keyboard path.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DATA_DIR, TMP, check, finish, findProject, gotoProjects, launch, openProjectForm, projectTab, runRecordsDir, screenshot, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, finish, findProject, gotoProjects, launch, openProjectForm, projectTab, runRecordsDir, screenshot, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 delete process.env.ORGAI_MOCK_GH
@@ -19,7 +19,7 @@ const { app, page } = await launch({ shotPrefix: 'folder-trust' })
 page.setDefaultTimeout(10_000)
 
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     if (await fn()) return true
     await sleep(200)
@@ -63,7 +63,7 @@ const endRun = async () => {
 // The transcript is not always on screen (side panel collapsed), so read what the newest run saved.
 const pageHas = async (text, timeout = 20_000) => {
   const dir = runRecordsDir()
-  const end = Date.now() + timeout
+  const end = Date.now() + t(timeout)
   while (Date.now() < end) {
     try {
       const files = fs.readdirSync(dir).map((f) => path.join(dir, f))

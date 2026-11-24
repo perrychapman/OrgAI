@@ -6,7 +6,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TMP, check, createProject, deleteProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, removeFixture, sleep, windowShift, pickSetup } from './lib.mjs'
+import { TMP, check, createProject, deleteProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, removeFixture, sleep, windowShift, pickSetup, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-knowledge-'))
@@ -35,7 +35,7 @@ const setTheme = async (theme) => {
 }
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true

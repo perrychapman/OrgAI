@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, openProject, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, openProject, projectTab, screenshot, setThemeAndWait, setWindowSize, settleMotion, sleep, t, errDetail } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E versions (orgai test)'
@@ -55,21 +55,10 @@ const scriptFile = (v) => {
 let { app, page } = await launch({ shotPrefix: 'outputs-versions' })
 page.setDefaultTimeout(8000)
 const snap = (name) => screenshot(page, `outputs-versions-${name}`)
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(600)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(500)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 600)
+const setTheme = (theme) => setThemeAndWait(page, theme, 500)
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true
@@ -102,13 +91,13 @@ async function startRun(prompt) {
   await projectTab(page, 'Live').click()
   if (!(await page.locator('.new-run').count())) {
     await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 8000 })
+    await page.locator('.new-run').waitFor({ timeout: t(8000) })
   }
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
 }
 async function runWith(v, prompt, expectCount, expectVersion) {
   await app.evaluate((_e, file) => {
@@ -129,15 +118,15 @@ async function openOutputsTab() {
   await page.locator('[data-testid=tab-outputs]').click()
   // Files opens in Grid when no view is saved (ui-overhaul Files board); these checks read the list rows.
   const main = page.locator('[data-testid=outputs-main]')
-  await main.waitFor({ timeout: 10_000 })
+  await main.waitFor({ timeout: t(10_000) })
   if ((await main.getAttribute('data-view')) !== 'list') await page.locator('[data-testid=outputs-view-switch]').getByText('List', { exact: true }).click()
-  await rows().first().waitFor({ timeout: 10_000 })
+  await rows().first().waitFor({ timeout: t(10_000) })
 }
 async function select(title) {
   await openOutputsTab()
   await rows().filter({ hasText: title }).first().click()
-  await detail().waitFor({ timeout: 8000 })
-  await page.locator('[data-testid=outputs-detail] [data-testid=output-detail-heading]', { hasText: title }).first().waitFor({ timeout: 8000 })
+  await detail().waitFor({ timeout: t(8000) })
+  await page.locator('[data-testid=outputs-detail] [data-testid=output-detail-heading]', { hasText: title }).first().waitFor({ timeout: t(8000) })
 }
 
 /** Read-only checks on the two-version project, at each size and theme. */
@@ -146,11 +135,11 @@ async function versionChecks(label, wide) {
   const planId = (await outputsOf()).find((o) => o.title === 'Project plan')?.id
   // The panel head shows the version as text ("v2 of 2"); switching is on the Versions tab and in the Larger view's select.
   const solo = detail().locator('[data-testid=output-version-solo]')
-  await solo.waitFor({ state: 'visible', timeout: 8000 })
+  await solo.waitFor({ state: 'visible', timeout: t(8000) })
   await page.waitForFunction((id) => {
     const detail = document.querySelector('[data-testid=outputs-detail] [data-testid=output-detail]')
     return !!id && detail?.getAttribute('data-id') === id && /^v2 of 2$/.test(detail.querySelector('[data-testid=output-version-solo]')?.textContent?.trim() ?? '')
-  }, planId, { timeout: 8000 })
+  }, planId, { timeout: t(8000) })
   check((await detail().locator('[data-testid=output-version-select]').count()) === 0, `${label}: the panel head has no version select`)
   check(/^v2 of 2$/.test(clean(await solo.innerText())), `${label}: the panel head says "v2 of 2"`, clean(await solo.innerText()))
   check((await detail().getAttribute('data-version')) === '2', `${label}: the detail carries data-version 2`)
@@ -163,13 +152,13 @@ async function versionChecks(label, wide) {
   const toolbarCount = await detail().evaluate((d) => [...d.querySelectorAll('[role=group][aria-label="Output actions"] button')].filter((b) => !b.closest('.popover-panel')).length)
   check(toolbarCount > 0 && toolbarCount <= 4, `${label}: the toolbar at rest has at most four controls`, String(toolbarCount))
   await detail().locator('[data-testid=output-more]').click()
-  await page.locator('[data-testid=output-revise]').waitFor({ state: 'visible', timeout: 4000 })
+  await page.locator('[data-testid=output-revise]').waitFor({ state: 'visible', timeout: t(4000) })
   check((await detail().locator('[data-testid=output-revise]').count()) === 1, `${label}: Revise is offered in the More menu`)
   const menuIds = await page.locator('[data-testid=output-actions] [role=menuitem]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
   check(menuIds.indexOf('output-open') >= 0 && menuIds.indexOf('output-revise') < menuIds.indexOf('output-reveal') && menuIds.indexOf('output-reveal') < menuIds.indexOf('output-forget') && menuIds.at(-1) === 'output-delete', `${label}: More lists Open, Revise, then Show in folder ... Remove, Delete`, JSON.stringify(menuIds))
   await snap(`${label}-more`)
   await page.keyboard.press('Escape')
-  await page.locator('[data-testid=output-revise]').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined)
+  await page.locator('[data-testid=output-revise]').waitFor({ state: 'detached', timeout: t(4000) }).catch(() => undefined)
   await snap(`${label}-detail`)
   check(await until(async () => (await active()).id === 'output-more'), `${label}: Esc closes More and focus returns to its button`, JSON.stringify(await active()))
   check((await live().count()) === 1, `${label}: one output-live region on the panel`)
@@ -177,7 +166,7 @@ async function versionChecks(label, wide) {
   // Versions tab.
   await detail().locator('[data-testid=output-tab-versions]').click()
   const panel = detail().locator('[data-testid=output-versions]')
-  await panel.waitFor({ timeout: 8000 })
+  await panel.waitFor({ timeout: t(8000) })
   const vrows = panel.locator('[data-testid=output-version-row]')
   check((await vrows.count()) === 2, `${label}: the Versions tab lists two versions`)
   check((await vrows.first().getAttribute('data-n')) === '2' && (await vrows.first().getAttribute('data-current')) === 'true', `${label}: the newest is first and marked current`)
@@ -200,7 +189,7 @@ async function versionChecks(label, wide) {
   // Old version banner.
   await vrows.nth(1).locator('[data-testid=output-version-view]').click()
   const banner = detail().locator('[data-testid=output-old-version]')
-  await banner.waitFor({ timeout: 8000 })
+  await banner.waitFor({ timeout: t(8000) })
   check(/You are looking at version 1\. The current version is 2\./.test(clean(await banner.innerText())), `${label}: the banner says which version you are looking at`, clean(await banner.innerText()))
   check((await detail().locator('[data-testid=output-edit]').count()) === 0, `${label}: Edit is hidden on an old version`)
   check(/Restore this version to edit it\./.test(clean(await detail().locator('[data-testid=output-edit-reason]').innerText())), `${label}: the reason Edit is missing is visible text`)
@@ -223,8 +212,8 @@ async function versionChecks(label, wide) {
   await select('Project plan')
   await detail().locator('[data-testid=output-detail-expand]').click()
   const dlg = page.locator('[data-testid=output-dialog]')
-  await dlg.waitFor({ state: 'visible', timeout: 5000 })
-  await dlg.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: 8000 })
+  await dlg.waitFor({ state: 'visible', timeout: t(5000) })
+  await dlg.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: t(8000) })
   check((await dlg.locator('[data-testid=output-version-select]').count()) === 1, `${label}: the Larger view has the version select`)
   const opts = (await dlg.locator('[data-testid=output-version-select] option').allInnerTexts()).map(clean)
   check(opts.length === 2 && /^v2 · now, .+ · \d+ \w+$/.test(opts[0]) && /^v1 · .+ · \d+ \w+$/.test(opts[1]), `${label}: the select lists "v2 · now, <who> · <date>" then v1`, JSON.stringify(opts))
@@ -235,7 +224,7 @@ async function versionChecks(label, wide) {
   await noScroll(`${label}: Larger view`)
   await snap(`${label}-viewer`)
   await page.keyboard.press('Escape')
-  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlg.waitFor({ state: 'hidden', timeout: t(5000) })
   check(await until(async () => (await active()).id === 'output-detail-expand'), `${label}: Esc closes the Larger view and focus returns to its button`)
   void wide
 }
@@ -264,16 +253,16 @@ async function mutatingChecks(label) {
   check(await until(async () => /First draft/.test(clean(await v1.locator('[data-testid=output-version-label]').innerText().catch(() => '')))), `${label}: a named version shows its name`)
   await detail().locator('[data-testid=output-detail-expand]').click()
   const dlgNamed = page.locator('[data-testid=output-dialog]')
-  await dlgNamed.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: 8000 })
+  await dlgNamed.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: t(8000) })
   const opts = (await dlgNamed.locator('[data-testid=output-version-select] option').allInnerTexts()).map(clean)
   check(opts.some((o) => /^v1 · First draft/.test(o)), `${label}: the Larger view's select shows the name`, JSON.stringify(opts))
   await page.keyboard.press('Escape')
-  await dlgNamed.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlgNamed.waitFor({ state: 'hidden', timeout: t(5000) })
 
   // Rename.
   await detail().locator('[data-testid=output-more]').click()
   await page.locator('[data-testid=output-rename]').click()
-  await page.locator('[data-testid=output-rename-dialog]').waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=output-rename-dialog]').waitFor({ timeout: t(5000) })
   await page.locator('[data-testid=output-rename-title]').fill('Project plan final')
   await page.locator('[data-testid=output-rename-save]').click()
   check(await until(async () => /Project plan final/.test(clean(await detail().locator('[data-testid=output-detail-heading]').innerText()))), `${label}: Rename changes the heading`)
@@ -285,7 +274,7 @@ async function mutatingChecks(label) {
   await detail().locator('[data-testid=output-more]').click()
   await page.locator('[data-testid=output-delete]').click()
   const confirmBtn = page.locator('[data-testid=output-delete-confirm]')
-  await confirmBtn.waitFor({ timeout: 5000 })
+  await confirmBtn.waitFor({ timeout: t(5000) })
   const text = clean(await page.locator('dialog[open]').innerText())
   check(/Delete Config\?/.test(text) && /outputs\/config\.json and its 1 earlier version from your computer\./.test(text), `${label}: the produced-delete confirm names the file and its earlier versions`, text.slice(0, 260))
   check(/Recycle Bin or Trash|deleted for good/.test(text), `${label}: the confirm says where the file goes`)
@@ -299,13 +288,13 @@ async function mutatingChecks(label) {
   await select('Handoff')
   await detail().locator('[data-testid=output-more]').click()
   await page.locator('[data-testid=output-delete]').click()
-  await confirmBtn.waitFor({ timeout: 5000 })
+  await confirmBtn.waitFor({ timeout: t(5000) })
   const rtext = clean(await page.locator('dialog[open]').innerText())
   const shownPath = clean(await page.locator('[data-testid=output-delete-path]').innerText()).replace(/\\/g, '/')
   check(/Delete Handoff and its file\?/.test(rtext) && /a file the team registered/.test(rtext), `${label}: the registered-delete confirm says the team registered it`, rtext.slice(0, 260))
   check(shownPath.endsWith('/reg/handoff.txt') && path.isAbsolute(shownPath.replace(/\//g, path.sep)), `${label}: the confirm shows the full path`, shownPath)
   await page.keyboard.press('Escape')
-  await confirmBtn.waitFor({ state: 'hidden', timeout: 5000 })
+  await confirmBtn.waitFor({ state: 'hidden', timeout: t(5000) })
   check((await outputsOf()).some((o) => o.title === 'Handoff'), `${label}: cancelling keeps the registered output`)
   await detail().locator('[data-testid=output-more]').click()
   await page.locator('[data-testid=output-delete]').click()
@@ -317,7 +306,7 @@ async function mutatingChecks(label) {
   await detail().locator('[data-testid=output-more]').click()
   await page.locator('[data-testid=output-forget]').click()
   const forget = page.locator('[data-testid=output-forget-confirm]')
-  await forget.waitFor({ timeout: 5000 })
+  await forget.waitFor({ timeout: t(5000) })
   const ftext = clean(await page.locator('dialog[open]').innerText())
   check(/Remove Report from OrgAI\?/.test(ftext) && /The file stays at outputs\/report\.csv\. OrgAI's earlier versions and notes are deleted\./.test(ftext), `${label}: the Remove confirm names where the file stays`, ftext.slice(0, 240))
   await forget.click()
@@ -379,14 +368,14 @@ try {
     try {
       await versionChecks(label, c.w >= 1100)
     } catch (e) {
-      check(false, `${label}: version checks`, e.message.split('\n')[0])
+      check(false, `${label}: version checks`, errDetail(e))
     }
     await runParts(label, [c.w, c.h], c.theme)
   }
   try {
     await mutatingChecks('1024x640 light')
   } catch (e) {
-    check(false, 'mutating checks', e.message.split('\n')[0])
+    check(false, 'mutating checks', errDetail(e))
   }
 } finally {
   await deleteProject(page, NAME_PARTS).catch(() => {})

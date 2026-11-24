@@ -5,7 +5,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E slides (orgai test)'
@@ -80,7 +80,7 @@ const setTheme = async (theme) => {
   await sleep(500)
 }
 const until = async (fn, ms = 8000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true

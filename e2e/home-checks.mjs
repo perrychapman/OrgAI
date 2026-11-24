@@ -1,13 +1,13 @@
 // Shared checks for the Home tab of a stored project (docs/design/ui-overhaul/impl-project-home.md). Token-free (mock adapter);
 // called from per-project.mjs (code Home) and engagement.mjs / engagement2.mjs (engagement Home) so each script keeps its own
 // project, data dir and cleanup. Not a script of its own.
-import { check, sleep } from './lib.mjs'
+import { check, sleep, t, until } from './lib.mjs'
 
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 
 async function setSize(app, page, w, h) {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await sleep(500)
 }
@@ -23,6 +23,10 @@ const openHome = async (page) => {
   await sleep(500)
 }
 const selectedTab = (page) => page.locator('[role=tablist][aria-label="Project sections"] [role=tab][aria-selected=true]').first().innerText()
+// Wait for the selected tab to read as `re`: a click that changes the view is answered a frame or more later, so a read right
+// after it saw the old tab or none (CI macOS 2026-11-24: "Open goes to the run" found no selected tab within 5 s).
+const tabIs = (page, re) => until(async () => re.test((await selectedTab(page)).trim()), 12_000).then(Boolean)
+const tabNow = (page) => selectedTab(page).then((x) => x.trim(), () => '(none)')
 
 /** The Home page fits its window at this size/theme: no sideways scroll, every section inside the page. */
 async function geometry(page, root, what) {
@@ -64,7 +68,7 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   check((await page.locator('[data-testid=tab-home]').count()) === 1, `${tag}: a stored project has a Home tab`)
   await openHome(page)
   check((await page.locator('[data-testid=project-home]').count()) === 1 && (await page.locator('[data-testid=engagement-home]').count()) === 0, `${tag}: a code project opens ProjectHome, not EngagementHome`)
-  check((await selectedTab(page)).trim() === 'Home', `${tag}: the Home tab is the selected tab`)
+  check(await tabIs(page, /^Home$/),`${tag}: the Home tab is the selected tab`)
 
   // Look: workbench (mono lowercase labels), not serif.
   const look = await page.evaluate(() => {
@@ -93,7 +97,7 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   check((await page.locator('[data-testid=home-todo-run]').count()) === 2, `${tag}: one Run button per open to-do`)
   await page.locator('[data-testid=home-todo-run]').first().click()
   const composer = page.locator('.composer textarea').first()
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
+  await composer.waitFor({ state: 'visible', timeout: t(10_000) })
   check(/^To-do:/.test(await composer.inputValue()), `${tag}: a to-do's Run fills the New run box`, await composer.inputValue())
   check((await page.locator('[data-testid=home-todos]').count()) === 0, `${tag}: the New run page replaced Home`)
   await openHome(page)
@@ -101,13 +105,13 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   // The new run box: chips and Start run open New run with the text; Ctrl+Enter does the same; nothing is sent.
   const runsBefore = await page.evaluate(async (id) => (await window.orgai.runs.list(id)).length, pid)
   await page.locator('[data-testid=home-quick]').first().click()
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
+  await composer.waitFor({ state: 'visible', timeout: t(10_000) })
   const v1 = await composer.inputValue()
   check(v1.includes('Fix a failing test') && /^To-do:/.test(v1), `${tag}: a quick chip adds its text to the draft and keeps the earlier one`, v1)
   await openHome(page)
   await page.locator('[data-testid=home-new-run-text]').fill('Plan the pagination work')
   await page.locator('[data-testid=home-new-run-text]').press('Control+Enter')
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
+  await composer.waitFor({ state: 'visible', timeout: t(10_000) })
   check((await composer.inputValue()).includes('Plan the pagination work'), `${tag}: Ctrl+Enter in the box opens New run with the text`)
   const runsAfter = await page.evaluate(async (id) => (await window.orgai.runs.list(id)).length, pid)
   check(runsAfter === runsBefore, `${tag}: opening New run from Home starts nothing`)
@@ -118,18 +122,18 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   check(await tabTo(page, '[data-testid=home-quick]', 2), `${tag}: Tab moves from the box to the chips`)
   check(await tabTo(page, '[data-testid=home-start-run]', 4), `${tag}: Start run is reachable by keyboard`)
   await page.keyboard.press('Enter')
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
+  await composer.waitFor({ state: 'visible', timeout: t(10_000) })
   check(true, `${tag}: Enter on Start run opens New run`)
   await openHome(page)
 
   // Team Edit -> Team tab; To-dos link -> To-dos tab.
   await page.locator('[data-testid=home-team-edit]').click()
-  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
-  check(/^Team/.test((await selectedTab(page)).trim()), `${tag}: the team's Edit opens the Team tab`)
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: t(10_000) })
+  check(await tabIs(page, /^Team/), `${tag}: the team's Edit opens the Team tab`)
   await openHome(page)
   await page.locator('[data-testid=home-todos-open]').click()
-  await page.locator('[data-testid=todos-view], [data-testid=todo-list], .todos-view').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})
-  check(/^To-dos/.test((await selectedTab(page)).trim()), `${tag}: All to-dos opens the To-dos tab`)
+  await page.locator('[data-testid=todos-view], [data-testid=todo-list], .todos-view').first().waitFor({ state: 'visible', timeout: t(10_000) }).catch(() => {})
+  check(await tabIs(page, /^To-dos/),`${tag}: All to-dos opens the To-dos tab`)
   await openHome(page)
 
   // Schedules: only this project's, with the last result; the link opens Schedules.
@@ -141,7 +145,7 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   await page.locator('[data-testid=home-schedules]').waitFor({ state: 'visible' })
   check(clean(await page.locator('[data-testid=home-schedules]').innerText()).includes('Nightly dependency check'), `${tag}: the project's schedule is listed`)
   await page.locator('[data-testid=home-schedules-open]').click()
-  await page.locator('[data-testid=schedules-view]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.locator('[data-testid=schedules-view]').waitFor({ state: 'visible', timeout: t(10_000) })
   check(true, `${tag}: the Schedules link opens the Schedules page`)
   await nav().click()
   await sleep(400)
@@ -153,24 +157,24 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   const emptySpend = page.locator('[data-testid=home-spend-figure]')
   const hadRuns = await page.evaluate(async (id) => (await window.orgai.runInsights.projectSpend(id)).month.runs, pid)
   if (hadRuns === 0) {
-    check(await emptySpend.waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false), `${tag}: an empty month still shows the spend section`)
+    check(await emptySpend.waitFor({ state: 'visible', timeout: t(20_000) }).then(() => true, () => false), `${tag}: an empty month still shows the spend section`)
     check(clean(await emptySpend.innerText()) === 'No spend yet', `${tag}: an empty month reads "No spend yet"`, clean(await emptySpend.innerText().catch(() => '')))
   }
   await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'Add response caching' }), pid)
-  await page.locator('[data-testid=home-running]').waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('[data-testid=home-running]').waitFor({ state: 'visible', timeout: t(15_000) })
   check(clean(await page.locator('[data-testid=home-running]').innerText()).includes('Add response caching'), `${tag}: "running now" names the run`)
   const marks = page.locator('[data-testid=home-running-marks]')
   if (await marks.count()) check(!!(await marks.getAttribute('aria-label')), `${tag}: the agent strip has a text alternative`)
   await shot('code-home-running')
   await page.locator('[data-testid=home-running-open]').click()
-  await page.locator('[data-testid=project-home]').waitFor({ state: 'detached', timeout: 10_000 })
-  check(/^Live|^Work/.test((await selectedTab(page)).trim()), `${tag}: Open goes to the run`, await selectedTab(page))
+  await page.locator('[data-testid=project-home]').waitFor({ state: 'detached', timeout: t(10_000) })
+  check(await tabIs(page, /^Live|^Work/), `${tag}: Open goes to the run`, await tabNow(page))
   // Month spend appears once the run is in the usage numbers (a fresh Home reads it at once).
   await openHome(page)
-  check(await page.locator('[data-testid=home-spend]').waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false), `${tag}: "spend this month" appears for a project with a run this month`)
+  check(await page.locator('[data-testid=home-spend]').waitFor({ state: 'visible', timeout: t(20_000) }).then(() => true, () => false), `${tag}: "spend this month" appears for a project with a run this month`)
   const spendNow = await page.evaluate(async (id) => (await window.orgai.runInsights.projectSpend(id)).month.runs, pid)
   if (spendNow > 0) {
-    await page.waitForFunction(() => !/No spend yet/.test(document.querySelector('[data-testid=home-spend-figure]')?.textContent ?? ''), null, { timeout: 20_000 }).catch(() => {})
+    await page.waitForFunction(() => !/No spend yet/.test(document.querySelector('[data-testid=home-spend-figure]')?.textContent ?? ''), null, { timeout: t(20_000) }).catch(() => {})
     check(!/No spend yet/.test(await page.locator('[data-testid=home-spend-figure]').innerText()), `${tag}: once a run is counted the month is no longer "No spend yet"`)
   }
 
@@ -179,13 +183,13 @@ export async function codeHomeChecks({ app, page, shot, pid, name, folderName })
   if (schedId) {
     await page.evaluate((sid) => window.orgai.schedules.runNow(sid), schedId)
     const bars = page.locator('[data-testid=home-schedules] [data-testid=home-nightly]')
-    check(await bars.first().waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false), `${tag}: the schedule row draws its recent runs`)
+    check(await bars.first().waitFor({ state: 'visible', timeout: t(20_000) }).then(() => true, () => false), `${tag}: the schedule row draws its recent runs`)
     check((await bars.first().locator('.runbars-bar').count()) >= 1 && (await bars.first().locator('.runbars-mark-fill, .runbars-mark-line, .runbars-mark-ring').count()) >= 1, `${tag}: each bar has a shape under it (the outcome is not colour alone)`)
     const chart = bars.first().locator('.runbars-chart')
     check((await chart.getAttribute('tabindex')) === '0' && /Last \d+ runs?/.test((await chart.getAttribute('aria-label')) ?? ''), `${tag}: the bars are one focusable group with every run in its label`)
     await chart.focus()
     await page.keyboard.press('ArrowRight')
-    check(await page.waitForFunction(() => /still running|finished|failed|stopped|needed you/.test(document.querySelector('[data-testid=home-nightly-readout]')?.textContent ?? ''), null, { timeout: 5000 }).then(() => true, () => false), `${tag}: Right arrow reads one run in words`)
+    check(await page.waitForFunction(() => /still running|finished|failed|stopped|needed you/.test(document.querySelector('[data-testid=home-nightly-readout]')?.textContent ?? ''), null, { timeout: t(5000) }).then(() => true, () => false), `${tag}: Right arrow reads one run in words`)
   }
 
   // Both sizes and themes.
@@ -248,7 +252,7 @@ export async function engagementHomeChecks({ app, page, shot, name, client, purp
   const stickyBefore = await stickyModes()
   await page.locator('[data-testid=eng-start-button]').click()
   const composer = page.locator('.composer textarea').first()
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
+  await composer.waitFor({ state: 'visible', timeout: t(10_000) })
   check((await composer.inputValue()).includes('What did we agree on the kickoff call?'), `${tag}: Start opens New run with the text`)
   check(/Ask/.test(await page.locator('[data-testid=new-run-mode]').innerText().catch(() => '')) || (await page.locator('[data-testid=new-run-ask-lead]').count()) === 1, `${tag}: New run opens in Ask mode`)
   // The Ask choice is a one-shot for this opening (store newRunMode): the sticky Team / Ask choice in storage is untouched,
@@ -265,23 +269,23 @@ export async function engagementHomeChecks({ app, page, shot, name, client, purp
 
   // Links to their tabs.
   await page.locator('[data-testid=eng-edit-description]').click()
-  await page.locator('#settings-section-engagement-plan, [data-testid=engagement-plan-section]').first().waitFor({ state: 'visible', timeout: 10_000 })
-  check(/^Settings/.test((await selectedTab(page)).trim()), `${tag}: "Edit the description" opens the engagement plan in Settings`)
+  await page.locator('#settings-section-engagement-plan, [data-testid=engagement-plan-section]').first().waitFor({ state: 'visible', timeout: t(10_000) })
+  check(await tabIs(page, /^Settings/),`${tag}: "Edit the description" opens the engagement plan in Settings`)
   await openHome(page)
   await page.locator('[data-testid=eng-open-team]').click()
-  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
-  check(/^Team/.test((await selectedTab(page)).trim()), `${tag}: the team's Open opens the Team tab`)
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: t(10_000) })
+  check(await tabIs(page, /^Team/), `${tag}: the team's Open opens the Team tab`)
   await openHome(page)
   const know = page.locator('[data-testid=eng-add-knowledge]')
   if (await know.count()) {
     await know.click()
-    await page.locator('[data-testid=knowledge-view]').waitFor({ state: 'visible', timeout: 10_000 })
-    check(/^Knowledge/.test((await selectedTab(page)).trim()), `${tag}: "Add something you know" opens Knowledge`)
+    await page.locator('[data-testid=knowledge-view]').waitFor({ state: 'visible', timeout: t(10_000) })
+    check(await tabIs(page, /^Knowledge/),`${tag}: "Add something you know" opens Knowledge`)
     await openHome(page)
   }
   await page.locator('[data-testid=eng-manage-connections]').click().then(
     async () => {
-      await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
+      await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: t(10_000) })
       check(true, `${tag}: Connections > Manage opens where connections are managed (Team catalog)`)
       await openHome(page)
     },
@@ -292,21 +296,21 @@ export async function engagementHomeChecks({ app, page, shot, name, client, purp
   const before = await page.locator('[data-testid=eng-run]').count()
   const pid = await page.evaluate(async (n) => (await window.orgai.projects.list()).find((p) => p.name === n)?.id, name)
   await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'Draft the plan' }), pid)
-  await page.locator('[data-testid=eng-run]').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('[data-testid=eng-run]').first().waitFor({ state: 'visible', timeout: t(15_000) })
   check((await page.locator('[data-testid=eng-run]').count()) === Math.min(4, before + 1), `${tag}: starting a run adds one row to Recent work (${before} before)`)
   check(clean(await page.locator('[data-testid=eng-recent]').innerText()).includes('Draft the plan'), `${tag}: Recent work lists the run`)
-  const asked = await page.locator('[data-testid=eng-waiting]').waitFor({ state: 'visible', timeout: 15_000 }).then(() => true, () => false)
+  const asked = await page.locator('[data-testid=eng-waiting]').waitFor({ state: 'visible', timeout: t(15_000) }).then(() => true, () => false)
   check(asked, `${tag}: a decision of the run shows under "Waiting on you"`)
   await shot('engagement-home-run')
   if (asked) {
     await page.locator('[data-testid=eng-review]').first().click()
-    await page.locator('[data-testid=engagement-home]').waitFor({ state: 'detached', timeout: 10_000 })
-    check(/^Live|^Work/.test((await selectedTab(page)).trim()), `${tag}: Review opens the run with its decision`, await selectedTab(page))
+    await page.locator('[data-testid=engagement-home]').waitFor({ state: 'detached', timeout: t(10_000) })
+    check(await tabIs(page, /^Live|^Work/), `${tag}: Review opens the run with its decision`, await tabNow(page))
     await openHome(page)
   }
   await page.locator('[data-testid=eng-run]').first().click()
-  await page.locator('[data-testid=engagement-home]').waitFor({ state: 'detached', timeout: 10_000 })
-  check(/^Live|^Work/.test((await selectedTab(page)).trim()), `${tag}: a recent run opens the run`, await selectedTab(page))
+  await page.locator('[data-testid=engagement-home]').waitFor({ state: 'detached', timeout: t(10_000) })
+  check(await tabIs(page, /^Live|^Work/), `${tag}: a recent run opens the run`, await tabNow(page))
   await openHome(page)
 
   for (const [w, h] of [[1440, 900], [1024, 640]]) {

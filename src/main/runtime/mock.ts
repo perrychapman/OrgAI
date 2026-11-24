@@ -95,6 +95,10 @@ import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
  * Revise requests (OUTPUTS_REVISE_TOKEN, no prompt marker needed): a user message, or a started / continued run's
  * prompt, carrying OrgAI's "The user wrote (request rev_...):" line makes the root read_output the named output and
  * produce_output it again at the same file name with a visible change (reviseOutputStep). Peer messages never do.
+ * REVISE_HOLD_TOKEN ([mock:revise-hold]) in the instruction makes the mock ask one permission card first and answer only
+ * once it is answered, so a test can read the "waiting for the team's version" state at any speed (e2e/outputs-notes.mjs).
+ * MODEL_SWITCH_HOLD_TOKEN ([mock:model-switch-hold]) in a later message of a [mock:model-switch] run keeps its turn running
+ * until the interrupt or stop (e2e/model-switch.mjs: "Interrupt and switch" needs a run that is running when it is pressed).
  *
  *
  * Chat (quick) markers (quick runs, default script): [mock:chat-edit] (chatEditSteps): list_projects, then an Edit of
@@ -811,6 +815,15 @@ export const MOCK_HOST_REJECT_REASON = 'This session does not take this change; 
 export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
 export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
 /**
+ * [mock:model-switch-hold] in a LATER message of a [mock:model-switch] run: after its reply the turn stays running (status
+ * 'running', the root thinking) until the user interrupts or stops it, instead of ending after a mock delay. A test that must
+ * press "Interrupt and switch" while the run is running cannot race the mock's own turn end on a slow machine: the interrupt it
+ * is testing is the release (e2e/model-switch.mjs). Not used by a run that never carries a model-switch marker.
+ */
+export const MODEL_SWITCH_HOLD_TOKEN = '[mock:model-switch-hold]'
+/** How long the hold waits at most (the interrupt or stop cuts it short): longer than any e2e run. */
+export const MOCK_MODEL_SWITCH_HOLD_MS = 30 * 60 * 1000
+/**
  * RunHold e2e markers (work runs, default script; UI overhaul). [mock:budget-stop] (budgetStopSteps): one text, then the
  * root turn ends as a Claude turn that hit its spending limit does: ctx.onRootTurnEnded({ ok: false, errorSubtype:
  * 'error_max_budget_usd' }), root state 'error', then run.status 'idle'. RunManager holds the run on 'budget' when the run
@@ -1244,6 +1257,14 @@ export const OUTPUTS_V2_TOKEN = '[mock:outputs-v2]'
  * prompt) on a default-script work run carrying OrgAI's revise marker line is answered (reviseOutputStep).
  */
 export const OUTPUTS_REVISE_TOKEN = '[mock:outputs-revise]'
+/**
+ * [mock:revise-hold] inside the user's revise instruction: the mock does not answer on its own clock. Before it reads the
+ * output it asks for one permission card (a Bash `npm test`), and it revises only once the card is answered (stop releases
+ * it). The Outputs views show "Waiting for the team's new version" for as long as the card stays open, so a test reads that
+ * state when it gets there, however slow the page is, and releases the answer by answering the card (e2e/outputs-notes.mjs).
+ * Without the token nothing changes: the answer arrives after the mock's own delays.
+ */
+export const REVISE_HOLD_TOKEN = '[mock:revise-hold]'
 /** The root's sentence after the [mock:outputs-all] steps (4 + 7 produced, 1 registered). */
 export const MOCK_OUTPUTS_ALL_DONE = 'I produced 12 outputs.'
 export const MOCK_OUTPUTS_V2_START = 'I will update the deliverables.'
@@ -2268,7 +2289,13 @@ export class MockSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId, status: 'running' })
         if (next.harness) await this.turn(this.continueTurns.shift() ?? [{ type: 'text', text: 'Mock: continuing with the plan.' }])
         else if (this.answersRevisions() && isReviseMessage(next.text)) await this.turn([{ type: 'text', text: MOCK_REVISE_START }, { type: 'reviseOutput', message: next.text }])
-        else await this.turn([{ type: 'text', text: this.modelSwitchMarker() ? `Mock reply (${this.usageModel(ROOT_AGENT_ID)}): ${next.text}` : this.script.reply.replace('{text}', next.text) }])
+        else {
+          const hold = this.modelSwitchMarker() && next.text.includes(MODEL_SWITCH_HOLD_TOKEN)
+          await this.turn([
+            { type: 'text', text: this.modelSwitchMarker() ? `Mock reply (${this.usageModel(ROOT_AGENT_ID)}): ${next.text}` : this.script.reply.replace('{text}', next.text) },
+            ...(hold ? [{ type: 'wait' as const, ms: MOCK_MODEL_SWITCH_HOLD_MS }] : [])
+          ])
+        }
       }
       this.emit({ type: 'run.status', runId, status: 'finished' })
     } catch (e) {
@@ -3389,6 +3416,11 @@ export class MockSession implements RuntimeSession {
     if (!req.fileName) {
       await this.step({ type: 'text', text: MOCK_REVISE_REGISTERED })
       return
+    }
+    if (message.includes(REVISE_HOLD_TOKEN)) {
+      // The hold: one foreground permission card; the step returns when it is answered (or the session stopped).
+      await this.step({ type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'ok' })
+      if (this.stopped || this.interrupted) return
     }
     const read = await this.harnessStep({ type: 'harness', name: OUTPUT_TOOLS.read, args: { action: 'read', outputId: req.outputId }, retryOnRevise: false })
     if (this.stopped || this.interrupted) return
