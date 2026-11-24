@@ -441,16 +441,35 @@ export async function openProjectForm(page) {
 export async function pickSetup(form, skipSetup) {
   const box = form.locator('[data-testid=architect-setup]')
   const fieldset = form.locator('[data-testid=setup-choice]')
-  await box.or(fieldset).first().waitFor({ timeout: t(30_000) })
-  if (await box.count()) {
-    if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: /Set up with the Architect|Start with the setup interview/ }).click()
-    if ((await box.isChecked()) === skipSetup) throw new Error('could not toggle "Set up with the Architect"')
-    return
+  // The options area is one of the two while the form loads what decides it (templates, importable agents, the kind chosen
+  // above): a click on one can land as it is replaced by the other, which Playwright reports as "Clicking the checkbox did
+  // not change its state" (CI macOS 2026-11-24, self-help: the radio resolved, was clicked and nothing changed). So each
+  // try finds out which one is there NOW, acts on it and verifies; a lost click is tried again, saying so in the log.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await box.or(fieldset).first().waitFor({ timeout: t(30_000) })
+      if (await box.count()) {
+        if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: /Set up with the Architect|Start with the setup interview/ }).click({ timeout: t(10_000) })
+        if (await until(async () => (await box.count()) === 0 || (await box.isChecked()) !== skipSetup, 3000, 100)) {
+          if ((await box.count()) === 0) throw new Error('the options changed to the "How should the team start?" choice under the click')
+          return
+        }
+        throw new Error('could not toggle "Set up with the Architect"')
+      }
+      const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
+      // The form's submit row is sticky: Playwright's own scroll can leave the last radio underneath it, and a forced click
+      // then lands on "Create project" (it created the project with the Architect choice). Centre the radio first.
+      await radio.waitFor({ state: 'attached', timeout: t(5000) })
+      await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: t(5000) })
+      await radio.check({ force: true, timeout: t(10_000) })
+      if (await until(() => radio.isChecked(), 3000, 100)) return
+      throw new Error(`the "${skipSetup ? 'default' : 'architect'}" setup choice did not stay chosen`)
+    } catch (e) {
+      if (attempt >= 3) throw e
+      log(`create project: the setup choice did not stick (${String(e.message).split('\n')[0]}); looking again`)
+      await sleep(500)
+    }
   }
-  const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
-  // The form's submit row is sticky: Playwright's own scroll can leave the last radio underneath it, and a forced click
-  // then lands on "Create project" (it created the project with the Architect choice). Centre the radio first.
-  await checkRadio(radio, `the "${skipSetup ? 'default' : 'architect'}" setup choice`)
 }
 
 /**
