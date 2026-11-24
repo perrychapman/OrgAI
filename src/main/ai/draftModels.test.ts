@@ -87,4 +87,13 @@ describe('draftOrgChart', () => {
     await draftOrgChart(make(seen), p, { projectId: p.id, instruction: 'x', mode: 'new' } as never, { connection: 'anthropic', tierModels: { deep: 'claude-opus-9' }, catalog: builtinModels('anthropic') })
     expect(seen.model).toBe('claude-opus-9')
   })
+
+  it('openai context with partial tierModels and discovered catalog resolves unmapped everyday via nearest real tier instead of gpt-5-mini placeholder', async () => {
+    const seen: { model?: string } = {}
+    const discovered = [{ id: 'gpt-6.2-sol', label: 'GPT-6.2-Sol', connection: 'openai' as const, family: 'openai' as const, adapter: 'codex' as const, tier: 'deep' as const, source: 'discovered' as const }]
+    const out = await draftOrgChart(make(seen), p, { projectId: p.id, instruction: 'x', mode: 'new' } as never, { connection: 'openai', tierModels: { deep: 'gpt-6.2-sol' }, catalog: discovered })
+    expect(seen.model).toBe('gpt-6.2-sol')
+    expect(out.roles.map((r) => r.model)).toEqual(['gpt-6.2-sol', 'gpt-6.2-sol'])
+    expect(toRoles(chart(['deep', 'everyday']), { connection: 'openai', tierModels: { deep: 'gpt-6.2-sol' }, models: ['gpt-6.2-sol'] }).map((r) => r.model)).toEqual(['gpt-6.2-sol', 'gpt-6.2-sol'])
+  })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderModel } from '@shared/types'
-import { autoFillTierModels, classifyFamily, inferTier, makeDiscoveredModel } from './catalog'
+import { autoFillTierModels, classifyFamily, inferTier, makeDiscoveredModel, openaiDiscoveredTier, suggestTierModels, tierFromDescription } from './catalog'
 
 describe('classifyFamily', () => {
   it('recognizes dotted AWS ids without changing the request id or inventing metadata', () => {
@@ -105,5 +105,51 @@ describe('Claude model versions (stale tier mappings)', () => {
     const { anthropicModelsToCatalog } = await import('./catalog')
     const out = anthropicModelsToCatalog([{ id: 'opus', resolvedModel: 'claude-opus-5-5' }, { id: 'claude-opus-5-5', resolvedModel: 'claude-opus-5-5' }])
     expect(out.map((m) => [m.id, m.upstream])).toEqual([['opus', 'claude-opus-5-5'], ['claude-opus-5-5', undefined]])
+  })
+})
+
+describe('openai ChatGPT discovery tiers and suggestTierModels', () => {
+  it('classifies Codex ChatGPT models by suffix/description instead of collapsing all gpt-* to deep', () => {
+    expect(tierFromDescription('Efficient model that excels at visual understanding and computer use.')).toBe('everyday')
+    expect(tierFromDescription('Fast and affordable model for easier tasks.')).toBe('fast')
+    expect(tierFromDescription('Legacy fast model for simpler tasks.')).toBe('fast')
+    expect(tierFromDescription('Fast, go-to model for coding and everyday work.')).toBe('everyday')
+
+    expect(openaiDiscoveredTier('gpt-6.2-sol', 'Fast, go-to model for coding and everyday work.', true)).toBe('everyday')
+    expect(openaiDiscoveredTier('gpt-6.2-astra', 'Our most capable model for complex coding and professional work.')).toBe('top')
+    expect(openaiDiscoveredTier('gpt-6.1-terra', 'Efficient model that excels at visual understanding and computer use.')).toBe('everyday')
+    expect(openaiDiscoveredTier('gpt-6-astra', 'Previous generation model for complex coding and professional work.')).toBe('deep')
+    expect(openaiDiscoveredTier('gpt-6-luna', 'Fast and affordable model for easier tasks.')).toBe('fast')
+    expect(openaiDiscoveredTier('gpt-5.6-luna', 'Legacy fast model for simpler tasks.')).toBe('fast')
+  })
+
+  it('maps all 4 tiers across the 10-model Codex catalog without letting legacy deep shadow current models', () => {
+    const raw: [string, string, boolean?][] = [
+      ['gpt-6.2-sol', 'Fast, go-to model for coding and everyday work.', true],
+      ['gpt-6.2-astra', 'Our most capable model for complex coding and professional work.'],
+      ['gpt-6.1-terra', 'Efficient model that excels at visual understanding and computer use.'],
+      ['gpt-6.1-sol', 'Previous generation model for coding and everyday work.'],
+      ['gpt-6-astra', 'Previous generation model for complex coding and professional work.'],
+      ['gpt-6-sol', 'Legacy model for coding and everyday work.'],
+      ['gpt-6-luna', 'Fast and affordable model for easier tasks.'],
+      ['gpt-5.6-sol', 'Legacy model for coding and everyday work.'],
+      ['gpt-5.6-terra', 'Legacy balanced model for agentic coding.'],
+      ['gpt-5.6-luna', 'Legacy fast model for simpler tasks.']
+    ]
+    const catalog: ProviderModel[] = raw.map(([id, description, recommended]) =>
+      makeDiscoveredModel('openai', {
+        id,
+        family: 'openai',
+        hint: description,
+        recommended,
+        tier: openaiDiscoveredTier(id, description, recommended)
+      })
+    )
+    expect(suggestTierModels('openai', catalog)).toEqual({
+      top: 'gpt-6.2-astra',
+      deep: 'gpt-6.2-astra',
+      everyday: 'gpt-6.2-sol',
+      fast: 'gpt-6-luna'
+    })
   })
 })

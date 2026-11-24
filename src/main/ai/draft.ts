@@ -1,4 +1,4 @@
-import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
+import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, ProviderModel, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG } from '@shared/types'
 import { ROLE_COLORS, cleanRequiredReports, modelForTier, nearestTiers, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
 import type { RuntimeAdapter } from '../runtime/types'
@@ -104,6 +104,8 @@ export interface DraftModelContext {
   tierModels: Partial<Record<ModelTier, ModelRef>>
   /** Exact model ids the connection lists as available; a proposed id in this list is kept. */
   models?: string[]
+  /** Optional discovered catalog entries for the connection; avoids falling back to builtin placeholder models. */
+  catalog?: readonly ProviderModel[]
   /** The current chart root's concrete model: the last choice before 'inherit' for a NEW role whose tier maps nothing. */
   fallback?: { model: ModelRef; tier?: ModelTier }
 }
@@ -111,7 +113,9 @@ export interface DraftModelContext {
 export type ResolvedModel = { model: ModelRef; tier?: ModelTier }
 
 const tierContextOf = (ctx: DraftModelContext | undefined): TierContext =>
-  ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
+  ctx
+    ? { connection: ctx.connection, tierModels: ctx.tierModels, ...(ctx.catalog ? { catalog: ctx.catalog } : ctx.models ? { catalog: [] } : {}) }
+    : { connection: 'anthropic', tierModels: {} }
 
 /**
  * Strict resolution of a proposed model: 'inherit' stays; a tier name or legacy alias maps through modelForTier
@@ -322,7 +326,7 @@ Design the org chart now. Return only the JSON object.`
   })
   const payload = extractJson(text)
   const context: DraftModelContext | undefined = tiers
-    ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id) } : {}) }
+    ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id), catalog: tiers.catalog } : {}) }
     : undefined
   return { roles: toRoles(payload, context), rationale: payload.rationale ?? '' }
 }

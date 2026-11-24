@@ -67,7 +67,7 @@ import type { SettingsStore } from '../store/settings'
 import { SyncedFile, storeSyncFor } from '../store/shared/storeSync'
 import type { AdapterModelInfo, RunConnection } from '../runtime/types'
 import { anthropicStatus } from './anthropicAuth'
-import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, newerClaudeModel, suggestTierModels, tierFromDescription } from './catalog'
+import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, newerClaudeModel, openaiDiscoveredTier, suggestTierModels } from './catalog'
 import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
 import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMSpend, fetchProxyModels, normalizeBaseUrl } from './litellm'
@@ -256,6 +256,12 @@ export class ConnectionService {
                 ...(typeof rest.label === 'string' ? { label: rest.label.slice(0, MODEL_TEXT_MAX) } : {}),
                 ...(typeof rest.hint === 'string' ? { hint: rest.hint.slice(0, MODEL_TEXT_MAX) } : {})
               }
+              if (id === 'openai' && capped.source === 'discovered') {
+                const { tier: _stale, ...withoutTier } = capped
+                const tier = openaiDiscoveredTier(withoutTier.id, withoutTier.hint, withoutTier.recommended)
+                const refreshed: ProviderModel = tier ? { ...withoutTier, tier } : withoutTier
+                return price ? { ...refreshed, price } : refreshed
+              }
               return price ? { ...capped, price } : capped
             })
         }
@@ -366,10 +372,7 @@ export class ConnectionService {
       })
       if (!list) return SIGNED_OUT
       return list.map((m) => {
-        const base = makeDiscoveredModel('openai', { id: m.id, label: m.label, family: 'openai', hint: m.description })
-        // The id gives a tier for the known families; otherwise the provider's description, and its recommended
-        // model never stays tierless.
-        const tier = base.tier ?? tierFromDescription(m.description) ?? (m.isDefault ? 'deep' : undefined)
+        const tier = openaiDiscoveredTier(m.id, m.description, m.isDefault)
         return makeDiscoveredModel('openai', { id: m.id, label: m.label, family: 'openai', hint: m.description, recommended: m.isDefault, ...(tier ? { tier } : {}) })
       })
     }
