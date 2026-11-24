@@ -870,6 +870,9 @@
 }
 .template-option input {
   grid-row: 1 / span 3;
+  /* A grid item stretches: without these the radio (and its focus ring) became a tall oval the height of the card. */
+  align-self: start;
+  justify-self: start;
   margin-top: var(--space-0h);
 }
 .template-option > :not(input) {

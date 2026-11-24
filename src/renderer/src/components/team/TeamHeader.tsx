@@ -201,7 +201,7 @@ export default function TeamHeader({ roleCount, groupCount = 0, onAddGroup, onIm
   return (
     <div className="team-header" ref={rootRef} data-compact={compact ? 'true' : undefined} data-testid="team-header">
       <div className="team-header-left">
-        <h1 className="team-header-title" data-testid="team-title" title={`Team, ${countText}`}>
+        <h1 className="team-header-title" data-testid="team-title" title={`Team, ${countText}${groupCount > 0 ? ` in ${groupCount} ${groupCount === 1 ? 'group' : 'groups'}` : ''}`}>
           Team
         </h1>
         <span className="team-header-count">

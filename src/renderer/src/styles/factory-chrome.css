@@ -95,6 +95,7 @@
   background: transparent;
 }
 .factory-show .seg-item {
+  min-height: var(--space-6);
   padding: var(--space-1) var(--space-2);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;

@@ -39,10 +39,21 @@
   color: var(--text-primary);
 }
 .team-header-count {
-  flex: 0 0 auto;
+  /* Shrinks and ends in an ellipsis before it can run under the buttons. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--text-small);
   color: var(--text-secondary);
   white-space: nowrap;
+}
+/* With the role panel open the header is about 980 px wide at 1600: the labelled buttons need ~870 of it, so "in N groups"
+   (it stays in the title's tooltip) goes before the count can be cut. */
+@container teamhdr (max-width: 1100px) {
+  .team-header-groups {
+    display: none;
+  }
 }
 .team-view-switch:empty {
   display: none;
@@ -122,6 +133,22 @@
   background: var(--eng);
   border-color: var(--eng);
   color: var(--surface-0);
+}
+/* The role panel, the catalog and the assistant tray read in the same coral as the header's Add role (UX walk L5: they
+   stayed violet). Disabled buttons keep the neutral fill from controls.css. */
+.team-editor[data-kind='engagement'] .btn.primary:not(:disabled):not([aria-disabled='true']) {
+  background: var(--eng);
+  border-color: var(--eng);
+  color: var(--surface-0);
+}
+.team-editor[data-kind='engagement'] .link-btn {
+  color: var(--eng);
+}
+.team-editor[data-kind='engagement'] .btn.primary:not(:disabled):not([aria-disabled='true']):hover {
+  background: color-mix(in oklab, var(--eng) 86%, var(--text-primary));
+}
+.team-editor[data-kind='engagement'] .btn.primary:not(:disabled):not([aria-disabled='true']):active {
+  background: color-mix(in oklab, var(--eng) 74%, var(--text-primary));
 }
 
 /* ---------- Zoom group (bottom right of the stage): − 100% + Fit Tidy ---------- */
