@@ -768,6 +768,8 @@ try {
     const fixNodes = await page.locator('.react-flow__node .agent-node').count()
     check(fixNodes >= 4, 'the corrected run shows the lead, the manager and its two worker nodes', String(fixNodes))
     await shot('run-delegation-fix')
+    // The choice is the user's own and stays (localStorage): give the later fold checks the default back.
+    await showFinishedAgents(page, false).catch(() => {})
     await endSession(page)
     await page.evaluate((p) => window.orgai.projects.save(p), before)
   }
@@ -826,7 +828,14 @@ try {
   await ta.fill('Chain second turn')
   await ta.press('Enter')
   await sleep(2500)
-  const tabsAfterSend = await tabTotal()
+  // The strip's total is wraps plus the "+n" figure, which is laid out from the strip's width: while the Interrupt button
+  // arrives beside it the cap moves and the two can disagree for a frame or two (9 -> 10 twice on a busy machine, then 9).
+  // The chain keeping one tab is a standing state, so wait for it to show.
+  let tabsAfterSend = await tabTotal()
+  for (let i = 0; i < 20 && tabsAfterSend !== tabsBefore; i++) {
+    await sleep(250)
+    tabsAfterSend = await tabTotal()
+  }
   check(tabsAfterSend === tabsBefore, 'Send on an ended run keeps one tab for the chain', `${tabsBefore} -> ${tabsAfterSend}`)
   const chainAfter = await chainOf()
   check(!!chainAfter && chainAfter === chainBefore, 'the same chain tab stays selected after Send', `${chainBefore} -> ${chainAfter}`)

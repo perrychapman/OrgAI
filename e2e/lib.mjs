@@ -604,11 +604,12 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
  * group. A user looking for a named agent turns the fold off; with it off the node is there at any speed. Call it right after
  * the run header is up, before the agents can finish. The choice is the renderer's own (localStorage orgai.collapseFinished).
  */
-export async function showFinishedAgents(page) {
+export async function showFinishedAgents(page, show = true) {
   const fold = page.getByRole('switch', { name: 'Hide finished agents' })
   await fold.waitFor({ state: 'attached', timeout: t(15_000) })
-  if ((await fold.getAttribute('aria-checked')) === 'true') await fold.click()
-  await until(async () => (await fold.getAttribute('aria-checked')) === 'false', 5000)
+  const want = show ? 'false' : 'true'
+  if ((await fold.getAttribute('aria-checked')) !== want) await fold.click()
+  await until(async () => (await fold.getAttribute('aria-checked')) === want, 5000)
 }
 
 /** The project as the main process stores it, looked up by name. */
