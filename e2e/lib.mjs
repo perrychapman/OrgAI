@@ -607,19 +607,47 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
 export async function showFinishedAgents(page, show = true) {
   // The switch lives in the run toolbar's View menu and appears once the run has a second agent: open the menu until it is there.
   const want = show ? 'false' : 'true'
+  let lastError = ''
   const done = await until(async () => {
-    const panel = await openViewMenu(page)
-    const fold = panel.getByRole('switch', { name: 'Hide finished agents' })
-    if ((await fold.count()) === 0) {
-      await page.keyboard.press('Escape')
-      return false
+    try {
+      const panel = await openViewMenu(page)
+      const fold = panel.getByRole('switch', { name: 'Hide finished agents' })
+      if ((await fold.count()) === 0) {
+        lastError = 'the View menu has no Hide finished agents switch (yet)'
+        await page.keyboard.press('Escape')
+        return false
+      }
+      if ((await fold.getAttribute('aria-checked')) !== want) await fold.click()
+      return (await fold.getAttribute('aria-checked')) === want
+    } catch (e) {
+      lastError = String(e?.message ?? e).split('\n')[0]
+      throw e
     }
-    if ((await fold.getAttribute('aria-checked')) !== want) await fold.click()
-    return (await fold.getAttribute('aria-checked')) === want
   }, 15_000, 400)
   await page.keyboard.press('Escape')
   await until(async () => (await page.locator('.run-body [data-testid=canvas-style-button]').getAttribute('aria-expanded')) !== 'true', 3000)
-  if (!done) throw new Error('showFinishedAgents: the Hide finished agents switch did not reach the wanted state')
+  if (!done) {
+    // What the page showed, so a failure on a runner is a diagnosis and not a bare timeout.
+    const seen = await page
+      .evaluate(() => ({
+        stored: localStorage.getItem('orgai.collapseFinished'),
+        trigger: document.querySelector('.run-body [data-testid=canvas-style-button]')?.getAttribute('aria-expanded') ?? null,
+        switches: [...document.querySelectorAll('.run-body [role=switch]')].map((s) => `${s.getAttribute('aria-label')}=${s.getAttribute('aria-checked')}`),
+        agents: document.querySelectorAll('.react-flow__node .agent-node').length,
+        groups: document.querySelectorAll('[data-testid=done-group]').length
+      }))
+      .catch(() => ({}))
+    throw new Error(`showFinishedAgents(${show}): the Hide finished agents switch did not reach the wanted state (${lastError}) ${JSON.stringify(seen)}`)
+  }
+}
+
+/**
+ * Give the "Hide finished agents" choice its default back (on) without the View menu: the choice is the renderer's own
+ * localStorage key, read when a run view mounts (a new run, a reload). Use it to start a fold check from a known state; it does
+ * not change a run view that is already mounted, so call it before the run that checks the fold starts, or reload.
+ */
+export async function resetFinishedAgentsChoice(page) {
+  await page.evaluate(() => localStorage.removeItem('orgai.collapseFinished'))
 }
 
 /**

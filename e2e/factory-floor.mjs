@@ -221,7 +221,12 @@ const spawnWork = (tree, slug) => [
 ]
 /** Start a fresh Live run with `prompt` (the previous one is ended first). */
 let runsStarted = 0
-const startLiveRun = async (prompt, metaTimeout = 15_000) => {
+// metaTimeout is scaled like every wait (t() below): 60 s is 180 s on a CI runner. It was 15 s (45 s there) and a run that
+// staffs the 39-station tour ([mock:factory-floor-pause], windows-latest 2026-11-24, CI run 45484286401) kept the page's timers
+// from running for the whole of it: the dump after the timeout found the header mounted, the composer gone and the hall paused,
+// a state the poll would have read at once had the page run it. The wait ends the moment the header is there, so a fast
+// machine loses nothing; only a run that really never starts waits the full time.
+const startLiveRun = async (prompt, metaTimeout = 60_000) => {
   if (runsStarted++ > 0 || (await page.getByRole('button', { name: 'End session' }).count())) await endSession(page)
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t')
@@ -264,6 +269,14 @@ const startLiveRun = async (prompt, metaTimeout = 15_000) => {
           }
         })
         .catch(() => ({}))
+      // The poll can end without having read the state it waits for: the same evaluate that follows it read the header mounted
+      // and the composer gone (windows-latest 2026-11-24, twice, 300 s and 45 s). The state is what this helper stands for, and
+      // it is read directly here, so a poll that was starved is reported and the script goes on; a header that is not there
+      // still fails with the dump.
+      if (seen.newRun === false && Array.isArray(seen.metas) && seen.metas.length > 0) {
+        log(`startLiveRun(${JSON.stringify(prompt)}): the poll timed out after ${t(metaTimeout)} ms but the header is mounted and the composer gone (poll starved, not a missing run): ${JSON.stringify(seen)}`)
+        return
+      }
       log(`startLiveRun(${JSON.stringify(prompt)}) found no run header after ${t(metaTimeout)} ms: ${JSON.stringify(seen)}`)
       throw error
     })
