@@ -204,3 +204,41 @@ describe('normalizeReview dismissals', () => {
     ])
   })
 })
+
+describe('normalizeReview re-redacts stored evidence (old files)', () => {
+  const ev = (id: string, summary: string) => ({ id, kind: 'ruleRequest' as const, runIds: ['r1'], summary, count: 2, lastSeenAt: '2026-01-01T00:00:00.000Z' })
+  const hex = (n: number): string => `ev-${n.toString(16).padStart(16, '0')}`
+
+  it('removes a password flag, URL userinfo and an Authorization header from a review saved before the rules existed', () => {
+    const old = review({
+      evidence: [
+        ev(hex(1), 'Dev asked for Bash(mysql --password hunter2 -h db).'),
+        ev(hex(2), 'Dev looked for a connection (https://u:p4ss@host.example/x).'),
+        ev(hex(3), 'Dev asked for Bash(curl -H "Authorization: Bearer abcDEF123456789xyz" https://h/x).')
+      ]
+    })
+    const n = normalizeReview(JSON.parse(JSON.stringify(old)), 'p1')!
+    const text = JSON.stringify(n.evidence)
+    for (const secret of ['hunter2', 'u:p4ss', 'p4ss@', 'abcDEF123456789xyz']) expect(text).not.toContain(secret)
+    expect(n.evidence.map((e) => e.id)).toEqual([hex(1), hex(2), hex(3)])
+    expect(n.evidence[0]!.count).toBe(2)
+  })
+
+  it('is idempotent, and a clean review loads unchanged (ids and modelSeen untouched)', () => {
+    const seen = { hash: 'a'.repeat(64), evidence: [{ id: hex(1), count: 2 }] }
+    const clean = review({ evidence: [ev(hex(1), 'Dev asked for permission rules: Read(~/x).'), ev(hex(2), 'The same correction came up in 3 runs.')] })
+    const stored = { ...clean, modelSeen: seen }
+    const once = normalizeReview(JSON.parse(JSON.stringify(stored)), 'p1')!
+    expect(once.evidence).toEqual(clean.evidence)
+    expect(once.modelSeen).toEqual(seen)
+    const dirty = review({ evidence: [ev(hex(1), 'x --password hunter2 https://u:p@host/x Authorization: Bearer abc123def456ghi')] })
+    const a = normalizeReview(JSON.parse(JSON.stringify(dirty)), 'p1')!
+    const b = normalizeReview(JSON.parse(JSON.stringify(a)), 'p1')!
+    expect(b).toEqual(a)
+  })
+
+  it('drops a non-object evidence entry', () => {
+    const bad = { ...review(), evidence: [null, 5, ev(hex(1), 'ok')] }
+    expect(normalizeReview(bad, 'p1')!.evidence).toHaveLength(1)
+  })
+})

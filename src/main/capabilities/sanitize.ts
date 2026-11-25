@@ -56,12 +56,74 @@ export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string 
 // of a URL), not preceded by a word character. It runs through spaces up to the next delimiter (a parenthesis, quote,
 // backtick, comma, semicolon) or the end of the line, because folder names hold spaces ("OneDrive - Acme Corp",
 // "John Smith") and a path cut at the first space would send the rest to a model.
-const PATH_TOKEN = /(?<![\w.-])(?:[A-Za-z]:[\\/]|~[\\/]|[\\/]{1,2})[^()"'`,;\r\n]*/g
+const PATH_START = /(?<![\w.-])(?:[A-Za-z]:[\\/]|~[\\/]|[\\/]{1,2})/g
 const PATH_MARK = '[path]'
 const HOST_MARK = '[host]'
 // Rule words: `Read(` before a relative path stays readable; trailing closers stay so a rule keeps its shape.
 const RULE_PREFIX = /^[A-Za-z][A-Za-z0-9_]*\(/
-const TRAILING_CLOSERS = /[)"'`,;]+$/
+const CLOSER_CHARS = ')"\'`,;'
+/** The trailing run of `) " ' ` , ;` of a word ('' when none). A loop from the end: linear, no regex backtracking. */
+export function trailingClosers(w: string): string {
+  let i = w.length
+  while (i > 0 && CLOSER_CHARS.includes(w[i - 1]!)) i--
+  return w.slice(i)
+}
+/** Remove the trailing closers of a word. */
+const stripClosers = (w: string): string => w.slice(0, w.length - trailingClosers(w).length)
+const isSep = (c: string): boolean => c === '\\' || c === '/'
+const isPathDelim = (c: string): boolean => c === '"' || c === "'" || c === '`' || c === ',' || c === ';'
+
+/**
+ * Stage 1 of scrubLocalPaths. Once an absolute path starts, it ends at the first of: the end of the line, a `)` that
+ * closes no `(` opened inside it (a balanced `(...)` group is part of the name), or a quote, backtick, comma or
+ * semicolon. Exception: when a path separator still follows later on the same line, before that `)` or the end of the
+ * line, the quote, comma or semicolon does not end it: it runs through the last separator and the name after it (up to
+ * the next quote, comma, semicolon, backtick, unbalanced `)` or line end). One left-to-right pass: linear.
+ */
+function maskAbsolutePaths(s: string): string {
+  PATH_START.lastIndex = 0
+  let out = ''
+  let pos = 0
+  for (let m = PATH_START.exec(s); m; m = PATH_START.exec(s)) {
+    const start = m.index
+    let j = start + m[0].length
+    let depth = 0
+    let firstDelim = -1
+    let lastSep = isSep(m[0][m[0].length - 1]!) ? j - 1 : -1
+    for (; j < s.length; j++) {
+      const c = s[j]!
+      if (c === '\r' || c === '\n') break
+      if (c === '(') depth++
+      else if (c === ')') {
+        if (depth === 0) break
+        depth--
+      } else if (isPathDelim(c)) {
+        if (firstDelim < 0) firstDelim = j
+      } else if (isSep(c)) lastSep = j
+    }
+    const hardEnd = j
+    let end = firstDelim < 0 ? hardEnd : firstDelim
+    if (firstDelim >= 0 && lastSep > firstDelim) {
+      // Keep going through the name after the last separator.
+      end = lastSep + 1
+      let d = 0
+      while (end < hardEnd) {
+        const c = s[end]!
+        if (isPathDelim(c)) break
+        if (c === '(') d++
+        else if (c === ')') {
+          if (d === 0) break
+          d--
+        }
+        end++
+      }
+    }
+    out += s.slice(pos, start) + PATH_MARK
+    pos = end
+    PATH_START.lastIndex = Math.max(end, start + 1)
+  }
+  return out + s.slice(pos)
+}
 const IPV4 = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w])/g
 const IPV6_FULL = /(?<![\w:.])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![\w:])/gi
 const IPV6_SHORT = /(?<![\w:.])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?(?![\w:])/gi
@@ -71,8 +133,11 @@ const PRIVATE_HOST = /(?<![\w.-])(?:[\w-]+\.)+(?:internal|local|corp|lan|home|in
 /**
  * Text for a model on an automatic pass: nothing that locates a file or a machine. Rules, applied in order, chosen to
  * remove too much rather than too little (the result is a hint for a model, never displayed):
- *  1. a drive, UNC, `~/`, `/` or `//` path becomes "[path]" and swallows everything up to the next `( ) " ' ` , ;` or end
- *     of line (so a folder name with spaces is removed whole, and a following word in the same clause goes with it);
+ *  1. a drive, UNC, `~/`, `/` or `//` path becomes "[path]" and swallows everything up to the end of the line or a `)`
+ *     that closes no `(` of its own (balanced `(UK)` groups are part of the name, so a folder name with spaces and
+ *     parentheses is removed whole, and a following word in the same clause goes with it). A quote, backtick, comma or
+ *     semicolon ends it too, unless a path separator still follows on the same line before that `)`/line end: then it
+ *     runs through the last separator and the name after it (maskAbsolutePaths);
  *  2. then any whitespace-separated word that still holds a `\` or a `/` becomes "[path]" (relative paths, `..\..\x`,
  *     `a/b`; "and/or" and "read/write" go too), keeping a leading `Name(` and trailing closers; "v1.2.3" and "node.js"
  *     are left alone; adjacent "[path]" words collapse into one;
@@ -82,11 +147,11 @@ const PRIVATE_HOST = /(?<![\w.-])(?:[\w-]+\.)+(?:internal|local|corp|lan|home|in
  * ("My Docs/x"), a bare `~`.
  */
 export function scrubLocalPaths(s: string): string {
-  const stage1 = String(s ?? '').replace(PATH_TOKEN, PATH_MARK)
+  const stage1 = maskAbsolutePaths(String(s ?? ''))
   const words = stage1.split(/(\s+)/).map((w, i) => {
     if (i % 2 === 1 || w === PATH_MARK || !/[\\/]/.test(w)) return w
     const prefix = RULE_PREFIX.exec(w)?.[0] ?? ''
-    const trail = TRAILING_CLOSERS.exec(w.slice(prefix.length))?.[0] ?? ''
+    const trail = trailingClosers(w.slice(prefix.length))
     return `${prefix}${PATH_MARK}${trail}`
   })
   return words
@@ -107,7 +172,10 @@ const HEADER_FLAGS: ReadonlySet<string> = new Set(['-H', '--header', '--headers'
 const REDACTED = '[redacted]'
 const QUOTES = '"\''
 // What may stand before a word's own text: quotes, parentheses and a rule's `Name(`.
-const WORD_LEAD = /^(?:[A-Za-z][A-Za-z0-9_]*\(|[("'`])*/
+// A PowerShell `$env:` prefix too, so `$env:DB_PASSWORD="x"` is read as `DB_PASSWORD="x"`.
+const WORD_LEAD = /^(?:[A-Za-z][A-Za-z0-9_]*\(|\$env:|[("'`])*/i
+// A header name that carries a key, written `Name: value` with no -H flag.
+const KEY_HEADER_WORD = /^(?:x-)?(?:api[_-]?key|auth[_-]?token|access[_-]?token|secret[_-]?key):$/i
 
 function isValueFlag(name: string): boolean {
   return VALUE_FLAGS.has(name.toLowerCase()) || HEADER_FLAGS.has(name) || isSecretFlag(name)
@@ -116,7 +184,7 @@ function isValueFlag(name: string): boolean {
 /** `("x` -> `("` + [redacted] + trailing closers: the value goes, the shape around it stays. */
 function maskValueWord(word: string, trailOverride?: string): string {
   const lead = /^[("'`]*/.exec(word)?.[0] ?? ''
-  const trail = trailOverride ?? (TRAILING_CLOSERS.exec(word.slice(lead.length))?.[0] ?? '')
+  const trail = trailOverride ?? trailingClosers(word.slice(lead.length))
   return `${lead}${REDACTED}${trail}`
 }
 
@@ -143,7 +211,7 @@ export function redactCredentialWords(text: string): string {
     const closes = (w: string): boolean => w.slice(q ? 1 : 0).includes(q)
     if (q && !closes(body)) {
       for (let j = at + 2, n = 0; j < parts.length && n < 40; j += 2, n++) {
-        if (parts[j]!.includes(q)) return { end: j, trail: TRAILING_CLOSERS.exec(parts[j]!)?.[0] ?? '' }
+        if (parts[j]!.includes(q)) return { end: j, trail: trailingClosers(parts[j]!) }
       }
       return { end: at, trail: '' }
     }
@@ -153,7 +221,7 @@ export function redactCredentialWords(text: string): string {
       if (parts[end] !== undefined && /^(?:bearer|basic|digest|token|negotiate|ntlm)$/i.test(parts[end]!) && parts[end + 2] !== undefined) end += 2
       if (parts[end] === undefined) end = at
     }
-    return { end, trail: TRAILING_CLOSERS.exec(parts[end]!)?.[0] ?? '' }
+    return { end, trail: trailingClosers(parts[end]!) }
   }
   const out: string[] = []
   for (let i = 0; i < parts.length; i++) {
@@ -168,7 +236,7 @@ export function redactCredentialWords(text: string): string {
     const eq = /^(-{0,2}[\w.-]{1,60})=([\s\S]*)$/.exec(core)
     if (eq) {
       const [, name, value] = eq as unknown as [string, string, string]
-      const valueCore = value.replace(TRAILING_CLOSERS, '')
+      const valueCore = stripClosers(value)
       if (value !== '' && (isValueFlag(name) || isSecretName(name) || isKeyLikeValue(valueCore) || isKeyLikeArg(`${name}=${valueCore}`))) {
         const t = take(i, value, HEADER_FLAGS.has(name))
         out.push(`${lead}${name}=${REDACTED}${t.trail}`)
@@ -180,7 +248,7 @@ export function redactCredentialWords(text: string): string {
     }
     // `-u` glued to its value (`-uuser:pass`).
     if (/^-u[^\s=-][^\s]*:/.test(core)) {
-      out.push(`${lead}-u${REDACTED}${TRAILING_CLOSERS.exec(core)?.[0] ?? ''}`)
+      out.push(`${lead}-u${REDACTED}${trailingClosers(core)}`)
       continue
     }
     // A flag whose value is the next word.
@@ -194,8 +262,18 @@ export function redactCredentialWords(text: string): string {
       }
       continue
     }
+    // `X-Api-Key: value` without -H.
+    if (KEY_HEADER_WORD.test(core)) {
+      const next = parts[i + 2]
+      if (next !== undefined && next !== '') {
+        const t = take(i + 2, next, false)
+        out.push(w, parts[i + 1]!, maskValueWord(next, t.trail))
+        i = t.end
+        continue
+      }
+    }
     // A bare key-like word.
-    const bare = core.replace(TRAILING_CLOSERS, '')
+    const bare = stripClosers(core)
     if (bare && isKeyLikeValue(bare)) {
       out.push(`${lead}${REDACTED}${core.slice(bare.length)}`)
       continue

@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { isSafeId } from '@shared/defaults'
-import type { CapabilityKind, CapabilityRecommendation, TeamDismissal, TeamReview, TeamReviewModelSkip, TeamReviewSummary } from '@shared/types'
+import type { CapabilityKind, CapabilityRecommendation, TeamDismissal, TeamEvidence, TeamReview, TeamReviewModelSkip, TeamReviewSummary } from '@shared/types'
+import { evidenceText } from '../store/runDigest'
 import { clampText } from './sanitize'
 
 /**
@@ -58,6 +59,22 @@ function cleanSeen(v: unknown): ModelSeen | null {
     evidence.push({ id: y.id, count: Math.floor(y.count as number) })
   }
   return { hash: x.hash, evidence }
+}
+
+/**
+ * Stored evidence with each summary put through the write-time redaction again (evidenceText = capabilities/evidence.ts
+ * summary(): credential words, key-like tokens, home folders, clamp 300), so a review saved before a redaction rule
+ * existed never reaches a prompt or the UI with a secret. Idempotent; an entry's id is derived from its kind, role and
+ * key at collection time, never from the summary, so a clean review loads unchanged and `modelSeen` still matches.
+ */
+function cleanEvidence(list: unknown[]): TeamEvidence[] {
+  const out: TeamEvidence[] = []
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || isArr(e)) continue
+    const x = e as TeamEvidence
+    out.push(isStr(x.summary) ? { ...x, summary: evidenceText(x.summary, 300) } : x)
+  }
+  return out
 }
 
 /** A stored recommendation rebuilt field by field, or null when its id, candidate, kind or roles are unusable. */
@@ -118,7 +135,7 @@ export function normalizeReview(v: unknown, projectId: string): StoredReview | n
     newCandidateIds: r.newCandidateIds.filter(isStr),
     recommendations,
     gaps: r.gaps,
-    evidence: r.evidence,
+    evidence: cleanEvidence(r.evidence),
     dismissed,
     pendingCount: recommendations.length,
     runsSinceModel: Number.isFinite(r.runsSinceModel) && (r.runsSinceModel as number) >= 0 ? Math.floor(r.runsSinceModel as number) : 0,
