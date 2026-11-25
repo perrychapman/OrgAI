@@ -84,7 +84,7 @@ export function hideHome(text: string): string {
   return text
     .replace(/(?<![:\w])(?:\\\\|\/\/)[^\\/\s"')]+[\\/]+[^\\/\s"')]+[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/gi, '~')
     .replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"')]+/gi, '~')
-    .replace(/[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/g, '~')
+    .replace(/[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/gi, '~')
 }
 
 /** The Team review's redaction (capabilities/evidence.ts summary()), bounded. */

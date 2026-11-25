@@ -148,6 +148,15 @@ describe('gap findings', () => {
     expect(toolSequenceFindings([runWith('1', same), runWith('2', same), runWith('3', same)])).toHaveLength(0)
   })
 
+  it('shows a tool name that is not a plain identifier as "an unnamed tool", keeping the key in the evidence', () => {
+    const names = ['Read', 'Odd tool name!', 'Edit', 'Bash']
+    const f = toolSequenceFindings([runWith('1', names), runWith('2', names), runWith('3', names)])
+    expect(f).toHaveLength(1)
+    expect(f[0].detail).toContain('Read, then an unnamed tool, then Edit')
+    expect(f[0].detail).not.toContain('#')
+    expect(f[0].evidence?.sequence?.[1]).toMatch(/^#/)
+  })
+
   it('counts a window once per run and keeps top 5', () => {
     const many = Array.from({ length: 8 }, (_, i) => [`T${i}`, 'X', 'Y', 'Z'])
     const runs = [1, 2, 3].map((i) => runWith(String(i), [...many.flat(), ...seq, ...seq]))

@@ -127,7 +127,10 @@ export class SkillEvaluationService implements SkillEvaluationApi {
     // no digest is read through getRun; one with no readable record still counts, from its summary alone.
     const runs: RunDigest[] = summaries.map((summary) => {
       try {
-        const digest = this.deps.getDigest?.(summary.id)
+        // A run still in progress is digested on the fly from getRun (the in-memory record, never cached): the stored
+        // record behind getDigest may lag it or not exist yet.
+        const ended = summary.status === 'finished' || summary.status === 'error'
+        const digest = ended ? this.deps.getDigest?.(summary.id) : null
         if (digest) return digest
         const rec = this.deps.getRun(summary.id)
         return digestRun(rec ?? { summary, agents: {}, transcript: [], logs: [] })

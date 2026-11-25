@@ -172,6 +172,15 @@ describe('collectEvidence', () => {
       expect(collectEvidence(project, [digestRun(rec)])[0]!.id).toBe(e!.id)
     })
 
+    it('never shows a hashed tool key to the person, and keeps the same id', () => {
+      const odd = 'Weird Tool/name with spaces'
+      const rec = record('run-a', [use('eng', 'a', odd), result('eng', 'a', 'Permission to use it has been denied: permission denied')])
+      const [e] = collectEvidence(project, [rec])
+      expect(e!.summary).toBe('Engineer was denied a tool.')
+      expect(e!.summary).not.toContain('#')
+      expect(collectEvidence(project, [digestRun(rec)])[0]!.id).toBe(e!.id)
+    })
+
     it('maps a role the project does not have to no role, as before', () => {
       const rec = record('run-a', [use('ghost', 'a', 'Bash'), result('ghost', 'a', 'Permission denied')])
       rec.agents.ghost = agent('ghost', 'r-gone')

@@ -312,6 +312,22 @@ describe('SkillEvaluationService reads cached run digests', () => {
     expect(viaDigests.runsConsidered).toBe(viaRecords.runsConsidered)
   })
 
+  it('a run still in progress is digested from the in-memory record, never through getDigest', async () => {
+    const live = finished('live', 900)
+    live.summary = { ...live.summary, status: 'running', endedAt: undefined }
+    const getDigest = vi.fn(() => null)
+    const getRun = vi.fn((id: string) => (id === 'live' ? live : store.getRecord(id)))
+    build({ listRuns: () => [live.summary], getRun, getDigest })
+    const report = await svc.evaluate('p1')
+    expect(getDigest).not.toHaveBeenCalled()
+    expect(getRun).toHaveBeenCalledWith('live')
+    expect(report.runsConsidered).toBe(1)
+    // An ended run still goes through the digest port first.
+    build({ listRuns: () => [{ ...live.summary, status: 'finished', endedAt: 905 }], getRun, getDigest })
+    await svc.evaluate('p1')
+    expect(getDigest).toHaveBeenCalledWith('live')
+  })
+
   it('a run with no readable record still counts, from its summary', async () => {
     const [r] = fill(1)
     store.upsert({ ...r.summary, id: 'ghost', startedAt: 50 })

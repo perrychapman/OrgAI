@@ -445,7 +445,17 @@ export async function synthesize(input: SynthesizeInput): Promise<EvolutionPlan>
   if (!input.complete) return note('no model adapter, used the deterministic plan')
   const digest = buildDigest(project, diagnosis, rejected, input.cooldownSlugs)
   const digestHash = digestHashOf(digest)
-  if (input.memo && input.memo.digestHash === digestHash) return note(`the same telemetry got no usable answer last time (${input.memo.outcome}), used the deterministic plan (no model call)`)
+  if (input.memo && input.memo.digestHash === digestHash) {
+    // Every proposed patch was trimmed last time and nothing applied: stay with that (an empty gated plan), never
+    // apply the deterministic plan where the model call itself applied nothing.
+    if (input.memo.outcome === 'trimmed') {
+      const { maxConcurrentSubagents: _drop, ...rest } = base
+      void _drop
+      const emptied = validateEvolutionPlan(project, { ...rest, strategy: 'hybrid', rolePatches: [], newSkills: [], pruneSkillIds: [] }, { rejected, diagnosis, cooldownSlugs: input.cooldownSlugs })
+      return { ...emptied, rationale: safeLine(`${base.rationale} | hybrid unavailable: the same telemetry got no usable answer last time (${input.memo.outcome}), nothing applied (no model call)`, 1200) }
+    }
+    return note(`the same telemetry got no usable answer last time (${input.memo.outcome}), used the deterministic plan (no model call)`)
+  }
   const unusable = (outcome: HybridMemo['outcome']): void => {
     try {
       input.onUnusable?.({ digestHash, outcome })
@@ -513,6 +523,7 @@ export async function synthesize(input: SynthesizeInput): Promise<EvolutionPlan>
     return withUsage({ ...note(`the model's proposal was refused by the safety gate (${gated.gate.violations.filter((v) => v.action === 'rejected').map((v) => v.rule).join(', ')})`) })
   }
   // Every proposed patch trimmed away (and nothing from the deterministic plan left): nothing usable either.
-  if (gated.empty && (deltas.rolePatches.length || deltas.newSkills.length || deltas.pruneSkillIds.length)) unusable('unusable')
+  // Remembered as 'trimmed' (not 'unusable') so a memo hit returns the same empty plan, not the deterministic one.
+  if (gated.empty && (deltas.rolePatches.length || deltas.newSkills.length || deltas.pruneSkillIds.length)) unusable('trimmed')
   return gated
 }

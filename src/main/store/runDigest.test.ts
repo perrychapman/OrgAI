@@ -185,6 +185,8 @@ describe('digestRun', () => {
     expect(hideHome('//nas/share/home/alice/docs')).toBe('~/docs')
     expect(hideHome('C:\\Users\\alice\\x and /home/bob/y and /Users/carol/z')).toBe('~\\x and ~/y and ~/z')
     expect(hideHome('https://example.com/home/x/y')).toBe('https://example.com~/y')
+    expect(hideHome('\\users\\alice\\docs')).toBe('~\\docs')
+    expect(hideHome('/USERS/alice/docs and /Home/bob/y')).toBe('~/docs and ~/y')
     for (const file of ['/home/alice/proj/src/a.ts', 'C:\\Users\\alice\\proj\\src\\a.ts', '\\\\nas\\share\\Users\\alice\\proj\\src\\a.ts', '/Users/alice/proj/src/a.ts']) {
       expect(dirPrefix(file)).toBe('proj/src')
     }
