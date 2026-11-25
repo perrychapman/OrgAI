@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, checkRadio, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, openViewMenu, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, checkRadio, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, openViewMenu, removeFixture, sleep, until } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -589,7 +589,7 @@ try {
   await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
   const wide = await sideW()
   await page.keyboard.press(`${mod}+b`)
-  await sleep(400)
+  await until(async () => Math.abs((await sideW()) - 56) <= 1, 5_000, 100)
   const narrow = await sideW()
   check(Math.abs(wide - 232) <= 1 && Math.abs(narrow - 56) <= 1, 'Ctrl/Cmd+B collapses the sidebar to the rail', `${wide} -> ${narrow}`)
   await page.reload()
@@ -597,7 +597,8 @@ try {
   await sleep(600)
   check(Math.abs((await sideW()) - 56) <= 1, 'the collapsed sidebar persists across a reload', String(await sideW()))
   await page.keyboard.press(`${mod}+b`)
-  await sleep(400)
+  // Wait for the width transition to end, not a fixed time: Windows CI 2026-11-25 (run 45592437685) read 227 mid-transition.
+  await until(async () => Math.abs((await sideW()) - 232) <= 1, 5_000, 100)
   check(Math.abs((await sideW()) - 232) <= 1, 'Ctrl/Cmd+B expands the sidebar again', String(await sideW()))
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 30_000 })
