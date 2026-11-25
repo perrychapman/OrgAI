@@ -23,6 +23,24 @@ async function viewShowsMainStatus() {
     throw new Error(`run window status never matched main for ${viewRunId}: main "${status}", window ${JSON.stringify(shown)}. ${error.message}`)
   })
 }
+/**
+ * Say why a wait on the picker failed: the line it shows, the busy flag, the Apply label, the window's and main's run status
+ * and the run window's last status changes. A bare Playwright timeout hid the cause twice (macOS CI 2026-11-24).
+ */
+async function whyStuck(label, error) {
+  const mainStatus = await page.evaluate(async (id) => (await window.orgai.runs.get(id))?.summary.status, viewRunId).catch(() => 'unreadable')
+  const shown = await view.evaluate(() => ({
+    error: document.querySelector('[data-testid=live-model-error]')?.textContent ?? null,
+    pending: document.querySelector('[data-testid=live-model-pending]')?.textContent ?? null,
+    apply: document.querySelector('[data-testid=live-model-apply]')?.textContent ?? null,
+    confirm: !!document.querySelector('[data-testid=live-model-confirm]'),
+    busy: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('aria-busy') ?? null,
+    windowStatus: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('data-run-status') ?? null,
+    statusLog: window.modelStatusLog?.slice(-12)
+  })).catch(() => ({}))
+  log(`${label}: ${JSON.stringify({ mainStatus, ...shown })}`)
+  throw error
+}
 async function open(run) {
   viewRunId = run.id
   if (view && !view.isClosed()) await view.close()
@@ -39,6 +57,10 @@ async function open(run) {
   await view.waitForFunction((id) => document.querySelector('.run-tab[aria-selected=true]')?.closest('[data-run]')?.getAttribute('data-run') === id, run.id, { timeout: t(15000) })
   await view.evaluate(() => {
     window.modelFocusTrace = []
+    window.modelStatusLog = []
+    new MutationObserver((records) => {
+      for (const r of records) if (r.target.getAttribute?.('data-testid') === 'live-model-switch') window.modelStatusLog.push([Math.round(performance.now()), r.target.getAttribute('data-run-status')])
+    }).observe(document.body, { attributes: true, attributeFilter: ['data-run-status'], subtree: true })
     const record = (event) => {
       const panel = document.querySelector('[data-testid=live-model-picker]')
       window.modelFocusTrace.push({ at: performance.now(), type: event.type, key: event.key, old: event.oldState, next: event.newState, target: event.target?.getAttribute?.('data-testid'), active: document.activeElement?.getAttribute('data-testid'), nativeOpen: panel?.matches(':popover-open'), expanded: document.querySelector('[data-testid=live-model-change]')?.getAttribute('aria-expanded'), inert: panel?.inert })
@@ -88,8 +110,14 @@ try {
     const offline = await start('chat', '', '[mock:model-switch]')
     await open(offline)
     await view.locator('[data-testid=live-model-change]').click()
-    await view.getByText('No connection is connected.', { exact: false }).waitFor()
-    check(await view.locator('[data-testid=live-model-apply]').isDisabled(), 'offline selection explains unavailable connection and disables Apply')
+    // A machine with a signed-in Claude CLI lists models for an unconnected connection (Windows dev box, 2026-11-24): the
+    // explanation only exists when the catalog is empty, so check it only then.
+    const explained = view.getByText('No connection is connected.', { exact: false })
+    const listed = view.locator('[data-testid=live-model-choice]').first()
+    await explained.or(listed).first().waitFor({ timeout: t(30000) })
+    if (await explained.isVisible()) check(await view.locator('[data-testid=live-model-apply]').isDisabled(), 'offline selection explains unavailable connection and disables Apply')
+    else log('SKIP offline explanation: this machine lists models without a connected connection')
+    await view.keyboard.press('Escape')
     await page.evaluate((id) => window.orgai.runs.stop(id), offline.id)
   } else log('SKIP offline-only feedback: an initial connection is connected')
   const { project, primary, alternative } = await page.evaluate(async (repo) => {
@@ -265,7 +293,7 @@ try {
       check(await view.locator(`[data-testid=live-model-choice][value="${next}"]`).count() >= 2, 'duplicate model ids retain separate connection identities')
       await view.locator('[data-testid=live-model-apply]').focus()
       await view.keyboard.press('Enter')
-      await view.locator('[data-testid=live-model-confirm]').waitFor()
+      await view.locator('[data-testid=live-model-confirm]').waitFor({ timeout: t(30_000) }).catch((error) => whyStuck('handoff confirmation never appeared', error))
       await view.screenshot({ path: 'e2e/shots/model-switch-handoff-confirmation.png' })
       await view.getByRole('button', { name: 'Cancel', exact: true }).click()
       await view.locator('[data-testid=live-model-search]').waitFor()
