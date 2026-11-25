@@ -52,6 +52,15 @@ describe('toRoles model mapping', () => {
     expect(roles.map((r) => r.model)).toEqual(['gw/other', 'gw/mid', 'gw/mid'])
   })
 
+  it('on anthropic with a partial tier mapping and a model list, an unmapped fast role keeps the builtin haiku, not a stronger tier', () => {
+    const ctx: DraftModelContext = { connection: 'anthropic', tierModels: { deep: 'claude-opus-9' }, models: ['claude-opus-9'] }
+    const roles = toRoles(chart(['deep', 'fast']), ctx)
+    expect(roles.map((r) => [r.model, r.tier])).toEqual([
+      ['claude-opus-9', 'deep'],
+      ['haiku', 'fast']
+    ])
+  })
+
   it('uses inherit when the connection maps nothing', () => {
     const roles = toRoles(chart(['deep', 'weird']), { connection: 'litellm', tierModels: {}, models: [] })
     expect(roles.map((r) => [r.model, r.tier])).toEqual([

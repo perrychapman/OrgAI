@@ -86,15 +86,19 @@ export function isFailedExecOutcome(outcome: RunRecord['summary']['execOutcome']
 }
 
 /**
- * True when a team work run was cut short by an interrupt/timeout (headless exec SIGTERM/SIGINT -> execOutcome
- * 'interrupted', or killed mid-work when the host exited -> endedBy 'app' with endedWhile 'working'). Excluded from
- * normal diagnosis (isMeasuredRun), but counted as an incomplete/errored run when evaluating an active trial.
+ * True when a team work run was cut short (execOutcome 'interrupted') by neither the user nor the app. A user's Ctrl-C /
+ * SIGTERM / End session (execOutcome 'interrupted', endedBy 'user') and quitting OrgAI mid-work (endedBy 'app') say
+ * nothing about the team, so they are never an interrupted trial run: they stay out of the trial window (the trial
+ * stays pending) like every other user or app end (isMeasuredRun). A real timeout is the stall watchdog, which ends the
+ * run 'stalled' with endedBy 'policy': that is a measured run and a failed exec outcome (isFailedExecOutcome), so it
+ * already counts against a trial. An 'interrupted' outcome with any other endedBy (host-attributed) counts as one too.
  */
 export function isInterruptedTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
   const s = r.summary
   if (!isTeamWorkRun(r)) return false
   if (s.status !== 'finished' && s.status !== 'error') return false
-  return s.execOutcome === 'interrupted' || (s.endedBy === 'app' && s.endedWhile === 'working')
+  if (s.endedBy === 'user' || s.endedBy === 'app') return false
+  return s.execOutcome === 'interrupted'
 }
 
 /** Runs eligible to count in an active trial window (measured runs plus interrupted/timed-out trial runs). */

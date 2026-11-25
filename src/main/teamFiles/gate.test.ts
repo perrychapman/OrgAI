@@ -505,7 +505,7 @@ describe('security review fixes', () => {
       ['effort raised', (d) => (lead(d).effort = 'max'), true],
       ['effort lowered', (d) => (lead(d).effort = 'low'), false],
       ['effort set to low over unset', (d) => (dev(d).effort = 'low'), false],
-      ['effort set to medium over unset', (d) => (dev(d).effort = 'medium'), false],
+      ['effort set to medium over unset', (d) => (dev(d).effort = 'medium'), true],
       ['effort set above default over unset', (d) => (dev(d).effort = 'high'), true]
     ]
     for (const [label, mutate, pends] of cases) {

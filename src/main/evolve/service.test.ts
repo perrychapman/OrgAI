@@ -638,7 +638,7 @@ describe('run loading (review M: synchronous records)', () => {
     const original = structuredClone(h.proj)
     await h.svc.apply({ projectId: 'p1', evalWindowRuns: 1 })
     const timedOut = cleanRuns(1, NOW + 10)[0]
-    timedOut.summary.endedBy = 'user'
+    timedOut.summary.endedBy = 'policy'
     timedOut.summary.execOutcome = 'interrupted'
     h.setRuns([timedOut, ...cleanRuns(8, 1_000_000)])
     const rb = await h.svc.apply({ projectId: 'p1' })

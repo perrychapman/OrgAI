@@ -198,8 +198,9 @@ export function suggestTierModels(connection: ConnectionId, catalog: readonly Pr
     const current = defaultTierModels(own.filter((m) => !isLegacyHint(m)))
     const legacy = defaultTierModels(own.filter(isLegacyHint))
     const out: Partial<Record<ModelTier, ModelRef>> = { ...current }
-    // Prefer a current-generation strong/recommended model over a legacy deep model (e.g. gpt-6.2-astra over gpt-6-astra).
-    if (!out.deep && (out.top || out.everyday)) out.deep = out.top ?? out.everyday
+    // Prefer a current-generation model over a legacy deep model, but never the most capable one: an automatic deep tier
+    // that jumps to `top` on a rediscovery would raise spend with no gate, so deep takes everyday first.
+    if (!out.deep && (out.everyday || out.top)) out.deep = out.everyday ?? out.top
     for (const tier of MODEL_TIERS) {
       if (!out[tier] && legacy[tier]) out[tier] = legacy[tier]
     }

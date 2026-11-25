@@ -147,9 +147,21 @@ describe('openai ChatGPT discovery tiers and suggestTierModels', () => {
     )
     expect(suggestTierModels('openai', catalog)).toEqual({
       top: 'gpt-6.2-astra',
-      deep: 'gpt-6.2-astra',
+      deep: 'gpt-6.2-sol',
       everyday: 'gpt-6.2-sol',
       fast: 'gpt-6-luna'
     })
+  })
+
+  it('rule: with no current-generation deep model, deep takes everyday, never top (no ungated spend move on rediscovery)', () => {
+    const mk = (id: string, tier: ProviderModel['tier'], hint?: string): ProviderModel => makeDiscoveredModel('openai', { id, family: 'openai', hint, tier })
+    const catalog = [mk('gpt-9-astra', 'top'), mk('gpt-9-sol', 'everyday')]
+    const out = suggestTierModels('openai', catalog)
+    expect(out.deep).toBe('gpt-9-sol')
+    expect(out.top).toBe('gpt-9-astra')
+    // Only a top model: deep falls back to it, since nothing weaker exists.
+    expect(suggestTierModels('openai', [mk('gpt-9-astra', 'top')]).deep).toBe('gpt-9-astra')
+    // A real deep model is kept.
+    expect(suggestTierModels('openai', [...catalog, mk('gpt-9-deep', 'deep')]).deep).toBe('gpt-9-deep')
   })
 })

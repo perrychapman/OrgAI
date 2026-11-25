@@ -313,7 +313,7 @@ describe('openai recommended and tiers', () => {
     expect(ctx.settings.get().connections.openai.tierModels.deep).toBe('zen-2')
   })
 
-  it('maps all 4 tiers from real ChatGPT Codex descriptions and prefers current-gen models over legacy deep models', async () => {
+  it('maps all 4 tiers from real ChatGPT Codex descriptions and prefers current-gen models over legacy deep models; with no current deep model, deep takes everyday, not top', async () => {
     const rpc = fakeRpc({
       'account/read': { account: { type: 'chatgpt', email: 'me@x.io', planType: 'plus' }, requiresOpenaiAuth: false },
       'model/list': {
@@ -337,7 +337,7 @@ describe('openai recommended and tiers', () => {
     await ctx.service.connect('openai')
     expect(ctx.settings.get().connections.openai.tierModels).toEqual({
       top: 'gpt-6.2-astra',
-      deep: 'gpt-6.2-astra',
+      deep: 'gpt-6.2-sol',
       everyday: 'gpt-6.2-sol',
       fast: 'gpt-6-luna'
     })

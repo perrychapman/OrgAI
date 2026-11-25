@@ -258,6 +258,14 @@ describe('org evolve --apply', () => {
     expect(f.out()).toContain('Generation gen_1 finished its trial and was promoted')
   })
 
+  it('the settle path reports the result\'s own applied, generation and heldSpendRaises in json', async () => {
+    const emptyPlan = { ...PLAN, rolePatches: [], newSkills: [], pruneSkillIds: [], empty: true }
+    const result = { applied: true, generation: GEN, reason: 'settled', project: P, diagnosis: DIAGNOSIS, plan: emptyPlan, teamFilesSynced: true, heldSpendRaises: [{ roleSlug: 'dev', field: 'tier', summary: 'dev may cost more' }] }
+    const { f } = setup({ 'org:evolveAnalyze': () => analysisOf(emptyPlan), 'org:evolveHistory': () => HISTORY, 'org:evolveApply': () => result }, { format: 'json' })
+    expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
+    expect(JSON.parse(f.out())).toMatchObject({ applied: true, generation: { id: 'gen_1' }, teamFilesSynced: true, heldSpendRaises: [{ field: 'tier' }] })
+  })
+
   it('a fingerprint mismatch refusal reads as nothing applied and the plan changed', async () => {
     const { f } = flow(PLAN, { applied: false, reason: 'the plan changed since it was shown (fingerprint mismatch)', project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false })
     expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)

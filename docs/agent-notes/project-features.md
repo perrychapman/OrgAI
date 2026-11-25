@@ -70,7 +70,12 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
   is report-only. A refused or fully held apply still exits 0 (the JSON `applied` / `heldSpendRaises` say which). The
   CLI's interactive confirmation trusts a terminal on stdin (`manage.ts` `confirm`): a process that allocates a pty can
   answer it, which the same-user threat model accepts. Approval covers the raises the host finds at apply time for the
-  reviewed fingerprint, not a digest of the sentences shown. Verified by unit tests
+  reviewed fingerprint, not a digest of the sentences shown. The rule fails closed on unset values (contributor PR 70
+  review): a role with no effort may run at the CLI default or a repository's `.claude/settings.json` `effortLevel`, so
+  `effortRaised` compares an unset effort as `low`: unset to low is not held, unset to medium or higher is. A staffing
+  tier floor is compared against `fast` when none was set, so adding a `fast` floor is not held and everyday or above is.
+  Verified by unit tests (`roleSpend.test.ts`, `teamFiles/gate.test.ts` "effort set to medium over unset" held) and
+  `e2e/cli-tui.mjs` (default to medium asks "Press y to save"); the evolve flow by unit tests
   (`spend.test.ts`, `service.test.ts` "spend raises need the person", `dispatcherEvolve.test.ts` args and scope gate)
   with fake runs and fake completions; no live provider run.
 

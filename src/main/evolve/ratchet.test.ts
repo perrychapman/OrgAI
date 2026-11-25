@@ -840,19 +840,25 @@ describe('trial comparison edge cases', () => {
     expect(rules(allowFastLow)).not.toContain('effort_low_thin_evidence')
     expect(allowFastLow.rolePatches.find((x) => x.slug === 'dev')).toMatchObject({ tier: 'fast', effort: 'low', staffing: { mode: 'auto', maxEffort: 'low' } })
   })
-  it('treats interrupted/timed-out and stalled trial runs as regressions in evaluateActiveTrial', () => {
+  it('a stall timeout fails the trial; a user interrupt and an app quit mid-run are not counted (the trial stays pending)', () => {
     const gen = { appliedAt: 5_000_000, evalWindowRuns: 1, baselineMetrics: metrics({ runs: 1, firstPassRate: 1, errorRunRate: 0 }) }
-    const timedOut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev', state: 'thinking' }] })
-    timedOut.summary.endedBy = 'user'
-    timedOut.summary.execOutcome = 'interrupted'
-    const d1 = evaluateActiveTrial(gen, [timedOut])
-    expect(d1).toMatchObject({ state: 'decided', regressed: true })
-    if (d1.state === 'decided') expect(d1.reason).toContain('interrupted/timed out')
+    const userStopped = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev', state: 'thinking' }] })
+    userStopped.summary.endedBy = 'user'
+    userStopped.summary.execOutcome = 'interrupted'
+    expect(evaluateActiveTrial(gen, [userStopped])).toEqual({ state: 'pending', have: 0, need: 1 })
 
     const appCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
     appCut.summary.endedBy = 'app'
     appCut.summary.endedWhile = 'working'
-    expect(evaluateActiveTrial(gen, [appCut])).toMatchObject({ state: 'decided', regressed: true })
+    expect(evaluateActiveTrial(gen, [appCut])).toEqual({ state: 'pending', have: 0, need: 1 })
+
+    // An 'interrupted' outcome neither the user nor the app ended still fails the trial.
+    const hostCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
+    hostCut.summary.endedBy = 'policy'
+    hostCut.summary.execOutcome = 'interrupted'
+    const d1 = evaluateActiveTrial(gen, [hostCut])
+    expect(d1).toMatchObject({ state: 'decided', regressed: true })
+    if (d1.state === 'decided') expect(d1.reason).toContain('interrupted/timed out')
 
     const stalled = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
     stalled.summary.endedBy = 'policy'

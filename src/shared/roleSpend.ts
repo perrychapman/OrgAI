@@ -51,10 +51,13 @@ export function modelMayCostMore(a: SpendRole, d: SpendRole): boolean {
   if (a.tier !== undefined && d.tier !== undefined) return TIER_RANK[d.tier] > TIER_RANK[a.tier]
   return true
 }
+/**
+ * Fails closed: a role with no effort may run at the CLI default or a repository's `.claude/settings.json` `effortLevel`
+ * (the Claude root and fixed roles send none), which can be low. So an unset effort is compared as the lowest rank: setting
+ * low over unset applies, setting medium or above is held.
+ */
 export const effortRaised = (a: SpendRole, d: SpendRole): boolean =>
-  d.effort === undefined
-    ? false
-    : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? EFFORT_RANK[DEFAULT_SENT_EFFORT] : (EFFORT_RANK[a.effort] ?? 99))
+  d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? EFFORT_RANK.low : (EFFORT_RANK[a.effort] ?? 99))
 
 /**
  * Under what a role's spend is judged: the project's staffing mode, and whether the role's parent tier is known at spawn
@@ -172,7 +175,7 @@ export interface HeldSpend {
  * (`role`), the keys that apply and the held rows ('model', 'effort', 'staffing' with their summaries). In order, each
  * step judged on the state the steps before it settled:
  * 1. model: only a strictly lower tier applies;
- * 2. a raised effort (above the current effort, or above the default medium when unset) is held;
+ * 2. a raised effort (above the current effort, or above low when unset: the run may be at a low default) is held;
  * 3. staffing, on its own (the approved effort): held when, against the approved role, it raises any part of the spend
  *    (spendRises);
  * 4. any other effort change (lowered or removed), on the staffing as step 3 settled it: held when it raises the spend

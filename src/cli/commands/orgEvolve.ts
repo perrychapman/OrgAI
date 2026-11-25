@@ -292,13 +292,13 @@ async function reviewAndApply(ctx: CliContext, client: HostClient, project: Proj
         ctx,
         {
           ...base,
-          applied: false,
+          applied: res.applied,
           reason: res.reason ?? (plan.empty ? 'nothing to change' : 'the safety gate refused the plan'),
-          generation: null,
+          generation: (res.generation ?? null) as unknown as Json,
           teamFilesSynced: res.teamFilesSynced,
-          heldSpendRaises: []
+          heldSpendRaises: (res.heldSpendRaises ?? []) as unknown as Json
         },
-        () => [...shown, '', res.reason ? safeLine(res.reason) : 'Nothing would be applied.']
+        () => [...shown, '', res.reason ? safeLine(res.reason) : res.applied ? 'Applied.' : 'Nothing would be applied.']
       )
       return EXIT.ok
     }

@@ -114,7 +114,13 @@ export type ResolvedModel = { model: ModelRef; tier?: ModelTier }
 
 const tierContextOf = (ctx: DraftModelContext | undefined): TierContext =>
   ctx
-    ? { connection: ctx.connection, tierModels: ctx.tierModels, ...(ctx.catalog ? { catalog: ctx.catalog } : ctx.models ? { catalog: [] } : {}) }
+    ? {
+        connection: ctx.connection,
+        tierModels: ctx.tierModels,
+        // An empty catalog (no builtin placeholders) only on openai, as modelForTier does when tiers are mapped; on other
+        // connections (Anthropic with a partial mapping) the builtin list still names a tier's model.
+        ...(ctx.catalog ? { catalog: ctx.catalog } : ctx.models && ctx.connection === 'openai' ? { catalog: [] } : {})
+      }
     : { connection: 'anthropic', tierModels: {} }
 
 /**

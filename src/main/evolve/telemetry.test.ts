@@ -208,21 +208,37 @@ describe('diagnose findings', () => {
     expect(devF?.summary).toContain('trimmed automatically')
   })
 
-  it('keeps interrupted/timed-out runs out of normal diagnosis while marking them as interrupted trial runs and failed exec outcomes in measure()', () => {
-    const timedOut = run({ status: 'finished', agents: [{ slug: 'dev' }] })
-    timedOut.summary.endedBy = 'user'
-    timedOut.summary.execOutcome = 'interrupted'
-    expect(isMeasuredRun(timedOut)).toBe(false)
-    expect(isInterruptedTrialRun(timedOut)).toBe(true)
-    expect(isTrialRun(timedOut)).toBe(true)
+  it('a user interrupt and an app quit are not trial runs; a stall timeout and a host-attributed interrupt are, and fail the trial window in measure()', () => {
+    const userStopped = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    userStopped.summary.endedBy = 'user'
+    userStopped.summary.execOutcome = 'interrupted'
+    expect(isMeasuredRun(userStopped)).toBe(false)
+    expect(isInterruptedTrialRun(userStopped)).toBe(false)
+    expect(isTrialRun(userStopped)).toBe(false)
 
     const appCutWorking = run({ status: 'finished', agents: [{ slug: 'dev' }] })
     appCutWorking.summary.endedBy = 'app'
     appCutWorking.summary.endedWhile = 'working'
     expect(isMeasuredRun(appCutWorking)).toBe(false)
-    expect(isInterruptedTrialRun(appCutWorking)).toBe(true)
+    expect(isInterruptedTrialRun(appCutWorking)).toBe(false)
+    expect(isTrialRun(appCutWorking)).toBe(false)
 
-    const mTrial = measure([timedOut, run({ agents: [{ slug: 'dev' }] })], 8, { includeInterrupted: true })
+    // The exec stall watchdog is the in-product timeout: endedBy 'policy', a measured run and a failure.
+    const stalledRun = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    stalledRun.summary.endedBy = 'policy'
+    stalledRun.summary.execOutcome = 'stalled'
+    expect(isMeasuredRun(stalledRun)).toBe(true)
+    expect(isTrialRun(stalledRun)).toBe(true)
+
+    // An 'interrupted' outcome that neither the user nor the app ended is a failure.
+    const hostCut = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    hostCut.summary.endedBy = 'policy'
+    hostCut.summary.execOutcome = 'interrupted'
+    expect(isInterruptedTrialRun(hostCut)).toBe(true)
+    expect(isTrialRun(hostCut)).toBe(true)
+
+    // The user's and the app's cuts stay out of the window even when interrupted runs are included.
+    const mTrial = measure([userStopped, appCutWorking, hostCut, run({ agents: [{ slug: 'dev' }] })], 8, { includeInterrupted: true })
     expect(mTrial.runs).toBe(2)
     expect(mTrial.firstPassRate).toBe(0.5)
     expect(mTrial.errorRunRate).toBe(0.5)
