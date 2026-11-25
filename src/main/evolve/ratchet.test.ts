@@ -815,6 +815,61 @@ describe('trial comparison edge cases', () => {
     expect(compareMetrics(none, metrics({ errorRunRate: 0.21 })).regressed).toBe(true)
     expect(compareMetrics(none, metrics()).reason).toContain('no baseline run')
   })
+  it('blocks dropping file-editing roles to fast or effort low on thin evidence (< 3 runs or exploration), while allowing everyday, medium effort, read-only fast/low, and >= 3 runs', () => {
+    const p = project({}, [
+      role('lead', { id: 'r_lead', reportsTo: null }),
+      role('dev', { id: 'r_dev', tools: ['Read', 'Edit', 'Write', 'Bash'], tier: 'deep', model: 'deep', effort: 'high' }),
+      role('review', { id: 'r_review', name: 'Spec Reviewer', tools: ['Read', 'Glob', 'Grep'], tier: 'everyday', model: 'everyday' })
+    ])
+    const thinDiag = { metrics: { runs: 1 }, findings: [{ kind: 'tier_overprovisioned' as const, roleSlug: 'dev', severity: 5, summary: 's', evidence: [], exploration: { everyK: 4, tier: 'everyday' as const }, data: { runs: 1 } }] }
+    const blocked = validateEvolutionPlan(p, mkPlan({ rolePatches: [patch('dev', { tier: 'fast', effort: 'low', staffing: { mode: 'auto', maxEffort: 'low' } }), patch('review', { tier: 'fast', effort: 'low' })] }), { diagnosis: thinDiag })
+    expect(rules(blocked)).toContain('tier_fast_thin_evidence')
+    expect(rules(blocked)).toContain('effort_low_thin_evidence')
+    expect(blocked.rolePatches.find((x) => x.slug === 'dev')).toBeUndefined()
+    expect(blocked.rolePatches.find((x) => x.slug === 'review')).toMatchObject({ tier: 'fast', effort: 'low' })
+
+    // Downgrading a writer role deep -> everyday and effort high -> medium (or capping maxEffort at medium) on 1 run is allowed.
+    const toEverydayMedium = validateEvolutionPlan(p, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday', effort: 'medium', staffing: { mode: 'auto', maxEffort: 'medium' } })] }), { diagnosis: thinDiag })
+    expect(rules(toEverydayMedium)).not.toContain('tier_fast_thin_evidence')
+    expect(rules(toEverydayMedium)).not.toContain('effort_low_thin_evidence')
+    expect(toEverydayMedium.rolePatches.find((x) => x.slug === 'dev')).toMatchObject({ tier: 'everyday', effort: 'medium', staffing: { mode: 'auto', maxEffort: 'medium' } })
+
+    const matureDiag = { metrics: { runs: 3 }, findings: [{ kind: 'tier_overprovisioned' as const, roleSlug: 'dev', severity: 15, summary: 's', evidence: [], data: { runs: 3 } }] }
+    const allowFastLow = validateEvolutionPlan(p, mkPlan({ rolePatches: [patch('dev', { tier: 'fast', effort: 'low', staffing: { mode: 'auto', maxEffort: 'low' } })] }), { diagnosis: matureDiag })
+    expect(rules(allowFastLow)).not.toContain('tier_fast_thin_evidence')
+    expect(rules(allowFastLow)).not.toContain('effort_low_thin_evidence')
+    expect(allowFastLow.rolePatches.find((x) => x.slug === 'dev')).toMatchObject({ tier: 'fast', effort: 'low', staffing: { mode: 'auto', maxEffort: 'low' } })
+  })
+  it('a stall timeout fails the trial; a user interrupt and an app quit mid-run are not counted (the trial stays pending)', () => {
+    const gen = { appliedAt: 5_000_000, evalWindowRuns: 1, baselineMetrics: metrics({ runs: 1, firstPassRate: 1, errorRunRate: 0 }) }
+    const userStopped = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev', state: 'thinking' }] })
+    userStopped.summary.endedBy = 'user'
+    userStopped.summary.execOutcome = 'interrupted'
+    expect(evaluateActiveTrial(gen, [userStopped])).toEqual({ state: 'pending', have: 0, need: 1 })
+
+    const appCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
+    appCut.summary.endedBy = 'app'
+    appCut.summary.endedWhile = 'working'
+    expect(evaluateActiveTrial(gen, [appCut])).toEqual({ state: 'pending', have: 0, need: 1 })
+
+    // An 'interrupted' outcome neither the user nor the app ended still fails the trial.
+    const hostCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
+    hostCut.summary.endedBy = 'policy'
+    hostCut.summary.execOutcome = 'interrupted'
+    const d1 = evaluateActiveTrial(gen, [hostCut])
+    expect(d1).toMatchObject({ state: 'decided', regressed: true })
+    if (d1.state === 'decided') expect(d1.reason).toContain('interrupted/timed out')
+
+    const stalled = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
+    stalled.summary.endedBy = 'policy'
+    stalled.summary.execOutcome = 'stalled'
+    const d3 = evaluateActiveTrial(gen, [stalled])
+    expect(d3).toMatchObject({ state: 'decided', regressed: true })
+    if (d3.state === 'decided') {
+      expect(d3.trialMetrics.firstPassRate).toBe(0)
+      expect(d3.trialMetrics.errorRunRate).toBe(1)
+    }
+  })
 })
 
 describe('ledger size cap', () => {

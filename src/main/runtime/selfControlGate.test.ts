@@ -2549,4 +2549,47 @@ describe('ordinary commands the gate refused (owner report 2026-11-19)', () => {
       ], SELF_CONTROL_DENIAL_MESSAGE)
     })
   })
+
+  describe('inline code, array literals, destructuring braces, and Markdown heredocs', () => {
+    it('allows benign node -e, python3 heredoc, and Markdown heredoc commands in orgai-named directories', () => {
+      const ctx: SelfControlContext = {
+        protectedPaths: ['/tmp/orgai-cli-data/run', '/tmp/orgai-cli-data/secrets.json'],
+        cwd: '/tmp/agent-evals/orgai-evo__bench-small-semver',
+        platform: 'darwin',
+        cliRoots: ['/opt/homebrew/lib/node_modules/orgai-cli/out/cli']
+      }
+      for (const command of [
+        `node -e 'import("/tmp/agent-evals/orgai-evo__bench-small-semver/src/semver.mjs").then(({satisfies}) => { for (const [v,r] of [["1.2.2","< = 1.2.3"]]) console.log(r, v, satisfies(v, r)); })'`,
+        `node --input-type=module -e '\nimport * as m from "./src/dag.mjs";\ntry{m.validateDag([{id:"a",deps:["b"]},{id:"b",deps:["a"]}])}catch(e){console.log(e.code,e.cycle)}\nconst r=await m.runDag([{id:"a",retries:2}],{maxConcurrency:2,sleep:async()=>{}});\nconsole.log(JSON.stringify(r))'`,
+        `npm test 2>&1 | tail -8; node -e '\nimport("./src/semver.mjs").then(({parse,compare,satisfies:s,maxSatisfying:m})=>{\nconst t=[[s("1.2.3","^1.2.3"),1],[s("2.0.0-alpha","^1.2.3"),0]];\nconsole.log(t.map(([a,b],i)=>a==b?"":"FAIL "+i).join("")||"all ok");})'`,
+        `node -e 'import("./src/parser.mjs").then(({parseSQL}) => { for (const s of ["SELECT * FROM t WHERE name LIKE '\''J%'\''"]) { console.log(JSON.stringify(parseSQL(s))); } })'`,
+        `mkdir -p docs; cat > docs/AST.md <<'EOF'\n# AST contract\nKeywords case-insensitive\n{ type:"select", columns: SelectItem[] | "*" }\nEOF\ncat docs/AST.md | wc -l`,
+        `cat > /tmp/t.mjs <<'EOF'\nimport { MiniDB } from "/tmp/agent-evals/orgai-evo__bench-hard-sql-lite/src/engine.mjs";\nconst L=v=>({type:'literal',value:v});\ndb._run({type:'insert',table:'a',columns:null,rows:[[L(1),L('x')],[L(2),L('y')]]});\nEOF\nnode /tmp/t.mjs`,
+        `python3 - <<'EOF'\ns = open('src/engine.mjs').read()\nEOF\ncat > /tmp/t.mjs <<'EOF'\nconst a = [1, 2];\nEOF\nnode /tmp/t.mjs; npm test 2>&1 | tail -8`
+      ]) {
+        expect(checkSelfControlDenial('Bash', { command }, ctx), command).toBeNull()
+      }
+    })
+
+    it('still denies real custodian, vault, env, CLI, glob, and executable heredoc attempts', () => {
+      const ctx: SelfControlContext = {
+        protectedPaths: ['/tmp/orgai-cli-data/run', '/tmp/orgai-cli-data/secrets.json'],
+        cwd: '/tmp/agent-evals/orgai-evo__bench-small-semver',
+        platform: 'darwin',
+        cliRoots: ['/opt/homebrew/lib/node_modules/orgai-cli/out/cli']
+      }
+      for (const command of [
+        `node -e "require('child_process').execSync('security dump-keychain')"`,
+        `node -e "require('fs').readFileSync('/tmp/orgai-cli-data/vault.json')"`,
+        `node -e "console.log(process.env.ORGAI_VAULT_KEY_FILE)"`,
+        'orga{i,} status',
+        "ls *(e:'orgai status':)",
+        '/usr/bin/secur[]i]ty dump-keychain',
+        `C=']'; /usr/bin/secur[z-"]"i\${C}ty dump-keychain`,
+        "cat <<'EOF' > /tmp/x.sh\norgai status\nEOF\nsh /tmp/x.sh"
+      ]) {
+        expect(checkSelfControlDenial('Bash', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+  })
 })

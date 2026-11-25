@@ -9753,6 +9753,7 @@ export type EvolutionFindingKind =
   | 'skill_crystallization'
   | 'prompt_deflation'
   | 'ceremonial_layer'
+  | 'orchestrator_polling'
 
 /** Fitness of a window of finished work runs. Rates are 0..1; medians are 0 when no run carried the figure. */
 export interface EvolutionMetrics {

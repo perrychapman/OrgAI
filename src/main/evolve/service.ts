@@ -21,7 +21,7 @@ import type {
   StaffingGoal,
   StaffingMode
 } from '../../shared/types'
-import { MIN_WASTE_DEFAULT, applyPlan, effectiveConcurrency, patchFingerprint, planSummary } from './plan'
+import { MIN_WASTE_DEFAULT, applyPlan, effectiveConcurrency, patchFingerprint, planFingerprint, planSummary } from './plan'
 import {
   addRejected,
   chartProblems,
@@ -43,7 +43,7 @@ import {
 import { draftProblem } from '../skills/skillMd'
 import { holdSpendRaises, spendRaisesOf } from './spend'
 import { buildDigest, synthesize } from './synthesizer'
-import { diagnose, isMeasuredRun } from './telemetry'
+import { diagnose, isMeasuredRun, isTrialRun } from './telemetry'
 import { withNamedLock } from '../store/shared/namedLock'
 
 export interface EvolveAfterRunInput {
@@ -169,6 +169,14 @@ function newestMeasured<T extends Pick<RunRecord, 'summary'>>(runs: readonly T[]
     .slice(0, max)
 }
 
+/** The newest `max` trial-eligible runs (measured runs plus interrupted/timed-out trial runs), newest first. */
+function newestTrial<T extends Pick<RunRecord, 'summary'>>(runs: readonly T[], max = 50): T[] {
+  return runs
+    .filter(isTrialRun)
+    .sort((a, b) => b.summary.startedAt - a.summary.startedAt)
+    .slice(0, max)
+}
+
 /** A hybrid plan analyze made is reusable by an apply naming its fingerprint for this long. */
 export const REVIEWED_PLAN_TTL_MS = 30 * 60_000
 /** Reviewed hybrid plans kept per project. */
@@ -181,6 +189,8 @@ const REVIEWED_PLANS_KEPT = 4
 interface RunSource {
   /** Measured runs (summary only), newest first, at most 50. */
   summaries(): Pick<RunRecord, 'summary'>[]
+  /** Trial-eligible runs (summary only, includes interrupted/timed-out runs), newest first, at most 50. */
+  trialSummaries(): Pick<RunRecord, 'summary'>[]
   /** Full records of the newest `n` measured runs. */
   records(n: number): RunRecord[]
   /** Full records of these runs (missing ones left out). */
@@ -248,26 +258,39 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     let recs: RunRecord[] | undefined
     let recLimit = 0
     let sums: Pick<RunRecord, 'summary'>[] | undefined
-    const loadRecords = (n: number): RunRecord[] => {
+    let rawSums: RunSummary[] | undefined
+    let trialSums: Pick<RunRecord, 'summary'>[] | undefined
+    const loadRawRecords = (n: number): RunRecord[] => {
       const want = Math.min(50, Math.max(1, Math.floor(n)))
       // Reloaded only when more are wanted than were asked for and the store had that many to give.
       if (!recs || (want > recLimit && recs.length >= recLimit)) {
         recs = tryRead(() => deps.listRunRecords(id, want), [] as RunRecord[])
         recLimit = want
       }
-      return newestMeasured(recs, want)
+      return recs
     }
     const cheap = !!deps.listRunSummaries && !!deps.getRunRecord
+    const rawSummaries = (): RunSummary[] => {
+      if (!rawSums) rawSums = tryRead(() => deps.listRunSummaries!(id, 50), [] as RunSummary[])
+      return rawSums
+    }
     return {
       summaries() {
-        if (!sums) sums = cheap ? newestMeasured(tryRead(() => deps.listRunSummaries!(id, 50), [] as RunSummary[]).map((summary) => ({ summary }))) : loadRecords(50)
+        if (!sums) sums = cheap ? newestMeasured(rawSummaries().map((summary) => ({ summary }))) : newestMeasured(loadRawRecords(50), 50)
         return sums
       },
-      records: loadRecords,
+      trialSummaries() {
+        if (!trialSums) trialSums = cheap ? newestTrial(rawSummaries().map((summary) => ({ summary }))) : newestTrial(loadRawRecords(50), 50)
+        return trialSums
+      },
+      records(n) {
+        const want = Math.min(50, Math.max(1, Math.floor(n)))
+        return newestMeasured(loadRawRecords(want), want)
+      },
       byIds(ids) {
         if (!cheap) {
           const want = new Set(ids)
-          return loadRecords(50).filter((r) => want.has(r.summary.id))
+          return loadRawRecords(50).filter((r) => want.has(r.summary.id))
         }
         const out: RunRecord[] = []
         for (const runId of ids) {
@@ -408,12 +431,15 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     }
     plan.spendRaises = spendRaisesOf(project, plan)
     let held: EvolutionSpendRaise[] = []
-    const refuse = (reason: string): EvolveApplyResult => ({ applied: false, reason, project, diagnosis, plan, teamFilesSynced: false, ...(held.length ? { heldSpendRaises: held } : {}) })
+    const promotedPrefix = open && settled?.state === 'promoted' ? `Generation ${open.id} finished its trial and was promoted (${settled.reason}). ` : ''
+    const refuse = (reason: string): EvolveApplyResult => ({ applied: false, reason: `${promotedPrefix}${reason}`, project, diagnosis, plan, teamFilesSynced: false, ...(held.length ? { heldSpendRaises: held } : {}) })
     if (trial && settled?.state === 'pending') return refuse(`Generation ${trial.id} is still on trial; it has ${settled.have} of ${settled.need} finished runs it needs before another change.`)
     if (trial && settled?.state === 'held') return refuse(`Nothing was applied: ${settled.reason}.`)
     const busy = teamFilesBusy(project.id)
     if (busy) return refuse(`Nothing was applied; run evolve again once ${busy}.`)
     if (open && settled?.state === 'rolled_back') return { ...refuse(`Generation ${open.id} finished its trial and was rolled back (${settled.reason}); no new change was applied.`), teamFilesSynced: settled.teamFilesSynced === true }
+    const emptyFp = planFingerprint({ rolePatches: [], newSkills: [], pruneSkillIds: [] })
+    if (open && settled?.state === 'promoted' && expected === emptyFp && plan.fingerprint !== expected) return refuse('No new change was applied.')
     // Approving a raise means approving a reviewed plan: without its fingerprint nothing was reviewed.
     if (input.allowSpendRaise === true && expected === undefined) return refuse('Nothing was applied: approving changes that may spend more needs the fingerprint of the plan that was reviewed.')
     if (missingReviewed) return refuse('Nothing was applied: the hybrid plan that was reviewed is no longer available (it is kept for 30 minutes and only while the team is unchanged). Run the analysis again; no model call was made.')
@@ -600,7 +626,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     // The window is found from summaries; only the runs it measures are loaded in full.
     const need = clampWindow(trial.evalWindowRuns)
     const since = src
-      .summaries()
+      .trialSummaries()
       .filter((r) => r.summary.startedAt >= trial.appliedAt)
       .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
     if (since.length < need) return { state: 'pending', have: since.length, need }

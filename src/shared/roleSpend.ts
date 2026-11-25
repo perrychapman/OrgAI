@@ -38,13 +38,6 @@ const same = (a: unknown, b: unknown): boolean => canonical(a) === canonical(b)
 const TIER_RANK: Record<ModelTier, number> = { fast: 0, everyday: 1, deep: 2, top: 3 }
 const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 
-/** Whether a role's model setting moves to something that may spend more: only a strictly lower tier is safe. */
-export function modelMayCostMore(a: SpendRole, d: SpendRole): boolean {
-  if (a.tier !== undefined && d.tier !== undefined) return TIER_RANK[d.tier] > TIER_RANK[a.tier]
-  return true
-}
-export const effortRaised = (a: SpendRole, d: SpendRole): boolean => (d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? -1 : (EFFORT_RANK[a.effort] ?? 99)))
-
 /** The effort ceiling the staffing resolver enforces on an automatic role when none is set (runtime/staffing.ts rule 2). */
 const UNSET_EFFORT_CEILING: Effort = 'high'
 /**
@@ -52,6 +45,19 @@ const UNSET_EFFORT_CEILING: Effort = 'high'
  * DEFAULT_EFFORT_BASELINE). A fixed role with no effort runs at it.
  */
 const DEFAULT_SENT_EFFORT: Effort = 'medium'
+
+/** Whether a role's model setting moves to something that may spend more: only a strictly lower tier is safe. */
+export function modelMayCostMore(a: SpendRole, d: SpendRole): boolean {
+  if (a.tier !== undefined && d.tier !== undefined) return TIER_RANK[d.tier] > TIER_RANK[a.tier]
+  return true
+}
+/**
+ * Fails closed: a role with no effort may run at the CLI default or a repository's `.claude/settings.json` `effortLevel`
+ * (the Claude root and fixed roles send none), which can be low. So an unset effort is compared as the lowest rank: setting
+ * low over unset applies, setting medium or above is held.
+ */
+export const effortRaised = (a: SpendRole, d: SpendRole): boolean =>
+  d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? EFFORT_RANK.low : (EFFORT_RANK[a.effort] ?? 99))
 
 /**
  * Under what a role's spend is judged: the project's staffing mode, and whether the role's parent tier is known at spawn
@@ -116,7 +122,7 @@ export function spendRises(x: Spend, y: Spend): Clause[] {
     if (compareEffort(y.most, x.most) > 0) out.push(x.fixed ? 'auto' : 'most')
     if (!y.fixed && compareEffort(y.nopick, x.nopick) > 0) out.push('nopick')
   }
-  if (y.floor !== undefined && (x.floor === undefined || compareTier(y.floor, x.floor) > 0)) out.push('floor')
+  if (y.floor !== undefined && compareTier(y.floor, x.floor ?? 'fast') > 0) out.push('floor')
   return out.map((kind) => ({ kind, x, y }))
 }
 
@@ -169,7 +175,7 @@ export interface HeldSpend {
  * (`role`), the keys that apply and the held rows ('model', 'effort', 'staffing' with their summaries). In order, each
  * step judged on the state the steps before it settled:
  * 1. model: only a strictly lower tier applies;
- * 2. a raised effort (or one set over none) is held;
+ * 2. a raised effort (above the current effort, or above low when unset: the run may be at a low default) is held;
  * 3. staffing, on its own (the approved effort): held when, against the approved role, it raises any part of the spend
  *    (spendRises);
  * 4. any other effort change (lowered or removed), on the staffing as step 3 settled it: held when it raises the spend

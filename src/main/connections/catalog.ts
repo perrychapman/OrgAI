@@ -138,9 +138,23 @@ export function tierFromDescription(text: string | undefined): ModelTier | undef
   if (!t) return undefined
   if (/most (capable|intelligent|powerful|advanced)|frontier/.test(t)) return 'top'
   if (/complex|deep reasoning|hardest|difficult/.test(t)) return 'deep'
-  if (/everyday|balanced|general[- ]purpose/.test(t)) return 'everyday'
-  if (/fastest|quick|cheap|lightweight|simple tasks|low[- ]latency/.test(t)) return 'fast'
+  if (/everyday|balanced|general[- ]purpose|\befficient\b/.test(t)) return 'everyday'
+  if (/fastest|quick|cheap|affordable|lightweight|simple(?:r)? tasks?|easier tasks?|low[- ]latency|\bfast\b.*\bmodel\b/.test(t)) return 'fast'
   return undefined
+}
+
+/**
+ * Tier of a model returned by OpenAI/Codex `model/list`. Explicit OpenAI size/capability suffixes (`nano`, `mini`,
+ * `codex`, `pro`) win first; otherwise the provider's description (so `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6-luna`
+ * are classified by what Codex says they are instead of collapsing into the generic `gpt-*` -> `deep` fallback);
+ * otherwise `inferTier` or `deep` for Codex's recommended default.
+ */
+export function openaiDiscoveredTier(id: string, description: string | undefined, isDefault?: boolean): ModelTier | undefined {
+  const b = bare(id)
+  if (/nano/.test(b)) return 'fast'
+  if (/mini/.test(b)) return 'everyday'
+  if (/codex/.test(b) || /(^|-)pro($|-)/.test(b)) return 'top'
+  return tierFromDescription(description) ?? inferTier(id, 'openai') ?? (isDefault ? 'deep' : undefined)
 }
 
 /**
@@ -171,6 +185,8 @@ export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): Pro
   return out
 }
 
+const isLegacyHint = (m: ProviderModel): boolean => /^(?:legacy|previous generation)\b/i.test(m.hint ?? '')
+
 /**
  * The tier mapping a catalog suggests: defaultTierModels (recommended first, then catalog order). On anthropic a
  * bare alias of the tier (/^[a-z]+$/, e.g. 'sonnet') is preferred over a full id so the tier keeps floating to the
@@ -178,6 +194,18 @@ export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): Pro
  */
 export function suggestTierModels(connection: ConnectionId, catalog: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
   const own = catalog.filter((m) => m.connection === connection)
+  if (connection === 'openai') {
+    const current = defaultTierModels(own.filter((m) => !isLegacyHint(m)))
+    const legacy = defaultTierModels(own.filter(isLegacyHint))
+    const out: Partial<Record<ModelTier, ModelRef>> = { ...current }
+    // Prefer a current-generation model over a legacy deep model, but never the most capable one: an automatic deep tier
+    // that jumps to `top` on a rediscovery would raise spend with no gate, so deep takes everyday first.
+    if (!out.deep && (out.everyday || out.top)) out.deep = out.everyday ?? out.top
+    for (const tier of MODEL_TIERS) {
+      if (!out[tier] && legacy[tier]) out[tier] = legacy[tier]
+    }
+    return out
+  }
   // A mixed proxy serves Claude-family models on the Claude adapter, which maps tiers through ANTHROPIC_DEFAULT_*_MODEL
   // and runs most roles, so Claude-family ids win a tier when the proxy lists one (stable otherwise: a tier with no
   // Claude model falls back to whatever the catalog suggests). This is auto-fill only: the user may pick a GPT or other

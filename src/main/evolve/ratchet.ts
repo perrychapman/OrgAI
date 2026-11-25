@@ -29,6 +29,7 @@ import {
   MAX_EVOLVED_SKILL_BODY,
   MAX_PATCH_PROMPT_CHARS,
   MAX_PLAN_SKILLS,
+  MIN_RUNS_FOR_WRITER_FAST,
   compressPrompt,
   PROMPT_BUDGET_PER_ROLE,
   SAFE_ADD_TOOLS,
@@ -40,6 +41,7 @@ import {
   isPlanEmpty,
   isReviewRole,
   isGuardRole,
+  isWriterRole,
   managedBlockEdited,
   patchFingerprint,
   planFingerprint,
@@ -51,7 +53,7 @@ import {
   upsertScopeBlock,
   type PatchedField
 } from './plan'
-import { measuredRuns, measure } from './telemetry'
+import { isInterruptedTrialRun, isTrialRun, measure } from './telemetry'
 
 /**
  * The safety gate and the ledger of the Pareto-Ratchet. The gate is a spend and security boundary: it fails closed, it
@@ -64,7 +66,7 @@ export interface GateOptions {
   /** Rejected hypotheses: a plan or a patch with one of these fingerprints is refused / trimmed. */
   rejected?: readonly Pick<EvolutionRejectedHypothesis, 'fingerprint'>[]
   /** The diagnosis behind the plan: only roles with a tier_underprovisioned finding may be raised. Absent = no raises. */
-  diagnosis?: Pick<TeamEvolutionDiagnosis, 'findings'>
+  diagnosis?: Pick<TeamEvolutionDiagnosis, 'findings'> & { metrics?: Pick<EvolutionMetrics, 'runs'> }
   /** Roles patched in either of the last two decided generations: no new patch for them (anti-oscillation). */
   cooldownSlugs?: readonly string[]
 }
@@ -186,6 +188,10 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     // evolution: a rollback never restores it (restoreSnapshot), so such a cut could not be undone.
     const userOnly = cur === 'top' || role.tier === 'top' || settingTier(role.model ?? '') === 'top' || role.effort === 'xhigh' || role.effort === 'max' || role.staffing?.minTier === 'top' || role.staffing?.maxEffort === 'xhigh' || role.staffing?.maxEffort === 'max'
 
+    const overFinding = findings.find((f) => f.kind === 'tier_overprovisioned' && f.roleSlug === slug)
+    const roleRuns = overFinding?.data?.runs !== undefined ? Number(overFinding.data.runs) : opts.diagnosis?.metrics?.runs
+    const thinWriter = isWriterRole(role) && (overFinding?.exploration !== undefined || (roleRuns !== undefined && roleRuns < MIN_RUNS_FOR_WRITER_FAST))
+
     if (!fixed && userOnly && (rawPatch.tier !== undefined || rawPatch.effort !== undefined || rawPatch.staffing !== undefined)) trim('user_only_value', `${slug} holds a value only you set (tier top, effort xhigh or max), so its tier, effort and staffing stay as they are`, slug)
     else if (!fixed && rawPatch.tier !== undefined) {
       const t = rawPatch.tier
@@ -198,6 +204,8 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
       else if (compareTier(t, cur) > 0) {
         if (under && t === stepTier(cur, 1)) out.tier = t
         else trim('tier_raise', `${slug} may be raised only by one step and only when it is under-provisioned`, slug)
+      } else if (t === 'fast' && thinWriter) {
+        trim('tier_fast_thin_evidence', `${slug} edits files and needs at least ${MIN_RUNS_FOR_WRITER_FAST} measured runs before dropping to "fast"`, slug)
       } else out.tier = t
     }
     if (!fixed && !userOnly && rawPatch.effort !== undefined) {
@@ -209,6 +217,8 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
       } else if (compareEffort(e, curEffort) > 0) {
         if (under && e === stepEffort(curEffort, 1)) out.effort = e
         else trim('effort_raise', `${slug} may raise effort only by one step and only when under-provisioned`, slug)
+      } else if (e === 'low' && thinWriter) {
+        trim('effort_low_thin_evidence', `${slug} edits files and needs at least ${MIN_RUNS_FOR_WRITER_FAST} measured runs before dropping effort to "low"`, slug)
       } else out.effort = e
     }
     // The effort ceiling automatic staffing uses for the role today (staffing.ts: staffing.maxEffort, else the role's
@@ -242,6 +252,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         if (s.maxEffort === 'xhigh' || s.maxEffort === 'max') trim('effort_xhigh', 'staffing maxEffort "xhigh"/"max" is never set', slug)
         else if (!isEff(s.maxEffort)) trim('effort_invalid', 'unknown maxEffort', slug)
         else if (compareEffort(s.maxEffort, curMax) > 0 && (!under || s.maxEffort !== stepEffort(curMax, 1))) trim('effort_raise', 'staffing maxEffort may rise only one step and only with an under-provisioned finding', slug)
+        else if (s.maxEffort === 'low' && thinWriter) trim('effort_low_thin_evidence', `${slug} edits files and needs at least ${MIN_RUNS_FOR_WRITER_FAST} measured runs before capping effort at "low"`, slug)
         else next.maxEffort = s.maxEffort
       }
       if (next.minTier !== curFloor || next.maxEffort !== role.staffing?.maxEffort) out.staffing = next
@@ -864,11 +875,23 @@ export type TrialDecision = { state: 'pending'; have: number; need: number } | {
  */
 export function evaluateActiveTrial(gen: Pick<EvolutionGeneration, 'appliedAt' | 'evalWindowRuns' | 'baselineMetrics'>, runs: RunRecord[], limit = 8): TrialDecision {
   const need = clampWindow(gen.evalWindowRuns)
-  const since = measuredRuns(runs, 50)
-    .filter((r) => r.summary.startedAt >= gen.appliedAt)
+  const since = runs
+    .filter((r) => isTrialRun(r) && r.summary.startedAt >= gen.appliedAt)
     .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
   if (since.length < need) return { state: 'pending', have: since.length, need }
-  const trialMetrics = measure(since.slice(0, need), limit)
+  const windowRuns = since.slice(0, need)
+  const trialMetrics = measure(windowRuns, limit, { includeInterrupted: true })
   const c = compareMetrics(gen.baselineMetrics, trialMetrics)
+  const interrupted = windowRuns.filter(isInterruptedTrialRun).length
+  if (interrupted > 0) {
+    return {
+      state: 'decided',
+      regressed: true,
+      trialMetrics,
+      reason: c.regressed
+        ? `trial run interrupted/timed out (${interrupted}/${windowRuns.length}): ${c.reason}`
+        : `trial run interrupted/timed out (${interrupted}/${windowRuns.length})`
+    }
+  }
   return { state: 'decided', regressed: c.regressed, trialMetrics, reason: c.reason }
 }

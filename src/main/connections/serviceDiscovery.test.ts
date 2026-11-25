@@ -312,6 +312,36 @@ describe('openai recommended and tiers', () => {
     expect(models.find((m) => m.id === 'gpt-9-mini')?.tier).toBe('everyday')
     expect(ctx.settings.get().connections.openai.tierModels.deep).toBe('zen-2')
   })
+
+  it('maps all 4 tiers from real ChatGPT Codex descriptions and prefers current-gen models over legacy deep models; with no current deep model, deep takes everyday, not top', async () => {
+    const rpc = fakeRpc({
+      'account/read': { account: { type: 'chatgpt', email: 'me@x.io', planType: 'plus' }, requiresOpenaiAuth: false },
+      'model/list': {
+        data: [
+          { model: 'gpt-6.2-sol', displayName: 'GPT-6.2-Sol', description: 'Fast, go-to model for coding and everyday work.', isDefault: true },
+          { model: 'gpt-6.2-astra', displayName: 'GPT-6.2-Astra', description: 'Our most capable model for complex coding and professional work.' },
+          { model: 'gpt-6.1-terra', displayName: 'GPT-6.1 Terra', description: 'Efficient model that excels at visual understanding and computer use.' },
+          { model: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', description: 'Previous generation model for coding and everyday work.' },
+          { model: 'gpt-6-astra', displayName: 'GPT-6-Astra', description: 'Previous generation model for complex coding and professional work.' },
+          { model: 'gpt-6-sol', displayName: 'GPT-6-Sol', description: 'Legacy model for coding and everyday work.' },
+          { model: 'gpt-6-luna', displayName: 'GPT-6-Luna', description: 'Fast and affordable model for easier tasks.' },
+          { model: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', description: 'Legacy model for coding and everyday work.' },
+          { model: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', description: 'Legacy balanced model for agentic coding.' },
+          { model: 'gpt-5.6-luna', displayName: 'GPT-5.6-Luna', description: 'Legacy fast model for simpler tasks.' }
+        ]
+      }
+    })
+    const ctx = setup({ codexFactory: () => asCodexServer(rpc) })
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, openai: { ...s.connections.openai, enabled: true, auth: { kind: 'chatgpt' } } } })
+    await ctx.service.connect('openai')
+    expect(ctx.settings.get().connections.openai.tierModels).toEqual({
+      top: 'gpt-6.2-astra',
+      deep: 'gpt-6.2-sol',
+      everyday: 'gpt-6.2-sol',
+      fast: 'gpt-6-luna'
+    })
+  })
 })
 
 describe('runConnection tiers and models', () => {

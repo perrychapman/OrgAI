@@ -1,4 +1,4 @@
-import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
+import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, ProviderModel, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG } from '@shared/types'
 import { ROLE_COLORS, cleanRequiredReports, modelForTier, nearestTiers, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
 import type { RuntimeAdapter } from '../runtime/types'
@@ -26,15 +26,18 @@ export interface DraftPayload {
   roles: DraftRole[]
 }
 
-const SYSTEM = `You design org charts of AI coding agents for OrgAI, a harness that runs a hierarchy of agents on a software project.
+export const DRAFT_SYSTEM = `You design org charts of AI coding agents for OrgAI, a harness that runs a hierarchy of agents on a software project.
 
 An org chart is a tree of roles. Exactly one role is the root orchestrator (reportsTo = null). Every other role reports to exactly one manager. A role with canSpawn=true may delegate to the roles listed in its spawnable array, which should normally be its direct reports. Roles with canSpawn=false do their own work and report back.
 
 Design principles:
-- Purpose-built roles: each role has a tight set of responsibilities and only the tools it needs. Reviewers and researchers get read-only tools.
+- Size the team to the task scope:
+  - Small / single-file / 1-2 module task: use 1 to 2 roles total. Give the root role Edit, Write and Bash so it implements and verifies the work directly, plus at most one optional checker role if an independent test/review adds value. Do NOT create a non-editing orchestrator, a 4-role Implementer + Tester + Reviewer committee, or mandatory requiredReports for a small task.
+  - Multi-module / multi-domain project (3+ independent modules or clearly separate domains): use 3 to 6 focused specialist roles that can work in parallel under an orchestrator. Add a middle layer (a lead with its own reports) only when there are clearly separate domains with multiple specialists each, such as frontend and backend, or app and infrastructure.
+- Purpose-built roles: each role has a tight set of responsibilities and only the tools it needs. Reviewers and researchers get read-only tools. Do not add a Researcher or Reviewer by reflex, and only set requiredReports when an independent gate is genuinely needed for multi-module or high-risk work.
+- Do not tell the orchestrator to delegate everything: on small or contained tasks the root should do the work itself; on multi-module work it should delegate independent pieces in parallel.
 - Right-size the model to the task by tier: "deep" for orchestration, architecture and hard debugging; "everyday" for implementation, testing and review; "fast" for lookups, summaries and mechanical chores. Use "top" only for the single hardest reasoning role if the project truly needs it.
-- Keep it as small as the work allows. Three to seven roles is typical. Add a middle layer (a lead with its own reports) only when the project has clearly separate domains, such as frontend and backend, or app and infrastructure.
-- Prompts are system prompts: second person, concrete, 60 to 160 words, describing how the role works and how it reports back.
+- Prompts are system prompts: second person, concrete, concise (60 to 120 words, under 900 characters), describing how the role works and how it reports back.
 - The description is one sentence telling a manager when to delegate to this role.
 
 Available tools: ${TOOL_CATALOG.join(', ')}. (The Agent tool is granted automatically to roles with canSpawn=true; do not list it.)
@@ -101,6 +104,8 @@ export interface DraftModelContext {
   tierModels: Partial<Record<ModelTier, ModelRef>>
   /** Exact model ids the connection lists as available; a proposed id in this list is kept. */
   models?: string[]
+  /** Optional discovered catalog entries for the connection; avoids falling back to builtin placeholder models. */
+  catalog?: readonly ProviderModel[]
   /** The current chart root's concrete model: the last choice before 'inherit' for a NEW role whose tier maps nothing. */
   fallback?: { model: ModelRef; tier?: ModelTier }
 }
@@ -108,7 +113,15 @@ export interface DraftModelContext {
 export type ResolvedModel = { model: ModelRef; tier?: ModelTier }
 
 const tierContextOf = (ctx: DraftModelContext | undefined): TierContext =>
-  ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
+  ctx
+    ? {
+        connection: ctx.connection,
+        tierModels: ctx.tierModels,
+        // An empty catalog (no builtin placeholders) only on openai, as modelForTier does when tiers are mapped; on other
+        // connections (Anthropic with a partial mapping) the builtin list still names a tier's model.
+        ...(ctx.catalog ? { catalog: ctx.catalog } : ctx.models && ctx.connection === 'openai' ? { catalog: [] } : {})
+      }
+    : { connection: 'anthropic', tierModels: {} }
 
 /**
  * Strict resolution of a proposed model: 'inherit' stays; a tier name or legacy alias maps through modelForTier
@@ -311,7 +324,7 @@ ${req.instruction}${existing}
 Design the org chart now. Return only the JSON object.`
 
   const text = await adapter.complete({
-    system: SYSTEM,
+    system: DRAFT_SYSTEM,
     prompt,
     cwd: project.path,
     model: tiers ? modelForTier('deep', tiers)?.model : undefined,
@@ -319,7 +332,7 @@ Design the org chart now. Return only the JSON object.`
   })
   const payload = extractJson(text)
   const context: DraftModelContext | undefined = tiers
-    ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id) } : {}) }
+    ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id), catalog: tiers.catalog } : {}) }
     : undefined
   return { roles: toRoles(payload, context), rationale: payload.rationale ?? '' }
 }

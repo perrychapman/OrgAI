@@ -622,10 +622,14 @@ try {
       await sleep(300)
       await type(t, 'e')
       await t.waitFor((s) => s.includes('Effort of '), 10_000)
+      // Options: default, low, medium, ... Down twice picks medium. Default -> low spends no more and saves at once;
+      // default -> medium may (an unset effort may already run at a low default).
+      t.key('down')
+      await sleep(200)
       t.key('down')
       await sleep(200)
       t.key('enter')
-      // Raising a role's effort may spend more: the view asks before it saves.
+      // Raising a role's effort above low may spend more: the view asks before it saves.
       await t.waitFor((s) => s.includes('Press y to save'), 10_000)
       await type(t, 'y')
       const liveSaid = await t.waitFor((s) => s.includes('The team: this run uses the change now.'), 15_000).then(() => true, () => false)

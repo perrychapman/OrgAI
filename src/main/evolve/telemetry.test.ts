@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PlanStep, SkillFinding } from '../../shared/types'
 import { agent, entry, project, role, run } from './fixtures'
-import { classifyError, diagnose, measure, planWidth, safeLine, wasteScoreOf } from './telemetry'
+import { classifyError, diagnose, isInterruptedTrialRun, isMeasuredRun, isTrialRun, measure, planWidth, safeLine, wasteScoreOf } from './telemetry'
 
 const NOW = 1_700_000_000_000
 const steps = (n: number, after: (i: number) => string[] = () => []): PlanStep[] => Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, title: `s${i}`, status: 'done' as const, after: after(i) }))
@@ -192,10 +192,66 @@ describe('diagnose findings', () => {
     expect(d.findings.find((f) => f.kind === 'prompt_deflation' && !f.roleSlug)?.data?.neverLoaded).toBe('s1')
   })
 
-  it('prompt_deflation: a prompt over 900 characters', () => {
-    const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null, prompt: 'x '.repeat(700) }), role('dev')])
+  it('prompt_deflation: a prompt over 900 characters reports removableChars and honest summary', () => {
+    const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null, prompt: 'x '.repeat(700) }), role('dev', { prompt: 'Unique line.\n' + 'x '.repeat(500) })])
     const d = diagnose({ project: p, runs: [run({ agents: [{ slug: 'dev' }] })], now: NOW })
-    expect(d.findings.find((f) => f.kind === 'prompt_deflation' && f.roleSlug === 'lead')?.data?.chars).toBe(1400)
+    const leadF = d.findings.find((f) => f.kind === 'prompt_deflation' && f.roleSlug === 'lead')
+    expect(leadF?.data?.chars).toBe(1400)
+    expect(leadF?.data?.removableChars).toBe(0)
+    expect(leadF?.summary).toContain('shorten manually')
+
+    const dup = 'Always run the full test suite before reporting back.'
+    const pDup = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { prompt: [dup, dup, 'Unique detail. '.repeat(70)].join('\n') })])
+    const dDup = diagnose({ project: pDup, runs: [run({ agents: [{ slug: 'dev' }] })], now: NOW })
+    const devF = dDup.findings.find((f) => f.kind === 'prompt_deflation' && f.roleSlug === 'dev')
+    expect(Number(devF?.data?.removableChars)).toBeGreaterThan(0)
+    expect(devF?.summary).toContain('trimmed automatically')
+  })
+
+  it('a user interrupt and an app quit are not trial runs; a stall timeout and a host-attributed interrupt are, and fail the trial window in measure()', () => {
+    const userStopped = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    userStopped.summary.endedBy = 'user'
+    userStopped.summary.execOutcome = 'interrupted'
+    expect(isMeasuredRun(userStopped)).toBe(false)
+    expect(isInterruptedTrialRun(userStopped)).toBe(false)
+    expect(isTrialRun(userStopped)).toBe(false)
+
+    const appCutWorking = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    appCutWorking.summary.endedBy = 'app'
+    appCutWorking.summary.endedWhile = 'working'
+    expect(isMeasuredRun(appCutWorking)).toBe(false)
+    expect(isInterruptedTrialRun(appCutWorking)).toBe(false)
+    expect(isTrialRun(appCutWorking)).toBe(false)
+
+    // The exec stall watchdog is the in-product timeout: endedBy 'policy', a measured run and a failure.
+    const stalledRun = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    stalledRun.summary.endedBy = 'policy'
+    stalledRun.summary.execOutcome = 'stalled'
+    expect(isMeasuredRun(stalledRun)).toBe(true)
+    expect(isTrialRun(stalledRun)).toBe(true)
+
+    // An 'interrupted' outcome that neither the user nor the app ended is a failure.
+    const hostCut = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+    hostCut.summary.endedBy = 'policy'
+    hostCut.summary.execOutcome = 'interrupted'
+    expect(isInterruptedTrialRun(hostCut)).toBe(true)
+    expect(isTrialRun(hostCut)).toBe(true)
+
+    // The user's and the app's cuts stay out of the window even when interrupted runs are included.
+    const mTrial = measure([userStopped, appCutWorking, hostCut, run({ agents: [{ slug: 'dev' }] })], 8, { includeInterrupted: true })
+    expect(mTrial.runs).toBe(2)
+    expect(mTrial.firstPassRate).toBe(0.5)
+    expect(mTrial.errorRunRate).toBe(0.5)
+
+    for (const execOutcome of ['stalled', 'budget-exceeded', 'incomplete-plan'] as const) {
+      const r = run({ status: 'finished', agents: [{ slug: 'dev' }] })
+      r.summary.endedBy = execOutcome === 'budget-exceeded' ? 'budget' : 'policy'
+      r.summary.execOutcome = execOutcome
+      const m = measure([r])
+      expect(m.runs).toBe(1)
+      expect(m.firstPassRate).toBe(0)
+      expect(m.errorRunRate).toBe(1)
+    }
   })
 
   it('ceremonial_layer: a mid-level spawner with fan-out <= 1 and heavy input', () => {
@@ -210,6 +266,62 @@ describe('diagnose findings', () => {
     const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null, canSpawn: true }), role('mid', { canSpawn: true }), role('dev')])
     const runs = Array.from({ length: 3 }, () => run({ agents: [{ slug: 'mid', id: 'm', inTok: 40_000 }, { slug: 'dev', parent: 'm' }, { slug: 'dev', parent: 'm' }, { slug: 'dev', parent: 'm' }] }))
     expect(diagnose({ project: p, runs, now: NOW }).findings.some((x) => x.kind === 'ceremonial_layer')).toBe(false)
+  })
+
+  it('orchestrator_polling: fires when a spawner polls ListAgents >= 3 times with live reports, never for <= 2 or non-spawners', () => {
+    const tPoll = (agentId: string, count: number) => Array.from({ length: count }, (_, i) => entry(agentId, { kind: 'tool_use', id: `poll_${agentId}_${i}`, name: 'ListAgents', input: {} }))
+    const pollingRun = run({ cost: 0.5, agents: [{ slug: 'dev', id: 'd1', cost: 0 }], transcript: tPoll('root', 5) })
+    const d = diag([pollingRun])
+    const f = d.findings.find((x) => x.kind === 'orchestrator_polling')
+    expect(f?.roleSlug).toBe('lead')
+    expect(f?.data).toMatchObject({ runs: 1, totalPolls: 5, avgPolls: 5 })
+    expect(f?.estSavingsUsd).toBeGreaterThan(0)
+
+    const lightPollRun = run({ agents: [{ slug: 'dev', id: 'd1' }], transcript: tPoll('root', 2) })
+    expect(diag([lightPollRun]).findings.some((x) => x.kind === 'orchestrator_polling')).toBe(false)
+
+    const leafPollRun = run({ agents: [{ slug: 'dev', id: 'd1' }], transcript: tPoll('d1', 5) })
+    expect(diag([leafPollRun]).findings.some((x) => x.kind === 'orchestrator_polling')).toBe(false)
+  })
+
+  it('serial_bottleneck: root-owned steps without or with root staff do not inflate delegated DAG width', () => {
+    const hybridSteps: PlanStep[] = [
+      { id: 'p1', title: 'Read and plan', status: 'done' },
+      { id: 'p2', title: 'Implement', status: 'done', after: ['p1'], staff: { role: 'dev', tier: 'everyday', effort: 'medium' } },
+      { id: 'p3', title: 'Verify', status: 'done', after: ['p2'] },
+      { id: 'p4', title: 'Fix', status: 'done', after: ['p2'], staff: { role: 'dev', tier: 'deep', effort: 'medium' } },
+      { id: 'p5', title: 'Final verify', status: 'done', after: ['p4'], staff: { role: 'lead', tier: 'deep', effort: 'medium' } }
+    ]
+    const rSingleWorker = run({ steps: hybridSteps, agents: [{ slug: 'dev', start: 2000, end: 5000 }, { slug: 'dev', start: 6000, end: 9000 }] })
+    expect(diag([rSingleWorker]).findings.some((x) => x.kind === 'serial_bottleneck')).toBe(false)
+
+    const parallelWorkers: PlanStep[] = [
+      { id: 'p1', title: 'Plan', status: 'done' },
+      { id: 'p2', title: 'Module A', status: 'done', after: ['p1'], staff: { role: 'dev', tier: 'everyday', effort: 'medium' } },
+      { id: 'p3', title: 'Module B', status: 'done', after: ['p1'], staff: { role: 'dev', tier: 'everyday', effort: 'medium' } }
+    ]
+    const rSerial = run({ steps: parallelWorkers, agents: [{ slug: 'dev', start: 2000, end: 4000 }, { slug: 'dev', start: 5000, end: 7000 }] })
+    expect(diag([rSerial]).findings.some((x) => x.kind === 'serial_bottleneck')).toBe(true)
+  })
+
+  it('tier_overprovisioned: skips $0 free workers in hybrid paid runs while keeping subscription ($0 totalCost) behavior intact', () => {
+    const freeWorkerRuns = Array.from({ length: 4 }, () =>
+      run({
+        cost: 0.4,
+        agents: [{ slug: 'dev', turns: 2, out: 400, cost: 0 }, { slug: 'dev', turns: 2, out: 400, cost: 0 }],
+        assignments: [{ roleId: 'r_dev', tier: 'deep' }, { roleId: 'r_dev', tier: 'deep' }]
+      })
+    )
+    expect(diag(freeWorkerRuns).findings.some((x) => x.kind === 'tier_overprovisioned')).toBe(false)
+
+    const subscriptionRuns = Array.from({ length: 4 }, () =>
+      run({
+        cost: 0,
+        agents: [{ slug: 'dev', turns: 2, out: 400, cost: 0 }, { slug: 'dev', turns: 2, out: 400, cost: 0 }],
+        assignments: [{ roleId: 'r_dev', tier: 'deep' }, { roleId: 'r_dev', tier: 'deep' }]
+      })
+    )
+    expect(diag(subscriptionRuns).findings.some((x) => x.kind === 'tier_overprovisioned')).toBe(true)
   })
 })
 

@@ -504,7 +504,9 @@ describe('security review fixes', () => {
       ['inherit', (d) => ((dev(d).tier = undefined), (dev(d).model = 'inherit')), true],
       ['effort raised', (d) => (lead(d).effort = 'max'), true],
       ['effort lowered', (d) => (lead(d).effort = 'low'), false],
-      ['effort set over unset', (d) => (dev(d).effort = 'low'), true]
+      ['effort set to low over unset', (d) => (dev(d).effort = 'low'), false],
+      ['effort set to medium over unset', (d) => (dev(d).effort = 'medium'), true],
+      ['effort set above default over unset', (d) => (dev(d).effort = 'high'), true]
     ]
     for (const [label, mutate, pends] of cases) {
       const r = gate(mutate)
@@ -696,9 +698,10 @@ describe('gateTeam staffing', () => {
 
   it('holds a tier floor that is added or raised and applies one that is lowered or removed', () => {
     const setup = (d: TeamDoc): void => void (arch(d).staffing = { mode: 'auto', minTier: 'everyday' })
-    const added = gateA((d) => (arch(d).staffing = { mode: 'auto', minTier: 'fast' }))
+    expect(gateA((d) => (arch(d).staffing = { mode: 'auto', minTier: 'fast' })).pending).toEqual([])
+    const added = gateA((d) => (arch(d).staffing = { mode: 'auto', minTier: 'everyday' }))
     held(added, 'role:arch:staffing')
-    expect(summary(added, 'role:arch:staffing')).toBe('Arch gets a lowest tier of fast. This may spend more.')
+    expect(summary(added, 'role:arch:staffing')).toBe('Arch gets a lowest tier of everyday. This may spend more.')
     const raised = staffedA(setup, (d) => (arch(d).staffing = { mode: 'auto', minTier: 'deep' }))
     held(raised, 'role:arch:staffing')
     expect(summary(raised, 'role:arch:staffing')).toBe("Arch's lowest tier is raised from everyday to deep. This may spend more.")
@@ -716,10 +719,13 @@ describe('gateTeam staffing', () => {
     // reviewer inherits (no tier): any floor works.
     held(gate((d) => (reviewer(d).staffing = { mode: 'auto', minTier: 'deep' })), 'role:reviewer:staffing')
     // A floor on a fixed role does nothing and applies; it is counted when the role becomes automatic.
-    expect(staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' })).pending).toEqual([])
-    const toAuto = staffed((d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' }), (d) => (dev(d).staffing = { mode: 'auto', minTier: 'fast' }))
+    expect(staffed((d) => (dev(d).staffing = { mode: 'fixed' }), (d) => (dev(d).staffing = { mode: 'fixed', minTier: 'everyday' })).pending).toEqual([])
+    const toAutoFast = staffed((d) => (dev(d).staffing = { mode: 'fixed', minTier: 'fast' }), (d) => (dev(d).staffing = { mode: 'auto', minTier: 'fast' }))
+    held(toAutoFast, 'role:dev:staffing')
+    expect(summary(toAutoFast, 'role:dev:staffing')).toBe('Dev becomes automatic and may be picked up to high effort (it ran at medium). This may spend more.')
+    const toAuto = staffed((d) => (dev(d).staffing = { mode: 'fixed', minTier: 'everyday' }), (d) => (dev(d).staffing = { mode: 'auto', minTier: 'everyday' }))
     held(toAuto, 'role:dev:staffing')
-    expect(summary(toAuto, 'role:dev:staffing')).toBe('Dev becomes automatic and may be picked up to high effort (it ran at medium); Dev gets a lowest tier of fast. This may spend more.')
+    expect(summary(toAuto, 'role:dev:staffing')).toBe('Dev becomes automatic and may be picked up to high effort (it ran at medium); Dev gets a lowest tier of everyday. This may spend more.')
   })
 
   it('holds a role going from automatic to fixed, and fixed to automatic only when its maximum rises', () => {
@@ -889,10 +895,10 @@ describe('gateTeam staffing, second review', () => {
   })
 
   it('item 3: held rows state the whole move to the role on disk', () => {
-    const r = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', minTier: 'fast' })))
+    const r = staffed((d) => ((dev(d).effort = 'low'), (dev(d).staffing = { mode: 'auto', maxEffort: 'low' })), (d) => (delete dev(d).effort, (dev(d).staffing = { mode: 'auto', minTier: 'everyday' })))
     expect(r.ids.pending).toEqual(['role:dev:staffing'])
     expect(summary(r, 'role:dev:staffing')).toBe(
-      "Dev's effort ceiling is removed, so it may be picked up to high effort (up to low before); Dev runs at medium effort when nothing is picked (low before); Dev gets a lowest tier of fast. This may spend more."
+      "Dev's effort ceiling is removed, so it may be picked up to high effort (up to low before); Dev runs at medium effort when nothing is picked (low before); Dev gets a lowest tier of everyday. This may spend more."
     )
     // The effort removal that spends no more under the approved cap applies.
     expect(dev(r.effective)).toMatchObject({ staffing: { mode: 'auto', maxEffort: 'low' } })

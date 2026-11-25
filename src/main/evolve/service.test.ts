@@ -633,6 +633,31 @@ describe('run loading (review M: synchronous records)', () => {
     expect(listRunRecords).not.toHaveBeenCalled()
     expect(getRunRecord).toHaveBeenCalledTimes(3)
   })
+  it('rolls back an active trial on an interrupted/timed-out exec run', async () => {
+    const h = harness()
+    const original = structuredClone(h.proj)
+    await h.svc.apply({ projectId: 'p1', evalWindowRuns: 1 })
+    const timedOut = cleanRuns(1, NOW + 10)[0]
+    timedOut.summary.endedBy = 'policy'
+    timedOut.summary.execOutcome = 'interrupted'
+    h.setRuns([timedOut, ...cleanRuns(8, 1_000_000)])
+    const rb = await h.svc.apply({ projectId: 'p1' })
+    expect(rb.applied).toBe(false)
+    expect(rb.reason).toContain('was rolled back')
+    expect(rb.reason).toContain('interrupted/timed out')
+    expect(h.proj.roles).toEqual(original.roles)
+    expect(h.svc.history('p1').rejectedHypotheses.length).toBeGreaterThan(0)
+  })
+  it('promotes cleanly and includes promotion reason on an empty follow-up apply', async () => {
+    const h = harness()
+    expect((await h.svc.apply({ projectId: 'p1', evalWindowRuns: 1 })).applied).toBe(true)
+    h.setRuns([...cleanRuns(1, NOW + 10), ...cleanRuns(8, 1_000_000)])
+    const settled = await h.svc.apply({ projectId: 'p1', minWaste: 99 })
+    expect(settled.applied).toBe(false)
+    expect(settled.reason).toContain('gen_1 finished its trial and was promoted')
+    expect(h.svc.history('p1')).toMatchObject({ championId: 'gen_1' })
+    expect(h.svc.history('p1').trialId).toBeUndefined()
+  })
   it('analyze and history never move a corrupt ledger file aside', async () => {
     const h = harness()
     const { mkdirSync, writeFileSync, readdirSync } = await import('node:fs')

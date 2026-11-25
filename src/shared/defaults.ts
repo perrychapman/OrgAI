@@ -201,7 +201,9 @@ export interface TierContext {
  * when nothing at all maps. `tier` is the tier actually used.
  */
 export function modelForTier(tier: ModelTier, ctx: TierContext): { model: ModelRef; tier: ModelTier } | undefined {
-  const catalog = (ctx.catalog ?? builtinModels(ctx.connection)).filter((m) => m.connection === ctx.connection)
+  const hasExplicit = MODEL_TIERS.some((t) => !!ctx.tierModels[t]?.trim())
+  const fallback = ctx.connection === 'openai' && hasExplicit ? [] : builtinModels(ctx.connection)
+  const catalog = (ctx.catalog ?? fallback).filter((m) => m.connection === ctx.connection)
   const suggested = defaultTierModels(catalog)
   for (const t of nearestTiers(tier)) {
     const model = ctx.tierModels[t]?.trim() || suggested[t]

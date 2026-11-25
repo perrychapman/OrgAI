@@ -398,11 +398,26 @@ function wordMayBe(word: string, names: readonly string[]): boolean {
   for (const n of wordNames(word)) {
     if (literalOpenBracket(n)) continue
     const variants = expandShellGlobAlternatives(n)
-    if (!variants) return true
+    if (!variants) {
+      // Unreadable bracket/glob word: still fail closed for obfuscated names (`secur[]i]ty`, `orga[[:alpha:]]`,
+      // `secur[z-"]"i${C}ty`, `securit(y|(x))`), without misreading JS/prose tokens (`[]`, `],[L`, `[{id:"a"}]`) as npx/orgai.
+      if (/[\s;,=]/.test(n) || /(?<!\$)\{/.test(n)) continue
+      const letters = n.replace(/[^a-z]/gi, '').toLowerCase()
+      if (
+        names.some((name) => {
+          let got = 0
+          for (const ch of letters) if (name[got] === ch) got++
+          return got >= Math.min(3, Math.max(1, name.length - 1))
+        })
+      ) {
+        return true
+      }
+      continue
+    }
     for (const candidate of variants) {
       const zshName = candidate.startsWith('=') ? candidate.slice(1) : candidate
       if (names.includes(candidate) || names.includes(zshName)) return true
-      if (!GLOB_CHARS.test(candidate)) continue
+      if (/[\s;,=]/.test(candidate) || !GLOB_CHARS.test(candidate)) continue
       const re = cachedGlobRegex(candidate)
       const kept = globKeptLetters(candidate).length
       for (const name of names) if (re.test(name) && kept >= Math.min(3, Math.max(1, name.length - 1))) return true
@@ -1932,11 +1947,56 @@ function envSplitText(words: readonly string[]): string | null {
   return null
 }
 
+/** Indices of inline-code operands (`node -e '...'`, `python3 -c '...'`) that must not be read as script paths or package runner args. */
+function inlineCodeArgIndices(words: readonly string[], at: number): Set<number> {
+  const out = new Set<number>()
+  const prog = words[at]
+  if (prog === undefined) return out
+  const bare = stripExe(binName(prog))
+  if (INTERPRETERS.has(bare)) {
+    for (let k = at + 1; k < words.length; k++) {
+      const w = words[k]
+      if (w === '--') break
+      if (/^\d*[<>]/.test(w)) {
+        if (/^\d*(?:<<<?|[<>]+&?)$/.test(w)) k++
+        continue
+      }
+      if (INTERPRETER_EVAL_OPTIONS.test(w)) {
+        if (w.includes('=')) out.add(k)
+        else if (k + 1 < words.length) out.add(++k)
+        continue
+      }
+      if (w.startsWith('-')) {
+        if (!w.includes('=') && INTERPRETER_VALUE_OPTIONS.has(w)) k++
+        continue
+      }
+      break
+    }
+    return out
+  }
+  if (isCodeRunner(bare)) {
+    for (let k = at + 1; k < words.length; k++) {
+      const w = words[k]
+      if (w === '--') break
+      if (/^-(?:c|e|r)$/.test(w)) {
+        if (k + 1 < words.length) out.add(++k)
+        continue
+      }
+      if (/^-(?:c|e|r)=/.test(w)) {
+        out.add(k)
+        continue
+      }
+      if (!w.startsWith('-')) break
+    }
+  }
+  return out
+}
+
 /** True when one segment (or a shell -c text inside it) runs the OrgAI CLI. */
 function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   // Past the budget the rest of the command goes unread: count it as running the CLI (fail closed).
   if (++budget.n > MAX_SEGMENTS) return (budget.limited = true)
-  const words = expandWords(segmentWords(segment), budget)
+  const words = expandSegmentWords(segment, budget)
   return wordsRunCli(words, depth, budget, check)
 }
 
@@ -1945,20 +2005,23 @@ const FIND_EXEC: Readonly<Record<string, RegExp>> = { find: /^-(?:exec|execdir|o
 
 function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget, check: CliCheck): boolean {
   if (!words.length) return false
+  const at = programIndex(words)
+  const inlineCode = inlineCodeArgIndices(words, at)
+  const scanWords = inlineCode.size ? words.filter((_, idx) => !inlineCode.has(idx)) : words
   // npx / npm exec with `-p orgai` / `--package=orgai`.
-  const runner = words.some((w) => wordMayBe(w, PACKAGE_RUNNERS))
-  for (let k = 0; runner && k < words.length; k++) {
-    if (/^(?:-p|--package)$/.test(words[k]) && words[k + 1] && CLI_NAME.test(binName(words[k + 1]))) return true
-    const eq = /^(?:--package=|-p)(.+)$/.exec(words[k])
+  const runner = scanWords.some((w) => wordMayBe(w, PACKAGE_RUNNERS))
+  for (let k = 0; runner && k < scanWords.length; k++) {
+    if (/^(?:-p|--package)$/.test(scanWords[k]) && scanWords[k + 1] && CLI_NAME.test(binName(scanWords[k + 1]))) return true
+    const eq = /^(?:--package=|-p)(.+)$/.exec(scanWords[k])
     if (eq && CLI_NAME.test(binName(eq[1]))) return true
   }
   // Wave 7 (cli-standalone 8.4): a package runner naming the npm package. `@orgai/cli` is matched on the raw word
   // (binName keeps only `cli`), in every spelling (`@orgai/cli@1.2.3`, `--package=@orgai/cli`, `npm:@orgai/cli`, a
   // registry URL), and so is any `orgai` word; a `-c` / `--call` value or a first positional word holding whitespace
   // (`npx -c 'orgai status'`, `pnpm dlx -c ...`) is a command text of its own (runnerCommandTexts).
-  if (isPackageRunner(words)) {
-    for (const w of words) if (runnerWordNamesCli(w)) return true
-    for (const t of runnerCommandTexts(words)) {
+  if (isPackageRunner(scanWords)) {
+    for (const w of scanWords) if (runnerWordNamesCli(w)) return true
+    for (const t of runnerCommandTexts(scanWords)) {
       if (depth >= MAX_NEST) return (budget.limited = true)
       if (textRunsCli(t, depth + 1, budget, check)) return true
     }
@@ -1974,7 +2037,6 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
     if (depth >= MAX_NEST) return (budget.limited = true)
     if (textRunsCli(t, depth + 1, budget, check)) return true
   }
-  const at = programIndex(words)
   // Wave 7: the vault key's custodian tools (security, secret-tool, D-Bus clients, PowerShell DPAPI).
   if (custodianCall(words, at)) return true
   const prog = words[at]
@@ -2010,7 +2072,7 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
     // A test runner (`node --test`, `bun test`, `deno test`, vitest / jest run by the interpreter) reads test files and
     // folders of this install's own src/cli when the install is the repo being edited (review M3): those are not the CLI.
     const testCheck: CliCheck = isTestRun(bare, rest) ? { ...check, testRun: true } : check
-    if (rest.some((w) => interpreterArgIsCli(w, testCheck)) || redirectFeedsCli(rest, check)) return true
+    if (rest.some((w, idx) => !inlineCode.has(at + 1 + idx) && interpreterArgIsCli(w, testCheck)) || redirectFeedsCli(rest, check)) return true
   }
   // `sh <file>`, `bash -e <file>`: a POSIX shell runs its first non-option argument as a script.
   if (SCRIPT_SHELLS.has(bare) && shellScriptIsCli(rest, check)) return true
@@ -2082,7 +2144,7 @@ function hereStrings(rest: readonly string[]): string[] {
  */
 function producerRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   if (++budget.n > MAX_SEGMENTS) return (budget.limited = true)
-  for (const w of expandWords(segmentWords(segment), budget)) {
+  for (const w of expandSegmentWords(segment, budget)) {
     if (literalNamesCli(w, check) || scriptWordIsCli(w, check)) return true
     if (/\s/.test(w)) {
       if (depth >= MAX_NEST) return (budget.limited = true)
@@ -2095,18 +2157,73 @@ function producerRunsCli(segment: string, depth: number, budget: CliBudget, chec
 /** Most words one segment's brace expansions may produce before the scan gives up (fail closed). */
 const MAX_BRACE_WORDS = 256
 
-/** The words after bash brace expansion (`orga{i,}` -> `orgai orga`, `orga{h..i}` -> `orgah orgai`). */
-function expandWords(words: readonly string[], budget: CliBudget): string[] {
-  if (!words.some((w) => w.includes('{'))) return [...words]
+/** Split `segment` like `segmentWords` while tracking whether each word contains an unquoted `{` for brace expansion. */
+function expandSegmentWords(segment: string, budget: CliBudget): string[] {
+  const words: { text: string; unquotedBrace: boolean }[] = []
+  let cur = ''
+  let inWord = false
+  let unquotedBrace = false
+  let quote: string | null = null
+  for (const ch of segment) {
+    if (quote) {
+      if (ch === quote) quote = null
+      else cur += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      inWord = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (inWord) words.push({ text: cur, unquotedBrace })
+      cur = ''
+      inWord = false
+      unquotedBrace = false
+      continue
+    }
+    if (ch === '{') unquotedBrace = true
+    cur += ch
+    inWord = true
+  }
+  if (inWord) words.push({ text: cur, unquotedBrace })
+  if (!words.some((w) => w.unquotedBrace)) return words.map((w) => w.text)
   const out: string[] = []
   for (const w of words) {
-    for (const e of expandBraces(w, MAX_BRACE_WORDS - out.length)) out.push(e)
+    if (!w.unquotedBrace) {
+      out.push(w.text)
+    } else {
+      for (const e of expandBraces(w.text, MAX_BRACE_WORDS - out.length)) out.push(e)
+    }
     if (out.length >= MAX_BRACE_WORDS) {
       budget.limited = true
       break
     }
   }
   return out
+}
+
+/** True when `text` has an unquoted `{...,...}` or `{..}` sequence outside single and double quotes. */
+function hasUnquotedBraceList(text: string): boolean {
+  let quote: string | null = null
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quote) {
+      if (quote === '"' && ch === '\\') i++
+      else if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '{' && /^\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/.test(text.slice(i))) return true
+  }
+  return false
 }
 
 function expandBraces(word: string, limit: number): string[] {
@@ -2269,13 +2386,23 @@ function programIsCli(word: string, check: CliCheck): boolean {
     if (CLI_NAME.test(binName(w)) || CLI_NAME.test(binName(zshName)) || SCOPED_CLI.test(w)) return true
     if (/[\\/]/.test(w) && (insideCliRoot(w, check) || (hasShellGlobWord(w) && globMayReachCliRoot(w, check)))) return true
     const bare = binName(w)
-    if (hasShellGlobWord(bare)) {
+    if (hasShellGlobWord(bare) && !/[\s;,=]/.test(bare)) {
       const alternatives = expandShellGlobAlternatives(bare)
-      if (!alternatives) return true
+      if (!alternatives) {
+        if (bare.includes('$')) return true
+        if (/(?<!\$)\{/.test(bare)) continue
+        const letters = bare.replace(/[^a-z]/gi, '').toLowerCase()
+        let got = 0
+        for (const ch of letters) if ('orgai'[got] === ch) got++
+        if (got >= 3) return true
+        continue
+      }
+      const hasPathSep = /[\\/]/.test(w)
       if (alternatives.some((candidate) => {
         if (CLI_NAME.test(candidate)) return true
-        if (!GLOB_CHARS.test(candidate)) return false
+        if (/[\s;,=]/.test(candidate) || !GLOB_CHARS.test(candidate)) return false
         const re = cachedGlobRegex(candidate)
+        if (!hasPathSep && keptSubsequence(candidate, 'orgai') < 3) return false
         return CLI_FILE_NAMES.some((name) => re.test(name))
       })) return true
     }
@@ -2436,10 +2563,12 @@ const MAX_QUALIFIER_TEXTS = 256
  */
 function zshQualifierTexts(text: string): string[] | null {
   const out = new Set<string>()
+  const lex = lexClasses(text, { esc: '\\', full: true, groups: 'safe' }).classes
   const add = (code: string): void => {
     out.add(code.replace(/\\(.)/gs, '$1').replace(/['"]/g, ''))
   }
   for (let i = text.indexOf('('); i >= 0 && i < text.length; i = text.indexOf('(', i + 1)) {
+    if (lex[i] !== LEX_ACTIVE) continue
     const prev = text[i - 1]
     if (prev === undefined || isSpace(prev) || ';&|<>(`$='.includes(prev)) continue
     let j = i + 1
@@ -2538,7 +2667,7 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
     if (r === undefined) produced.set(t, (r = producerRunsCli(t, depth, budget, check)))
     return r
   }
-  for (const keepBraces of /\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/.test(text) ? [false, true] : [false]) {
+  for (const keepBraces of hasUnquotedBraceList(text) ? [false, true] : [false]) {
     for (const segments of cliSegmentReadings(text, keepBraces)) {
       // The look-back stays within one reading: its earlier pieces are the ones that feed this pipe.
       const producerBefore = earlierPieces(segments, producerRuns)
@@ -2813,7 +2942,6 @@ function pipesOnLine(segment: string): boolean {
  */
 export function stripDataHeredocs(text: string): string {
   if (typeof text !== 'string' || !text.includes('<<')) return text
-  if (/\(\(|\$'|\bcase\b/.test(text)) return text
   const frames: HeredocFrame[] = [{ cmdStart: 0, quote: null, subStart: -1, depth: 0 }]
   let pending: { delim: string; dash: boolean; quoted: boolean; op: number; eligible: boolean }[] = []
   const cut: { start: number; end: number }[] = []
@@ -2954,6 +3082,7 @@ export function stripDataHeredocs(text: string): string {
     from = c.end
   }
   out += text.slice(from)
+  if (/\(\(|\$'|\bcase\b/.test(out)) return text
   // The written text must not reach anything that runs it.
   for (const seg of cliSegments(out)) {
     const words = segmentWords(seg.text)
@@ -3123,7 +3252,7 @@ function pathScanVariants(text: string): string[] | 'limit' {
   let grown = 0
   let limited = false
   let out = text.replace(SHELL_TOKEN, (tok) => {
-    if (!/\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/.test(tok)) return tok
+    if (!hasUnquotedBraceList(tok)) return tok
     const words = expandBraces(tok, MAX_BRACE_WORDS)
     if (words.length >= MAX_BRACE_WORDS) limited = true
     grown += words.length
@@ -3136,7 +3265,8 @@ function pathScanVariants(text: string): string[] | 'limit' {
     .replace(/%APPDATA%|\$\{?env:APPDATA\}?|\$\{?APPDATA\}?/gi, '$HOME/AppData/Roaming')
     .replace(/%LOCALAPPDATA%|\$\{?env:LOCALAPPDATA\}?|\$\{?LOCALAPPDATA\}?/gi, '$HOME/AppData/Local')
   // The whole text split (the spelling before review K6) stays a variant too, so the token-wise one only adds denials.
-  const wholeSplit = out.replace(/['"(),]/g, ' ')
+  // Empty `[]` left after stripping `()` (e.g. `runDag([])`) is literal empty brackets, never a closed glob class.
+  const wholeSplit = out.replace(/['"(),]/g, ' ').replace(/\[\](?=[\s;]|$)/g, '  ')
   out = out.replace(/(?:\\|`)([ \t])/g, "'$1'")
   return [...new Set([out, codeVariant(out), wholeSplit])].filter((v) => v !== text)
 }
@@ -3165,7 +3295,7 @@ function codeVariant(text: string): string {
       return tok
     }
     if (CD_WORDS.has(tok.replace(/^[({]+/, '').replace(/['"]/g, '').toLowerCase())) state = 'cd'
-    return tok.replace(/['"(),]/g, ' ')
+    return tok.replace(/['"(),]/g, ' ').replace(/\[\](?=[\s;]|$)/g, '  ')
   })
 }
 

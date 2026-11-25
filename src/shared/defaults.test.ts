@@ -33,6 +33,7 @@ describe('tier-based model defaults', () => {
     expect(modelForTier('deep', { connection: 'openai', tierModels: { deep: 'chosen' }, catalog })).toEqual({ model: 'chosen', tier: 'deep' })
     expect(modelForTier('deep', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x', tier: 'deep' })
     expect(modelForTier('fast', { connection: 'openai', tierModels: {}, catalog })).toEqual({ model: 'gpt-x-mini', tier: 'everyday' })
+    expect(modelForTier('everyday', { connection: 'openai', tierModels: { deep: 'gpt-6.2-sol' } })).toEqual({ model: 'gpt-6.2-sol', tier: 'deep' })
     expect(modelForTier('deep', { connection: 'litellm', tierModels: {}, catalog: [] })).toBeUndefined()
     expect(modelForTier('deep', { connection: 'anthropic', tierModels: {} })).toEqual({ model: 'opus', tier: 'deep' })
   })

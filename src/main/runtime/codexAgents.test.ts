@@ -207,6 +207,72 @@ describe('message_agent and list_team', () => {
     expect(out.text).toContain('reviewer-1 · reviewer')
     expect(out.text).not.toContain('engineer-1')
   })
+
+  it('guards against repeated list_team polling while the same live children remain', async () => {
+    const s = setup()
+    const sp = await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'engineer', brief: 'x' })
+    expect(sp.success).toBe(true)
+    expect(sp.text).toContain('end your turn now')
+
+    const first = await callNetworkTool(s.net, s.host, 'root', 'l1', 'list_team', {})
+    expect(first.success).toBe(true)
+    expect(first.text).toContain('end your turn now')
+
+    // Second call with identical live children and no waiter refuses the poll.
+    const second = await callNetworkTool(s.net, s.host, 'root', 'l2', 'list_team', {})
+    expect(second.success).toBe(false)
+    expect(second.text).toContain('STOP POLLING')
+
+    // Once that child finishes or another spawns, list_team succeeds cleanly again.
+    s.net.finish(s.spawned[0].id)
+    s.agents.get(s.spawned[0].id)!.state = 'done'
+    const afterFinish = await callNetworkTool(s.net, s.host, 'root', 'l3', 'list_team', {})
+    expect(afterFinish.success).toBe(true)
+    expect(afterFinish.text).toBe('No other agents are running.')
+
+    // Non-spawners with 0 live children are never throttled by repeated list_team calls.
+    await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'engineer', brief: 'y' })
+    await callNetworkTool(s.net, s.host, 'root', 'c3', 'spawn_report', { role: 'reviewer', brief: 'z' })
+    const childId = s.spawned[1].id
+    expect((await callNetworkTool(s.net, s.host, childId, 'p1', 'list_team', {})).success).toBe(true)
+    expect((await callNetworkTool(s.net, s.host, childId, 'p2', 'list_team', {})).success).toBe(true)
+  })
+
+  it('awaits host.waitForReportChange on repeated list_team calls when wired', async () => {
+    const s = setup()
+    await callNetworkTool(s.net, s.host, 'root', 'c1', 'spawn_report', { role: 'engineer', brief: 'x' })
+    let release!: (r: 'changed' | 'interrupted') => void
+    let waited = 0
+    s.host.waitForReportChange = () => {
+      waited++
+      return new Promise((r) => (release = r))
+    }
+
+    const first = await callNetworkTool(s.net, s.host, 'root', 'l1', 'list_team', {})
+    expect(first.success).toBe(true)
+    expect(waited).toBe(0)
+
+    const secondPromise = callNetworkTool(s.net, s.host, 'root', 'l2', 'list_team', {})
+    await new Promise((r) => setTimeout(r, 10))
+    expect(waited).toBe(1)
+
+    s.net.finish(s.spawned[0].id)
+    s.agents.get(s.spawned[0].id)!.state = 'done'
+    release('changed')
+    const second = await secondPromise
+    expect(second.success).toBe(true)
+    expect(second.text).toContain('Your report finished')
+
+    // Interrupted wait also returns cleanly with interrupted note.
+    await callNetworkTool(s.net, s.host, 'root', 'c2', 'spawn_report', { role: 'reviewer', brief: 'y' })
+    await callNetworkTool(s.net, s.host, 'root', 'l3', 'list_team', {})
+    const interruptedPromise = callNetworkTool(s.net, s.host, 'root', 'l4', 'list_team', {})
+    await new Promise((r) => setTimeout(r, 10))
+    release('interrupted')
+    const interrupted = await interruptedPromise
+    expect(interrupted.success).toBe(true)
+    expect(interrupted.text).toContain('Waiting interrupted.')
+  })
 })
 
 describe('pre-rename aliases', () => {

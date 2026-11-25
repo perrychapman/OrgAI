@@ -14,7 +14,7 @@ import type {
   TeamEvolutionDiagnosis
 } from '../../shared/types'
 import { redactEvidence } from '../skills/suggest'
-import { PROMPT_BUDGET_PER_ROLE, effectiveConcurrency, stepTier } from './plan'
+import { PROMPT_BUDGET_PER_ROLE, compressPrompt, effectiveConcurrency, isGuardRole, stepTier } from './plan'
 
 /**
  * The zero-token analyzer: reads finished work runs as stored and produces a waste score, fitness metrics and typed
@@ -34,6 +34,8 @@ export const MIN_ROLE_AGENTS = 3
 export const OVER_FIRST_PASS = 0.9
 export const UNDER_ESCALATION_RATE = 0.35
 export const MAX_FINDINGS = 12
+const POLL_TOOLS = new Set(['ListAgents', 'list_team', 'list_agents'])
+const MIN_POLLS_PER_RUN = 3
 const FINDING_SUMMARY_MAX = 240
 const EVIDENCE_LINE_MAX = 120
 
@@ -72,6 +74,38 @@ export function safeLine(s: string, max = EVIDENCE_LINE_MAX): string {
 
 const safeName = (s: unknown, max = 40): string => String(s ?? '').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, max)
 
+/** True when a work run belongs to this project's team (not setup, quick/Chat, or single-assistant). */
+export function isTeamWorkRun(r: Pick<RunRecord, 'summary'>): boolean {
+  const s = r.summary
+  return s.kind === 'work' && !s.quick && s.projectId !== QUICK_PROJECT_ID && s.team !== 'single'
+}
+
+/** True when an exec run ended without completing (e.g. stalled, budget-exceeded, incomplete-plan, interrupted, failed). */
+export function isFailedExecOutcome(outcome: RunRecord['summary']['execOutcome']): boolean {
+  return outcome !== undefined && outcome !== 'completed' && outcome !== 'completed-unplanned'
+}
+
+/**
+ * True when a team work run was cut short (execOutcome 'interrupted') by neither the user nor the app. A user's Ctrl-C /
+ * SIGTERM / End session (execOutcome 'interrupted', endedBy 'user') and quitting OrgAI mid-work (endedBy 'app') say
+ * nothing about the team, so they are never an interrupted trial run: they stay out of the trial window (the trial
+ * stays pending) like every other user or app end (isMeasuredRun). A real timeout is the stall watchdog, which ends the
+ * run 'stalled' with endedBy 'policy': that is a measured run and a failed exec outcome (isFailedExecOutcome), so it
+ * already counts against a trial. An 'interrupted' outcome with any other endedBy (host-attributed) counts as one too.
+ */
+export function isInterruptedTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
+  const s = r.summary
+  if (!isTeamWorkRun(r)) return false
+  if (s.status !== 'finished' && s.status !== 'error') return false
+  if (s.endedBy === 'user' || s.endedBy === 'app') return false
+  return s.execOutcome === 'interrupted'
+}
+
+/** Runs eligible to count in an active trial window (measured runs plus interrupted/timed-out trial runs). */
+export function isTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
+  return isMeasuredRun(r) || isInterruptedTrialRun(r)
+}
+
 /**
  * Finished work runs the engine measures: kind 'work', not a Chat (quick) or single-assistant run, ended finished or
  * error (or paused on a usage limit), and not cut short by the user or by quitting (that says nothing about the team).
@@ -79,7 +113,7 @@ const safeName = (s: unknown, max = 40): string => String(s ?? '').replace(/[^A-
 export function isMeasuredRun(r: Pick<RunRecord, 'summary'>): boolean {
   const s = r.summary
   if (s.endedBy === 'user' || s.endedBy === 'app') return false
-  return s.kind === 'work' && !s.quick && s.projectId !== QUICK_PROJECT_ID && s.team !== 'single' && (s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && s.pausedUntil !== undefined))
+  return isTeamWorkRun(r) && (s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && s.pausedUntil !== undefined))
 }
 
 /** The newest `max` measured runs, newest first. */
@@ -107,8 +141,12 @@ const runInputTokens = (r: RunRecord): number => {
 // ---- plan graph shape -----------------------------------------------------------------------------------------------
 
 /** Widest set of steps that can run together (longest-path levels, path overlaps as extra waits). 1 without a graph. */
-export function planWidth(steps: readonly GraphStepLike[]): { width: number; depth: number } {
-  if (steps.length < 2) return { width: steps.length ? 1 : 0, depth: steps.length }
+export function planWidth(steps: readonly GraphStepLike[], opts?: { countIds?: ReadonlySet<string> }): { width: number; depth: number } {
+  if (steps.length < 2) {
+    if (!steps.length) return { width: 0, depth: 0 }
+    if (opts?.countIds && !opts.countIds.has(steps[0].id)) return { width: 0, depth: 1 }
+    return { width: 1, depth: 1 }
+  }
   const pending = steps.map((s) => ({ ...s, status: 'pending' as const }))
   const deps = new Map<string, Set<string>>(pending.map((s) => [s.id, new Set((s.after ?? []).filter((x) => x !== s.id))]))
   for (const o of pathOverlaps({ steps: pending })) deps.get(o.second)?.add(o.first)
@@ -130,9 +168,9 @@ export function planWidth(steps: readonly GraphStepLike[]): { width: number; dep
   for (const s of pending) {
     const d = depthOf(s.id)
     deepest = Math.max(deepest, d)
-    levels.set(d, (levels.get(d) ?? 0) + 1)
+    if (!opts?.countIds || opts.countIds.has(s.id)) levels.set(d, (levels.get(d) ?? 0) + 1)
   }
-  return { width: Math.max(...levels.values()), depth: deepest }
+  return { width: levels.size ? Math.max(...levels.values()) : 0, depth: deepest }
 }
 
 interface Shape {
@@ -176,10 +214,32 @@ export function spawnShape(r: RunRecord): Shape {
   return { reports: iv.length, maxParallel: max, busyMs: busy, sumMs: sum }
 }
 
-function dagRatio(r: RunRecord): { ratio: number; width: number; shape: Shape } | null {
+function dagRatio(r: RunRecord, rootRoleNames?: ReadonlySet<string>): { ratio: number; width: number; shape: Shape } | null {
   const steps = r.plan?.steps
   if (!steps || steps.length < 2) return null
-  const { width } = planWidth(steps)
+  const hasStaff = steps.some((s) => !!s.staff?.role?.trim())
+  let width: number
+  if (hasStaff) {
+    const roots = new Set(rootRoleNames)
+    if (!roots.size) {
+      for (const a of Object.values(r.agents ?? {})) {
+        if (!isRoot(a)) continue
+        if (a.roleSlug) roots.add(a.roleSlug.toLowerCase())
+        if (a.name) roots.add(a.name.toLowerCase())
+      }
+    }
+    const delegated = new Set(
+      steps
+        .filter((s) => {
+          const role = s.staff?.role?.trim().toLowerCase()
+          return !!role && !roots.has(role)
+        })
+        .map((s) => s.id)
+    )
+    width = planWidth(steps, { countIds: delegated }).width
+  } else {
+    width = planWidth(steps).width
+  }
   const shape = spawnShape(r)
   if (width < 2 || shape.reports < 2) return null
   return { ratio: clamp(shape.maxParallel / width, 0, 1), width, shape }
@@ -194,21 +254,22 @@ function firstPassOf(a: AgentInstance, run: RunRecord, escalatedAgents: Set<stri
 const escalatedAgentIds = (r: RunRecord): Set<string> => new Set((r.staffing?.assignments ?? []).filter((x) => x.source === 'escalated' && x.agentId).map((x) => x.agentId as string))
 
 /** Fitness of a set of measured runs. Pure. */
-export function measure(runs: RunRecord[], _limit = 8): EvolutionMetrics {
-  const work = runs.filter(isMeasuredRun)
+export function measure(runs: RunRecord[], _limit = 8, opts?: { includeInterrupted?: boolean }): EvolutionMetrics {
+  const work = runs.filter(opts?.includeInterrupted ? isTrialRun : isMeasuredRun)
   let reports = 0
   let passed = 0
   let conflicted = 0
   let errored = 0
   const ratios: number[] = []
   for (const r of work) {
-    // A run paused on a usage limit (status 'paused' with pausedUntil) never finished its work: it counts as not first pass.
+    // A run paused on a usage limit or ended incomplete/interrupted never finished its work: it counts as not first pass.
     const paused = r.summary.status === 'paused'
-    if (r.summary.status === 'error' || paused) errored++
+    const incomplete = paused || isFailedExecOutcome(r.summary.execOutcome) || isInterruptedTrialRun(r)
+    if (r.summary.status === 'error' || incomplete) errored++
     const esc = escalatedAgentIds(r)
     const rep = reportsOf(r)
-    reports += paused ? Math.max(1, rep.length) : rep.length
-    if (!paused) for (const a of rep) if (firstPassOf(a, r, esc)) passed++
+    reports += incomplete ? Math.max(1, rep.length) : rep.length
+    if (!incomplete) for (const a of rep) if (firstPassOf(a, r, esc)) passed++
     if (rep.some((a) => a.worktree?.status === 'conflict')) conflicted++
     const d = dagRatio(r)
     if (d) ratios.push(d.ratio)
@@ -302,6 +363,10 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
 
   const roleBySlug = new Map(project.roles.map((r) => [r.slug, r]))
   const roleById = new Map(project.roles.map((r) => [r.id, r]))
+  const rootRole = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+  const rootNames = new Set(
+    [rootRole?.slug, rootRole?.name].filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim().toLowerCase())
+  )
   const aggs = new Map<string, RoleAgg>()
   const agg = (slug: string): RoleAgg => {
     let a = aggs.get(slug)
@@ -313,6 +378,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   const frictionCount = new Map<string, Map<Category, number>>()
   const frictionTools = new Map<string, Set<string>>()
   const frictionRepeat = new Map<string, Map<string, number>>()
+  const pollAgg = new Map<string, { totalPolls: number; pollRuns: Set<string>; costUsd: number; inTokens: number }>()
   const serial: { ratio: number; width: number; shape: Shape }[] = []
   let serialRuns = 0
 
@@ -361,7 +427,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     }
 
     // serial bottleneck
-    const d = dagRatio(r)
+    const d = dagRatio(r, rootNames)
     if (d && d.ratio < 0.6) {
       serialRuns++
       serial.push(d)
@@ -382,13 +448,17 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
       conflictRuns.push({ agents: conflicted.map((a) => byId.get(a.parentId ?? '') ?? a), overlap, run: r })
     }
 
-    // tool friction
+    // tool friction and status polling
     const uses = new Map<string, string>()
+    const pollsByAgent = new Map<string, number>()
     const t = r.transcript ?? []
     for (let i = 0; i < t.length && i < TRANSCRIPT_SCAN_LIMIT; i++) {
       const b = t[i].block
-      if (b.kind === 'tool_use') uses.set(b.id, String(b.name))
-      else if (b.kind === 'tool_result' && b.isError) {
+      if (b.kind === 'tool_use') {
+        const name = String(b.name)
+        uses.set(b.id, name)
+        if (POLL_TOOLS.has(name)) pollsByAgent.set(t[i].agentId, (pollsByAgent.get(t[i].agentId) ?? 0) + 1)
+      } else if (b.kind === 'tool_result' && b.isError) {
         const slug = byId.get(t[i].agentId)?.roleSlug ?? 'unknown'
         const cat = classifyError(b.content)
         const m = frictionCount.get(slug) ?? new Map<Category, number>()
@@ -405,6 +475,17 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
           frictionRepeat.set(slug, rm)
         }
       }
+    }
+    for (const [agentId, count] of pollsByAgent) {
+      if (count < MIN_POLLS_PER_RUN || (childCount.get(agentId) ?? 0) < 1) continue
+      const a = byId.get(agentId)
+      if (!a?.roleSlug) continue
+      let p = pollAgg.get(a.roleSlug)
+      if (!p) pollAgg.set(a.roleSlug, (p = { totalPolls: 0, pollRuns: new Set(), costUsd: 0, inTokens: 0 }))
+      p.totalPolls += count
+      p.pollRuns.add(r.summary.id)
+      p.costUsd += finite(a.usage?.costUsd ?? a.costUsd)
+      p.inTokens += finite(a.usage?.tokens.input) + finite(a.usage?.tokens.cacheRead) + finite(a.usage?.tokens.cacheWrite) || finite(a.inputTokens)
     }
   }
 
@@ -434,7 +515,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     }
     const simple = g.turns / g.agents <= 6 && g.outTokens / g.agents <= 4000
     const runtimeTier = roleTier ?? ([...g.tiers].sort((a, b) => b[1] - a[1])[0]?.[0] as ModelTier | undefined)
-    if (rate >= OVER_FIRST_PASS && g.escalated === 0 && g.failedReceipts === 0 && g.errors === 0 && simple && tierDown(runtimeTier) && !(runtimeTier === 'everyday' && role.effort === 'low')) {
+    if (rate >= OVER_FIRST_PASS && g.escalated === 0 && g.failedReceipts === 0 && g.errors === 0 && simple && tierDown(runtimeTier) && !(runtimeTier === 'everyday' && role.effort === 'low') && !(totalCost > 0 && g.costUsd === 0)) {
       const saveUsd = perRunCost(g) * (role.effort && role.effort !== 'low' && role.effort !== 'medium' ? 0.2 : 0.5)
       const thin = g.agents < 6 || g.runs.size < 3
       findings.push({
@@ -447,7 +528,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
         estSavingsTokens: Math.round((g.outTokens / n) * 0.15),
         estSavingsMs: Math.round((g.wallMs / n) * 0.15),
         ...(thin ? { exploration: { everyK: 4, ...(runtimeTier && stepTier(runtimeTier, -1) ? { tier: stepTier(runtimeTier, -1) } : {}) } } : {}),
-        data: { agents: g.agents, tier: runtimeTier ?? '' }
+        data: { agents: g.agents, runs: g.runs.size, tier: runtimeTier ?? '' }
       })
     }
   }
@@ -542,14 +623,20 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     const chars = role.prompt?.length ?? 0
     if (chars <= PROMPT_BUDGET_PER_ROLE) continue
     const spawns = Math.max(1, (aggs.get(role.slug)?.agents ?? n) / n)
+    const protectedRole = role.reportsTo === null || isGuardRole(role, project.roles)
+    const removableChars = protectedRole ? 0 : chars - compressPrompt(role.prompt ?? '').prompt.length
+    const summary =
+      removableChars > 0
+        ? `${role.name}'s prompt is ${chars} characters (over ${PROMPT_BUDGET_PER_ROLE}); ${removableChars} characters of exact duplicate lines can be trimmed automatically.`
+        : `${role.name}'s prompt is ${chars} characters (over ${PROMPT_BUDGET_PER_ROLE}); no exact duplicate lines to auto-trim (shorten manually if desired).`
     findings.push({
       kind: 'prompt_deflation',
       roleSlug: role.slug,
       severity: clamp(3 + Math.round((chars - PROMPT_BUDGET_PER_ROLE) / 100), 0, 20),
-      summary: safeLine(`${role.name}'s prompt is ${chars} characters (over ${PROMPT_BUDGET_PER_ROLE}); duplicated and filler lines cost tokens on every spawn.`, FINDING_SUMMARY_MAX),
+      summary: safeLine(summary, FINDING_SUMMARY_MAX),
       evidence: [`${chars} characters`, `about ${Math.round(spawns * 10) / 10} spawns per run`],
       estSavingsTokens: Math.round(((chars - PROMPT_BUDGET_PER_ROLE) / 4) * spawns * 0.2),
-      data: { chars }
+      data: { chars, removableChars }
     })
   }
 
@@ -567,6 +654,32 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
       evidence: [`fan-out <= 1 in ${g.lowFan}/${g.spawnerAgents} agents`, `${g.lowFanRuns.size} runs`, `avg ${Math.round(avgIn)} input tokens`],
       estSavingsTokens: Math.round((avgIn * g.lowFan) / n),
       data: { runs: g.lowFanRuns.size, avgInputTokens: Math.round(avgIn) }
+    })
+  }
+
+  // 7. orchestrator polling
+  for (const [slug, p] of pollAgg) {
+    const role = roleBySlug.get(slug)
+    if (!role) continue
+    const runCount = p.pollRuns.size
+    const avgPolls = p.totalPolls / runCount
+    const wasteFrac = clamp(avgPolls / (avgPolls + 4), 0.25, 0.75)
+    const estUsd = r4((p.costUsd / n) * wasteFrac)
+    const estTok = Math.round((p.inTokens / n) * wasteFrac)
+    const severity = clamp(10 + Math.round(avgPolls * 2), 10, 45)
+    findings.push({
+      kind: 'orchestrator_polling',
+      roleSlug: slug,
+      severity,
+      summary: safeLine(`${role.name} polled ListAgents ${avgPolls.toFixed(1)}x/run across ${runCount} of ${n} run${n === 1 ? '' : 's'} while waiting on reports; let it end its turn and wait for report delivery.`, FINDING_SUMMARY_MAX),
+      evidence: [
+        `ListAgents called ${p.totalPolls}x across ${runCount} run${runCount === 1 ? '' : 's'} (avg ${avgPolls.toFixed(1)}/run)`,
+        ...(p.costUsd > 0 ? [`spawner cost $${(p.costUsd / runCount).toFixed(4)}/run`] : []),
+        ...(p.inTokens > 0 ? [`avg ${Math.round(p.inTokens / runCount / 1000)}k input tokens/run`] : [])
+      ],
+      ...(estUsd > 0 ? { estSavingsUsd: estUsd } : {}),
+      ...(estTok > 0 ? { estSavingsTokens: estTok } : {}),
+      data: { runs: runCount, totalPolls: p.totalPolls, avgPolls: Math.round(avgPolls * 10) / 10 }
     })
   }
 

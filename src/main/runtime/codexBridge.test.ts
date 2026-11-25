@@ -295,4 +295,63 @@ describe('Codex bridged reports', () => {
     await new Promise((r) => setTimeout(r, 40))
     expect(s.turnStarts('th-1')).toHaveLength(1)
   })
+
+  it('tracks live bridged reports in root activity and settlement().quiescent', async () => {
+    const { bridge, pending } = fakeBridge()
+    const { ctx, s } = await start({ bridge })
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'Analyse' }))
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => {
+      const root = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID).at(-1)
+      expect(root?.type === 'agent.upsert' && root.agent.activity).toBe('Waiting on reports…')
+    })
+    expect(session!.settlement!()).toMatchObject({ rootIdle: true, quiescent: false })
+
+    pending[0]!.resolve({ agentId: 'b1', handle: 'analyst-1', text: 'Done.', ok: true })
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+    s.push('turn/completed', turnDone('th-1', 'tu-2'))
+    await vi.waitFor(() => expect(session!.settlement!()).toMatchObject({ rootIdle: true, quiescent: true }))
+  })
+
+  it('blocks a repeated list_team poll until the bridged report finishes, and unblocks on interrupt', async () => {
+    const { bridge, pending } = fakeBridge()
+    const { ctx, s } = await start({ bridge })
+    await s.ask('item/tool/call', call('th-1', 'c1', 'spawn_report', { role: 'analyst', brief: 'Slow work' }))
+
+    // First list_team answers immediately.
+    const first = await s.ask('item/tool/call', call('th-1', 'c2', 'list_team', {}))
+    expect(first.success).toBe(true)
+    expect(first.contentItems[0].text).toContain('analyst-1')
+
+    // Second list_team waits with root in 'waiting' state until the bridged report finishes.
+    let settled = false
+    const secondPromise = s.ask('item/tool/call', call('th-1', 'c3', 'list_team', {})).then((res) => {
+      settled = true
+      return res
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(settled).toBe(false)
+    const waitingRoot = ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id === ROOT_AGENT_ID).at(-1)
+    expect(waitingRoot?.type === 'agent.upsert' && waitingRoot.agent.state).toBe('waiting')
+
+    pending[0]!.resolve({ agentId: 'b1', handle: 'analyst-1', text: 'Finished.', ok: true })
+    const second = await secondPromise
+    expect(second.success).toBe(true)
+    expect(second.contentItems[0].text).toContain('Your report finished')
+
+    // Second spawn: interrupt() unblocks a waiting list_team poll cleanly.
+    await s.ask('item/tool/call', call('th-1', 'c4', 'spawn_report', { role: 'analyst', brief: 'More work' }))
+    await s.ask('item/tool/call', call('th-1', 'c5', 'list_team', {}))
+    let interruptedSettled = false
+    const thirdPromise = s.ask('item/tool/call', call('th-1', 'c6', 'list_team', {})).then((res) => {
+      interruptedSettled = true
+      return res
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(interruptedSettled).toBe(false)
+    await session!.interrupt()
+    const third = await thirdPromise
+    expect(third.success).toBe(true)
+    expect(third.contentItems[0].text).toContain('Waiting interrupted.')
+  })
 })
