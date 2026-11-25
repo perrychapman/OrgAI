@@ -2668,3 +2668,93 @@ describe('PR 70 review: scanner loosening closed again', () => {
     expect(stripDataHeredocs('echo ${x:-a} ; cat <<EOF\nbody\nEOF')).toBe('echo ${x:-a} ; cat <<EOF\n')
   })
 })
+
+describe('PR 70 recheck: program globs and zsh qualifiers in here-document bodies', () => {
+  const ctx: SelfControlContext = {
+    protectedPaths: ['/tmp/orgai-cli-data/run', '/tmp/orgai-cli-data/secrets.json'],
+    cwd: '/tmp/agent-evals/orgai-evo__bench-small-semver',
+    platform: 'darwin',
+    cliRoots: ['/opt/homebrew/lib/node_modules/orgai-cli/out/cli']
+  }
+  const refused = [SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_UNCHECKED_MESSAGE]
+
+  // H1: a program-position glob without a path separator that may match an orgai file name, whatever number of the
+  // name's letters it keeps (in a folder holding a file named orgai the shell expands it and PATH runs the CLI).
+  it.each([
+    // 0 letters kept
+    'cd /opt/homebrew/bin && * status',
+    'touch orgai; * status',
+    'touch orgai; ????? status',
+    'touch orgai; *.mjs status',
+    // 1 letter kept
+    'touch orgai; o* status',
+    'touch orgai; *i status',
+    'touch orgai; o???? status',
+    // 2 letters kept
+    'touch orgai; o*i status',
+    'touch orgai; o???i status',
+    'cd /opt/homebrew/bin && or* status',
+    'touch orgai; [o]*[i] status',
+    // zsh `=name` spellings, read without the `=`
+    'touch orgai; =* status',
+    'touch orgai; =o*i status',
+    'touch orgai; =o?gai status'
+  ])('H1 refuses the program glob %j', (command) => {
+    expect(refused, command).toContain(checkSelfControlDenial('Bash', { command }, ctx))
+    // The CLI scan refuses it by itself, not only through another check.
+    expect(commandRunsOrgaiCli(command.replace(/^.*(?:&&|;) /, ''), { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform: 'darwin' })).toBe(true)
+  })
+
+  // A program glob that cannot match an orgai file name is still allowed.
+  it.each(['ls *.txt', './*.sh', 'x?z status'])('H1 still allows %j', (command) => {
+    expect(commandRunsOrgaiCli(command, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform: 'darwin' })).toBe(false)
+  })
+
+  // H5: a quote zsh does not treat as an opener (an apostrophe in a comment line, `\'` inside `$'...'`) on a body line
+  // before the qualifier line must not hide the qualifier from the scan.
+  it.each([
+    "zsh <<'EOF'\n# it's a comment\nls *(e:'orgai status':)\nEOF",
+    "zsh <<'EOF'\necho $'\\''\nls *(e:'orgai status':)\nEOF",
+    "cat <<'EOF' | zsh\n# it's a comment\nls *(e:'orgai status':)\nEOF",
+    "cat <<'EOF' | zsh\necho $'\\''\nls *(e:'orgai status':)\nEOF",
+    // Unquoted delimiters: the body is expanded text, still run by zsh.
+    "zsh <<EOF\n# it's a comment\nls *(e:'orgai status':)\nEOF",
+    "cat <<EOF | zsh\necho $'\\''\nls *(e:'orgai status':)\nEOF"
+  ])('H5 refuses %j', (command) => {
+    expect(refused, command).toContain(checkSelfControlDenial('Bash', { command }, ctx))
+  })
+
+  // Low: the inline code check reads the whole operand too, and splits tokens on + [ ] { } = : as well. A CLI folder
+  // whose path does not hold `orgai-cli`, so SCOPED_CLI does not answer first.
+  it.each([
+    `node -e "import('file:///opt/tools/out/cli/index.js')"`,
+    `node -e "x={a:/opt/tools/out/cli/index.js}"`,
+    `node -e "p=[1]+/opt/tools/out/cli/index.js"`,
+    `node -e "q=[/opt/tools/out/cli/index.js]"`,
+    'node -e /opt/tools/out/cli/index.js'
+  ])('inline code naming the CLI is refused: %j', (command) => {
+    expect(commandRunsOrgaiCli(command, { cwd: ctx.cwd, cliRoots: ['/opt/tools/out/cli'], platform: 'darwin' }), command).toBe(true)
+  })
+
+  it('inline code naming a CLI folder whose path holds blanks and parentheses is refused (whole operand)', () => {
+    const command = 'node -e "C:\\Program Files (x86)\\Tools\\out\\cli\\index.js"'
+    expect(commandRunsOrgaiCli(command, { cwd: 'C:\\work', cliRoots: ['C:\\Program Files (x86)\\Tools\\out\\cli'], platform: 'win32' }), command).toBe(true)
+  })
+
+  it('a drive path token in inline code is still read whole after the wider split', () => {
+    const command = `node -e "import('C:\\Tools\\out\\cli\\index.js').then(m=>m)"`
+    expect(commandRunsOrgaiCli(command, { cwd: 'C:\\work', cliRoots: ['C:\\Tools\\out\\cli'], platform: 'win32' }), command).toBe(true)
+  })
+
+  it('a literal [] and a quoted brace text are still allowed with the protected paths and CLI folder set', () => {
+    for (const command of ["node -e 'const a = []; console.log(a.length)'", 'echo [] ok', "jq '{a: .b}' f.json"]) {
+      expect(checkSelfControlDenial('Bash', { command }, ctx), command).toBeNull()
+    }
+  })
+
+  it('inline code naming no CLI folder is still allowed', () => {
+    for (const command of [`node -e "import('file:///opt/other/index.js')"`, `node -e "x={a:1,b:[2]}; console.log(x)"`]) {
+      expect(commandRunsOrgaiCli(command, { cwd: ctx.cwd, cliRoots: ['/opt/tools/out/cli'], platform: 'darwin' }), command).toBe(false)
+    }
+  })
+})
