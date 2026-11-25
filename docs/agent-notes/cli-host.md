@@ -300,6 +300,24 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     lowercasing only literal characters, since `binName` lowercases before the class is parsed); a zsh group without `|` (`orga(i)`); the path scan's here-document handling grows
     faster than linear on many `<<` starts (thousands take seconds). Tracking is private (SECURITY.md), not a public
     issue.
+  - PR 70 (Bash gate false positives, outside contributor, 2026-11-23; review and recheck fixes 2026-11-25). Allowed
+    now: an inline interpreter code operand (`node -e` / `-p` / `--eval`, `tsx -e`, `python3 -c`, `perl` / `ruby -e`,
+    `php -r`) is not read as a program name or a script word, so JS / Python text in it (globs, brackets, `orgai`-named
+    folders in a relative import) passes; quoted brace text (object literals, destructuring) is not brace-expanded;
+    quoted or commented parentheses are not read as zsh glob qualifiers in a text without `<<`; a data here-document
+    body holding shell keywords (`case`) or `[]` is cut before scanning; a literal `[]` (an empty array, `echo []`) is
+    read as text, not as an unreadable glob. Still refused: inline code naming the installed CLI package or a CLI folder (as a token, split also on `+ [ ]
+    { } = :` so `file://` URLs and assignments are read, or as the whole operand, as before the PR, except the file-name
+    glob reading of an operand holding a blank), and custodian, vault and environment words in it; a program-position
+    glob that may match an orgai file name however few of its letters it keeps (the zsh `=name` spelling too); a bracket
+    class holding `,` or `=`; unreadable globs (ranges, wildcards, groups past the limits); brace lists after quotes zsh
+    or bash do not open; zsh qualifier code anywhere in a text that holds `<<` (a body fed to zsh); executable
+    here-document bodies; a `${...}` holding a quote keeps stripDataHeredocs from cutting. Narrowed again by the recheck:
+    a code here-document body line starting with a wildcard (a JS continuation `* 3`, Python star unpacking) is refused,
+    and parentheses in a text holding `<<` count as possible qualifiers. Checked by unit tests only
+    (`selfControlGate.test.ts` "inline code, array literals, destructuring braces, and Markdown heredocs" with the PR's
+    seven commands, "PR 70 review: scanner loosening closed again", "PR 70 recheck: program globs and zsh qualifiers in
+    here-document bodies"); never run in a real bash or zsh.
   - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and
     `anthropicAuth.ts`), evaluated per call: `ORGAI_CLAUDE_PATH` (absolute, existing regular file, not .cmd / .bat / .ps1 / .js /
     .mjs / .cjs; when set it decides), the app.asar.unpacked native package, the SDK per-platform package via `createRequire` from

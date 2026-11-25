@@ -1987,13 +1987,21 @@ function inlineCodeArgIndices(words: readonly string[], at: number): Set<number>
 
 /**
  * An inline code operand (`node -e "import('<root>/index.js')"`, `--eval=...`) that names the CLI: the scoped package
- * anywhere in it, or a token (split on blanks, quotes, backticks, parentheses, commas and semicolons) that
- * interpreterArgIsCli reads as the CLI.
+ * anywhere in it, the whole operand read as an interpreter argument (what the check before PR 70 read, so this is a
+ * superset of it), or a token that interpreterArgIsCli reads as the CLI. Tokens are split twice: on blanks, quotes,
+ * backticks, parentheses, commas and semicolons (keeps a drive path `C:\...` whole), and on those plus `+`, brackets,
+ * braces, `=` and `:` (reads `file:///<root>/index.js` and `x=<root>/index.js`).
  */
 function inlineCodeNamesCli(code: string, check: CliCheck): boolean {
   if (SCOPED_CLI.test(code)) return true
-  for (const token of code.split(/[\s'"`(),;]+/)) {
-    if (token && (SCOPED_CLI.test(token) || interpreterArgIsCli(token, check))) return true
+  // The whole operand, as the check before PR 70 read it, but without the file-name glob reading of its last path
+  // component when it holds a blank: that reading took long code text as one glob keeping three letters of "orgai"
+  // (PR 70's false positives), and a word with a blank can never be a glob the shell expands to an orgai file name.
+  if (interpreterArgIsCli(code, check, !/\s/.test(code))) return true
+  for (const split of [/[\s'"`(),;]+/, /[\s'"`(),;+[\]{}=:]+/]) {
+    for (const token of code.split(split)) {
+      if (token && (SCOPED_CLI.test(token) || interpreterArgIsCli(token, check))) return true
+    }
   }
   return false
 }
@@ -2401,8 +2409,12 @@ function programIsCli(word: string, check: CliCheck): boolean {
     const zshName = w.startsWith('=') ? w.slice(1) : w
     if (CLI_NAME.test(binName(w)) || CLI_NAME.test(binName(zshName)) || SCOPED_CLI.test(w)) return true
     if (/[\\/]/.test(w) && (insideCliRoot(w, check) || (hasShellGlobWord(w) && globMayReachCliRoot(w, check)))) return true
-    const bare = binName(w)
-    if (hasShellGlobWord(bare)) {
+    // A program-position glob is refused when it may match an orgai file name, however few of the name's letters it
+    // keeps (`*`, `o*i`): in a folder holding such a file the shell expands it and PATH runs the CLI (PR 70 recheck
+    // H1; no letter-count exemption). The zsh `=name` spelling is read without its `=` as well.
+    const bares = new Set([binName(w), binName(zshName)])
+    for (const bare of bares) {
+      if (!hasShellGlobWord(bare)) continue
       const alternatives = expandShellGlobAlternatives(bare)
       if (!alternatives) {
         // As in wordMayBe: only a word whose sole unreadable part is an unclosed `[` is read by its letters (review H2).
@@ -2410,12 +2422,10 @@ function programIsCli(word: string, check: CliCheck): boolean {
         if (inOrderLetters(bare.replace(/[^a-z]/gi, '').toLowerCase(), 'orgai') >= 3) return true
         continue
       }
-      const hasPathSep = /[\\/]/.test(w)
       if (alternatives.some((candidate) => {
         if (CLI_NAME.test(candidate)) return true
         if (!GLOB_CHARS.test(candidate)) return false
         const re = cachedGlobRegex(candidate)
-        if (!hasPathSep && keptSubsequence(candidate, 'orgai') < 3) return false
         return CLI_FILE_NAMES.some((name) => re.test(name))
       })) return true
     }
@@ -2514,15 +2524,16 @@ function scriptWordIsCli(word: string, check: CliCheck): boolean {
 /**
  * An interpreter argument that is the CLI: an `orgai` / `orgai.mjs` / `orgai.js` file, or a path (relative against the
  * cwd) inside one of this install's CLI folders, also through backslash escapes and globs (`<Resources>/bin/o*`,
- * `out/cli/orga?.mjs`; a bare `*.js` is not read as one).
+ * `out/cli/orga?.mjs`; a bare `*.js` is not read as one). `globName` false skips only the file-name glob reading of
+ * the last component (inlineCodeNamesCli, for a code operand holding a blank).
  */
-function interpreterArgIsCli(word: string, check: CliCheck): boolean {
+function interpreterArgIsCli(word: string, check: CliCheck, globName = true): boolean {
   const value = word.replace(/^--?[A-Za-z][\w-]*=/, '')
   if (!value || value.startsWith('-')) return false
   for (const v of spellings(value)) {
     if (!PATHISH.test(v)) continue
     if (CLI_NAME.test(binName(v)) || SCOPED_CLI.test(v) || insideCliRoot(v, check)) return true
-    if (hasShellGlobWord(v) && (globMayReachCliRoot(v, check) || (hasShellGlobWord(binName(v)) && globNamesCli(binName(v))))) return true
+    if (hasShellGlobWord(v) && (globMayReachCliRoot(v, check) || (globName && hasShellGlobWord(binName(v)) && globNamesCli(binName(v))))) return true
   }
   return false
 }
@@ -2606,17 +2617,22 @@ const MAX_QUALIFIER_TEXTS = 256
 function zshQualifierTexts(text: string): string[] | null {
   const out = new Set<string>()
   // A `(` counts when any bash reading takes it as shell syntax: the full grammar, and the readings that take
-  // here-document body lines as commands (`zsh <<'EOF'` runs its body; PR 70 review H5).
-  const lexes = [
-    lexClasses(text, { esc: '\\', full: true, groups: 'safe' }).classes,
-    lexClasses(text, { esc: '\\', full: false, groups: 'safe' }).classes,
-    lexClasses(text, { esc: '', full: false, groups: 'safe' }).classes
-  ]
+  // here-document body lines as commands (`zsh <<'EOF'` runs its body; PR 70 review H5). A text holding `<<` counts
+  // every `(`: a here-document body left in (data-only bodies were cut by stripDataHeredocs) may be fed to zsh, the
+  // full grammar does not read a body as code, and the other readings model neither `#` comments nor `$'...'`, so a
+  // quote zsh does not open on an earlier body line hides the qualifier from all of them (PR 70 recheck H5).
+  const lexes = text.includes('<<')
+    ? null
+    : [
+        lexClasses(text, { esc: '\\', full: true, groups: 'safe' }).classes,
+        lexClasses(text, { esc: '\\', full: false, groups: 'safe' }).classes,
+        lexClasses(text, { esc: '', full: false, groups: 'safe' }).classes
+      ]
   const add = (code: string): void => {
     out.add(code.replace(/\\(.)/gs, '$1').replace(/['"]/g, ''))
   }
   for (let i = text.indexOf('('); i >= 0 && i < text.length; i = text.indexOf('(', i + 1)) {
-    if (!lexes.some((lex) => lex[i] === LEX_ACTIVE)) continue
+    if (lexes && !lexes.some((lex) => lex[i] === LEX_ACTIVE)) continue
     const prev = text[i - 1]
     if (prev === undefined || isSpace(prev) || ';&|<>(`$='.includes(prev)) continue
     let j = i + 1
