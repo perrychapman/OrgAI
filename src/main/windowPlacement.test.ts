@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { centerIn, orderDisplays, parseLargerThanScreen, parseWindowHidden, parseWindowDisplay, parseWindowInactive, pickDisplay, windowPlacement, type DisplayInfo } from './windowPlacement'
+import { centerIn, orderDisplays, parseLargerThanScreen, parseWindowHidden, parseWindowDisplay, parseWindowInactive, pickDisplay, windowPlacement, windowShowMode, type DisplayInfo } from './windowPlacement'
 
 const d = (id: number, x: number, y: number, w = 1920, h = 1080): DisplayInfo => ({
   id,
@@ -21,6 +21,10 @@ describe('window placement', () => {
     for (const v of [undefined, '', '0', 'true', ' 1']) expect(parseWindowHidden(v)).toBe(false)
     expect(parseLargerThanScreen('1')).toBe(true)
     for (const v of [undefined, '', '0', 'true', ' 1', '11']) expect(parseLargerThanScreen(v)).toBe(false)
+    expect(windowShowMode(true, false)).toBe('ghost')
+    expect(windowShowMode(true, true)).toBe('ghost')
+    expect(windowShowMode(false, true)).toBe('inactive')
+    expect(windowShowMode(false, false)).toBe('normal')
   })
 
   it('orders left to right, top to bottom', () => {

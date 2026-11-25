@@ -3,6 +3,8 @@ import type { RunEvent } from '@shared/types'
 
 const shown: { title: string; body: string }[] = []
 const icons: (string | undefined)[] = []
+const flashes: boolean[] = []
+const wins = [{ isDestroyed: () => false, isFocused: () => false, flashFrame: (f: boolean) => flashes.push(f), on: () => {} }]
 
 vi.mock('electron', () => {
   class Notification {
@@ -19,7 +21,7 @@ vi.mock('electron', () => {
   return {
     app: { setAppUserModelId: () => {}, dock: undefined },
     // No focused window, so every attention event is eligible.
-    BrowserWindow: { getAllWindows: () => [] },
+    BrowserWindow: { getAllWindows: () => wins },
     Notification
   }
 })
@@ -55,6 +57,31 @@ describe('Notifier', () => {
     settings.notifications = undefined // settings saved before the field existed: on
     notifier.handle(request)
     expect(shown).toHaveLength(2)
+  })
+
+  it('ORGAI_QUIET (the quiet dep) shows no notification and no taskbar flash, for events and notices; off is unchanged', () => {
+    const deps = { projectOfRun: () => ({ projectId: 'proj', kind: 'work' as const }), projectName: () => 'Shop', enabled: () => true }
+    const original = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      flashes.length = 0
+      const loud = new Notifier({ ...deps, quiet: false })
+      loud.handle(request)
+      loud.notice({ title: 'Schedule paused', body: 'Nightly stopped' })
+      expect(shown.map((s) => s.title)).toEqual(['Shop', 'Schedule paused'])
+      expect(flashes).toEqual([true])
+
+      shown.length = 0
+      flashes.length = 0
+      const quiet = new Notifier({ ...deps, quiet: true })
+      quiet.handle(request)
+      quiet.handle({ type: 'run.status', runId: 'run-1', status: 'finished' })
+      quiet.notice({ title: 'Schedule paused', body: 'Nightly stopped' })
+      expect(shown).toEqual([])
+      expect(flashes).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original })
+    }
   })
 
   it('passes the icon path on Linux only', () => {

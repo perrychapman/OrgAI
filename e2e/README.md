@@ -52,6 +52,16 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
   today). Open the folder afterwards with `ORGAI_MOCK=1` and `ORGAI_DATA_DIR=<folder>`. Runs that were live or waiting come
   back ended and their cards are gone after a restart; `E2E_DATA_DIR=<folder> node e2e/seed-review.mjs --live` opens a seeded
   folder, starts live, waiting and Chat runs again and keeps that window open until it is closed.
+- Windows and notifications of a local run (`appEnv()` in `lib.mjs`, used by `launch()`, `relaunch()` and factory-floor's own
+  launch; logged once at launch). Locally (`CI` not set, `E2E_FOREGROUND` not `1`) the app starts with `ORGAI_WINDOW_HIDDEN=1`:
+  the window is shown to Chromium (so it paints and keeps its frames, timers and visibility) but fully transparent,
+  click-through, off the taskbar and never active, so nothing appears on screen and no focus is taken. `E2E_FOREGROUND=1`
+  gives the normal visible window. A script that genuinely needs a shown window passes `window: 'inactive'` to `launch()` /
+  `relaunch()` (`ORGAI_WINDOW_INACTIVE=1`: shown, never focused); `window: 'foreground'` leaves the app's default (the
+  seed-review `--live` session). A value the caller sets for `ORGAI_WINDOW_HIDDEN` or `ORGAI_WINDOW_INACTIVE` is never
+  overridden. CI is unchanged (visible windows). Separately `ORGAI_QUIET=1` is set on every launch, locally and in CI: no OS
+  notification, taskbar flash or Dock bounce (`src/main/quietMode.ts`; everything before that last step, the Inbox included,
+  behaves as before); `E2E_NOTIFY=1` opts out. No script asserts a real OS notification.
 - To try a slow runner on a fast machine: `E2E_CPU_THROTTLE=4` (CDP CPU throttling of the renderer), two cores
   (`cmd /c start /affinity 5 /wait /b node e2e/<script>.mjs` on Windows) and `E2E_TIME_SCALE=3`;
   `E2E_CLAMP_WINDOW=1024x656` opens the window as the macOS runner's small screen does.

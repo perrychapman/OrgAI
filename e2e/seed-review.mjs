@@ -209,7 +209,8 @@ function writeLongScript() {
 async function open(withScript) {
   if (withScript) process.env.ORGAI_MOCK_SCRIPT = SCRIPT_FILE
   else delete process.env.ORGAI_MOCK_SCRIPT
-  const l = await launch({ shotPrefix: 'seed-review', clearPrefs: false })
+  // --live is a review a person looks at: a shown, focused window. The seeding pass runs hidden like any e2e script.
+  const l = await launch({ shotPrefix: 'seed-review', clearPrefs: false, window: LIVE ? 'foreground' : 'hidden' })
   app = l.app
   page = l.page
   page.setDefaultTimeout(20_000)

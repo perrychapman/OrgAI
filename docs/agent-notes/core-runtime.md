@@ -241,6 +241,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   `runtime/builtinModel.ts` (deep-tier fallback, one run warning). They are edited in App settings > General > Advanced
   settings > "Assistant models"; the MCP assist dialog hint and the Org retrospective tooltip name them (`lib/assistantModels.ts`).
   The `orgai:settings-section` window event switches a mounted App settings page to the requested pane.
+- Notification test plumbing: `ORGAI_QUIET=1` in the process environment (read once in `index.ts`, `quietMode.ts`) makes
+  `Notifier` (`handle` and `notice`) and `navigateSender` skip the OS toast, the taskbar flash and the Dock bounce at the last
+  step; what would be shown, the categories and the Inbox are unchanged. It is not reachable from settings, project files,
+  IPC, the socket or agents. Unit-tested (`notifications.test.ts`, `appMenu.test.ts`, `quietMode.test.ts`); e2e launches set it.
 - Run titles: `RunSummary.title` (at most `RUN_TITLE_MAX_CHARS` = 32) and the `run.title` event come from
   `src/main/ai/runTitle.ts`. RunManager fires it for work runs with prompt text and never awaits it. It is a one-shot
   `complete({ kind: 'title', model: fast tier, connection })` with a 20 s timeout, cleaned by `cleanTitle`. A failure

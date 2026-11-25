@@ -356,15 +356,47 @@ export async function ensureDefaultViewport(app, page) {
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
 }
 
+let windowModeLogged = false
+/**
+ * The environment of an app launch. Locally (CI not set, E2E_FOREGROUND not 1) the windows are hidden
+ * (ORGAI_WINDOW_HIDDEN=1: they load and run but are never shown, so nothing appears on screen or takes focus).
+ * `window: 'inactive'` is the per-script opt-out for a script that needs a real, shown window (ORGAI_WINDOW_INACTIVE=1:
+ * shown without taking focus); `window: 'foreground'` (a review session a person looks at) leaves the app's default.
+ * A value the caller already set (ORGAI_WINDOW_HIDDEN or ORGAI_WINDOW_INACTIVE, any value) is never overridden, and CI
+ * is unchanged. Scripts that start Electron themselves spread this into their `env`.
+ */
+export function appEnv({ window: windowMode = 'hidden' } = {}) {
+  const env = { ...process.env, ORGAI_DATA_DIR: DATA_DIR }
+  const local = !process.env.CI && process.env.E2E_FOREGROUND !== '1'
+  const callerSet = process.env.ORGAI_WINDOW_HIDDEN !== undefined || process.env.ORGAI_WINDOW_INACTIVE !== undefined
+  let mine = ''
+  if (local && !callerSet && windowMode !== 'foreground') {
+    if (windowMode === 'inactive') env.ORGAI_WINDOW_INACTIVE = '1'
+    else env.ORGAI_WINDOW_HIDDEN = '1'
+    mine = ', the local default'
+  }
+  // No OS notification, taskbar flash or Dock bounce from a test run (ORGAI_QUIET=1, src/main/quietMode.ts), locally and in
+  // CI. E2E_NOTIFY=1 opts out; a value the caller set stays; a person's review session (window: 'foreground') is the real app.
+  const quiet = windowMode !== 'foreground' && process.env.E2E_NOTIFY !== '1' && process.env.ORGAI_QUIET === undefined
+  if (quiet) env.ORGAI_QUIET = '1'
+  if (!windowModeLogged) {
+    windowModeLogged = true
+    log(`OS notifications are ${env.ORGAI_QUIET === '1' ? 'off (ORGAI_QUIET=1)' : 'on'}; E2E_NOTIFY=1 turns them on`)
+    const mode =env.ORGAI_WINDOW_HIDDEN === '1' ? `hidden (ORGAI_WINDOW_HIDDEN=1${mine})` : env.ORGAI_WINDOW_INACTIVE === '1' ? `inactive (ORGAI_WINDOW_INACTIVE=1${mine || ', set by the caller'})` : 'foreground (default placement)'
+    log(`app windows are ${mode}${env.ORGAI_WINDOW_DISPLAY ? `, display ${env.ORGAI_WINDOW_DISPLAY}` : ''}; E2E_FOREGROUND=1 shows them in front`)
+  }
+  return env
+}
+
 /**
  * Launch the built app and wait until the renderer is up. Returns { app, page, shot }.
  * Dialogs (confirm()) are accepted automatically; renderer console errors are logged.
  */
-export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome = false } = {}) {
+export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome = false, window: windowMode = 'hidden' } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
-  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: t(60_000), env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
+  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: t(60_000), env: appEnv({ window: windowMode }) })
   // Before anything is awaited on a window: the scale covers this window and every one the app opens later.
   scaleApp(app)
   const page = await app.firstWindow()
@@ -424,9 +456,9 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
  * so open tabs and widths are restored). Returns { app, page, shot } like launch(). Runs that were live when the app
  * quit come back as 'Ended when OrgAI closed'.
  */
-export async function relaunch(app, { shotPrefix = 'shot' } = {}) {
+export async function relaunch(app, { shotPrefix = 'shot', window: windowMode = 'hidden' } = {}) {
   await app.close().catch(() => {})
-  return launch({ shotPrefix, clearPrefs: false })
+  return launch({ shotPrefix, clearPrefs: false, window: windowMode })
 }
 
 export async function screenshot(page, name) {
