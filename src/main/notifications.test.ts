@@ -3,6 +3,22 @@ import type { RunEvent } from '@shared/types'
 
 const shown: { title: string; body: string }[] = []
 const icons: (string | undefined)[] = []
+const flashes: boolean[] = []
+const clicks: (() => void)[] = []
+const bounces: string[] = []
+const direct: string[] = []
+const wins = [
+  {
+    isDestroyed: () => false,
+    isFocused: () => false,
+    isMinimized: () => false,
+    flashFrame: (f: boolean) => flashes.push(f),
+    on: () => {},
+    show: () => direct.push('show'),
+    focus: () => direct.push('focus'),
+    webContents: { send: () => {} }
+  }
+]
 
 vi.mock('electron', () => {
   class Notification {
@@ -10,16 +26,18 @@ vi.mock('electron', () => {
       return true
     }
     constructor(private opts: { title: string; body: string; icon?: string }) {}
-    on(): void {}
+    on(event: string, fn: () => void): void {
+      if (event === 'click') clicks.push(fn)
+    }
     show(): void {
       if ('icon' in this.opts) icons.push(this.opts.icon)
       shown.push({ title: this.opts.title, body: this.opts.body })
     }
   }
   return {
-    app: { setAppUserModelId: () => {}, dock: undefined },
+    app: { setAppUserModelId: () => {}, dock: { bounce: (kind: string) => bounces.push(kind) } },
     // No focused window, so every attention event is eligible.
-    BrowserWindow: { getAllWindows: () => [] },
+    BrowserWindow: { getAllWindows: () => wins },
     Notification
   }
 })
@@ -55,6 +73,67 @@ describe('Notifier', () => {
     settings.notifications = undefined // settings saved before the field existed: on
     notifier.handle(request)
     expect(shown).toHaveLength(2)
+  })
+
+  it('ORGAI_QUIET (the quiet dep) shows no notification and no taskbar flash, for events and notices; off is unchanged', () => {
+    const deps = { projectOfRun: () => ({ projectId: 'proj', kind: 'work' as const }), projectName: () => 'Shop', enabled: () => true }
+    const original = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      flashes.length = 0
+      const loud = new Notifier({ ...deps, quiet: false })
+      loud.handle(request)
+      loud.notice({ title: 'Schedule paused', body: 'Nightly stopped' })
+      expect(shown.map((s) => s.title)).toEqual(['Shop', 'Schedule paused'])
+      expect(flashes).toEqual([true])
+
+      shown.length = 0
+      flashes.length = 0
+      const quiet = new Notifier({ ...deps, quiet: true })
+      quiet.handle(request)
+      quiet.handle({ type: 'run.status', runId: 'run-1', status: 'finished' })
+      quiet.notice({ title: 'Schedule paused', body: 'Nightly stopped' })
+      expect(shown).toEqual([])
+      expect(flashes).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original })
+    }
+  })
+
+  it('ORGAI_QUIET suppresses the macOS Dock bounce; loud bounces once for a request', () => {
+    const deps = { projectOfRun: () => ({ projectId: 'proj', kind: 'work' as const }), projectName: () => 'Shop', enabled: () => true }
+    const original = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      bounces.length = 0
+      new Notifier({ ...deps, quiet: false }).handle(request)
+      expect(bounces).toEqual(['critical'])
+      bounces.length = 0
+      new Notifier({ ...deps, quiet: true }).handle(request)
+      expect(bounces).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original })
+    }
+  })
+
+  it('a notification click reveals the window through the reveal dep (run and notice paths), else shows and focuses directly', () => {
+    const deps = { projectOfRun: () => ({ projectId: 'proj', kind: 'work' as const }), projectName: () => 'Shop', enabled: () => true }
+    const revealed: unknown[] = []
+    clicks.length = 0
+    direct.length = 0
+    const withDep = new Notifier({ ...deps, reveal: (w) => revealed.push(w) })
+    withDep.handle(request)
+    withDep.notice({ title: 'Schedule paused', body: 'x' })
+    expect(clicks).toHaveLength(2)
+    for (const click of clicks) click()
+    expect(revealed).toEqual([wins[0], wins[0]])
+    expect(direct).toEqual([])
+
+    clicks.length = 0
+    const without = new Notifier(deps)
+    without.handle(request)
+    clicks[0]!()
+    expect(direct).toEqual(['show', 'focus'])
   })
 
   it('passes the icon path on Linux only', () => {

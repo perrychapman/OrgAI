@@ -416,6 +416,8 @@ interface AppState {
   ensureWorkspace(): Promise<void>
   /** Select a project and open the run that needs the user, else the last viewed one, else the newest. */
   openProject(projectId: string): Promise<void>
+  /** Select a project and show its Home tab; its runs are restored behind it, never opened over it. */
+  openProjectHome(projectId: string): void
   /** Select the project, open the run and ask its decision card to take focus. */
   jumpToDecision(projectId: string, runId: string, requestId?: string): Promise<void>
   /** Latest plan usage reported by any live session. */
@@ -563,7 +565,7 @@ interface AppState {
   loadHistory(): Promise<void>
   loadAllHistory(): Promise<void>
   /** Show a past run on the canvas. */
-  openRun(runId: string): Promise<void>
+  openRun(runId: string, opts?: { keepView?: boolean }): Promise<void>
   sendMessage(text: string, images?: ImageAttachment[]): Promise<void>
   /** Start a new run that resumes a finished run's session, and show it. */
   continueRun(fromRunId: string, text: string, images?: ImageAttachment[]): Promise<void>
@@ -735,7 +737,7 @@ export function useProjectSummaries(): RunSummary[] {
 }
 
 /** State patch that shows a run in its project's workspace: leaves the New run page, un-hides the tab. */
-function showRunPatch(s: AppState, projectId: string, requestedId: string): Partial<AppState> {
+function showRunPatch(s: AppState, projectId: string, requestedId: string, keepView = false): Partial<AppState> {
   // One conversation per chain: the tab always shows the chain's newest loaded member, and un-hides the whole chain.
   const members = chainOf(summariesOf(s, projectId), requestedId)
   const runId = [...members].reverse().find((m) => s.runs[m.id])?.id ?? requestedId
@@ -746,7 +748,7 @@ function showRunPatch(s: AppState, projectId: string, requestedId: string): Part
     delete dismissedRuns[id]
     delete unreadByRun[id]
   }
-  return { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root', view: 'run', draftPage, dismissedRuns, unreadByRun }
+  return { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root', ...(keepView ? {} : { view: 'run' as const }), draftPage, dismissedRuns, unreadByRun }
 }
 
 /** Summaries of one project: its persisted history merged with the runs the renderer holds (fresher). */
@@ -966,7 +968,8 @@ async function settleWorkspace(projectId: string): Promise<void> {
       ? assistantRunToOpen(runsOfProject(s, projectId), viewed ?? remembered, { history: s.historyByProject[projectId] ?? [] })
       : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed ?? remembered, { hidden: s.dismissedRuns })
     if (target) {
-      await getState().openRun(target)
+      // Someone on the project's Home tab (the sidebar's name row) stays there: the run is restored behind it.
+      await getState().openRun(target, { keepView: s.view === 'home' })
       showStartIfNothing(projectId)
     } else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
   } finally {
@@ -1550,6 +1553,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     markTabsRestored(projectId)
   },
 
+  openProjectHome(projectId) {
+    // The view is set after the selection and before the settle it starts reaches its run (that waits on history), so the settle keeps Home.
+    if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+    set({ view: 'home' })
+  },
+
   async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
     set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
@@ -1863,7 +1872,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) }, ...adoptRowsPatch(s, entries.flatMap(([, rows]) => rows)) }))
   },
 
-  async openRun(runId) {
+  async openRun(runId, opts) {
     const project = selectedProject(get())
     if (!project) return
     // A slower, older request must not override a newer click in the same project.
@@ -1875,7 +1884,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!get().runs[runId]) return
     const members = chainOf(summariesOf(get(), project.id), runId)
     const newestId = [...members].reverse().find((m) => get().runs[m.id])?.id ?? runId
-    set((s) => ({ ...showRunPatch(s, project.id, newestId), chainFocusRun: newestId === runId ? null : runId }))
+    set((s) => ({ ...showRunPatch(s, project.id, newestId, opts?.keepView), chainFocusRun: newestId === runId ? null : runId }))
   },
 
   async loadLiveRuns() {

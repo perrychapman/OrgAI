@@ -6,7 +6,7 @@
 // there would pop the native menu from main, which e2e cannot dismiss) and must not be cancelled.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, findProject, finish, gotoProjects, launch, openProject, openProjectForm, projectTab, sleep, pickSetup } from './lib.mjs'
+import { TMP, check, checkRadio, cleanup, endSession, findProject, finish, gotoProjects, launch, openProject, openProjectForm, projectTab, sleep, pickSetup, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-ctxmenu-'))
@@ -22,7 +22,7 @@ const setSize = async (w, h) => {
   await sleep(400)
 }
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true
@@ -95,7 +95,7 @@ try {
   // ---- An engagement with a [mock:knowledge] run: one run tab and five Knowledge rows ----
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(NAME)
   await form.locator('[data-testid=new-project-client]').fill('Ctx Corp')
   await form.getByLabel('Working folder', { exact: true }).fill(wf)
@@ -370,6 +370,7 @@ try {
   await dismissCustom()
   await navRow.click()
   await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
+  await page.locator('[data-testid=tab-live]').click()
   const composer = page.locator('.composer textarea, textarea').first()
   await composer.fill('ctx probe text')
   await probeReset()

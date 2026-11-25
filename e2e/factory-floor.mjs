@@ -19,7 +19,12 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, setReduceMotion, sleep } from './lib.mjs'
+import { APP_DIR, SHOTS_DIR, appEnv, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio, domPollWaits } from './lib.mjs'
+// A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
+// two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
+// or ends such a run waits for the renderer to answer instead of timing out at the default.
+const BUSY_CLICK_MS = 150_000
+const endSession = (page) => endSessionLib(page, { timeout: BUSY_CLICK_MS })
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-factory-script-')), 'script.json')
@@ -29,6 +34,8 @@ process.env.ORGAI_MOCK_SCRIPT = scriptFile
 const NAME = 'E2E factory floor (orgai test)'
 const repo = makeFixtureRepo('factory')
 const SWGL = process.env.E2E_FACTORY_SWGL !== '0'
+// The window mode of this script's own launch (lib.mjs appEnv): hidden unless a run needs it shown (see e2e/README.md).
+const FF_WINDOW = 'hidden'
 // E2E_FACTORY_PLAN=1 forces the floor plan for the whole run (the developer key below is set before the first mount), so
 // every slice 2 case also runs on the path a runner without WebGL2 (GitHub's macOS) takes. Default: the machine's own path.
 const PLAN = process.env.E2E_FACTORY_PLAN === '1'
@@ -45,10 +52,14 @@ const app = await electron.launch({
   executablePath: electronBinary(),
   args: ['--use-mock-keychain', ...(SWGL ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : []), APP_DIR],
   cwd: APP_DIR,
-  timeout: 60_000,
-  env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR }
+  timeout: t(60_000),
+  env: appEnv({ window: FF_WINDOW })
 })
+scaleApp(app)
 const page = await app.firstWindow()
+scalePage(page)
+// The scene's software GL leaves the renderer a frame or two a second while it mounts, and Playwright's own waits poll by frame.
+domPollWaits(page)
 page.on('dialog', (d) => void d.accept())
 page.on('console', (m) => {
   if (m.type() === 'error') log('console.error:', m.text().slice(0, 200))
@@ -59,7 +70,14 @@ await page.addInitScript(() => {
   window.__cspViolations = []
   document.addEventListener('securitypolicyviolation', (e) => window.__cspViolations.push(`${e.violatedDirective} ${e.blockedURI}`))
 })
-await page.waitForSelector('.sidebar', { timeout: 60_000 })
+await page.waitForSelector('.sidebar', { timeout: t(60_000) })
+// E2E_CPU_THROTTLE=3 slows the renderer's main thread three times. The software GPU process is not slowed by it: to starve
+// that one too, run the script under `start /affinity 5 /wait /b node e2e/factory-floor.mjs` on Windows (two cores).
+if (Number(process.env.E2E_CPU_THROTTLE) > 1) {
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) })
+  log('cpu throttle', process.env.E2E_CPU_THROTTLE)
+}
 await page.evaluate(() => {
   for (const k of Object.keys(localStorage).filter((x) => x.startsWith('orgai.'))) localStorage.removeItem(k)
   window.__cspViolations = []
@@ -67,13 +85,13 @@ await page.evaluate(() => {
 })
 if (PLAN) await page.evaluate((k) => localStorage.setItem(k, 'floor-plan'), KEY)
 await page.reload()
-await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
+await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: t(60_000) })
 let shots = 0
 const shot = (name) => page.screenshot({ path: path.join(SHOTS_DIR, `factory-floor-${String(++shots).padStart(2, '0')}-${name}.png`) }).catch(() => {})
 
 const resizeTo = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await sleep(500)
 }
@@ -101,15 +119,15 @@ const state = async () => JSON.parse((await page.locator('[data-testid=factory-s
 /** Remount the scene (graph, then back) so the developer key is read again. */
 const remount = async () => {
   await setCanvas({ presentation: 'graph' })
-  await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   await setCanvas({ presentation: 'factory-floor' })
 }
 const setKey = (v) => page.evaluate(([k, val]) => (val === null ? localStorage.removeItem(k) : localStorage.setItem(k, val)), [KEY, v])
 
 /** What every mounted scene must satisfy, whichever renderer it picked. Returns the renderer. */
 const checkMounted = async (mode, label) => {
-  await scene(mode).waitFor({ timeout: 20_000 })
-  await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: 20_000 })
+  await scene(mode).waitFor({ timeout: t(20_000) })
+  await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: t(20_000) })
   const renderer = await scene(mode).getAttribute('data-renderer')
   check(renderer === 'webgl2' || renderer === 'floor-plan', `${label}: scene mounts with a renderer`, String(renderer))
   const st = await state().catch(() => null)
@@ -119,7 +137,7 @@ const checkMounted = async (mode, label) => {
   check(/^Factory floor,/.test((await group.getAttribute('aria-label')) ?? ''), `${label}: the mirror's name starts "Factory floor,"`, String(await group.getAttribute('aria-label')))
   const canvases = page.locator('[data-testid=factory-canvas]')
   // The 3D path mounts its canvas once the lazy chunk has loaded, after data-renderer is set.
-  if (renderer === 'webgl2') await canvases.first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
+  if (renderer === 'webgl2') await canvases.first().waitFor({ state: 'attached', timeout: t(15_000) }).catch(() => {})
   if (await canvases.count()) {
     check((await canvases.first().getAttribute('aria-hidden')) === 'true', `${label}: the canvas is aria-hidden`)
     check(renderer === 'webgl2', `${label}: a canvas appears only on the 3D path`)
@@ -140,7 +158,7 @@ const activeWorkerId = async () => {
 }
 /** Poll the test state until `pred(state)` holds (the state is written at most twice a second). Returns the state, or null on timeout. */
 const untilState = async (pred, timeout = 8000) => {
-  const end = Date.now() + timeout
+  const end = Date.now() + t(timeout)
   let st = null
   while (Date.now() < end) {
     st = await state().catch(() => null)
@@ -205,31 +223,70 @@ const spawnWork = (tree, slug) => [
 ]
 /** Start a fresh Live run with `prompt` (the previous one is ended first). */
 let runsStarted = 0
-const startLiveRun = async (prompt, metaTimeout = 15_000) => {
+// metaTimeout is scaled like every wait (t() below): 60 s is 180 s on a CI runner. It was 15 s (45 s there) and a run that
+// staffs the 39-station tour ([mock:factory-floor-pause], windows-latest 2026-11-24, CI run 45484286401) kept the page's timers
+// from running for the whole of it: the dump after the timeout found the header mounted, the composer gone and the hall paused,
+// a state the poll would have read at once had the page run it. The wait ends the moment the header is there, so a fast
+// machine loses nothing; only a run that really never starts waits the full time.
+const startLiveRun = async (prompt, metaTimeout = 60_000) => {
   if (runsStarted++ > 0 || (await page.getByRole('button', { name: 'End session' }).count())) await endSession(page)
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 8000 }).catch(() => {})
+  await page.locator('.new-run').waitFor({ timeout: t(8000) }).catch(() => {})
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: metaTimeout }).catch(async (error) => {
-    // What the page showed when the run never appeared (CI windows-latest timed out here after the stress phase).
-    const seen = await page.evaluate(() => ({
-      newRun: !!document.querySelector('.new-run'),
-      draft: document.querySelector('.composer textarea')?.value ?? null,
-      endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
-      tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
-    })).catch(() => ({}))
-    log(`startLiveRun(${JSON.stringify(prompt)}) found no run-meta after ${metaTimeout} ms: ${JSON.stringify(seen)}`)
-    throw error
-  })
+  const metaFrom = Date.now()
+  // The ready state is the run header MOUNTED for the new run (the composer is gone and a run-meta is in the DOM), read by
+  // interval polling inside the page. It used to be Playwright's "visible" wait on run-meta, which (a) polls with
+  // requestAnimationFrame, so a renderer that draws a frame every few hundred ms (a software GPU under 122 agents) answers
+  // late or not at all, and (b) is false by design while the frame is narrower than 340 px (layout.css hides .run-meta there,
+  // and the header folds chips into its "more" menu), so a layout state looked like "the run never started". CI windows-latest
+  // 2026-11-24 waited 300 s with the run on screen (122 workers, tab Idle) and a run-meta the page counted as shown.
+  await page
+    .waitForFunction(() => !document.querySelector('.new-run') && !!document.querySelector('[data-testid=run-meta]'), null, { timeout: t(metaTimeout), polling: 250 })
+    .then(() => {
+      if (Date.now() - metaFrom > 15_000) log(`startLiveRun(${JSON.stringify(prompt)}): the run view took ${Math.round((Date.now() - metaFrom) / 1000)} s to show`)
+    })
+    .catch(async (error) => {
+      // What the page showed when the run never appeared.
+      const seen = await page
+        .evaluate(() => {
+          const m = document.querySelector('[data-testid=run-meta]')
+          const box = m?.getBoundingClientRect()
+          return {
+            metas: [...document.querySelectorAll('[data-testid=run-meta]')].map((x) => (x.getClientRects().length ? 'shown' : 'hidden')),
+            metaBox: box ? [Math.round(box.width), Math.round(box.height)] : null,
+            metaVisibility: m ? getComputedStyle(m).visibility : null,
+            frameWidth: Math.round(document.querySelector('.canvas-frame')?.getBoundingClientRect().width ?? 0),
+            window: [innerWidth, innerHeight],
+            hidden: document.hidden,
+            workers: document.querySelectorAll('[data-testid=factory-worker]').length,
+            scenes: document.querySelectorAll('[data-testid=factory-scene]').length,
+            newRun: !!document.querySelector('.new-run'),
+            draft: document.querySelector('.composer textarea')?.value ?? null,
+            endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
+            tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
+          }
+        })
+        .catch(() => ({}))
+      // The poll can end without having read the state it waits for: the same evaluate that follows it read the header mounted
+      // and the composer gone (windows-latest 2026-11-24, twice, 300 s and 45 s). The state is what this helper stands for, and
+      // it is read directly here, so a poll that was starved is reported and the script goes on; a header that is not there
+      // still fails with the dump.
+      if (seen.newRun === false && Array.isArray(seen.metas) && seen.metas.length > 0) {
+        log(`startLiveRun(${JSON.stringify(prompt)}): the poll timed out after ${t(metaTimeout)} ms but the header is mounted and the composer gone (poll starved, not a missing run): ${JSON.stringify(seen)}`)
+        return
+      }
+      log(`startLiveRun(${JSON.stringify(prompt)}) found no run header after ${t(metaTimeout)} ms: ${JSON.stringify(seen)}`)
+      throw error
+    })
 }
 /** Wait until the mirror has `n` workers and the scene has a readable state of that size. */
 const waitForFloor = async (n, extra = () => true, timeout = Number(process.env.E2E_FACTORY_WAIT_MS) || 90_000) => {
   const st = await untilState((s) => s.mode === 'live' && s.workers.length === n && extra(s), timeout)
-  const mirrored = await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: 10_000 }).then(() => true).catch(() => false)
+  const mirrored = await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: t(10_000) }).then(() => true).catch(() => false)
   if (!st || !mirrored) {
     const ids = await page.evaluate(() => [...document.querySelectorAll('[data-testid=factory-worker]')].map((b) => b.getAttribute('data-factory-worker-id')))
     log(`waitForFloor(${n}) gave up: state workers ${st ? st.workers.length : 'unreadable'}, mirror ${ids.length}: ${ids.join(',')}`)
@@ -349,7 +406,7 @@ async function keyboardWalk(label, booth) {
   await workerBtn(last.id).focus()
   await page.keyboard.press('Enter')
   const back2 = page.locator('[data-testid=factory-agent-back]')
-  await back2.waitFor({ timeout: 8000 }).catch(() => {})
+  await back2.waitFor({ timeout: t(8000) }).catch(() => {})
   check((await back2.count()) === 1, `${label}: Enter selects and opens the live inspector (Back to floor exists)`)
   check((await workerBtn(last.id).getAttribute('aria-current')) === 'true', `${label}: the selected worker has aria-current`)
   check((await page.locator('[data-testid=factory-worker][tabindex="0"]').getAttribute('data-factory-worker-id')) === last.id, `${label}: the selected worker is the Tab stop`)
@@ -365,7 +422,7 @@ async function findWalk(label, st) {
   const input = page.locator('[data-testid=factory-find-input]')
   const results = page.locator('[data-testid=factory-find-result]')
   await findBtn.click()
-  await input.waitFor({ timeout: 5000 })
+  await input.waitFor({ timeout: t(5000) })
   check(true, `${label}: Find opens a search field`)
   const target = st.workers.find((w) => w.row >= 1) ?? st.workers[st.workers.length - 1]
   await input.fill(target.id.toUpperCase())
@@ -391,7 +448,7 @@ async function findWalk(label, st) {
   check((await workerBtn(target.id).getAttribute('aria-current')) === 'true', `${label}: the chosen worker is selected`)
   check((await page.locator('[data-testid=factory-agent-back]').count()) === 1, `${label}: the chosen worker's inspector opens`)
   await findBtn.click()
-  await input.waitFor({ timeout: 5000 })
+  await input.waitFor({ timeout: t(5000) })
   await page.keyboard.press('Escape')
   await sleep(300)
   check((await input.count()) === 0, `${label}: Escape closes Find`)
@@ -518,11 +575,11 @@ try {
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const section = page.locator('[data-testid=canvas-section]')
-  await section.waitFor({ timeout: 10_000 })
+  await section.waitFor({ timeout: t(10_000) })
   const radio = section.locator('[data-testid=canvas-presentation-factory-floor]')
   check((await radio.count()) === 1, 'settings offer the Factory Floor presentation')
-  await radio.check({ force: true })
-  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'factory-floor', null, { timeout: 10_000 }).catch(() => {})
+  await checkRadio(radio, 'the Factory Floor presentation')
+  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'factory-floor', null, { timeout: t(10_000) }).catch(() => {})
   check((await html('data-canvas-presentation')) === 'factory-floor', 'choosing Factory Floor sets the presentation')
   const saved = await page.evaluate(async () => (await window.orgai.settings.get()).appearance.canvas.presentation)
   check(saved === 'factory-floor', 'the presentation is saved in settings', String(saved))
@@ -531,7 +588,7 @@ try {
   await openProject(page, NAME)
   projectOpen = true
   await openTeam(page)
-  await page.locator('.react-flow').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await page.locator('.react-flow').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   check((await page.locator('.react-flow').count()) > 0, 'Team shows the Graph while Factory Floor is chosen')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'Team never mounts the factory scene')
   check((await page.locator('[data-testid=factory-pause-motion]').count()) === 0, '[slice4] Team has no Pause motion button (live only)')
@@ -539,10 +596,10 @@ try {
 
   await projectTab(page, 'Live').click()
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Factory floor check build')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   const liveRenderer = await checkMounted('live', 'Live')
   const liveName = await page.locator('[data-testid=factory-floor]').first().getAttribute('aria-label')
   check(/^Factory floor, \d+ workers?$/.test(liveName ?? ''), 'Live: the mirror says workers', String(liveName))
@@ -573,7 +630,7 @@ try {
     for (const theme of ['dark', 'light']) {
       await setAppearance({ theme })
       for (const mode of ['live']) {
-        await scene(mode).waitFor({ timeout: 15_000 })
+        await scene(mode).waitFor({ timeout: t(15_000) })
         const st = await state().catch(() => null)
         check(!!st && ['webgl2', 'floor-plan'].includes(st.renderer), `${mode} scene state readable at ${w}x${h} ${theme}`)
         if (st?.renderer === 'webgl2') check(st.engines === 1, `theme switch keeps one engine at ${w}x${h} ${theme} (${mode})`, String(st.engines))
@@ -632,15 +689,20 @@ try {
   // 40 agents: the mock's [mock:factory-floor] tour (root, 3 leads, 9 sub-leads, 27 workers; ff-w333 removed). Invariants, not a table.
   writeScript(null)
   await startLiveRun('Factory floor forty agents [mock:factory-floor]')
-  const s40 = await waitForFloor(39, (s) => s.vacant === 1)
+  // The 39 stations took 94 s to show on windows-latest (the default wait is 90 s); a wait that passes costs only what it takes.
+  const s40 = await waitForFloor(39, (s) => s.vacant === 1, 150_000)
   check(!!s40, '40 agents: 39 stations stand and the removed ff-w333 is one vacant slot', JSON.stringify(s40 && { n: s40.workers.length, vacant: s40.vacant }))
   if (s40) {
     const booth = await boothOf()
-    // Slice 3, per-state cues. ff-w111 is in `tool` for 5 s after MOCK_FACTORY_FLOOR_READY: catch it first and read promptly.
+    // Slice 3, per-state cues. The mock holds ff-w111 in state tool after MOCK_FACTORY_FLOOR_READY until the card of ff-w211 is
+    // answered (below), not for a fixed time: a runner that shows the tour a minute late applies the whole backlog without a
+    // render in between, so a 5 s hold was never shown (CI windows-latest, and a two-core, 6x throttled run here: the state
+    // went from ff-w111 thinking to the plan blocked and the card pending in one write, and never showed the machine). Every
+    // READY condition is now a standing state, so reading it from here whenever the runner gets to it is enough.
     // READY follows the plan update (p2 blocked), ff-w111's tool steps and ff-w211's background card, so key the snapshot on
     // all three: ff-w123 failing alone comes before the plan update and before the tool hold (first slice 3 run).
-    const ready = (s) => s.mode === 'live' && wOf(s, 'ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && wOf(s, 'ff-w211')?.lamp === 'needs-you'
-    const snap = await untilState((s) => ready(s) && wOf(s, 'ff-w111')?.pose === 'machine', 25_000)
+    const ready = (s) => s.mode === 'live' && wOf(s, 'ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && wOf(s, 'ff-w211')?.lamp === 'needs-you' && wOf(s, 'ff-w111')?.pose === 'machine'
+    const snap = await untilState(ready, 150_000)
     chk3(!!snap, 'MOCK_FACTORY_FLOOR_READY is reached (plan blocked, ff-w211 card pending, ff-w111 at its machine)', wOf(await state(), 'ff-w111'))
     if (snap) {
       await checkWorker('tool', snap, 'ff-w111', { lamp: 'running', pose: 'machine', fenced: true, shutter: false, barrier: false })
@@ -698,10 +760,10 @@ try {
       // 3D-only labels (DOM overlay over the canvas).
       if (snap.renderer === 'webgl2') {
         // textContent: a label off-stage or skipped by the label budget is hidden, and innerText of a hidden node is ''.
-        const bl = ((await page.locator('[data-testid=factory-board-label]').first().textContent({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        const bl = ((await page.locator('[data-testid=factory-board-label]').first().textContent({ timeout: t(5000) }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
         chk3(bl === 'Plan · 0 of 3 done · 1 blocked', 'board label text', bl)
         const dk = page.locator('[data-testid=factory-dock]').first()
-        const dkText = ((await dk.textContent({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        const dkText = ((await dk.textContent({ timeout: t(5000) }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
         chk3(dkText === 'Main checkout · 1 merged' && (await dk.getAttribute('data-count').catch(() => null)) === '1', 'dock label text and data-count', dkText)
         const plates = page.locator('[data-testid=factory-nameplate][data-shown="true"]')
         const nShown = await plates.count()
@@ -739,7 +801,7 @@ try {
     await checkMirrorHooks('40 agents', s40, booth)
     // The tour's background permission ask (ff-w211) arrives after the removal; a new decision card takes focus on mount
     // (DecisionCard's existing auto-focus), so the keyboard walk starts only once the card is there.
-    const card = await page.locator('.decision-card').first().waitFor({ timeout: 20_000 }).then(() => true).catch(() => false)
+    const card = await page.locator('.decision-card').first().waitFor({ timeout: t(20_000) }).then(() => true).catch(() => false)
     check(card, '40 agents: the tour\'s permission card is in the tray before the keyboard walk')
     await sleep(400)
     // A pending card on a NON-root agent (ff-w211) is a needs-you cue on that worker.
@@ -818,7 +880,9 @@ try {
   }
 
   await startLiveRun('Factory floor paused [mock:factory-floor-pause]')
-  const paused = await untilState((s) => s.hall === 'paused', 60_000)
+  // The tour is the 40-agent tour again, then a usage limit: on windows-latest the renderer showed it 80 s late (the 39
+  // stations alone took 84 s), so the wait for the paused hall is as long as that run can take, not 60 s.
+  const paused = await untilState((s) => s.hall === 'paused', 180_000)
   chk3(!!paused, '[mock:factory-floor-pause]: the hall is paused', await state().then((s) => s.hall).catch(() => null))
   chk3((await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall')) === 'paused', 'factory-scene data-hall is paused', await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall'))
   // ---------- Slice 4: cues and motion (sections 1.4, 5, 6.5, 6.7, 7.5, 9.1, 10.3, 10.4) ----------
@@ -853,7 +917,7 @@ try {
   const cueDone = (s) => s.mode === 'live' && !!wOf(s, 'cq-b')?.shutter && wOf(s, 'cq-b')?.crate === 'dock' && !!wOf(s, 'cq-c')?.barrier && s.workers[0]?.lamp === 'off'
   /** Poll the state until `pred`; `each(state)` sees every state read. Returns the satisfying state or null. */
   const watch = async (pred, timeout, each = () => {}) => {
-    const end = Date.now() + timeout
+    const end = Date.now() + t(timeout)
     while (Date.now() < end) {
       const st = await state().catch(() => null)
       if (st) {
@@ -864,9 +928,17 @@ try {
     }
     return null
   }
-  /** Accumulates what the polls saw: every cue ever listed, the most stations looping, any message text in the state. */
+  /**
+   * Accumulates what the polls saw: every cue ever listed, the most stations looping, any message text in the state.
+   * A poll from here waits behind the renderer's own work (windows-latest read one state in 203 s of a burst), so
+   * `record()` also starts a recorder INSIDE the page that reads every write of the test state with a MutationObserver, and
+   * `merge()` folds what it saw into the same fields. What it records is evidence about what was WRITTEN: a state the
+   * renderer never commits (it applies a backlog in one render) is in no write, so a check that needs a state to be shown
+   * waits on a standing hold instead (see "a running station loops" below), and a recorder only widens ABSENCE checks
+   * (no leak, no cue under reduced motion, caps) and the cue list.
+   */
   const collector = () => {
-    const c = { cues: new Map(), maxLooping: 0, kinds: new Set(), leaked: false, each: null }
+    const c = { cues: new Map(), maxLooping: 0, kinds: new Set(), leaked: false, each: null, pageStates: [], pageWrites: 0 }
     c.each = (st) => {
       for (const q of [...(st.recentCues ?? []), ...(st.cues ?? [])]) c.cues.set(JSON.stringify(q), q)
       const looping = st.workers.filter((w) => w.ambient && w.ambient !== 'none')
@@ -876,18 +948,70 @@ try {
       if (TAILS.some((t) => json.includes(t))) c.leaked = true
     }
     c.has = (kind, from, to) => [...c.cues.values()].some((q) => q.kind === kind && q.from === from && (to === undefined || q.to === to))
+    /** Start the in-page recorder (the scene must stay mounted until `merge`). */
+    c.record = () =>
+      page.evaluate((tails) => {
+        window.__ffRec?.observer?.disconnect()
+        const el = document.querySelector('[data-testid=factory-state]')
+        const rec = { writes: 0, kinds: [], maxLooping: 0, leaked: false, cues: new Map(), states: new Map(), observer: null }
+        window.__ffRec = rec
+        if (!el) return false
+        const take = () => {
+          const json = el.textContent || ''
+          let s
+          try {
+            s = JSON.parse(json || '{}')
+          } catch {
+            return // a half-written state: the next write is read again
+          }
+          if (!Array.isArray(s.workers)) return
+          rec.writes++
+          if (tails.some((x) => json.includes(x))) rec.leaked = true
+          for (const q of [...(s.recentCues ?? []), ...(s.cues ?? [])]) rec.cues.set(JSON.stringify(q), q)
+          const looping = s.workers.filter((w) => w.ambient && w.ambient !== 'none')
+          rec.maxLooping = Math.max(rec.maxLooping, looping.length)
+          for (const w of looping) if (!rec.kinds.includes(`${w.id}:${w.ambient}`)) rec.kinds.push(`${w.id}:${w.ambient}`)
+          // Only what the quiet-run invariants read, one entry per distinct combination (never the whole state per write).
+          const slim = { cues: (s.cues ?? []).length, cuesStarted: s.cuesStarted, recent: (s.recentCues ?? []).length, workers: s.workers.map((w) => ({ id: w.id, ambient: w.ambient, barrier: w.barrier, lamp: w.lamp, pose: w.pose, shutter: w.shutter, crate: w.crate ?? null, fenced: w.fenced })) }
+          const key = JSON.stringify(slim)
+          if (rec.states.size < 400 && !rec.states.has(key)) rec.states.set(key, slim)
+        }
+        take()
+        rec.observer = new MutationObserver(take)
+        rec.observer.observe(el, { childList: true, characterData: true, subtree: true })
+        return true
+      }, TAILS)
+    /** Stop the recorder and fold its record into the fields above. */
+    c.merge = async () => {
+      const r = await page
+        .evaluate(() => {
+          const rec = window.__ffRec
+          rec?.observer?.disconnect()
+          return rec ? { writes: rec.writes, kinds: rec.kinds, maxLooping: rec.maxLooping, leaked: rec.leaked, cues: [...rec.cues.values()], states: [...rec.states.values()] } : null
+        })
+        .catch(() => null)
+      if (!r) return c
+      c.pageWrites = r.writes
+      c.maxLooping = Math.max(c.maxLooping, r.maxLooping)
+      for (const k of r.kinds) c.kinds.add(k)
+      if (r.leaked) c.leaked = true
+      for (const q of r.cues) c.cues.set(JSON.stringify(q), q)
+      // Pseudo-states in the shape quietViolations reads (lengths stand in for the lists).
+      c.pageStates = r.states.map((x) => ({ cues: { length: x.cues }, cuesStarted: x.cuesStarted, recentCues: { length: x.recent }, workers: x.workers }))
+      return c
+    }
     return c
   }
   const allowGate = async () => {
     const allow = page.locator('.decision-card .decision-footer .btn.primary').first()
-    await allow.waitFor({ timeout: 20_000 })
-    await allow.click()
+    await allow.waitFor({ timeout: t(20_000) })
+    await allow.click({ timeout: BUSY_CLICK_MS })
   }
   /** Start a gated run and return the state read while it waits at the gate (the scene is mounted, nothing has happened). */
   const startGated = async (label, work, delayMs) => {
     writeTimed([GATE, ...work], delayMs)
     await startLiveRun(`Factory floor cues ${label}`)
-    await page.locator('.decision-card').first().waitFor({ timeout: 30_000 })
+    await page.locator('.decision-card').first().waitFor({ timeout: t(30_000) })
     return untilState((s) => s.mode === 'live' && s.workers[0]?.lamp === 'needs-you', 40_000)
   }
   /**
@@ -897,7 +1021,7 @@ try {
    */
   const quiet = async (timeout = 20_000) => {
     const sig = (s) => JSON.stringify(s.workers.map((w) => [w.id, w.lamp, w.pose, w.shutter, w.barrier, w.crate ?? '', w.statusWord, w.fenced]))
-    const end = Date.now() + timeout
+    const end = Date.now() + t(timeout)
     let last = ''
     let since = Date.now()
     while (Date.now() < end) {
@@ -930,12 +1054,12 @@ try {
   }
   /** Switch to the conversation and back through the run layout toggle (the scene unmounts and mounts again). */
   const viaConversation = async () => {
-    const t = page.locator('[data-testid=run-layout-toggle]')
-    await t.click()
-    await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
-    await page.locator('[data-testid=run-conversation]').first().waitFor({ timeout: 10_000 }).catch(() => {})
-    await t.click()
-    await scene('live').waitFor({ timeout: 20_000 })
+    const toggle = page.locator('[data-testid=run-layout-toggle]')
+    await toggle.click()
+    await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
+    await page.locator('[data-testid=run-conversation]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
+    await toggle.click()
+    await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live', 20_000)
   }
   /** A fresh mount reads the events as baseline: nothing cues, nothing logs, the message cursor is set, and it stays so. */
@@ -993,7 +1117,7 @@ try {
   await sleep(2500)
   await checkNoReplay('remount after events (presentation switch)', async () => {
     await remount()
-    await scene('live').waitFor({ timeout: 20_000 })
+    await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live' && wOf(s, 'cq-b'), 20_000)
   })
   const baseline = await state().catch(() => null)
@@ -1017,8 +1141,11 @@ try {
   chk4((await logBefore.count()) === 1 && (await logBefore.evaluate((d) => d.tagName === 'DETAILS' && !d.open)), 'the floor log is a closed details by default', await logBefore.count())
   const col = collector()
   col.each(basePre ?? { recentCues: [], cues: [], workers: [] })
+  await col.record()
   await allowGate()
   const fullDone = await watch(cueDone, 90_000, col.each)
+  await col.merge()
+  log('full motion run: the page recorder read', col.pageWrites, 'writes of the test state; stations seen looping:', [...col.kinds].join(', ') || 'none')
   chk4(!!fullDone, 'full motion run: the events finished', await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
   const fin = fullDone ?? (await state())
   chk4(fin.cuesStarted > basePre.cuesStarted, 'events after mount start cues (cuesStarted grows)', { before: basePre.cuesStarted, after: fin.cuesStarted })
@@ -1028,8 +1155,11 @@ try {
   chk4(col.has('arrive', 'cq-b'), 'the spawned station gets an arrive cue', [...col.cues.values()].filter((q) => q.kind === 'arrive'))
   chk4(col.has('part', 'cq-b'), 'a tool call on a station pops a part there', [...col.cues.values()].filter((q) => q.kind === 'part'))
   chk4(col.has('crate', 'cq-b', 'dock'), 'a branch merged into main sends a crate to the dock', [...col.cues.values()].filter((q) => q.kind === 'crate'))
-  chk4([...col.kinds].some((k) => k.startsWith('cq-b:')), 'a running station loops (cq-b has an ambient loop while it works)', [...col.kinds])
-  chk4(!col.leaked, 'message text never appears in the factory-state JSON (sampled on every poll)')
+  // Whether cq-b looped is NOT asserted here: its 2.5 s tool hold is a timed state, and a renderer that is behind (CI
+  // windows-latest, 2026-11-25: [root:screen, cq-a:screen] and no cq-b in any read) applies the backlog in one render, so the
+  // tool state is never shown (its part cue still fires: that comes from the toolCalls counter). The loop is asserted on a
+  // standing hold below ("a running station loops").
+  chk4(!col.leaked, 'message text never appears in the factory-state JSON (read on every write of the state, in the page)')
   chk4(fin.cuePeaks.carriers >= 1 && fin.cuePeaks.carriers <= 6 && fin.cuePeaks.perSender <= 2, 'the cue peaks count the carriers within the caps', fin.cuePeaks)
   // The floor log: opens, lists what moved, newest first, matches logEntries.
   const logEl = page.locator('[data-testid=factory-log]').first()
@@ -1080,9 +1210,47 @@ try {
   await checkNoReplay('remount via the conversation', viaConversation, 'full')
   await checkNoReplay('remount via the presentation switch', async () => {
     await remount()
-    await scene('live').waitFor({ timeout: 20_000 })
+    await scene('live').waitFor({ timeout: t(20_000) })
     return untilState((s) => s.mode === 'live', 20_000)
   }, 'full')
+
+  // -- A running station loops (section 5.1), on a STANDING state. --
+  // The mock holds lp-a in state tool (holdUntilAnswered, the same hold the tour uses for ff-w111) until the background
+  // card of lp-b has been answered, so the machine loop is a state the floor rests in for as long as this script wants, not
+  // a 2.5 s window a slow renderer can skip. lp-b waits on its card (needs-you): a waiting station does not loop.
+  {
+    const loopEvents = () => [
+      { type: 'spawn', id: 'lp-a', name: 'lp-a', role: slug, description: 'Loop worker' },
+      { type: 'spawn', id: 'lp-b', name: 'lp-b', role: slug, description: 'Waiting worker' },
+      { type: 'tool', agent: 'lp-b', name: 'Bash', input: { command: 'loop-hold --ask' }, ask: true, background: true, result: 'ok' },
+      { type: 'tool', agent: 'lp-a', name: 'Read', input: { file_path: 'loop.ts' }, result: 'x', holdMs: 300, holdUntilAnswered: true },
+      { type: 'agentState', agent: 'lp-a', state: 'done' },
+      { type: 'agentState', agent: 'lp-b', state: 'done' },
+      { type: 'text', text: 'Loop events done.' }
+    ]
+    const loopBase = await startGated('standing loop', loopEvents(), 300)
+    chk4(!!loopBase && loopBase.motion === 'full', 'loop run: the scene is mounted at the gate in motion full', loopBase?.motion)
+    await allowGate()
+    const held = await untilState((s) => s.mode === 'live' && wOf(s, 'lp-a')?.ambient === 'machine' && wOf(s, 'lp-b')?.lamp === 'needs-you', 120_000)
+    chk4(!!held, 'a running station loops (lp-a is at its machine and has the machine loop while lp-b waits on its card)', held && [wOf(held, 'lp-a'), wOf(held, 'lp-b')])
+    if (held) {
+      chk4(wOf(held, 'lp-a')?.lamp === 'running' && wOf(held, 'lp-a')?.pose === 'machine', 'the looping station is running and posed at its machine', wOf(held, 'lp-a'))
+      chk4(wOf(held, 'lp-b')?.ambient === 'none', 'a station waiting on a card does not loop', wOf(held, 'lp-b'))
+      chk4(held.workers.filter((w) => w.ambient !== 'none').every((w) => w.lamp === 'running'), 'only running stations loop', held.workers.filter((w) => w.ambient !== 'none').map((w) => `${w.id}:${w.ambient}:${w.lamp}`))
+      if (held.renderer === 'webgl2') {
+        // A looping station keeps the render loop going (the opposite of the idle checks): frames keep growing while it holds.
+        const f0 = (await state()).frames
+        const grown = await untilState((s) => s.frames > f0 + 2 && wOf(s, 'lp-a')?.ambient === 'machine', 20_000)
+        chk4(!!grown, 'the render loop runs while a station loops (frames grow during the hold)', grown ? { f0, f1: grown.frames } : { f0, now: (await state().catch(() => ({}))).frames })
+      }
+      // Answering lp-b's card ends the hold: the loop stops and the station is docked.
+      await allowGate()
+    }
+    const loopDone = await untilState((s) => s.mode === 'live' && !!wOf(s, 'lp-a')?.shutter && !!wOf(s, 'lp-b')?.shutter && s.workers[0]?.lamp === 'off', 90_000)
+    chk4(!!loopDone, 'loop run: both stations finished once the card was answered', await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}:${w.ambient}`)).catch(() => null))
+    if (loopDone) chk4(loopDone.workers.every((w) => w.ambient === 'none'), 'no station loops once the work is done', loopDone.workers.map((w) => `${w.id}:${w.ambient}`))
+    await idleFrames('loop run at rest')
+  }
 
   // -- Burst: the caps of section 5.2 hold. --
   /**
@@ -1113,8 +1281,10 @@ try {
   const burstBase = await startGated('burst', burst, 25)
   chk4(!!burstBase, 'burst run: the scene is mounted at the gate', null)
   const bcol = collector()
+  await bcol.record()
   await allowGate()
-  const burstDone = await watch((s) => s.mode === 'live' && workers.every((w) => wOf(s, w)?.shutter) && s.workers[0]?.lamp === 'off', 120_000, bcol.each)
+  const burstDone = await watch((s) => s.mode === 'live' && workers.every((w) => wOf(s, w)?.shutter) && s.workers[0]?.lamp === 'off', 240_000, bcol.each)
+  await bcol.merge()
   chk4(!!burstDone, 'burst run: every station finished', await state().then((s) => ({ n: s.workers.length, shutters: s.workers.filter((w) => w.shutter).length })).catch(() => null))
   const bst = burstDone ?? (await state())
   const pk = bst.cuePeaks
@@ -1152,7 +1322,7 @@ try {
   /** Frames per second from state reads: the time each distinct frame count was first seen, over `ms`. */
   const frameRate = async (ms) => {
     const seen = []
-    const end = Date.now() + ms
+    const end = Date.now() + ms // a sampling window, not a wait: never scaled
     while (Date.now() < end) {
       const s = await state().catch(() => null)
       if (s && (seen.length === 0 || seen[seen.length - 1].frames !== s.frames)) seen.push({ frames: s.frames, at: Date.now() })
@@ -1189,11 +1359,47 @@ try {
     }
     if (++tick % 3 === 0) mx.plates = Math.max(mx.plates, await shownPlates())
   }
+  // The burst can leave the renderer busy for minutes (CI windows-latest: the stress run took 203 s and a poll from here read
+  // one state with perf data in all that time: every CDP read waited behind the renderer's own work). So the budgets are
+  // also read inside the page, on every write of the test state (a MutationObserver sees each one, whatever the main thread
+  // was doing in between), and merged below with what the polls from here saw.
+  await page.evaluate(() => {
+    const mx = { reads: 0, calls: 0, shadow: 0, tris: 0, plates: 0, animated: 0, frameP95: 0, intervalP95: 0, qualities: [] }
+    window.__ffMx = mx
+    window.__ffMxFrom = performance.now()
+    window.__ffMxObserver?.disconnect()
+    const el = document.querySelector('[data-testid=factory-state]')
+    if (!el) return
+    let tick = 0
+    window.__ffMxObserver = new MutationObserver(() => {
+      try {
+        const s = JSON.parse(el.textContent || '{}')
+        if (s.quality && !mx.qualities.includes(s.quality)) mx.qualities.push(s.quality)
+        if (s.renderer !== 'webgl2' || !s.perf) return
+        const p = s.perf
+        mx.reads++
+        mx.calls = Math.max(mx.calls, p.drawCalls)
+        mx.shadow = Math.max(mx.shadow, p.shadowCalls)
+        mx.tris = Math.max(mx.tris, p.triangles)
+        if ((s.cues ?? []).length > 0 && performance.now() - window.__ffMxFrom > 1000) {
+          mx.animated++
+          mx.frameP95 = Math.max(mx.frameP95, p.frameP95Ms)
+          mx.intervalP95 = Math.max(mx.intervalP95, p.intervalP95Ms)
+        }
+        if (++tick % 3 === 0) mx.plates = Math.max(mx.plates, document.querySelectorAll('[data-testid=factory-nameplate][data-shown="true"]').length)
+      } catch {
+        // a half-written state: the next write is read again
+      }
+    })
+    window.__ffMxObserver.observe(el, { childList: true, characterData: true, subtree: true })
+  })
   burstFrom = Date.now()
+  await scol.record()
   await allowGate()
   // Section 9.1's method for the frame interval: rAF timestamps over 5 s from the start of the burst (once the gate is
   // released, so no pre-burst idle frames dilute it), in the page.
   await page.evaluate(() => {
+    window.__ffMxFrom = performance.now()
     const ts = []
     window.__ffRaf = ts
     const end = performance.now() + 5000
@@ -1203,9 +1409,19 @@ try {
     }
     requestAnimationFrame(step)
   })
-  const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 120_000, sampleStress)
+  const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 300_000, sampleStress)
   chk6(!!stressRun, '40-agent stress: all 40 agents are on the floor and the six merged crates reached the dock', await state().then((s) => ({ n: s.workers.length, cues: s.cues.length })).catch(() => null))
+  await scol.merge()
   const sst = stressRun ?? (await state())
+  // What the page read on its own writes (see above) joins what the polls saw; each figure is a peak, so the larger one stands.
+  const pm = await page.evaluate(() => (window.__ffMxObserver?.disconnect(), window.__ffMx ?? null)).catch(() => null)
+  if (pm) {
+    log('stress burst reads: polled', mx.reads, 'in the page', pm.reads, `(${pm.animated} with a cue in flight)`)
+    mx.reads = Math.max(mx.reads, pm.reads)
+    mx.animated = Math.max(mx.animated, pm.animated)
+    for (const k of ['calls', 'shadow', 'tris', 'plates', 'frameP95', 'intervalP95']) mx[k] = Math.max(mx[k], pm[k])
+    for (const q of pm.qualities) mx.qualities.add(q)
+  }
   const spk = sst.cuePeaks
   log('stress burst peaks:', JSON.stringify(spk), 'cuesStarted', sst.cuesStarted, 'looping seen', scol.maxLooping, 'renderer', sst.renderer, 'quality', sst.qualityStart, '->', sst.quality)
   chk6(spk.carriers <= 6 && spk.perSender <= 2 && spk.parts <= 12 && spk.crates <= 4 && spk.arrivalsPerSecond <= 12, '40-agent stress: carriers 6 (2 per sender), parts 12, crates 4 and arrivals 12 per second are never exceeded', spk)
@@ -1294,7 +1510,7 @@ try {
       chk4(!!how, 'Pause motion is reachable by keyboard in the toolbar', how)
       if (!how) await pauseBtn.focus()
       await page.keyboard.press('Space')
-      await page.waitForFunction(() => document.querySelector('[data-testid=factory-pause-motion]')?.getAttribute('aria-pressed') === 'true', null, { timeout: 5000 }).catch(() => {})
+      await page.waitForFunction(() => document.querySelector('[data-testid=factory-pause-motion]')?.getAttribute('aria-pressed') === 'true', null, { timeout: t(5000) }).catch(() => {})
       chk4((await pressed()) === 'true', 'Pause motion pressed: aria-pressed true', await pressed())
       // Keyboard toggle both ways, then pressed again for the run.
       await page.keyboard.press('Space')
@@ -1310,11 +1526,16 @@ try {
     if (mode === 'reduced') chk4(base.cuesStarted === 0 && base.recentCues.length === 0, 'reduced: no cue was ever started', { cuesStarted: base.cuesStarted, recent: base.recentCues.length })
     const bad = []
     const qcol = collector()
+    await qcol.record()
     await allowGate()
     const done = await watch(cueDone, 90_000, (s) => {
       qcol.each(s)
       bad.push(...quietViolations(s, base).map((v) => v))
     })
+    // Every write of the state in the page, not only the ones a poll reached (the invariants are absence checks).
+    await qcol.merge()
+    for (const ps of qcol.pageStates) bad.push(...quietViolations(ps, base))
+    log(`${mode}: the page recorder read ${qcol.pageWrites} writes (${qcol.pageStates.length} distinct combinations checked)`)
     chk4(!!done, `${mode}: the events finished and the end states are on the floor`, await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
     chk4(bad.length === 0, `${mode}: every state written has no cue, no ambient and consistent end states (lamp, pose, shutter, barrier, crate)`, [...new Set(bad)].slice(0, 6))
     const fin = done ?? (await state())
@@ -1338,9 +1559,9 @@ try {
     } else log(`skip ${mode} loop and frames checks: no 3D render loop on the floor plan`)
     if (mode === 'paused') {
       // Pause motion is remembered across remounts for the session (a module-level value).
-      for (const [label, via] of [['the conversation', viaConversation], ['the presentation switch', async () => { await remount(); await scene('live').waitFor({ timeout: 20_000 }); return untilState((s) => s.mode === 'live', 20_000) }]]) {
+      for (const [label, via] of [['the conversation', viaConversation], ['the presentation switch', async () => { await remount(); await scene('live').waitFor({ timeout: t(20_000) }); return untilState((s) => s.mode === 'live', 20_000) }]]) {
         await checkNoReplay(`paused, remount via ${label}`, via, 'paused')
-        await pauseBtn.waitFor({ timeout: 10_000 })
+        await pauseBtn.waitFor({ timeout: t(10_000) })
         chk4((await pressed()) === 'true', `paused, remount via ${label}: Pause motion is still pressed`, await pressed())
       }
     }
@@ -1371,15 +1592,17 @@ try {
     // After the 40-agent stress and the cue phases a SwiftShader runner can take longer to end the last session and show
     // the new run (CI windows-latest hit the 15 s default here twice): this one start waits longer. 45 s was not enough
     // either: on 2026-11-23 three windows-latest runs timed out here with the run already on screen and idle (tab
-    // "R14 Factory floor large team Idle", End session shown) but its run-meta not drawn yet, so the wait is 120 s.
-    await startLiveRun('Factory floor large team', 120_000)
-    const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 150_000)
+    // "R14 Factory floor large team Idle", End session shown) but its run-meta not drawn yet, so the wait was 120 s. The
+    // renderer applies 121 spawns a render at a time: on two cores at a 6x throttle the run view took 113 s to show (and a
+    // first try at 120 s failed once), and the stress phase before it took windows-latest 203 s, so the waits follow the renderer.
+    await startLiveRun('Factory floor large team', 300_000)
+    const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 240_000)
     chk6(!!bigState, `large team: ${LARGE + 1} agents (root and ${LARGE} spawns) are on the floor`, await state().then((s) => s.workers.length).catch(() => null))
     if (bigState) {
       const n = bigState.workers.length
-      await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: 15_000 }).catch(() => {})
+      await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: t(15_000) }).catch(() => {})
       const notice = page.locator('[data-testid=factory-notice]').first()
-      await notice.waitFor({ timeout: 15_000 }).catch(() => {})
+      await notice.waitFor({ timeout: t(15_000) }).catch(() => {})
       const fin = (await untilState((s) => s.reason === 'too-many' && s.workers.length === n, 15_000)) ?? (await state())
       chk6(n > 120, 'large team: more than 120 agents', n)
       chk6(fin.renderer === 'floor-plan' && fin.reason === 'too-many', 'large team: the test state says floor-plan with reason too-many', { renderer: fin.renderer, reason: fin.reason })
@@ -1396,7 +1619,7 @@ try {
         await resizeTo(w, h)
         for (const theme of ['dark', 'light']) {
           await setAppearance({ theme })
-          await notice.waitFor({ timeout: 10_000 }).catch(() => {})
+          await notice.waitFor({ timeout: t(10_000) }).catch(() => {})
           chk6(await noPageScroll(), `large team: no page scroll at ${w}x${h} ${theme}`)
           await shot(`notice-large-team-${theme}-${w}x${h}`)
         }
@@ -1429,11 +1652,11 @@ try {
       }, presentation)
     /** The scene is mounted again: its renderer is chosen and (3D) the first frame's perf is in the state. */
     const mounted = async () => {
-      await scene('live').waitFor({ timeout: 20_000 })
-      await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: 20_000 })
+      await scene('live').waitFor({ timeout: t(20_000) })
+      await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: t(20_000) })
       const kind = await scene('live').getAttribute('data-renderer')
       if (kind === 'webgl2') {
-        await page.locator('[data-testid=factory-canvas]').first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
+        await page.locator('[data-testid=factory-canvas]').first().waitFor({ state: 'attached', timeout: t(15_000) }).catch(() => {})
         return untilPerf(15_000)
       }
       return untilState((s) => s.mode === 'live', 15_000)
@@ -1459,7 +1682,7 @@ try {
     const t0 = Date.now()
     for (let i = 1; i <= 20; i++) {
       await setPresentationFast('graph')
-      await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+      await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: t(15_000) }).catch(() => {})
       await setPresentationFast('factory-floor')
       const st = await mounted()
       const canvases = await page.locator('[data-testid=factory-canvas]').count()
@@ -1496,8 +1719,8 @@ try {
   // ---------- Forced floor plan, notices, Use Graph (Live scene, reads the key at mount) ----------
   await setKey('floor-plan')
   await remount()
-  await scene('live').waitFor({ timeout: 15_000 })
-  await page.waitForFunction(() => document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer') === 'floor-plan', null, { timeout: 10_000 }).catch(() => {})
+  await scene('live').waitFor({ timeout: t(15_000) })
+  await page.waitForFunction(() => document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer') === 'floor-plan', null, { timeout: t(10_000) }).catch(() => {})
   check((await scene('live').getAttribute('data-renderer')) === 'floor-plan', 'the developer key forces the floor plan')
   check((await scene('live').getAttribute('data-reason')) === 'forced', 'the forced floor plan reports reason forced')
   const forced = await state()
@@ -1516,8 +1739,8 @@ try {
   for (const [value, notice, retry] of [['no-webgl2', 'no-webgl2', false], ['chunk-failed', noWebgl2Here ? 'no-webgl2' : 'chunk-failed', !noWebgl2Here]]) {
     await setKey(value)
     await remount()
-    await scene('live').waitFor({ timeout: 15_000 })
-    await page.locator('[data-testid=factory-notice]').first().waitFor({ timeout: 15_000 }).catch(() => {})
+    await scene('live').waitFor({ timeout: t(15_000) })
+    await page.locator('[data-testid=factory-notice]').first().waitFor({ timeout: t(15_000) }).catch(() => {})
     const n = page.locator('[data-testid=factory-notice]').first()
     check((await n.count()) === 1 && (await n.getAttribute('data-notice')) === notice, `${value}: the ${notice} notice shows`, String(await n.getAttribute('data-notice').catch(() => null)))
     check((await scene('live').getAttribute('data-renderer')) === 'floor-plan' && (await scene('live').getAttribute('data-reason')) === notice, `${value}: the floor plan shows with reason ${notice}`)
@@ -1541,9 +1764,9 @@ try {
 
   // Use Graph returns to the graph canvas.
   await page.locator('[data-testid=factory-use-graph]').click()
-  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'graph', null, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'graph', null, { timeout: t(10_000) }).catch(() => {})
   check((await html('data-canvas-presentation')) === 'graph', 'Use Graph sets the presentation back to Graph')
-  await page.locator('.react-flow').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('.react-flow').first().waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await page.locator('.react-flow').count()) > 0, 'the graph canvas shows after Use Graph')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'the scene is gone after Use Graph')
 
@@ -1555,7 +1778,7 @@ try {
 
   // ---------- Pocket Office is still selectable ----------
   await setCanvas({ presentation: 'pocket-office' })
-  await page.locator('[data-testid=office-scene]').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await page.locator('[data-testid=office-scene]').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   check((await page.locator('[data-testid=office-scene]').count()) > 0, 'Pocket Office still mounts afterwards')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'no factory scene beside Pocket Office')
   await setCanvas({ presentation: 'graph' })
@@ -1567,7 +1790,7 @@ try {
   await setCanvas({ presentation: 'factory-floor' })
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
-  await page.locator('[data-testid=canvas-section]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=canvas-section]').waitFor({ timeout: t(10_000) })
   const readSamples = () =>
     page.evaluate(() =>
       [...document.querySelectorAll('[data-testid=factory-sample]')].map((el) => {
@@ -1586,7 +1809,7 @@ try {
     )
   for (const theme of ['dark', 'light']) {
     await setAppearance({ theme })
-    await page.waitForFunction((t) => { const i = document.querySelector('[data-testid=factory-sample-image]'); return !!i && i.getAttribute('data-sample-theme') === t && i.complete && i.naturalWidth > 0 }, theme, { timeout: 8000 }).catch(() => {})
+    await page.waitForFunction((t) => { const i = document.querySelector('[data-testid=factory-sample-image]'); return !!i && i.getAttribute('data-sample-theme') === t && i.complete && i.naturalWidth > 0 }, theme, { timeout: t(8000) }).catch(() => {})
     check((await html('data-theme')) === theme, `[slice6 sample] the app theme is ${theme}`, String(await html('data-theme')))
     const samples = await readSamples()
     check(samples.length >= 1 && samples.some((s) => s.preview), `[slice6 sample] ${theme}: the settings page shows the sample (the preview with Factory Floor chosen, and the thumbnail)`, `${samples.length} samples, ${samples.filter((s) => s.preview).length} previews`)

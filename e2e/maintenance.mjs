@@ -4,7 +4,7 @@
 // and delete the project. Finally checks the repository on disk.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, createProject, finish, git, gitSafe, launch, log, makeFixtureRepo, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, cleanup, createProject, finish, git, gitSafe, launch, log, makeFixtureRepo, projectTab, removeFixture, sleep, writeFile, t } from './lib.mjs'
 import { engagementEmptyChecks, limitsChecks } from './limits-checks.mjs'
 
 const NAME = 'E2E maintenance (orgai test)'
@@ -50,7 +50,7 @@ const notice = page.locator('#settings-section-maintenance > .draft-box')
 
 /** Wait for the maintenance notice to match. */
 async function waitNotice(re, ms = 30_000) {
-  const until = Date.now() + ms
+  const until = Date.now() + t(ms)
   let text = ''
   while (Date.now() < until) {
     text = (await notice.innerText().catch(() => '')).trim()
@@ -63,9 +63,9 @@ async function waitNotice(re, ms = 30_000) {
 /** Click the confirm button of the in-app ConfirmDialog (window.confirm is gone). */
 async function confirmDialog(button) {
   const dlg = page.locator('dialog[open]')
-  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.waitFor({ timeout: t(10_000) })
   await dlg.getByRole('button', { name: button, exact: true }).click()
-  await dlg.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await dlg.waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
 }
 
 try {
@@ -73,7 +73,7 @@ try {
   check(!!project, 'project created')
   await projectTab(page, 'Settings').click()
   await page.getByRole('tab', { name: 'Branches', exact: true }).click()
-  await page.waitForSelector('.maint-row', { timeout: 20_000 })
+  await page.waitForSelector('.maint-row', { timeout: t(20_000) })
   const count = await rows.count()
   check(count === 2, 'maintenance lists two pending branches', String(count))
   const rowA = rows.filter({ hasText: 'worktree-agent-cleanA' })
@@ -89,7 +89,7 @@ try {
   await rowA.getByRole('button', { name: /Merge into main checkout/ }).click()
   const merged = await waitNotice(/Merged worktree-agent-cleanA/)
   check(/Merged worktree-agent-cleanA/.test(merged), 'clean branch merged', merged)
-  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 1, null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 1, null, { timeout: t(15_000) }).catch(() => {})
   check((await rows.count()) === 1, 'merged branch disappears from the list')
 
   // The conflicting branch is reported and kept.
@@ -111,13 +111,13 @@ try {
   await confirmDialog('Discard branch')
   const discarded = await waitNotice(/Discarded worktree-agent-conflictB/)
   check(/Discarded/.test(discarded), 'conflicting branch discarded', discarded)
-  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: t(15_000) }).catch(() => {})
   check((await rows.count()) === 0, 'no pending branches left')
 
   // "Finished copies on this computer": a count and size, "None", or a stated failure; never a bare 0 or a blank.
   const copiesText = (await page.locator('[data-testid=finished-copies-size]').innerText().catch(() => '')).trim()
   check(/^(None|\d+ copies?( · (at least )?[\d.,]+ ?\w+)?|Measuring…|Could not be measured)$/.test(copiesText), 'finished copies shows a value or a stated unknown', copiesText)
-  await page.waitForFunction(() => !/Measuring/.test(document.querySelector('[data-testid=finished-copies-size]')?.textContent ?? ''), null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => !/Measuring/.test(document.querySelector('[data-testid=finished-copies-size]')?.textContent ?? ''), null, { timeout: t(15_000) }).catch(() => {})
   const copiesDone = (await page.locator('[data-testid=finished-copies-size]').innerText().catch(() => '')).trim()
   check(copiesDone !== '' && !/Measuring/.test(copiesDone), 'finished copies settles to a value or a stated unknown', copiesDone)
 
@@ -132,7 +132,7 @@ try {
   plantWithCommit('delG')
   plantWithCommit('delM')
   await page.getByRole('button', { name: 'Refresh', exact: true }).first().click()
-  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 3, null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 3, null, { timeout: t(15_000) }).catch(() => {})
   check((await rows.count()) === 3, 'delete-branch fixture: three report branches listed', String(await rows.count()))
   const rowF = rows.filter({ hasText: 'worktree-agent-delF' })
   const rowG = rows.filter({ hasText: 'worktree-agent-delG' })
@@ -153,27 +153,27 @@ try {
   await page.getByRole('tab', { name: 'Branches', exact: true }).evaluate((el) => el.parentElement?.querySelector('[role=tab]:not([aria-selected=true])')?.click())
   await sleep(500)
   await page.getByRole('tab', { name: 'Branches', exact: true }).click()
-  await page.waitForSelector('.maint-row', { timeout: 15_000 })
+  await page.waitForSelector('.maint-row', { timeout: t(15_000) })
   const mainSelect = page.getByLabel('Main branch', { exact: true })
   await mainSelect.selectOption('worktree-agent-delM')
-  await page.waitForFunction(() => document.querySelectorAll('[data-testid=delete-branch]').length === 2, null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid=delete-branch]').length === 2, null, { timeout: t(15_000) }).catch(() => {})
   check((await opener(rowM).count()) === 0, 'the main-branch row offers no Delete branch')
   check((await opener(rowF).count()) === 1 && (await opener(rowG).count()) === 1, 'the other report branches offer Delete branch')
 
   // Dialog: names the exact branch, focus starts on "Keep branch".
   await opener(rowF).click()
-  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.waitFor({ timeout: t(10_000) })
   const dlgText = (await dlg.innerText()).replace(/\s+/g, ' ')
   check(/worktree-agent-delF/.test(dlgText) && !/worktree-agent-delG/.test(dlgText), 'the dialog names the exact branch', dlgText)
   const focused = await page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
   check(focused === 'Keep branch', 'focus starts on "Keep branch"', focused)
   await page.keyboard.press('Escape')
-  await dlg.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await dlg.waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   check(exists('worktree-agent-delF'), 'Escape deletes nothing')
   await opener(rowF).click()
-  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.waitFor({ timeout: t(10_000) })
   await dlg.getByRole('button', { name: 'Keep branch', exact: true }).click()
-  await dlg.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+  await dlg.waitFor({ state: 'detached', timeout: t(10_000) }).catch(() => {})
   check(exists('worktree-agent-delF'), '"Keep branch" deletes nothing')
 
   // A held Enter on the opener (auto-repeat) cannot confirm; neither can a double click.
@@ -195,7 +195,7 @@ try {
 
   // A confirmed delete removes exactly that branch (and its finished copy).
   await opener(rowF).click()
-  await dlg.waitFor({ timeout: 10_000 })
+  await dlg.waitFor({ timeout: t(10_000) })
   await dlg.getByRole('button', { name: 'Delete branch', exact: true }).click()
   const deletedNote = await waitNotice(/Deleted worktree-agent-delF/)
   check(/Deleted worktree-agent-delF/.test(deletedNote), 'a confirmed delete reports the branch', deletedNote)
@@ -208,7 +208,7 @@ try {
     await confirmDialog('Discard branch')
     await waitNotice(new RegExp(`Discarded worktree-agent-${id}`))
   }
-  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelectorAll('.maint-row').length === 0, null, { timeout: t(15_000) }).catch(() => {})
 
   await page.getByRole('button', { name: /Remove OrgAI files from repository/ }).click()
   await confirmDialog('Remove files')

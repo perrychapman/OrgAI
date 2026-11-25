@@ -10289,8 +10289,12 @@ export interface RunHold {
   since: number
   /** One plain OrgAI-written sentence (never a raw provider message). */
   reason: string
-  /** 'budget' and 'spend-limit': which limit, what it is and what was spent (estimated USD). */
-  budget?: { scope: 'run' | 'conversation' | 'day' | 'month'; limitUsd: number; spentUsd: number; resetsAt?: number }
+  /**
+   * 'budget' and 'spend-limit': which limit, what it is and what was spent (estimated USD). `unpriced: true` ('budget' only):
+   * the run did not use up the limit; part of its cost has no known price, so the limit could not be enforced and the run
+   * stopped (`spentUsd` is the known part only). Absent on every other hold.
+   */
+  budget?: { scope: 'run' | 'conversation' | 'day' | 'month'; limitUsd: number; spentUsd: number; resetsAt?: number; unpriced?: true }
   /** 'provider': the connection and the last error in OrgAI's words. */
   provider?: { connection?: ConnectionId; error?: string; lastOkAt?: number; tries?: number }
   /** 'agent-failed': the agent that failed. */

@@ -1,6 +1,6 @@
 // Shared checks for the Spending limits page and the empty engagement Home (UI overhaul H2 and M12). Token-free (mock
 // adapter); called from maintenance.mjs so it keeps its own project, data dir and cleanup. Not a script of its own.
-import { check, deleteProject, findProject, gotoProjects, openProject, openProjectForm, pickSetup, projectTab, sleep } from './lib.mjs'
+import { check, checkRadio, deleteProject, findProject, gotoProjects, openProject, openProjectForm, pickSetup, projectTab, sleep } from './lib.mjs'
 
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 
@@ -149,7 +149,7 @@ export async function engagementEmptyChecks({ app, page, shot, name, dir }) {
   const tag = 'engagement first use'
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
   await pickSetup(form, true)

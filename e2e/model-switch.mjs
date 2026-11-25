@@ -1,5 +1,5 @@
 // Token-free: explicit model changes and recovery retain the conversation.
-import { check, finish, launch, log, makeFixtureRepo, removeFixture, setReduceMotion, sleep } from './lib.mjs'
+import { check, finish, launch, log, makeFixtureRepo, removeFixture, setReduceMotion, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const repo = makeFixtureRepo('model-switch')
@@ -18,10 +18,28 @@ const start = async (kind, projectId, marker) => page.evaluate(async ({ kind, pr
 // it too before acting on the picker (CI macOS: both Apply failures showed exactly that refusal).
 async function viewShowsMainStatus() {
   const status = await page.evaluate(async (id) => (await window.orgai.runs.get(id)).summary.status, viewRunId)
-  await view.waitForFunction((want) => document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus === want, status, { timeout: 15000 }).catch(async (error) => {
+  await view.waitForFunction((want) => document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus === want, status, { timeout: t(15000) }).catch(async (error) => {
     const shown = await view.evaluate(() => ({ status: document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus, tab: document.querySelector('.run-tab[aria-selected=true]')?.closest('[data-run]')?.getAttribute('data-run') })).catch(() => ({}))
     throw new Error(`run window status never matched main for ${viewRunId}: main "${status}", window ${JSON.stringify(shown)}. ${error.message}`)
   })
+}
+/**
+ * Say why a wait on the picker failed: the line it shows, the busy flag, the Apply label, the window's and main's run status
+ * and the run window's last status changes. A bare Playwright timeout hid the cause twice (macOS CI 2026-11-24).
+ */
+async function whyStuck(label, error) {
+  const mainStatus = await page.evaluate(async (id) => (await window.orgai.runs.get(id))?.summary.status, viewRunId).catch(() => 'unreadable')
+  const shown = await view.evaluate(() => ({
+    error: document.querySelector('[data-testid=live-model-error]')?.textContent ?? null,
+    pending: document.querySelector('[data-testid=live-model-pending]')?.textContent ?? null,
+    apply: document.querySelector('[data-testid=live-model-apply]')?.textContent ?? null,
+    confirm: !!document.querySelector('[data-testid=live-model-confirm]'),
+    busy: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('aria-busy') ?? null,
+    windowStatus: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('data-run-status') ?? null,
+    statusLog: window.modelStatusLog?.slice(-12)
+  })).catch(() => ({}))
+  log(`${label}: ${JSON.stringify({ mainStatus, ...shown })}`)
+  throw error
 }
 async function open(run) {
   viewRunId = run.id
@@ -33,12 +51,16 @@ async function open(run) {
     await sleep(100)
   }
   if (!view) throw new Error('Run window did not open')
-  await view.locator('[data-testid=live-model-change]').waitFor({ timeout: 20000 })
+  await view.locator('[data-testid=live-model-change]').waitFor({ timeout: t(20000) })
   // The window must show the run it was opened for. A second window once settled onto another window's remembered tab
   // (shared localStorage) and every later status check compared the wrong run (CI macOS: viewShowsMainStatus timed out).
-  await view.waitForFunction((id) => document.querySelector('.run-tab[aria-selected=true]')?.closest('[data-run]')?.getAttribute('data-run') === id, run.id, { timeout: 15000 })
+  await view.waitForFunction((id) => document.querySelector('.run-tab[aria-selected=true]')?.closest('[data-run]')?.getAttribute('data-run') === id, run.id, { timeout: t(15000) })
   await view.evaluate(() => {
     window.modelFocusTrace = []
+    window.modelStatusLog = []
+    new MutationObserver((records) => {
+      for (const r of records) if (r.target.getAttribute?.('data-testid') === 'live-model-switch') window.modelStatusLog.push([Math.round(performance.now()), r.target.getAttribute('data-run-status')])
+    }).observe(document.body, { attributes: true, attributeFilter: ['data-run-status'], subtree: true })
     const record = (event) => {
       const panel = document.querySelector('[data-testid=live-model-picker]')
       window.modelFocusTrace.push({ at: performance.now(), type: event.type, key: event.key, old: event.oldState, next: event.newState, target: event.target?.getAttribute?.('data-testid'), active: document.activeElement?.getAttribute('data-testid'), nativeOpen: panel?.matches(':popover-open'), expanded: document.querySelector('[data-testid=live-model-change]')?.getAttribute('aria-expanded'), inert: panel?.inert })
@@ -54,11 +76,11 @@ async function choose(connection) {
   await trigger.focus()
   await view.keyboard.press('Enter')
   await view.waitForFunction(() => document.activeElement?.matches('[data-testid=live-model-search]'))
-  await view.locator('[data-testid=live-model-choice]').first().waitFor({ timeout: 15000 })
+  await view.locator('[data-testid=live-model-choice]').first().waitFor({ timeout: t(15000) })
   connection ||= await view.evaluate(() => document.querySelector('[data-testid=live-model-choice]:checked')?.dataset.connection)
   const adapter = await view.evaluate(() => document.querySelector('[data-testid=live-model-choice]:checked')?.dataset.adapter)
   const select = view.locator(`[data-testid=live-model-choice]${connection ? `[data-connection="${connection}"]` : ''}${adapter ? `[data-adapter="${adapter}"]` : ''}`)
-  await select.first().waitFor({ timeout: 15000 })
+  await select.first().waitFor({ timeout: t(15000) })
   const current = await view.evaluate(() => document.querySelector('[data-testid=live-model-choice]:checked')?.value)
   const values = await select.evaluateAll((options) => options.filter((o) => !o.disabled).map((o) => o.value))
   const next = values.find((value) => value !== current)
@@ -88,8 +110,14 @@ try {
     const offline = await start('chat', '', '[mock:model-switch]')
     await open(offline)
     await view.locator('[data-testid=live-model-change]').click()
-    await view.getByText('No connection is connected.', { exact: false }).waitFor()
-    check(await view.locator('[data-testid=live-model-apply]').isDisabled(), 'offline selection explains unavailable connection and disables Apply')
+    // A machine with a signed-in Claude CLI lists models for an unconnected connection (Windows dev box, 2026-11-24): the
+    // explanation only exists when the catalog is empty, so check it only then.
+    const explained = view.getByText('No connection is connected.', { exact: false })
+    const listed = view.locator('[data-testid=live-model-choice]').first()
+    await explained.or(listed).first().waitFor({ timeout: t(30000) })
+    if (await explained.isVisible()) check(await view.locator('[data-testid=live-model-apply]').isDisabled(), 'offline selection explains unavailable connection and disables Apply')
+    else log('SKIP offline explanation: this machine lists models without a connected connection')
+    await view.keyboard.press('Escape')
     await page.evaluate((id) => window.orgai.runs.stop(id), offline.id)
   } else log('SKIP offline-only feedback: an initial connection is connected')
   const { project, primary, alternative } = await page.evaluate(async (repo) => {
@@ -117,7 +145,7 @@ try {
   check(await view.locator('.composer textarea').inputValue() === 'Keep initial conversation draft.', 'initial quick handoff restores retained draft')
   for (const kind of ['chat', 'mcp', 'skills', 'setup', 'work']) {
     let run = await start(kind, project.id, '[mock:model-switch]')
-    await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id, { timeout: 20000 })
+    await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id, { timeout: t(20000) })
     // Mock starts can retain Anthropic independently of the chosen default. Route
     // through a real saved continuation so the matrix never needs a local login.
     if (run.connection !== primary) {
@@ -127,7 +155,7 @@ try {
         await window.orgai.runs.switchModel({ runId: id, connection, model: models[0].id })
         return window.orgai.runs.continue({ runId: id, text: '[mock:model-switch]' })
       }, { id: run.id, connection: primary })
-      await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id, { timeout: 20000 })
+      await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id, { timeout: t(20000) })
     }
     await open(run)
     await view.waitForFunction(() => !document.querySelector('[data-testid=live-model-current]')?.textContent.includes('unavailable'))
@@ -162,7 +190,7 @@ try {
       const search = view.locator('[data-testid=live-model-search]')
       await search.waitFor()
       // The component focuses the search in a requestAnimationFrame after the popover opens, so wait (bounded) for it.
-      await view.waitForFunction(() => document.activeElement?.matches('[data-testid=live-model-search]'), undefined, { timeout: 5000 }).catch(() => {})
+      await view.waitForFunction(() => document.activeElement?.matches('[data-testid=live-model-search]'), undefined, { timeout: t(5000) }).catch(() => {})
       check(await search.evaluate((el) => el === document.activeElement), `picker opens with focus in search (active: ${await view.evaluate(() => { const a = document.activeElement; return a ? `${a.tagName.toLowerCase()}[${a.getAttribute('data-testid') || ''}]` : 'none' })})`)
       await search.fill('no-model-can-match-this')
       await view.getByText('No models match your search.').waitFor()
@@ -227,13 +255,28 @@ try {
         await view.locator('[data-testid=live-model-cancel]').click()
       }
       await choose(primary)
-      await page.evaluate((id) => window.orgai.runs.send({ runId: id, text: 'A long reply to interrupt. '.repeat(200) }), run.id)
+      // The token holds the mock's turn running until the interrupt below releases it. Without it the turn ended after a mock
+      // delay of its own and a slow renderer pressed "Interrupt and switch" on a run that had gone idle in between
+      // ("The session state changed (running to idle)", the picker stays open: macOS CI 2026-11-24).
+      await page.evaluate((id) => window.orgai.runs.send({ runId: id, text: `${'A long reply to interrupt. '.repeat(200)} [mock:model-switch-hold]` }), run.id)
       const interrupt = view.locator('[data-testid=live-model-apply]')
       await interrupt.filter({ hasText: 'Interrupt and switch' }).waitFor()
       await interrupt.focus()
       await view.keyboard.press('Enter')
       await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id)
-      await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden' })
+      // The switch closes the picker once the run is idle and main has applied the model (a bounded wait of 100 reads inside
+      // performModelSwitch). If it stays open say why (the line it shows, the run's status and selection), so a slow runner's
+      // failure is a finding and not a bare timeout (macOS CI 2026-11-24: 30 s, no reason kept).
+      await view.locator('[data-testid=live-model-picker]').waitFor({ state: 'hidden', timeout: t(60_000) }).catch(async (error) => {
+        const why = await view.evaluate(() => ({
+          error: document.querySelector('[data-testid=live-model-error]')?.textContent ?? null,
+          pending: document.querySelector('[data-testid=live-model-pending]')?.textContent ?? null,
+          busy: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('aria-busy') ?? null,
+          status: document.querySelector('[data-testid=live-model-switch]')?.getAttribute('data-run-status') ?? null
+        })).catch(() => ({}))
+        log(`busy interrupt: the picker stayed open: ${JSON.stringify(why)}`)
+        throw error
+      })
       check(await view.locator('[data-testid=live-model-change]').evaluate((el) => el === document.activeElement), 'busy interrupt then Apply restores keyboard focus')
       check(await view.locator('.composer textarea').inputValue() === 'Keep this unsent message while changing models.', 'busy interrupt retains unsent draft')
     }
@@ -241,7 +284,7 @@ try {
     await page.waitForFunction(async (id) => {
       const record = await window.orgai.runs.get(id)
       return JSON.stringify(record.transcript).includes(`Mock reply (${record.summary.modelSelection.model})`)
-    }, run.id, { timeout: 20000 })
+    }, run.id, { timeout: t(20000) })
     check(true, `${kind} next reply uses selected model`)
     if (kind === 'chat') {
       await page.waitForFunction(async (id) => (await window.orgai.runs.get(id))?.summary.status === 'idle', run.id)
@@ -250,7 +293,7 @@ try {
       check(await view.locator(`[data-testid=live-model-choice][value="${next}"]`).count() >= 2, 'duplicate model ids retain separate connection identities')
       await view.locator('[data-testid=live-model-apply]').focus()
       await view.keyboard.press('Enter')
-      await view.locator('[data-testid=live-model-confirm]').waitFor()
+      await view.locator('[data-testid=live-model-confirm]').waitFor({ timeout: t(30_000) }).catch((error) => whyStuck('handoff confirmation never appeared', error))
       await view.screenshot({ path: 'e2e/shots/model-switch-handoff-confirmation.png' })
       await view.getByRole('button', { name: 'Cancel', exact: true }).click()
       await view.locator('[data-testid=live-model-search]').waitFor()
@@ -295,7 +338,7 @@ try {
   }
   for (const marker of ['[mock:model-switch-limit]', '[mock:model-switch-error]']) {
     const run = await start('chat', project.id, marker)
-    await page.waitForFunction(async (id) => ['paused', 'error'].includes((await window.orgai.runs.get(id))?.summary.status), run.id, { timeout: 20000 })
+    await page.waitForFunction(async (id) => ['paused', 'error'].includes((await window.orgai.runs.get(id))?.summary.status), run.id, { timeout: t(20000) })
     await page.evaluate((id) => window.orgai.runs.cancelAutoResume(id), run.id)
     await open(run)
     const before = await page.evaluate((id) => window.orgai.runs.get(id), run.id)

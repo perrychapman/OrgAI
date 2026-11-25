@@ -8,7 +8,7 @@
 // The Notes tab and the toolbar mount come from the detail shell; the revise dialog is asserted only if it renders.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, settleMotion, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, finish, launch, makeFixtureRepo, projectTab, screenshot, setThemeAndWait, setWindowSize, settleMotion, sleep, t, errDetail } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E notes (orgai test)'
@@ -50,21 +50,10 @@ await app.evaluate((_e, file) => {
   process.env.ORGAI_MOCK_SCRIPT = file
 }, scriptFile)
 
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(600)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(500)
-}
+const setSize = (w, h) => setWindowSize(app, page, w, h, 600)
+const setTheme = (theme) => setThemeAndWait(page, theme, 500)
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true
@@ -109,35 +98,35 @@ async function startRun() {
   await projectTab(page, 'Live').click()
   if (!(await page.locator('.new-run').count())) {
     await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 8000 })
+    await page.locator('.new-run').waitFor({ timeout: t(8000) })
   }
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill('Produce the files')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
 }
 async function openRunOutputsTab() {
   await projectTab(page, 'Live').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   const railed = page.locator('aside.side-panel[data-collapsed=true]')
   if (await railed.count()) {
     await railed.getByRole('button', { name: /^Show run panel/ }).click()
     await sleep(400)
   }
   const tab = page.locator('[data-testid=side-tab-outputs]')
-  await tab.waitFor({ state: 'visible', timeout: 8000 })
+  await tab.waitFor({ state: 'visible', timeout: t(8000) })
   if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click()
-  await page.locator('[data-testid=run-outputs-list], [data-testid=output-detail]').first().waitFor({ timeout: 8000 })
+  await page.locator('[data-testid=run-outputs-list], [data-testid=output-detail]').first().waitFor({ timeout: t(8000) })
 }
 async function show(kind) {
   const back = page.locator('[data-testid=run-output-back]')
   if (await back.count()) {
     await back.click()
-    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: 5000 })
+    await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: t(5000) })
   }
   await page.locator(`[data-testid=run-output-row][data-kind=${kind}]`).locator('[data-testid=run-output-show]').click()
-  await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: 8000 })
+  await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: t(8000) })
   await toTab('preview')
 }
 /**
@@ -145,13 +134,13 @@ async function show(kind) {
  * note tools live on Preview; the list, its filter, Resolve, Edit, Delete and "Revise with notes" on Notes.
  */
 async function toTab(which) {
-  const t = detail().locator(`[data-testid=output-tab-${which}]`)
-  if (!(await t.count())) return
-  if ((await t.getAttribute('aria-selected')) !== 'true') await t.click()
+  const tab = detail().locator(`[data-testid=output-tab-${which}]`)
+  if (!(await tab.count())) return
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click()
   await detail()
     .locator(which === 'notes' ? '[data-testid=output-notes]' : '[data-testid=output-preview]')
     .first()
-    .waitFor({ timeout: 8000 })
+    .waitFor({ timeout: t(8000) })
     .catch(() => undefined)
 }
 const addBtn = () => detail().locator('[data-testid=output-note-add]').first()
@@ -164,16 +153,16 @@ const addIsMenu = async () => (await addBtn().getAttribute('aria-haspopup')) ===
 // the items current. The trigger reports expanded one task after the click (the platform's toggle event).
 const openAddMenu = async () => {
   if ((await addBtn().getAttribute('aria-expanded')) !== 'true') await addBtn().click()
-  await detail().locator('[data-testid=output-note-add][aria-expanded=true]').waitFor({ state: 'attached', timeout: 4000 })
-  await detail().locator('[data-testid=output-note-menu][data-state=in]').waitFor({ state: 'attached', timeout: 4000 })
-  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'visible', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-add][aria-expanded=true]').waitFor({ state: 'attached', timeout: t(4000) })
+  await detail().locator('[data-testid=output-note-menu][data-state=in]').waitFor({ state: 'attached', timeout: t(4000) })
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'visible', timeout: t(4000) })
 }
 const closeAddMenu = async () => {
   if ((await addBtn().getAttribute('aria-expanded')) !== 'true') return
   await page.keyboard.press('Escape')
   // Closed for real: the trigger says so and the retained exit render is gone, so nothing can take focus from the viewport.
-  await detail().locator('[data-testid=output-note-add][aria-expanded=false]').waitFor({ state: 'attached', timeout: 4000 })
-  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'detached', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-add][aria-expanded=false]').waitFor({ state: 'attached', timeout: t(4000) })
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'detached', timeout: t(4000) })
 }
 const addEnabled = async () => {
   if (!(await addIsMenu())) return (await addBtn().getAttribute('aria-disabled')) !== 'true'
@@ -196,13 +185,13 @@ const composer = () => page.locator('[data-testid=output-note-composer]')
 const liveText = async () => clean(await page.locator('[data-testid=output-live], [data-testid=output-live-temp]').allInnerTexts().then((a) => a.join(' ')))
 
 async function typeNote(text) {
-  await composer().waitFor({ state: 'visible', timeout: 4000 })
+  await composer().waitFor({ state: 'visible', timeout: t(4000) })
   const ta = composer().locator('textarea')
   check(await ta.evaluate((el) => document.activeElement === el), 'the composer takes focus in its field')
   check((await composer().locator('label', { hasText: 'Note' }).count()) === 1, 'the composer field is labelled "Note"')
   await ta.fill(text)
   await page.keyboard.press('Control+Enter')
-  await composer().waitFor({ state: 'hidden', timeout: 4000 })
+  await composer().waitFor({ state: 'hidden', timeout: t(4000) })
 }
 /** Select the first occurrence of `needle` in the text of `scope` (a CSS selector). */
 const selectText = (scope, needle) =>
@@ -253,6 +242,32 @@ async function textFlow(label) {
   await page.keyboard.press('Escape')
   await composer().waitFor({ state: 'hidden' })
   check(await addBtn().evaluate((el) => document.activeElement === el), `${label}: Esc closes the composer and focus returns to Add note`)
+  // The hand-back after Esc runs on a timer. A busy or throttled window (CI windows-latest: the composer opened again with
+  // focus on Add note, not in its field) runs it late, after the person has already reopened the composer and started to
+  // type: the late focus must not pull them out of the field. Timers of 100 ms or less are held for 1.5 s here, so the
+  // order (Esc, reopen, the late hand-back) is the same on every machine.
+  await page.locator(src).focus()
+  check(await selectText(src, 'quick brown fox'), `${label}: (late hand-back) selected again`)
+  await page.keyboard.press('Control+Shift+m')
+  await composer().waitFor({ state: 'visible' })
+  await page.evaluate(() => {
+    const real = window.setTimeout.bind(window)
+    window.__realSetTimeout = real
+    window.setTimeout = (cb, ms, ...rest) => real(cb, (ms ?? 0) <= 100 ? 1500 : ms, ...rest)
+  })
+  await page.keyboard.press('Escape')
+  await composer().waitFor({ state: 'hidden' })
+  await page.locator(src).focus()
+  check(await selectText(src, 'quick brown fox'), `${label}: (late hand-back) selected once more`)
+  await page.keyboard.press('Control+Shift+m')
+  await composer().waitFor({ state: 'visible' })
+  await sleep(2000)
+  check(await composer().locator('textarea').evaluate((el) => document.activeElement === el), `${label}: a late hand-back after Esc does not pull focus out of the reopened composer`, await page.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.getAttribute('data-testid') ?? ''}`))
+  await page.evaluate(() => {
+    window.setTimeout = window.__realSetTimeout
+  })
+  await page.keyboard.press('Escape')
+  await composer().waitFor({ state: 'hidden' })
   // Ctrl+Shift+M from the preview.
   await page.locator(src).focus()
   check(await selectText(src, 'quick brown fox'), `${label}: reselected`)
@@ -400,7 +415,7 @@ async function regionFlow(label) {
   await clearNotes()
   await show('mermaid')
   const vp = detail().locator('[data-testid=diagram-viewport]').first()
-  await vp.waitFor({ timeout: 30_000 })
+  await vp.waitFor({ timeout: t(30_000) })
   await sleep(500)
   check(/Mark an area to add a note\./.test(clean(await detail().locator('[data-testid=output-note-hint]').innerText())), `${label}: the hint names an area`)
   check((await detail().locator('[data-testid=output-note-region]').count()) === 0, `${label}: the Off / Box / Circle row is not in the toolbar at rest`)
@@ -416,7 +431,7 @@ async function regionFlow(label) {
   const before = await vp.evaluate((el) => ({ x: el.dataset.x, y: el.dataset.y }))
   await vp.focus()
   await page.keyboard.press('Enter')
-  await page.locator('[data-testid=diagram-viewport] .output-region-shape.draft').first().waitFor({ timeout: 3000 })
+  await page.locator('[data-testid=diagram-viewport] .output-region-shape.draft').first().waitFor({ timeout: t(3000) })
   const box0 = await vp.locator('.output-region-shape.draft').first().evaluate((el) => el.getBoundingClientRect().toJSON())
   for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight')
   await page.keyboard.press('Shift+ArrowDown')
@@ -509,7 +524,7 @@ try {
       try {
         await fn(label)
       } catch (e) {
-        check(false, `${label}: ${name} notes`, e.message.split('\n')[0])
+        check(false, `${label}: ${name} notes`, errDetail(e))
       }
     }
   }

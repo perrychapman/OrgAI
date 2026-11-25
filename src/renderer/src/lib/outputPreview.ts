@@ -28,6 +28,8 @@ export function sheetCellText(cell: SheetCell | null | undefined): string {
     if (fmt.includes('0.00')) return fixed(v, 2, fmt.includes(','))
     if (fmt.includes(',') && fmt.includes('#,##0')) return fixed(v, 0, true)
   }
+  // A computed number carries float noise (6.8500000000000005); a spreadsheet shows 15 significant digits, so does this.
+  if (typeof v === 'number' && Number.isFinite(v)) return String(Number(v.toPrecision(15)))
   return String(v)
 }
 

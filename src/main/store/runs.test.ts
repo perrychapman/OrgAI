@@ -664,6 +664,11 @@ describe('boot normalization of UI overhaul run fields (untrusted file)', () => 
     expect(n({ hold: full }).hold).toEqual(full)
   })
 
+  it('keeps budget.unpriced only when it is exactly true', () => {
+    expect(n({ hold: { ...hold, budget: { ...hold.budget, unpriced: true } } }).hold?.budget).toEqual({ ...hold.budget, unpriced: true })
+    for (const unpriced of [false, 1, 'true', null]) expect(n({ hold: { ...hold, budget: { ...hold.budget, unpriced } } }).hold?.budget).toEqual(hold.budget)
+  })
+
   it('keeps provider.tries when it is a positive integer and drops only that field otherwise', () => {
     expect(n({ hold: { ...hold, provider: { connection: 'anthropic', tries: 4 } } }).hold?.provider).toEqual({ connection: 'anthropic', tries: 4 })
     for (const tries of [0, -1, 1.5, NaN, Infinity, '3', null, {}]) {

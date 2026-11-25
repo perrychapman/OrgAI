@@ -474,6 +474,13 @@ describe('navigateSender', () => {
     expect(main.flashFrame).toHaveBeenCalledWith(true)
     expect(main.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
   })
+  it('ORGAI_QUIET: no flash, same delivery and still no focus', () => {
+    const main = { ...win(), flashFrame: vi.fn() }
+    expect(navigateSender(() => null, () => [[main, undefined]], true)(EVENT)).toBe(true)
+    expect(main.flashFrame).not.toHaveBeenCalled()
+    expect(main.focus).not.toHaveBeenCalled()
+    expect(main.webContents.send).toHaveBeenCalledWith(IPC.appNavigate, EVENT)
+  })
   it('queues for a main window whose renderer has not reported ready', () => {
     const fresh = win(true)
     expect(navigateSender(() => fresh, () => [[fresh, undefined]])(EVENT)).toBe(true)

@@ -41,6 +41,16 @@ export interface NotifierDeps {
   categoryEnabled?(category: NotifyCategory): boolean
   /** Absolute PNG path for Linux notifications; never used on Windows or macOS. */
   iconPath?(): string | undefined
+  /**
+   * Test plumbing (ORGAI_QUIET=1, quietMode.ts), fixed at process start: no OS notification is shown, no taskbar flash, no
+   * Dock bounce. Every decision before that last step is made as usual.
+   */
+  quiet?: boolean
+  /**
+   * Bring a window forward after a notification click (index.ts passes `showWindow`, which decides the show mode: a hidden
+   * test window is never activated). Missing = restore, show and focus directly.
+   */
+  reveal?(win: BrowserWindow): void
 }
 
 /**
@@ -101,11 +111,11 @@ export class Notifier {
     if (!body || !run) return
     if (BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isFocused())) return
 
-    if (isRequest && process.platform === 'win32') {
+    if (isRequest && process.platform === 'win32' && !this.deps.quiet) {
       for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.flashFrame(true)
     }
     // macOS: bounce the Dock icon until the user returns (no-op when the app is frontmost, which we ruled out above).
-    if (isRequest && process.platform === 'darwin') app.dock?.bounce('critical')
+    if (isRequest && process.platform === 'darwin' && !this.deps.quiet) app.dock?.bounce('critical')
     // macOS shows notifications only after the user allows them (System Settings > Notifications > OrgAI). An
     // unsigned or ad-hoc build may be listed under Electron or not at all; a signed build is reliable.
     if (!this.deps.enabled() || !this.categoryOn(this.categoryOf(event, isRequest)) || !Notification.isSupported()) return
@@ -125,6 +135,7 @@ export class Notifier {
       this.focus(target)
     })
     notification.on('close', release)
+    if (this.deps.quiet) return
     this.alive.add(notification)
     notification.show()
   }
@@ -146,14 +157,11 @@ export class Notifier {
       if (input.target) this.focus(input.target)
       else {
         const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-        if (win) {
-          if (win.isMinimized()) win.restore()
-          win.show()
-          win.focus()
-        }
+        if (win) this.reveal(win)
       }
     })
     notification.on('close', release)
+    if (this.deps.quiet) return
     this.alive.add(notification)
     notification.show()
   }
@@ -243,10 +251,18 @@ export class Notifier {
       target
     )
     if (!win) return
+    this.reveal(win)
+    if (process.platform === 'win32') win.flashFrame(false)
+    win.webContents.send(IPC.appFocusRun, target)
+  }
+
+  private reveal(win: BrowserWindow): void {
+    if (this.deps.reveal) {
+      this.deps.reveal(win)
+      return
+    }
     if (win.isMinimized()) win.restore()
     win.show()
     win.focus()
-    if (process.platform === 'win32') win.flashFrame(false)
-    win.webContents.send(IPC.appFocusRun, target)
   }
 }

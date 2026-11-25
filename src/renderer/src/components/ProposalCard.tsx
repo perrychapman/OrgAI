@@ -538,7 +538,7 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
   const diff = diffOrgChart(base, payload.roles)
   return (
     <div className="org-diff">
-      <p className="org-diff-summary">{diff.summary}</p>
+      {/* The count ("1 added, 1 changed") is the card's summary line under the title; it is not repeated here. */}
       <p className="proposal-rationale">{showHidden(payload.rationale)}</p>
       {diff.added.length > 0 && (
         <div className="org-diff-group" role="group" aria-label="Added roles">

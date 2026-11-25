@@ -54,6 +54,26 @@ describe('holdOf with summary.hold', () => {
     expect(h?.facts).toContainEqual({ label: 'Spent', value: '$5.01' })
     expect(h?.facts).toContainEqual({ label: 'Limit', value: '$5.00' })
   })
+  it('budget stopped on an unknown price: says so, shows the known cost, never "Paused at the $X limit"', () => {
+    const hold = mk({ kind: 'budget', reason: 'No known price.', budget: { scope: 'run', limitUsd: 2.5, spentUsd: 0.007, unpriced: true }, actions: ['switchModel'] })
+    const h = holdOf({ ...base, hold }, null)
+    expect(h).toMatchObject({ kind: 'budget', word: 'Stopped', title: 'Stopped: part of this run has no known price', text: 'No known price.', limitUsd: 2.5, actions: ['switchModel'] })
+    expect(h?.facts).toEqual([{ label: 'Known cost', value: '$0.01' }, { label: 'Limit', value: '$2.50' }, { label: 'Since', value: expect.any(String) }])
+  })
+  it('an unpriced stop with a known cost too small for two decimals says "under $0.01", and none at all stays $0.00', () => {
+    const at = (spentUsd: number) => holdOf({ ...base, hold: mk({ kind: 'budget', budget: { scope: 'run', limitUsd: 2.5, spentUsd, unpriced: true }, actions: ['switchModel'] }) }, null)
+    expect(at(0.003)?.facts[0]).toEqual({ label: 'Known cost', value: 'under $0.01' })
+    expect(at(0.0049)?.facts[0]).toEqual({ label: 'Known cost', value: 'under $0.01' })
+    expect(at(0.005)?.facts[0]).toEqual({ label: 'Known cost', value: '$0.01' })
+    expect(at(0)?.facts[0]).toEqual({ label: 'Known cost', value: '$0.00' })
+  })
+  it('an unpriced stop never offers addBudget, even from a stale action list', () => {
+    const hold = mk({ kind: 'budget', budget: { scope: 'run', limitUsd: 2.5, spentUsd: 1, unpriced: true }, actions: ['addBudget', 'switchModel'] })
+    expect(holdOf({ ...base, hold }, null)?.actions).toEqual(['switchModel'])
+  })
+  it('the pill word is Paused for a used-up limit and Stopped only for an unpriced stop', () => {
+    expect(holdOf({ ...base, hold: mk({ kind: 'budget', budget: { scope: 'run', limitUsd: 5, spentUsd: 5 }, actions: ['addBudget', 'switchModel'] }) }, null)).toMatchObject({ word: 'Paused', actions: ['addBudget', 'switchModel'] })
+  })
   it('spend-limit: day scope and a reset time', () => {
     const hold = mk({ kind: 'spend-limit', budget: { scope: 'day', limitUsd: 20, spentUsd: 20, resetsAt: 2_000_000 } })
     const h = holdOf({ ...base, hold }, null)

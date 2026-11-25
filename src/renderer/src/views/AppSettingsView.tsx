@@ -200,15 +200,13 @@ function DisplayNameRow({ stored, onSaved }: { stored: string | undefined; onSav
           }}
         />
       }
+      description={<span id="display-name-hint">Used for the greeting on Home. It stays on this computer. Leave it empty for no name.</span>}
       hint={
-        <>
-          <span id="display-name-hint">Used for the greeting on the Dashboard. It stays on this computer. Leave it empty for no name.</span>
-          {error && (
-            <span className="field-error" id="display-name-error" role="alert" data-testid="display-name-error">
-              {error}
-            </span>
-          )}
-        </>
+        error ? (
+          <span className="field-error" id="display-name-error" role="alert" data-testid="display-name-error">
+            {error}
+          </span>
+        ) : undefined
       }
     />
   )

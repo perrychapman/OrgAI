@@ -58,7 +58,7 @@ and Inbox" and `.orgai/ARCHITECTURE.md` "UI overhaul", the project Home tab in `
 
 ## Deviations
 
-- **Opening a project:** it still lands on Live, not Home. Every area's e2e expects the composer after clicking `nav-project`.
+- **Opening a project:** the sidebar name row (and the palette's project entry) opens the project's Home (`openProjectHome`); open runs are their own rows under it (`nav-run`). Earlier it opened the default run, which hid Home. The e2e helper `openProject` in `lib.mjs` clicks the name and then the Live tab, so area scripts still land on the composer. Dashboard tiles still open Live on purpose.
 - **Welcome:**
   - The board's last button "Open OrgAI" leads to the start choice and the inline New project form, not to an empty Home. The project still has to be created.
   - Step 1 has no API-key or company-gateway cards. Connections are added in App settings, and the step lists the ones that exist.

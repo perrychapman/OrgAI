@@ -132,7 +132,7 @@ export default function Sidebar({
   const setView = useAppStore((s) => s.setView)
   const openUsage = useAppStore((s) => s.openUsage)
   const openSchedules = useAppStore((s) => s.openSchedules)
-  const openProject = useAppStore((s) => s.openProject)
+  const openProjectHome = useAppStore((s) => s.openProjectHome)
   const openAssistant = useAppStore((s) => s.openAssistant)
   const virtualProjects = useAppStore((s) => s.virtualProjects)
   const openRun = useAppStore((s) => s.openRun)
@@ -392,7 +392,7 @@ export default function Sidebar({
               const rs = statusOfRun(r, p, needsYou(r))
               const first = firstOf.get(r.summary.id) ?? r.summary
               const tag = runTag(indexes.get(first.id))
-              const here = active && viewedId === r.summary.id
+              const here = active && view === 'run' && viewedId === r.summary.id
               const orgChange = isOrgChangeRun(first)
               return (
                 <li key={r.summary.id}>
@@ -437,10 +437,8 @@ export default function Sidebar({
     titleLines: [p.path],
     railMark: initials(p.name, names),
     kind: projectKindOf(p) === 'engagement' ? 'engagement' : undefined,
-    onOpen: () => {
-      void openProject(p.id)
-      if (!inProject(view)) setView('run')
-    }
+    // The name opens the project's Home; its open runs are separate rows below it.
+    onOpen: () => openProjectHome(p.id)
   }))
   const entryById = new Map(projectEntries.map((e) => [e.id, e]))
   const grouping = groupByClient(projects)

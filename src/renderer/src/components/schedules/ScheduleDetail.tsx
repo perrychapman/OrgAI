@@ -35,7 +35,8 @@ export default function ScheduleDetail({ schedule, row, cost, history }: { sched
         <div className="schedule-detail-fact">
           <dt>Weekly cost</dt>
           <dd data-testid="schedule-detail-cost" data-known={cost.known} title={cost.basis}>
-            {cost.text}
+            {/* The label already says "Weekly cost", so an unknown figure reads "Unknown", not "Weekly cost unknown" twice. */}
+            {cost.known ? cost.text : 'Unknown'}
             <span className="sr-only">. {cost.basis}</span>
           </dd>
         </div>

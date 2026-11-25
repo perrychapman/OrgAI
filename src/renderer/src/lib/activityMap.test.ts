@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { activityMap, blockRange, freshNow, firstDayLabel, mapText, MIN_STRENGTH, todayText } from './activityMap'
 
 const at = (y: number, m: number, d: number, h = 12, min = 0): number => new Date(y, m - 1, d, h, min, 0).getTime()
@@ -69,6 +69,58 @@ describe('activityMap bucketing', () => {
     expect(day.cells[0].runs).toBe(2)
     expect(day.cells[1].runs).toBe(1)
     expect(m.total).toBe(3)
+  })
+})
+
+describe('activityMap across midnight (local days in any zone)', () => {
+  // A run that started at 23:50 and the same map read at 23:59 and at 00:01: the day column is the run's local day, so after
+  // midnight the run is one column left of today and today's own column is empty. A fake clock, not the wall clock.
+  const zones: [string, number][] = [['UTC', 0], ['America/Los_Angeles', 480], ['Pacific/Auckland', -780], ['Asia/Kolkata', -330]]
+  // Deleting TZ does not bring the system zone back in Node, so put the zone the file started in back by name.
+  const startZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  afterEach(() => {
+    process.env.TZ = startZone
+  })
+
+  for (const [zone, offset] of zones) {
+    it(`moves a run one column left when the clock passes midnight (${zone})`, () => {
+      process.env.TZ = zone
+      // the zone really changed (a test that ran in one zone only would prove nothing)
+      expect(new Date(2026, 10, 24, 12).getTimezoneOffset()).toBe(offset)
+      const started = new Date(2026, 10, 24, 23, 50).getTime()
+      const before = activityMap([r('a', started)], new Date(2026, 10, 24, 23, 59).getTime())
+      const after = activityMap([r('a', started)], new Date(2026, 10, 25, 0, 1).getTime())
+      expect(before.days[13].key).toBe('2026-11-24')
+      expect(before.days[13].cells[5].runs).toBe(1)
+      expect(before.today).toBe(1)
+      expect(after.days[13].key).toBe('2026-11-25')
+      expect(after.days[12].key).toBe('2026-11-24')
+      expect(after.days[12].cells[5].runs).toBe(1)
+      expect(after.days[13].total).toBe(0)
+      expect(after.today).toBe(0)
+      expect(after.total).toBe(1)
+    })
+  }
+
+  it('a run seeded N whole days back reads N columns left of the column of its original day, on either side of midnight', () => {
+    process.env.TZ = 'America/Los_Angeles'
+    const original = new Date(2026, 10, 24, 23, 50).getTime()
+    for (const n of [3, 5, 9]) {
+      for (const read of [new Date(2026, 10, 24, 23, 59).getTime(), new Date(2026, 10, 25, 0, 1).getTime()]) {
+        const m = activityMap([r('o', original), r('s', original - n * 24 * 60 * 60 * 1000)], read)
+        const cols = m.days.map((d, i) => (d.total > 0 ? i : -1)).filter((i) => i >= 0)
+        expect(cols).toHaveLength(2)
+        expect(cols[1] - cols[0]).toBe(n)
+        // the original day is today before midnight and yesterday after it
+        expect(cols[1]).toBe(read < new Date(2026, 10, 25).getTime() ? 13 : 12)
+      }
+    }
+  })
+
+  it('the tick can lag by a minute: freshNow lets the wall clock past midnight win', () => {
+    const tick = new Date(2026, 10, 24, 23, 59, 30).getTime()
+    const wall = new Date(2026, 10, 25, 0, 0, 20).getTime()
+    expect(activityMap([], freshNow(tick, wall)).days[13].key).toBe('2026-11-25')
   })
 })
 

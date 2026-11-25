@@ -105,8 +105,7 @@ function run(target: PaletteTarget): void {
       void s.openAssistant(target.id)
       return
     case 'project':
-      void s.openProject(target.projectId)
-      if (!PROJECT_VIEWS.includes(s.view)) s.setView('run')
+      s.openProjectHome(target.projectId)
       return
     case 'tab':
       s.setView(target.view as View)
@@ -161,7 +160,6 @@ export default function CommandPalette({
   const items = useMemo(() => (open ? buildPaletteItems(snapshotInput(tabs, activeView)) : []), [open, tabs, activeView])
   const sections = useMemo(() => sectionsFor(items, query), [items, query])
   const flat = useMemo(() => flatten(sections), [sections])
-  const shortcut = paletteShortcut()
 
   useEffect(() => {
     const el = ref.current
@@ -313,7 +311,9 @@ export default function CommandPalette({
               <kbd>Enter</kbd> open
             </span>
             <span className="palette-foot-fill" />
-            <span>{shortcut.text} to open</span>
+            <span>
+              <kbd>Esc</kbd> close
+            </span>
           </div>
           <div className="sr-only" role="status" aria-live="polite">
             {typed ? resultsPhrase(flat.length) : ''}

@@ -87,8 +87,14 @@ const OPTIONS_LARGEST = 50
 const TYPE_AHEAD_MS = 500
 const CARD_SHOW_MS = 60
 const CARD_HIDE_MS = 120
-/** Stage changes within this time of the last one are part of a window resize: the panel, sidebar and filter band follow a few frames later. */
-const WINDOW_RESIZE_MS = 300
+/**
+ * Stage changes within this time of the last one are part of a window resize: the panel (a 120 ms timer in SidePanel), sidebar
+ * and filter band (its compact flip is a second render) follow a few frames later. On a slow or busy machine one link of that
+ * chain can come more than 300 ms after the one before it (a CPU-throttled window showed it: the stage narrowed late and the
+ * graph stayed where the wider stage had put it), so the gap allowed is generous. It only widens what counts as the window's
+ * own reflow, never what a person does: every user pan, zoom and Fit ends the following.
+ */
+const WINDOW_RESIZE_MS = 900
 
 /** The keyed wrapper: a new project starts a new canvas. */
 export default function KnowledgeNeural(props: KnowledgeNeuralProps): ReactElement {

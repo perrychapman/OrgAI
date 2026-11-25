@@ -4,7 +4,7 @@
 // opens a window scoped to #/run/<projectId>/<runId> whose title carries the run tag.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, projectTab, screenshot, sleep } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, findProject, launch, log, relaunch, makeFixtureRepo, openProject, openViewMenu, projectTab, resetFinishedAgentsChoice, screenshot, showFinishedAgents, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 // Per-run script file: starts as the default work script (only the delay is set); the MCP step rewrites it.
@@ -22,7 +22,7 @@ let { app, page, shot } = await launch({ shotPrefix: 'runs' })
 // window (the sidebar becomes a rail, as on a small CI screen) and then widens it to the working size again.
 const resizeTo = async (cw, ch, want) => {
   await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [cw, ch])
-  await page.waitForFunction((w) => Math.abs(window.innerWidth - w) <= 1, cw, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((w) => Math.abs(window.innerWidth - w) <= 1, cw, { timeout: t(10_000) }).catch(() => {})
   for (let i = 0; i < 40; i++) {
     await page.evaluate(() => window.dispatchEvent(new Event('resize')))
     if ((await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-sidebar'))) === want) break
@@ -40,7 +40,7 @@ await page.evaluate(() => {
 const tabsBar = () => page.getByRole('tablist', { name: 'Project sections' })
 const startOnPage = async (text) => {
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(text)
   await page.locator('.composer .btn.primary').click()
 }
@@ -49,15 +49,15 @@ try {
   check(!!project, 'project created on the mock adapter')
   check(project?.runMessaging !== false, 'run messaging is on by default')
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
-  await page.locator('.new-run').waitFor({ timeout: 10_000 })
+  await page.locator('.new-run').waitFor({ timeout: t(10_000) })
 
   await startOnPage('First concurrent task')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   check((await page.locator('[data-testid=run-meta]').count()) === 0 && (await page.locator('.agent-node').count()) === 0, 'New run page shows no old run metadata or nodes')
   await startOnPage('Second concurrent task')
-  await page.waitForFunction(() => document.querySelectorAll('.run-tablist [role="tab"]').length === 2 && !document.querySelector('.new-run'), null, { timeout: 15_000 })
+  await page.waitForFunction(() => document.querySelectorAll('.run-tablist [role="tab"]').length === 2 && !document.querySelector('.new-run'), null, { timeout: t(15_000) })
   await sleep(600)
 
   const tabs = await page.locator('.run-tablist [role="tab"] .run-tab-index').allInnerTexts()
@@ -74,7 +74,7 @@ try {
   // Sidebar: the project row expands to its open runs. The chevron exists only in the full sidebar, and a click that
   // lands while the window is still resizing can hit the rail's Expand button (which persists an explicit choice), so
   // wait for the full sidebar first.
-  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: t(15_000) }).catch(() => {})
   const toggle = page.locator('.sidebar button.nav-chevron').first()
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
   await sleep(200)
@@ -93,7 +93,7 @@ try {
   }
   check(!!win2, 'window:openRun opens a second window')
   if (win2) {
-    await win2.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
+    await win2.waitForSelector('[data-testid=run-meta]', { timeout: t(20_000) }).catch(() => {})
     await sleep(500)
     check(win2.url().includes(`#/run/${proj.id}/${r1.id}`), 'second window loads the run hash', win2.url())
     const title = await win2.title()
@@ -109,7 +109,7 @@ try {
   await sleep(300)
   // H4: a pending permission card must go away when its session ends.
   const permCards = page.locator('article.decision-card[data-kind="permission"]')
-  await permCards.first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await permCards.first().waitFor({ timeout: t(15_000) }).catch(() => {})
   const permBefore = await permCards.count()
   check(permBefore >= 1, 'a pending permission card is shown before End session', String(permBefore))
   if (permBefore >= 1) {
@@ -120,7 +120,7 @@ try {
     // Tray placement at 1024x640: under the stage (never beside it), the stage keeps 55 percent of the frame, cards go compact.
     const prevSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
-    await page.waitForFunction(() => Math.abs(window.innerWidth - 1024) <= 1, null, { timeout: 10_000 }).catch(() => {})
+    await page.waitForFunction(() => Math.abs(window.innerWidth - 1024) <= 1, null, { timeout: t(10_000) }).catch(() => {})
     await page.evaluate(() => window.dispatchEvent(new Event('resize')))
     await sleep(700)
     const tm = await page.evaluate(() => {
@@ -230,7 +230,7 @@ try {
   check(/All runs\s*·\s*2/.test(scopeText) && /Running now\s*·\s*\d+/.test(scopeText), 'History scope shows a real count on both options', scopeText)
   if (/Running now\s*·\s*0/.test(scopeText)) {
     await scopeBox.getByText('Running now', { exact: false }).click()
-    await page.locator('[data-testid=history-scope-empty]').waitFor({ timeout: 5000 })
+    await page.locator('[data-testid=history-scope-empty]').waitFor({ timeout: t(5000) })
     check((await page.locator('.run-row').count()) === 0, 'Running now shows no rows when nothing is running')
     await page.locator('[data-testid=history-scope-clear]').click()
     check((await page.locator('.run-row').count()) === 2, 'Show all runs brings both rows back')
@@ -244,7 +244,7 @@ try {
   await sleep(300)
   check(/All runs\s*·\s*2/.test((await scopeBox.innerText()).replace(/\s+/g, ' ')), 'History scope count comes back with the search cleared')
   // The files section never calls an unloaded index empty.
-  await page.locator('[data-testid=history-left-note]').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.locator('[data-testid=history-left-note]').waitFor({ timeout: t(5000) }).catch(() => {})
   const leftNote = ((await page.locator('[data-testid=history-left-note]').first().innerText().catch(() => '')) || '').trim()
   check(leftNote === '' || /^(No files registered\.|Checking files…|Could not load the files\.)$/.test(leftNote), 'What it left says files, not outputs', leftNote)
 
@@ -269,10 +269,10 @@ try {
   check((await titleBtns.nth(1).getAttribute('aria-current')) === 'true' && (await page.locator('[data-testid=history-detail]').count()) === 1, 'Enter on a row title button selects that run (keyboard path)')
   await page.locator('.run-row .run-open').nth(1).focus()
   await page.keyboard.press('Enter')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await page.locator('[data-testid=run-meta]').count()) > 0 && (await page.locator('[data-testid=history]').count()) === 0, 'Enter on a row Open button opens the run on Live (keyboard path)')
   await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
-  await page.locator('[data-testid=history-detail-again]').waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=history-detail-again]').waitFor({ timeout: t(5000) })
 
   // Run it again (H1): it never starts a run by itself. It opens the New run page of the run's own project with the
   // request filled in, so every start guard of that page applies and the user presses Start there.
@@ -292,16 +292,16 @@ try {
   }
   check((await page.locator('.new-run').count()) === 0 && (await runCount()) === runsBefore, 'a held Enter on Run it again does nothing until the key comes up')
   await page.keyboard.up('Enter')
-  await page.locator('.new-run').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.locator('.new-run').waitFor({ timeout: t(5000) }).catch(() => {})
   await sleep(1200)
   check((await page.locator('.new-run').count()) === 1, 'Run it again opens the New run page')
   check((await page.locator('.composer textarea').inputValue()).includes(requestWord), 'the New run page has the request filled in', await page.locator('.composer textarea').inputValue())
   check((await runCount()) === runsBefore, 'Run it again sent nothing (the user presses Start)', `${runsBefore} -> ${await runCount()}`)
   // A fast double click: still one page, one draft, no run.
   await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
-  await page.locator('[data-testid=history-detail-again]').waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=history-detail-again]').waitFor({ timeout: t(5000) })
   await page.locator('[data-testid=history-detail-again]').dblclick()
-  await page.locator('.new-run').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.locator('.new-run').waitFor({ timeout: t(5000) }).catch(() => {})
   await sleep(1200)
   const draftText = await page.locator('.composer textarea').inputValue()
   check((await runCount()) === runsBefore, 'a double click on Run it again starts no run', `${runsBefore} -> ${await runCount()}`)
@@ -318,21 +318,21 @@ try {
   }))
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Needs an MCP server')
   const mcpCard = page.locator('[data-testid=mcp-install-card]')
-  await mcpCard.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {})
+  await mcpCard.first().waitFor({ state: 'visible', timeout: t(20_000) }).catch(() => {})
   check((await mcpCard.count()) === 1 && (await mcpCard.first().isVisible()), 'a pending MCP install request renders a card (A1)')
   check((await mcpCard.getByRole('button', { name: 'Approve', exact: true }).count()) === 1 && (await mcpCard.getByRole('button', { name: 'Deny', exact: true }).count()) === 1, 'the MCP card has Approve and Deny buttons')
   await shot('mcp-card')
   await mcpCard.getByRole('button', { name: 'Deny', exact: true }).click()
   // A denied request stays as a resolved card (Denied badge, Dismiss) with no Approve or Deny left; Dismiss removes it.
-  await mcpCard.getByRole('button', { name: 'Dismiss', exact: true }).waitFor({ timeout: 10_000 }).catch(() => {})
+  await mcpCard.getByRole('button', { name: 'Dismiss', exact: true }).waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await mcpCard.getByText('Denied', { exact: true }).count()) >= 1 && (await mcpCard.getByRole('button', { name: 'Deny', exact: true }).count()) === 0 && (await mcpCard.getByRole('button', { name: 'Approve', exact: true }).count()) === 0, 'the MCP card resolves to Denied with no Approve or Deny buttons')
   await mcpCard.getByRole('button', { name: 'Dismiss', exact: true }).click()
   await sleep(300)
   check((await mcpCard.count()) === 0, 'Dismiss removes the resolved MCP card')
-  await page.getByText('Carrying on without the docs server.').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await page.getByText('Carrying on without the docs server.').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   check((await page.getByText('Carrying on without the docs server.').count()) >= 1, 'the run proceeds after the MCP request is denied')
   await endSession(page)
 
@@ -352,9 +352,9 @@ try {
   }))
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Add rate limiting with three decisions')
-  await page.locator('.decision-chip').nth(2).waitFor({ timeout: 20_000 }).catch(() => {})
+  await page.locator('.decision-chip').nth(2).waitFor({ timeout: t(20_000) }).catch(() => {})
   await sleep(1500)
   const prev3 = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
   // Resize events are delivered with the rendering lifecycle, so an unfocused or occluded CI window can lag behind its
@@ -362,7 +362,7 @@ try {
   // agrees with the CSS.
   const setSize = async (w, h) => {
     await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-    await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+    await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
     await page.evaluate(() => window.dispatchEvent(new Event('resize')))
     // Establish the state the later checks assert: the sidebar is a rail below 1180 px and full above. A throttled CI
     // renderer can render late, so wait for it (re-dispatching resize) rather than a fixed sleep.
@@ -460,8 +460,8 @@ try {
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
     const g0 = await geo()
     check(Math.abs(g0.gap) <= 2, 'the canvas pane meets the side panel (no blank strip) at the default width', JSON.stringify(g0))
-    await handle.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
-    const hb = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
+    await handle.waitFor({ state: 'visible', timeout: t(5000) }).catch(() => {})
+    const hb = await handle.boundingBox({ timeout: t(3000) }).catch(() => null)
     check(!!hb, 'the run view side panel has a resize handle with a live run', JSON.stringify({ ...(await geo()), ...(await envDiag()) }))
     if (hb) {
       const y = hb.y + hb.height / 2
@@ -473,7 +473,7 @@ try {
       const g1 = await geo()
       check(Math.abs(g1.gap) <= 2, 'the canvas pane meets the side panel after a drag', JSON.stringify(g1))
       check(g1.panel - g0.panel >= 30, 'dragging the run side panel handle left widens the panel', `${g0.panel} -> ${g1.panel}`)
-      const hb2 = (await handle.boundingBox({ timeout: 3000 }).catch(() => null)) ?? hb
+      const hb2 = (await handle.boundingBox({ timeout: t(3000) }).catch(() => null)) ?? hb
       await page.mouse.move(hb2.x + hb2.width / 2, y)
       await page.mouse.down()
       await page.mouse.move(hb2.x + hb2.width / 2 - 900, y, { steps: 8 })
@@ -487,7 +487,7 @@ try {
       // A large window: no 640 px cap, the composer moves into the panel column, the toolbar does not overflow.
       await setSize(1800, 1000)
       await sleep(300)
-      const hb3 = await handle.boundingBox({ timeout: 3000 }).catch(() => null)
+      const hb3 = await handle.boundingBox({ timeout: t(3000) }).catch(() => null)
       if (hb3) {
         const y3 = hb3.y + hb3.height / 2
         await page.mouse.move(hb3.x + hb3.width / 2, y3)
@@ -566,7 +566,7 @@ try {
   const needsN = Number(/Needs you · (\d+)/.exec(needs)?.[1] ?? 0)
   await page.locator('[data-testid=needs-you-row]').click()
   const items = page.locator('[data-testid=needs-you-list] .needs-item')
-  await items.first().waitFor({ timeout: 5000 }).catch(() => {})
+  await items.first().waitFor({ timeout: t(5000) }).catch(() => {})
   await sleep(300)
   check((await items.count()) === needsN && needsN >= 3, 'the Needs you row counts decisions: its number equals the list length', `${needs} / ${await items.count()}`)
   const q = items.filter({ hasText: 'Question: Which limiter' })
@@ -641,9 +641,9 @@ try {
   const TITLE = 'Please refactor the billing'
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage(TITLED_PROMPT)
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   const projNow = await findProject(page, NAME)
   const summaryFor = async (needle) => (await page.evaluate((id) => window.orgai.runs.list(id), projNow.id)).find((r) => r.prompt.includes(needle))
   let titled
@@ -653,7 +653,7 @@ try {
   }
   check(titled?.title === TITLE, 'the mock run title is the first four words of the prompt, persisted on RunSummary', String(titled?.title))
   const titledTab = page.locator('.run-tablist [role="tab"]', { hasText: TITLE })
-  await titledTab.first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await titledTab.first().waitFor({ timeout: t(10_000) }).catch(() => {})
   const tabText = ((await titledTab.first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
   check(tabText.includes(TITLE) && !tabText.includes('module'), 'the run tab shows the 4-word title, not the prompt', tabText)
   const tabTip = (await titledTab.first().getAttribute('title').catch(() => '')) ?? ''
@@ -672,12 +672,12 @@ try {
     await moreBtn.click()
     metaFolded = ((await page.locator('[data-testid=run-meta-more-panel]').innerText().catch(() => '')) || '').toLowerCase()
     await page.keyboard.press('Escape')
-    await page.locator('[data-testid=run-meta-more-panel]').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {})
+    await page.locator('[data-testid=run-meta-more-panel]').waitFor({ state: 'hidden', timeout: t(3000) }).catch(() => {})
   }
   const metaText = `${metaRow} ${metaFolded}`
   check(!metaText.includes('add tests') && /agent/.test(metaText) && metaRow.trim().length > 0, 'the metadata line shows facts (row plus its "more" menu), not the prompt', `${metaRow.replace(/\s+/g, ' ').slice(0, 80)} || ${moreName} || ${metaFolded.replace(/\s+/g, ' ').slice(0, 80)}`)
   check((await page.locator('[data-testid=run-meta-status]').isVisible()) && (/^\d+ more details? about this run$/.test(moreName) || !moreName), 'the row keeps the status visible and names how many facts the "more" menu holds', moreName)
-  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: 15_000 }).catch(() => {})
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-sidebar') === 'full', null, { timeout: t(15_000) }).catch(() => {})
   const sbToggle = page.locator('.sidebar button.nav-chevron').first()
   if ((await sbToggle.getAttribute('aria-expanded')) !== 'true') await sbToggle.click()
   await sleep(200)
@@ -693,7 +693,7 @@ try {
     if (!win3) await sleep(500)
   }
   if (win3) {
-    await win3.waitForSelector('[data-testid=run-meta]', { timeout: 20_000 }).catch(() => {})
+    await win3.waitForSelector('[data-testid=run-meta]', { timeout: t(20_000) }).catch(() => {})
     await sleep(500)
     const heading = ((await win3.locator('[data-testid=run-strip] .run-tab[aria-selected=true] .run-tab-title').first().innerText().catch(() => '')) || '').trim()
     check(heading === TITLE, 'a run opened in a new window still shows the title', heading)
@@ -706,9 +706,9 @@ try {
   // A failed title generation falls back to the prompt excerpt.
   const FAIL_PROMPT = 'Do [mock:title-fail] something with a long enough prompt to be cut'
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage(FAIL_PROMPT)
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   await sleep(2500)
   const failed = await summaryFor('title-fail')
   check(!!failed && !failed.title, 'a failed title generation leaves RunSummary.title unset', String(failed?.title))
@@ -719,19 +719,19 @@ try {
 
   // An auth failure ends the run Failed with the readable connection message.
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Check the setup [mock:auth-fail]')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   let authRun
   for (let i = 0; i < 40 && !(authRun?.endedAt); i++) {
     authRun = await summaryFor('mock:auth-fail')
     await sleep(300)
   }
   check(authRun?.status === 'error' && /connection was refused/.test(authRun?.error ?? ''), 'a [mock:auth-fail] run ends in error with the readable message', JSON.stringify(authRun))
-  await page.getByText(/connection was refused/).first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.getByText(/connection was refused/).first().waitFor({ timeout: t(10_000) }).catch(() => {})
   const refused = await page.getByText(/connection was refused/).count()
   check(refused > 0, 'the readable "connection was refused" error shows in the UI', String(refused))
-  await page.getByText('Failed', { exact: true }).first().waitFor({ timeout: 5000 }).catch(() => {})
+  await page.getByText('Failed', { exact: true }).first().waitFor({ timeout: t(5000) }).catch(() => {})
   check((await page.getByText('Failed', { exact: true }).count()) > 0, 'the run status word is Failed')
   await shot('run-auth-fail')
   await endSession(page)
@@ -750,10 +750,13 @@ try {
     await page.evaluate((p) => window.orgai.projects.save(p), { ...before, roles: chart, autoContinue: false })
     const delegationRun = async (marker, badgeId) => {
       await page.keyboard.press('Control+t')
-      await page.locator('.new-run').waitFor({ timeout: 5000 })
+      await page.locator('.new-run').waitFor({ timeout: t(5000) })
       await startOnPage(`Delegate the work ${marker}`)
-      await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
-      await page.locator(`[data-testid=${badgeId}]`).first().waitFor({ state: 'attached', timeout: 30_000 }).catch(() => {})
+      await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
+      // The badge sits on an agent's node, and a finished agent folds into its parent's "done" group 6 s after it ended, which
+      // takes the badge with it: a slow page that looks after that finds none (a loaded run waited its whole 90 s for it).
+      await showFinishedAgents(page).catch((e) => log('delegation run: could not turn Hide finished off:', e.message))
+      await page.locator(`[data-testid=${badgeId}]`).first().waitFor({ state: 'attached', timeout: t(30_000) }).catch(() => {})
     }
     await delegationRun('[mock:delegation-skip]', 'agent-badge-delegation-failed')
     check((await page.locator('[data-testid=agent-badge-delegation-failed]').count()) >= 1, 'a [mock:delegation-skip] run shows the "Skipped required reports" badge on an agent node')
@@ -761,10 +764,15 @@ try {
     await endSession(page)
     await delegationRun('[mock:delegation-fix]', 'agent-badge-delegation-corrected')
     check((await page.locator('[data-testid=agent-badge-delegation-corrected]').count()) >= 1, 'a [mock:delegation-fix] run shows the "Corrected" badge')
-    await page.waitForFunction(() => document.querySelectorAll('.react-flow__node .agent-node').length >= 4, null, { timeout: 30_000 }).catch(() => {})
+    await page.waitForFunction(() => document.querySelectorAll('.react-flow__node .agent-node').length >= 4, null, { timeout: t(30_000) }).catch(() => {})
     const fixNodes = await page.locator('.react-flow__node .agent-node').count()
     check(fixNodes >= 4, 'the corrected run shows the lead, the manager and its two worker nodes', String(fixNodes))
     await shot('run-delegation-fix')
+    // The choice is the user's own and stays (localStorage): give the later fold checks the default back. This was a View menu
+    // click whose failure was swallowed: on windows-latest (CI run 45484286401) it spent its whole 45 s budget, the choice stayed
+    // off and the deep-tree fold check below found four agents and no group. The key is what a run view reads when it mounts
+    // (the next run, the reload below), so reset it directly; the menu switch itself is exercised by the checks further down.
+    await resetFinishedAgentsChoice(page)
     await endSession(page)
     await page.evaluate((p) => window.orgai.projects.save(p), before)
   }
@@ -773,9 +781,9 @@ try {
   // one with an open card keeps going (unit-tested in runTabs.test.ts; the mock has no steady working state here).
   {
     await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 5000 })
+    await page.locator('.new-run').waitFor({ timeout: t(5000) })
     await startOnPage('Hide me while live [mock:model-switch]')
-    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
     const liveId = await page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-run')
     const liveStatus = () => page.evaluate(async (id) => (await window.orgai.runs.listLive()).find((r) => r.id === id)?.status ?? 'ended', liveId)
     const tabOf = () => page.locator(`.run-tablist .run-tab-wrap[data-run="${liveId}"]`)
@@ -789,7 +797,7 @@ try {
     // Delete on the focused idle tab: the tab goes, focus lands on a neighbouring tab, the notice says the session ended.
     await tabOf().locator('.run-tab').focus()
     await page.keyboard.press('Delete')
-    await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: 5000 }).catch(() => {})
+    await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: t(5000) }).catch(() => {})
     check((await tabOf().count()) === 0, 'Delete hides an idle tab')
     const notice = ((await page.locator('.run-tabs-notice').innerText().catch(() => '')) || '').trim()
     check(/session ended/.test(notice), 'the notice says the hidden idle run ended its session', notice)
@@ -802,9 +810,9 @@ try {
 
   // One conversation per chain: Send on an ended run continues it in the same tab, the feed shows both turns with a divider.
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Chain first turn')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   await sleep(1500)
   await endSession(page)
   // Counts every tab on the strip: the visible ones plus the number behind "+n" (the cap drops when the run buttons reappear).
@@ -823,12 +831,19 @@ try {
   await ta.fill('Chain second turn')
   await ta.press('Enter')
   await sleep(2500)
-  const tabsAfterSend = await tabTotal()
+  // The strip's total is wraps plus the "+n" figure, which is laid out from the strip's width: while the Interrupt button
+  // arrives beside it the cap moves and the two can disagree for a frame or two (9 -> 10 twice on a busy machine, then 9).
+  // The chain keeping one tab is a standing state, so wait for it to show.
+  let tabsAfterSend = await tabTotal()
+  for (let i = 0; i < 20 && tabsAfterSend !== tabsBefore; i++) {
+    await sleep(250)
+    tabsAfterSend = await tabTotal()
+  }
   check(tabsAfterSend === tabsBefore, 'Send on an ended run keeps one tab for the chain', `${tabsBefore} -> ${tabsAfterSend}`)
   const chainAfter = await chainOf()
   check(!!chainAfter && chainAfter === chainBefore, 'the same chain tab stays selected after Send', `${chainBefore} -> ${chainAfter}`)
   const divider = page.locator('[data-testid=chain-divider]').first()
-  await divider.waitFor({ timeout: 10_000 }).catch(() => {})
+  await divider.waitFor({ timeout: t(10_000) }).catch(() => {})
   check(/Continued/.test((await divider.innerText().catch(() => '')) || ''), 'the feed shows a Continued divider')
   check((await page.getByText('Chain first turn').count()) > 0, 'the feed still shows the earlier turn')
   check((await page.getByText('Continued from run').count()) === 0, 'no "Continued from run" harness row is shown')
@@ -840,7 +855,7 @@ try {
   const projectId = (await findProject(page, NAME)).id
   await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
   const chainRow = page.locator('tr.run-row[data-sessions="2"]')
-  await chainRow.first().waitFor({ timeout: 10_000 })
+  await chainRow.first().waitFor({ timeout: t(10_000) })
   check((await chainRow.count()) === 1, 'History shows the continued chain as one row with data-sessions=2', String(await chainRow.count()))
   check(/Chain first turn/.test(await chainRow.first().innerText()), 'the chain row is named by its first turn')
   const chainTotal = await page.evaluate(async (pid) => {
@@ -882,20 +897,20 @@ try {
   await page.getByRole('tab', { name: 'Permissions', exact: true }).click()
   await page.locator('[data-testid=settings-advanced][data-pane=project-permissions] > summary').click()
   const sw =page.getByRole('switch', { name: 'Let runs message each other' })
-  await sw.waitFor({ timeout: 10_000 })
+  await sw.waitFor({ timeout: t(10_000) })
   check((await sw.getAttribute('aria-checked')) === 'true', 'run messaging switch starts on')
   await sw.click()
   await sleep(1500)
   check((await findProject(page, NAME)).runMessaging === false, 'switch saved runMessaging=false')
   log('sidebar choice writes this run:', JSON.stringify(await page.evaluate(() => window.__sidebarSets)))
   await page.reload()
-  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(30_000) })
   await openProject(page, NAME)
   await tabsBar().getByRole('tab', { name: 'Settings', exact: true }).click()
   await page.getByRole('tab', { name: 'Permissions', exact: true }).click()
   check(await page.locator('details[data-testid=settings-advanced][data-pane=project-permissions]').evaluate((el) => el.open), 'the Advanced disclosure is still open after the reload')
   const sw2 =page.getByRole('switch', { name: 'Let runs message each other' })
-  await sw2.waitFor({ timeout: 10_000 })
+  await sw2.waitFor({ timeout: t(10_000) })
   check((await sw2.getAttribute('aria-checked')) === 'false', 'switch is still off after reload')
   await shot('settings-messaging')
 
@@ -903,11 +918,11 @@ try {
   // root -> mock-lead -> two reports, all done). Expanding it shows mock-lead with its own "2 done" group under it.
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Deep tree fold [mock:deep-tree]')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   // The reports finish, then the grace period (6 s) passes and the subtree folds.
-  await page.locator('[data-testid=done-group][data-count="3"]').waitFor({ timeout: 40_000 }).catch(() => {})
+  await page.locator('[data-testid=done-group][data-count="3"]').waitFor({ timeout: t(40_000) }).catch(() => {})
   await endSession(page)
   const nodeBox = (sel) => page.locator(sel).first().boundingBox()
   const foldShape = async () => ({
@@ -915,15 +930,20 @@ try {
     groups: await page.locator('[data-testid=done-group]').count(),
     counts: await page.locator('[data-testid=done-group]').evaluateAll((els) => els.map((e) => e.getAttribute('data-count'))),
     // No group on the canvas (Hide finished off) is a valid shape: do not let innerText wait out the 30 s default.
-    text: ((await page.locator('[data-testid=done-group]').first().innerText({ timeout: 1500 }).catch(() => '')) || '').replace(/\s+/g, ' '),
-    edges: await page.locator('.react-flow__edge').count()
+    text: ((await page.locator('[data-testid=done-group]').first().innerText({ timeout: t(1500) }).catch(() => '')) || '').replace(/\s+/g, ' '),
+    edges: await page.locator('.react-flow__edge').count(),
+    // The stored choice rides in the failure detail: "off" here means the fold was left off, not that it did not run.
+    pref: await page.evaluate(() => localStorage.getItem('orgai.collapseFinished'))
   })
-  await page.locator('[data-testid=done-group]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('[data-testid=done-group]').first().waitFor({ timeout: t(10_000) }).catch(() => {})
   await sleep(800)
   const f1 = await foldShape()
   check(f1.agents === 1 && f1.groups === 1 && f1.counts[0] === '3' && /3 done/.test(f1.text), 'a finished subtree folds into one "3 done" group under the root', JSON.stringify(f1))
   check(f1.edges >= 1, 'the folded group has an edge to the root', String(f1.edges))
-  const toggleLabel = (await page.locator('.run-fold .fold-label').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  // The Hide finished switch and its count are a row of the toolbar's View menu.
+  await openViewMenu(page)
+  const toggleLabel = (await page.locator('[data-testid=view-fold-label]').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  await page.keyboard.press('Escape')
   check(/\(3\)/.test(toggleLabel), 'the Hide finished count matches the group count', toggleLabel)
   const rootBox = await nodeBox('.react-flow__node-agent')
   const groupBox = await nodeBox('.react-flow__node-done-group')
@@ -937,7 +957,7 @@ try {
   await shot('fold-collapsed')
   // Expand: mock-lead shows, its two reports fold into a "2 done" group below it with an edge.
   await page.locator('[data-testid=done-group]').first().getByRole('button', { name: /^Show reports under / }).click()
-  await page.locator('.react-flow__node[data-id="mock-lead"]').waitFor({ timeout: 10_000 }).catch(() => {})
+  await page.locator('.react-flow__node[data-id="mock-lead"]').waitFor({ timeout: t(10_000) }).catch(() => {})
   await sleep(800)
   const focusAfter = await page.evaluate(() => document.activeElement?.closest('.react-flow__node')?.getAttribute('data-id') ?? document.activeElement?.tagName ?? '')
   check(focusAfter !== '' && focusAfter !== 'BODY' && !focusAfter.startsWith('group:'), 'focus moves to the agent the expanded group hung under', focusAfter)
@@ -949,7 +969,7 @@ try {
   check((await page.locator('[data-testid="rf__edge-e-mock-lead-group:mock-lead"]').count()) === 1, 'the lead\'s group has an edge from the lead')
   await shot('fold-expanded')
   // Fold back: Hide finished off shows all 4 agents; on again folds everything into the one root group.
-  const foldSwitch = page.getByRole('switch', { name: 'Hide finished agents' })
+  const foldSwitch = { click: async () => { await (await openViewMenu(page)).getByRole('switch', { name: 'Hide finished agents' }).click(); await page.keyboard.press('Escape') } }
   await foldSwitch.click()
   await sleep(800)
   const f3 = await foldShape()
@@ -986,13 +1006,18 @@ try {
     const para = (i) => `Paragraph ${i}. ` + 'The quick brown fox jumps over the lazy dog. '.repeat(6)
     const rowsScript = Array.from({ length: 16 }, (_, i) => ({ type: 'text', text: para(i) }))
     let acc = ''
-    const chunks = Array.from({ length: 160 }, (_, i) => (acc += `Streaming sentence ${i} goes on for a while. `))
+    // The check "ten quiet seconds, then the NEXT streamed text brings the list back" needs the stream still going when the
+    // script gets there, and a slow runner (two cores, the renderer throttled four times: the run view opens a minute later)
+    // is far past a 25 s stream (160 chunks at 150 ms), which had ended by then and left no next text. The stream outlasts any
+    // such run (700 chunks at 150 ms, about 105 s; short sentences keep the cumulative partials small) and the end of the
+    // block ends the session. The checks do not depend on how long it lasts.
+    const chunks = Array.from({ length: 700 }, (_, i) => (acc += `Sentence ${i} goes on. `))
     fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 150, work: [...rowsScript, { type: 'text', text: acc, partials: chunks }] }))
     const LIST = '[data-testid=run-conversation] .conversation-list'
     const topOf = () => page.evaluate((sel) => document.querySelector(sel)?.scrollTop ?? null, LIST)
     const jump = () => page.locator('[data-testid=conversation-jump]').count()
-    const jumpGone = () => page.waitForFunction(() => !document.querySelector('[data-testid=conversation-jump]'), null, { timeout: 2000 }).then(() => true, () => false)
-    const waitDist = (max, ms = 3000) => page.waitForFunction(([sel, m]) => { const el = document.querySelector(sel); return !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= m }, [LIST, max], { timeout: ms }).then(() => true, () => false)
+    const jumpGone = () => page.waitForFunction(() => !document.querySelector('[data-testid=conversation-jump]'), null, { timeout: t(2000) }).then(() => true, () => false)
+    const waitDist = (max, ms = 3000) => page.waitForFunction(([sel, m]) => { const el = document.querySelector(sel); return !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= m }, [LIST, max], { timeout: t(ms) }).then(() => true, () => false)
     // Clicks, then reads the list two frames later (resize observers run after the first frame's callbacks and before its
     // paint, so the second frame sees what was painted); a later stream update would be too slow to repair it by then.
     const clickThenDist = (testId) => page.evaluate(([id, sel]) => new Promise((resolve) => {
@@ -1002,18 +1027,19 @@ try {
         resolve(el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : null)
       }))
     }), [testId, LIST])
-    // Samples the distance from the end once per frame until it is back (or 3 s pass).
-    const watchReturn = () => page.evaluate(([sel]) => new Promise((resolve) => {
+    // Samples the distance from the end once per frame until it is back (or the limit passes: 3 s, scaled; a renderer busy with
+    // two streams draws a frame a second or less, and the return starts with the next streamed text, so 3 s read 3 samples).
+    const watchReturn = () => page.evaluate(([sel, limit]) => new Promise((resolve) => {
       const el = document.querySelector(sel)
       const seen = []
       const start = performance.now()
       const tick = () => {
         seen.push(Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))
-        if ((seen.at(-1) <= 2 && seen.length > 1) || performance.now() - start > 3000) resolve(seen)
+        if ((seen.at(-1) <= 2 && seen.length > 1) || performance.now() - start > limit) resolve(seen)
         else requestAnimationFrame(tick)
       }
       tick()
-    }), [LIST])
+    }), [LIST, t(3000)])
     // A run's tab, from the strip or from the "+n" menu when many runs are open.
     const openRunTab = async (title) => {
       const tab = page.locator('.run-tablist [role="tab"]', { hasText: title })
@@ -1026,28 +1052,28 @@ try {
     const restoreClock = () => page.evaluate(() => { if (window.__realNow) Date.now = window.__realNow })
 
     await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 5000 })
+    await page.locator('.new-run').waitFor({ timeout: t(5000) })
     await startOnPage('Follow one')
-    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
     await page.locator('[data-testid=run-layout-toggle]').click()
-    await page.locator(LIST).waitFor({ timeout: 5000 })
+    await page.locator(LIST).waitFor({ timeout: t(5000) })
     // Away to the Plan stage tab while rows keep arriving, then back: already at the end in the painted frame.
-    await page.getByText('Paragraph 3.').first().waitFor({ timeout: 30_000 })
+    await page.getByText('Paragraph 3.').first().waitFor({ timeout: t(30_000) })
     await page.locator('[data-testid=run-stage-tabs] [role=tab]').nth(1).click()
-    await page.waitForFunction(() => document.querySelectorAll('.run-stage-conversation .entry').length >= 12, null, { timeout: 30_000 })
+    await page.waitForFunction(() => document.querySelectorAll('.run-stage-conversation .entry').length >= 12, null, { timeout: t(30_000) })
     const backDist = await clickThenDist('run-tab-conversation')
     check(backDist !== null && backDist <= 2, 'returning to the Conversation stage tab lands on the newest message', String(backDist))
-    await page.locator('.entry.streaming').first().waitFor({ timeout: 30_000 })
+    await page.locator('.entry.streaming').first().waitFor({ timeout: t(30_000) })
     check(await waitDist(2), 'the conversation follows streamed text to the end')
 
     // Another run, then back: opens at the end.
     await page.keyboard.press('Control+t')
-    await page.locator('.new-run').waitFor({ timeout: 5000 })
+    await page.locator('.new-run').waitFor({ timeout: t(5000) })
     await startOnPage('Follow two')
-    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
     await sleep(500)
     await openRunTab('Follow one')
-    await page.locator(LIST).waitFor({ timeout: 5000 })
+    await page.locator(LIST).waitFor({ timeout: t(5000) })
     check(await waitDist(2, 1500), 'switching back to a run opens its conversation at the end')
 
     // A short wheel notch up (inside the stick distance) is not undone by the next token.
@@ -1101,10 +1127,44 @@ try {
     await page.locator('.react-flow__node').first().click()
     const PANEL = '.side-run [role=tabpanel].transcript'
     const panelDist = () => page.evaluate((sel) => { const el = document.querySelector(sel); return el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : null }, PANEL)
-    await page.locator(PANEL).waitFor({ timeout: 10_000 })
-    await sleep(400)
-    const pd = await panelDist()
-    check(pd !== null && pd <= 2, 'the side panel transcript opens at the newest message', String(pd))
+    await page.locator(PANEL).waitFor({ timeout: t(10_000) })
+    // The run is still streaming here (the panel's list grows by a line about every 150 ms), and the follow glides to a moving
+    // end: the list is at the end after each glide and up to a line short of it between a growth and the next frame (a CI
+    // trace read 0..24 px, never drifting). One read at one instant therefore says nothing (it read 14 and 11 on slow
+    // runners). What "opens at the newest message and follows it" means is read over the first 1.2 s after the panel
+    // draws: the list was never further than the follow's own "at the end" band (STICK_PX, 48 px) from the end in any
+    // sample, which a list opened at the top (hundreds of px away) or one that lost the end would break, and it touched
+    // the end (2 px) at least once.
+    const panelWindow = await page.evaluate(
+      ([sel, limit]) =>
+        new Promise((resolve) => {
+          const t0 = performance.now()
+          let min = Infinity
+          let max = -Infinity
+          let n = 0
+          const read = () => {
+            const e = document.querySelector(sel)
+            if (e) {
+              const d = Math.round(e.scrollHeight - e.scrollTop - e.clientHeight)
+              min = Math.min(min, d)
+              max = Math.max(max, d)
+              n++
+            }
+          }
+          read()
+          const iv = setInterval(() => {
+            read()
+            // 1.2 s of samples, and at least 8 of them: a renderer that is two frames a second (two streams, throttled) gives
+            // two samples in 1.2 s, which says nothing; it keeps sampling, up to the scaled limit, until it has some.
+            if ((performance.now() - t0 > 1200 && n >= 8) || performance.now() - t0 > limit) {
+              clearInterval(iv)
+              resolve({ min, max, n })
+            }
+          }, 30)
+        }),
+      [PANEL, t(8000)]
+    )
+    check(panelWindow.n >= 5 && panelWindow.min <= 2 && panelWindow.max <= 48, 'the side panel transcript opens at the newest message', JSON.stringify(panelWindow))
     await page.locator(PANEL).hover()
     await page.mouse.wheel(0, -300)
     await sleep(300)
@@ -1124,10 +1184,10 @@ try {
   const chatRow = () => page.locator('[data-testid=nav-assistant][data-id=quick]')
   const selectedChain = () => page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-chain').catch(() => null)
   await chatRow().click()
-  await page.locator('[data-testid=assistant-start-quick] .composer textarea').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=assistant-start-quick] .composer textarea').waitFor({ timeout: t(10_000) })
   await page.locator('[data-testid=assistant-start-quick] .composer textarea').fill('Chat that outlives its session')
   await page.locator('[data-testid=assistant-start-quick] .composer textarea').press('Enter')
-  await page.locator('.run-tablist .run-tab-wrap.selected').first().waitFor({ timeout: 20_000 })
+  await page.locator('.run-tablist .run-tab-wrap.selected').first().waitFor({ timeout: t(20_000) })
   const chatChain = await selectedChain()
   check(!!chatChain, 'a Chat run tab opens', String(chatChain))
   await openProject(page, NAME)
@@ -1135,9 +1195,9 @@ try {
   // Closing OrgAI while a run is live: after relaunch the run reads Ended when OrgAI closed and Send continues it in the same tab.
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Cut by quitting')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   await sleep(1500)
   // Open tabs: the remembered chains (localStorage) and every tab on the strip, visible or behind "+n".
   const rememberedTabs = () => page.evaluate((k) => (JSON.parse(localStorage.getItem(k) || '{"chains":[]}').chains || []).slice().sort(), `orgai.openTabs.${projectId}`)
@@ -1145,11 +1205,11 @@ try {
   const totalBeforeQuit = await tabTotal()
   check(tabsBeforeQuit.length > 0, 'open tabs are remembered before quitting', JSON.stringify(tabsBeforeQuit))
   ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'runs-relaunch' }))
-  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(30_000) })
   await openProject(page, NAME)
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   const cut = page.locator('.run-tablist [role="tab"]', { hasText: 'Cut by quitting' }).first()
-  await cut.waitFor({ timeout: 15_000 })
+  await cut.waitFor({ timeout: t(15_000) })
   let totalAfter = await tabTotal()
   for (let i = 0; i < 20 && totalAfter !== totalBeforeQuit; i++) {
     await sleep(500)
@@ -1159,18 +1219,18 @@ try {
   const tabsAfterQuit = await rememberedTabs()
   check(JSON.stringify(tabsAfterQuit) === JSON.stringify(tabsBeforeQuit), 'the remembered tab set is unchanged by the relaunch', `${JSON.stringify(tabsBeforeQuit)} -> ${JSON.stringify(tabsAfterQuit)}`)
   await cut.click()
-  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: t(10_000) })
   check((await page.locator('.react-flow__node', { hasText: /Thinking/ }).count()) === 0, 'no agent node shows Thinking… after the relaunch')
   check((await page.locator('[data-testid=composer-cut-notice]').count()) === 1, 'a run cut by closing OrgAI shows the cut notice in its composer')
   check(/Ended when OrgAI closed/.test((await cut.getAttribute('aria-label').catch(() => '')) + (await cut.innerText().catch(() => '')) + (await cut.getAttribute('title').catch(() => ''))), 'the tab reads Ended when OrgAI closed')
   // History reads the cut run the same way.
   await tabsBar().getByRole('tab', { name: 'History', exact: true }).click()
   const cutRow = page.locator('tr.run-row', { hasText: 'Cut by quitting' }).first()
-  await cutRow.waitFor({ timeout: 10_000 })
+  await cutRow.waitFor({ timeout: t(10_000) })
   const cutRowText = (await cutRow.innerText()) + ' ' + (await cutRow.locator('[title]').evaluateAll((els) => els.map((e) => e.getAttribute('title') || '').join(' ')))
   check(/Ended when OrgAI closed/.test(cutRowText), 'the History row of the cut run reads Ended when OrgAI closed', cutRowText.replace(/\s+/g, ' ').slice(0, 300))
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
-  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=composer-cut-notice]').waitFor({ timeout: t(10_000) })
   const cutTabs = await tabTotal()
   await page.locator('.composer textarea').fill('Pick it up')
   await page.locator('.composer textarea').press('Enter')
@@ -1178,7 +1238,7 @@ try {
   const cutTabsAfter = await tabTotal()
   check(cutTabsAfter === cutTabs, 'Send after relaunch continues in the same tab', `${cutTabs} -> ${cutTabsAfter}`)
   const cutDivider = page.locator('[data-testid=chain-divider]', { hasText: 'Continued after OrgAI closed' }).first()
-  await cutDivider.waitFor({ timeout: 10_000 })
+  await cutDivider.waitFor({ timeout: t(10_000) })
   check((await cutDivider.count()) === 1, 'the feed shows "Continued after OrgAI closed" after the relaunch continue')
   await shot('relaunch-continued')
   await endSession(page)
@@ -1186,7 +1246,7 @@ try {
   // The Chat cut by the relaunch: its tab is back and viewed (not the start page), it survives leave-and-return, and
   // Send continues it in the same tab.
   await chatRow().click()
-  await page.locator('.run-tablist .run-tab-wrap.selected').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await page.locator('.run-tablist .run-tab-wrap.selected').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   check((await selectedChain()) === chatChain, 'after a relaunch the Chat row shows the ended chat tab that was viewed', `${chatChain} -> ${await selectedChain()}`)
   check((await page.locator('[data-testid=assistant-start-quick]').count()) === 0, 'the Chat row does not fall back to the start page for an ended chat')
   const chatTabs = await tabTotal()
@@ -1199,7 +1259,7 @@ try {
   await sleep(2500)
   check((await selectedChain()) === chatChain && (await tabTotal()) === chatTabs, 'Send from the restored ended chat continues in the same tab', `${chatChain} -> ${await selectedChain()}, ${chatTabs} -> ${await tabTotal()}`)
   const chatDivider = page.locator('[data-testid=chain-divider]').first()
-  await chatDivider.waitFor({ timeout: 10_000 }).catch(() => {})
+  await chatDivider.waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await chatDivider.count()) === 1, 'the continued chat shows a continuation divider')
   await shot('chat-relaunch-continued')
   await endSession(page)
@@ -1210,16 +1270,16 @@ try {
   await openProject(page, NAME)
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 5000 })
+  await page.locator('.new-run').waitFor({ timeout: t(5000) })
   await startOnPage('Focus guard first turn')
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
   await sleep(1500)
   await endSession(page)
   const guardTa = page.locator('.composer textarea').first()
   await guardTa.fill('Focus guard second turn [mock:fatigue]')
   await guardTa.press('Enter')
   const guardCard = page.locator('.decision-card').first()
-  await guardCard.waitFor({ timeout: 20_000 })
+  await guardCard.waitFor({ timeout: t(20_000) })
   await sleep(700)
   const guardFocus = await page.evaluate(() => {
     const a = document.activeElement
@@ -1250,14 +1310,14 @@ try {
   check(heldTitle !== '', 'the permission to be jumped to is waiting before the held Enter', heldTitle)
   await projectTab(page, 'Team').click()
   const topNeeds = page.locator('[data-testid=topbar-needs-you]')
-  await topNeeds.waitFor({ timeout: 10_000 })
+  await topNeeds.waitFor({ timeout: t(10_000) })
   await topNeeds.focus()
   await page.keyboard.down('Enter')
   for (let i = 0; i < 14; i++) {
     await sleep(50)
     await page.keyboard.down('Enter') // a key repeat
   }
-  await heldCard.waitFor({ timeout: 10_000 })
+  await heldCard.waitFor({ timeout: t(10_000) })
   const heldFocus = await page.evaluate(() => {
     const a = document.activeElement
     return { tag: a?.tagName ?? '', onPrimary: !!a?.matches?.('.decision-footer .btn.primary'), inButton: !!a?.closest?.('button'), inTray: !!a?.closest?.('.frame-tray') }
@@ -1274,7 +1334,7 @@ try {
   check(afterFocus.onPrimary, 'after the key is released the primary button of the waiting decision takes focus', JSON.stringify(afterFocus))
   check(((await heldCard.locator('.decision-title').first().innerText().catch(() => '')) || '').trim() === heldTitle, 'the decision is still waiting after the key-up (focus alone answers nothing)')
   await page.keyboard.press('Enter')
-  await page.waitForFunction((t) => ![...document.querySelectorAll('.decision-card .decision-title')].some((n) => (n.textContent || '').trim() === t), heldTitle, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((t) => ![...document.querySelectorAll('.decision-card .decision-title')].some((n) => (n.textContent || '').trim() === t), heldTitle, { timeout: t(10_000) }).catch(() => {})
   const answeredGone = ![...(await page.locator('.decision-card .decision-title').allInnerTexts())].some((t) => t.trim() === heldTitle)
   check(answeredGone, 'a fresh Enter on the focused primary answers exactly that decision', heldTitle)
   await sleep(1500)

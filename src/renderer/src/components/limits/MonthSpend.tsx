@@ -49,7 +49,8 @@ export function MonthSpend({ project }: { project: Project }): ReactElement {
 
   const month = new Date().toLocaleDateString(undefined, { month: 'long' })
   let title = 'Loading this month…'
-  let line = ''
+  // A second line while loading, so the card does not grow and push the page down when the numbers arrive.
+  let line = "Reading this project's runs."
   if (failed) {
     title = "This month's spend is not available"
     line = 'The Usage page may still show it.'

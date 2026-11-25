@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { centerIn, orderDisplays, parseLargerThanScreen, parseWindowHidden, parseWindowDisplay, parseWindowInactive, pickDisplay, windowPlacement, type DisplayInfo } from './windowPlacement'
+import { centerIn, orderDisplays, parseLargerThanScreen, parseWindowHidden, parseWindowDisplay, parseWindowInactive, pickDisplay, windowPlacement, windowShowMode, type DisplayInfo } from './windowPlacement'
 
 const d = (id: number, x: number, y: number, w = 1920, h = 1080): DisplayInfo => ({
   id,
@@ -17,10 +17,25 @@ describe('window placement', () => {
     for (const bad of ['', 'Secondary', ' 2', '2 ', '0', '02', '-1', '1.5', '100', 'second', '1e1']) expect(parseWindowDisplay(bad)).toBeNull()
     expect(parseWindowInactive('1')).toBe(true)
     for (const v of [undefined, '', '0', 'true', ' 1', '11']) expect(parseWindowInactive(v)).toBe(false)
-    expect(parseWindowHidden('1')).toBe(true)
-    for (const v of [undefined, '', '0', 'true', ' 1']) expect(parseWindowHidden(v)).toBe(false)
+    expect(parseWindowHidden('1', '/tmp/data')).toBe(true)
+    expect(parseWindowHidden('1')).toBe(false)
+    expect(parseWindowHidden('1', '')).toBe(false)
+    expect(parseWindowHidden('1', undefined)).toBe(false)
+    for (const v of [undefined, '', '0', 'true', ' 1', '1 ', '11', 'yes']) expect(parseWindowHidden(v, '/tmp/data')).toBe(false)
     expect(parseLargerThanScreen('1')).toBe(true)
     for (const v of [undefined, '', '0', 'true', ' 1', '11']) expect(parseLargerThanScreen(v)).toBe(false)
+    for (const p of ['win32', 'darwin']) {
+      expect(windowShowMode(true, false, p)).toBe('ghost')
+      expect(windowShowMode(true, true, p)).toBe('ghost')
+    }
+    for (const p of ['linux', 'freebsd']) {
+      expect(windowShowMode(true, false, p)).toBe('never')
+      expect(windowShowMode(true, true, p)).toBe('never')
+    }
+    for (const p of ['win32', 'darwin', 'linux']) {
+      expect(windowShowMode(false, true, p)).toBe('inactive')
+      expect(windowShowMode(false, false, p)).toBe('normal')
+    }
   })
 
   it('orders left to right, top to bottom', () => {

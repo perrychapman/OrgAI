@@ -30,9 +30,26 @@ export function parseWindowInactive(value: string | undefined): boolean {
   return value === '1'
 }
 
-/** Only the exact value '1' turns it on (ORGAI_WINDOW_HIDDEN: windows load but are never shown; pack:verify's boot check). */
-export function parseWindowHidden(value: string | undefined): boolean {
-  return value === '1'
+/**
+ * Only the exact value '1' turns it on, and only when ORGAI_DATA_DIR is also set to a non-empty value (test plumbing: e2e and
+ * scripts/verify-pack.mjs always set it; a real install's persistent environment cannot hide the app by itself).
+ * ORGAI_WINDOW_HIDDEN: windows load and paint but nothing shows or takes focus, see windowShowMode.
+ */
+export function parseWindowHidden(value: string | undefined, dataDir?: string): boolean {
+  return value === '1' && typeof dataDir === 'string' && dataDir !== ''
+}
+
+/**
+ * How a window is shown when it is ready. 'ghost' (ORGAI_WINDOW_HIDDEN=1) is shown without activation but fully transparent,
+ * click-through and off the taskbar: nothing appears on screen or takes focus, yet the page keeps painting and its frames,
+ * timers and visibility run as in a real window (a window that is never shown has no frames: screenshots and rAF stall).
+ * setOpacity works only on Windows and macOS, so on Linux hidden keeps the old behaviour, 'never' (the window is never
+ * shown; verify-pack's Linux boot check relies on that). Hidden wins over inactive; neither is today's behaviour ('normal').
+ */
+export type WindowShowMode = 'ghost' | 'never' | 'inactive' | 'normal'
+export function windowShowMode(hidden: boolean, inactive: boolean, platform: string = process.platform): WindowShowMode {
+  if (hidden) return platform === 'win32' || platform === 'darwin' ? 'ghost' : 'never'
+  return inactive ? 'inactive' : 'normal'
 }
 
 /** Only the exact value '1' turns it on (ORGAI_WINDOW_LARGER_THAN_SCREEN, macOS CI only). */

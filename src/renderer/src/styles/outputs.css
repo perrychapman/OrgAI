@@ -242,8 +242,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The meta only shrinks (it never grows), so the separator sits against its text, not at the far edge. */
 .output-detail-line > .output-detail-meta {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 /* Provenance holds the focusable run link: it never clips (its focus ring and the tag stay whole); the meta ellipsises. */
 .output-detail-line > .output-detail-prov {

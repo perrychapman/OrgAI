@@ -702,6 +702,8 @@
 .hb-actions-row {
   display: flex;
   flex-wrap: wrap;
+  /* Not stretch: a button beside one with a caption under it grew to the caption's height. */
+  align-items: flex-start;
   gap: var(--space-2);
 }
 .hb-error {

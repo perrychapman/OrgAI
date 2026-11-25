@@ -115,11 +115,11 @@
   /* Collapsed, not gone: keep it out of the tab order and the accessibility tree while it has no height. */
   visibility: hidden;
 }
-/* The canvas-only controls (zoom, fit, legend, Hide finished) do nothing on a collapsed stage: take them out of reach. */
+/* The canvas-only controls (zoom, fit, the View menu with Hide finished, canvas style and the legend) do nothing on a collapsed stage: take them out of reach. */
 .canvas-tools {
   display: contents;
 }
-.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) :is(.canvas-tools, .run-fold) {
+.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card.kind-proposal[data-expanded='true']) :is(.canvas-tools, .frame-toolbar-end > .popover-wrap:has(> .canvas-view-trigger)) {
   display: none;
 }
 .frame-grid > .frame-tray[data-compact='true']:has(.decision-card.kind-proposal[data-expanded='true']) {
@@ -405,11 +405,6 @@ button.run-meta-item:focus-visible {
     display: none;
   }
 }
-@container frame (max-width: 560px) {
-  .fold-long {
-    display: none;
-  }
-}
 @container frame (max-width: 420px) {
   .run-meta-cost,
   .run-meta-wall,
@@ -428,31 +423,6 @@ button.run-meta-item:focus-visible {
   .run-meta {
     visibility: hidden;
   }
-  .fold-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-}
-.fold-short {
-  display: none;
-}
-@container frame (max-width: 560px) {
-  .fold-short {
-    display: inline;
-  }
-}
-.run-fold {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-right: var(--space-2);
-  font-size: var(--text-caption);
-  color: var(--text-secondary);
-  white-space: nowrap;
 }
 .zoom-group {
   display: inline-flex;
@@ -800,6 +770,10 @@ button.run-meta-item:focus-visible {
   grid-row: 2;
   grid-column: 1;
   border-left: 0;
+  /* The card is as wide as the reading column it belongs to (90ch plus its own padding), not the whole window: in a 1600 px
+     window it was a 1340 px bar under a 600 px column. */
+  width: min(calc(100% - 2 * var(--space-3)), calc(90ch + var(--space-6)));
+  margin-inline: auto;
 }
 .run-body.run-body[data-layout='conversation'] > .live-composer-region > .composer > .composer-field {
   max-width: 90ch;

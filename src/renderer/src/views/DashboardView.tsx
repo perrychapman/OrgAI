@@ -49,15 +49,16 @@ import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
 import { SecretNotices } from '../components/dashboard/SecretNotices'
 import AppNavigateBanner from '../components/AppNavigateBanner'
+import { focusLaterUnlessMoved, mayRestoreFocus } from '../lib/laterFocus'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
 
 const CONTROL = (id: DashSectionId, testId: string): string => `[data-testid=dash-section-controls][data-section="${id}"] [data-testid="${testId}"]`
 
-/** Focus an element found after React has rendered (a moved section's DOM node may have been re-inserted). */
+/** Focus an element found after React has rendered (a moved section's DOM node may have been re-inserted), unless the person has moved on. */
 function focusLater(selector: string): void {
-  requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus({ preventScroll: false }))
+  focusLaterUnlessMoved(() => document.querySelector<HTMLElement>(selector))
 }
 
 /** One `.motion-ring` on a section's slot after a move (restarts on a second move); none under reduced motion. */
@@ -198,13 +199,20 @@ export default function DashboardView(): ReactElement {
     updateLayout((l) => setMotionPaused(l, paused))
     say(paused ? 'Motion paused.' : 'Motion resumed.')
   }
+  // The button gets focus back a frame later, unless the person has already moved on (a busy window runs the frame late).
+  const focusCustomise = (): void => {
+    const from = document.activeElement
+    requestAnimationFrame(() => {
+      if (mayRestoreFocus(from, document.activeElement, document.body)) customiseRef.current?.focus({ preventScroll: true })
+    })
+  }
   const leaveCustomise = (): void => {
     setCustomising(false)
-    requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
+    focusCustomise()
   }
   const openCustomise = (): void => {
     setCustomising(true)
-    requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
+    focusCustomise()
   }
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (!customising || e.key !== 'Escape' || e.defaultPrevented) return

@@ -97,6 +97,8 @@
 .outputs-search-icon {
   position: absolute;
   left: var(--space-2);
+  /* The input has a backdrop filter, which makes it a stacking context that paints over an earlier absolute sibling. */
+  z-index: 1;
   display: inline-flex;
   color: var(--text-tertiary);
   pointer-events: none;

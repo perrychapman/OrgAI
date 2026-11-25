@@ -6,7 +6,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { checkPocketOffice } from './pocket-office.mjs'
-import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, sleep, windowShift } from './lib.mjs'
+import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, openViewMenu, projectTab, sleep, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-canvas-script-')), 'script.json')
@@ -268,7 +268,19 @@ try {
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
   await page.locator('[data-testid=done-group][data-count="3"]').waitFor({ timeout: 40_000 }).catch(() => {})
   // Show every agent: root -> mock-lead -> two reports.
-  const fold = page.getByRole('switch', { name: 'Hide finished agents' })
+  // The Hide finished agents switch lives in the toolbar's View menu: each use opens the menu, reads or flips it and closes it.
+  const fold = {
+    getAttribute: async (name) => {
+      const sw = (await openViewMenu(page)).getByRole('switch', { name: 'Hide finished agents' })
+      const v = await sw.getAttribute(name)
+      await page.keyboard.press('Escape')
+      return v
+    },
+    click: async () => {
+      await (await openViewMenu(page)).getByRole('switch', { name: 'Hide finished agents' }).click()
+      await page.keyboard.press('Escape')
+    }
+  }
   if ((await fold.getAttribute('aria-checked')) === 'true') await fold.click()
   await sleep(800)
   const STAGE = '.run-body .frame-stage'
@@ -394,10 +406,16 @@ try {
   })
   check(!!sizes && sizes.mh <= 0.34 * sizes.sh + 1, 'at 1024x640 the minimap is at most about a third of the stage height', JSON.stringify(sizes))
   const miniBox = await page.locator('.run-body .react-flow__minimap').boundingBox()
+  // The legend is a section of the toolbar's View menu: the menu opens collapsed (a short panel above the minimap) and the legend
+  // opens inside it. Whatever the menu covers is drawn above the minimap, never under it.
+  const viewPanel = await openViewMenu(page)
+  await sleep(300)
+  const closedBox = await viewPanel.boundingBox()
+  check(!intersects(miniBox, closedBox), 'the View menu, closed to its rows, does not land on the minimap', JSON.stringify({ miniBox, closedBox }))
   await page.locator('[data-testid=canvas-legend-trigger]').click()
   await sleep(300)
   const legendBox = await page.locator('[data-testid=canvas-legend]').boundingBox()
-  check(!intersects(miniBox, legendBox), 'the legend popover does not land on the minimap', JSON.stringify({ miniBox, legendBox }))
+  check(!!legendBox && (await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('[data-testid=canvas-style-popover]'), [legendBox.x + legendBox.width / 2, legendBox.y + 10])), 'the legend inside the View menu is drawn above the minimap', JSON.stringify({ miniBox, legendBox }))
   await shot('live-minimap-legend')
   await page.keyboard.press('Escape')
   await sleep(200)
@@ -468,6 +486,7 @@ try {
         check(await noPageScroll(), `${name} run view has no page scroll at ${w}x${h} ${theme}`, JSON.stringify(await pageScroll()))
         await shot(`live-${name.toLowerCase()}-${w}x${h}-${theme}`)
         if (theme === 'light' || w === 1024) {
+          await openViewMenu(page)
           await page.locator('[data-testid=canvas-legend-trigger]').click()
           await page.locator('[data-testid=canvas-legend]').waitFor({ timeout: 5000 })
           await sleep(250)
@@ -484,15 +503,17 @@ try {
 
   // ---------- The toolbar "Canvas style" popover ----------
   await setCanvas({ pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card' })
+  // The View button (test id canvas-style-button) opens the one popover: view options, then the Canvas style row, which opens the presets.
   const styleBtn = page.locator('.run-body [data-testid=canvas-style-button]')
-  await styleBtn.click()
-  const pop = page.locator('[data-testid=canvas-style-popover]')
-  await pop.waitFor({ timeout: 5000 })
+  const pop = await openViewMenu(page)
   await sleep(300)
   check((await pop.locator('[data-testid=canvas-presentation]').count()) === 0, 'the style popover no longer holds the presentation chooser (the Theme menu does)')
-  check((await pop.locator('[data-preset=default]').count()) === 1 && (await pop.locator('[data-preset]').first().getAttribute('data-preset')) === 'default', 'the popover lists Default first')
+  check((await pop.locator('[data-testid=canvas-style-disclosure]').getAttribute('aria-expanded')) === 'false' && (await pop.locator('[data-preset]').count()) === 0, 'the View menu opens with the style presets folded behind one Canvas style row')
   const popBox = await pop.boundingBox()
-  check(!intersects(miniBox, popBox), 'the style popover does not land on the minimap', JSON.stringify({ miniBox, popBox }))
+  check(!intersects(miniBox, popBox), 'the View menu does not land on the minimap', JSON.stringify({ miniBox, popBox }))
+  await pop.locator('[data-testid=canvas-style-disclosure]').click()
+  await sleep(300)
+  check((await pop.locator('[data-preset=default]').count()) === 1 && (await pop.locator('[data-preset]').first().getAttribute('data-preset')) === 'default', 'the popover lists Default first')
   await pop.locator('[data-preset=default]').focus()
   await page.keyboard.press('ArrowDown')
   await sleep(600)
@@ -509,7 +530,7 @@ try {
   {
     const menu = page.locator('[data-testid=canvas-theme-menu]')
     check((await themeTrigger.getAttribute('aria-haspopup')) === 'menu' && (await themeTrigger.getAttribute('aria-expanded')) === 'false', 'the Theme button is a menu button, closed')
-    check(/Theme\s*Org chart/.test(await themeTrigger.innerText()), 'the Theme button names the current theme (Org chart)')
+    check((await themeTrigger.innerText()).trim() === 'Org chart' && (await themeTrigger.getAttribute('aria-label')) === 'Canvas theme: Org chart', 'the scene button shows the current scene (Org chart) and its name says what it is')
     await themeTrigger.click()
     await menu.waitFor({ timeout: 5000 })
     await sleep(400)
@@ -541,7 +562,7 @@ try {
     await page.keyboard.press('Enter')
     await sleep(700)
     check((await html('data-canvas-presentation')) === 'pocket-office', 'Enter on Pocket Office applies it')
-    check(/Theme\s*Pocket Office/.test(await themeTrigger.innerText()), 'the Theme button now names Pocket Office')
+    check((await themeTrigger.innerText()).trim() === 'Pocket Office' && (await themeTrigger.getAttribute('aria-label')) === 'Canvas theme: Pocket Office', 'the scene button now names Pocket Office')
     check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'canvas-theme-trigger'), 'a pick returns focus to the Theme button')
     const themeSaid = await page.locator('.run-body [data-testid=tray-announce]').innerText().catch(() => '')
     check(/Canvas theme: Pocket Office\./.test(themeSaid), 'the pick is announced through the frame', themeSaid)

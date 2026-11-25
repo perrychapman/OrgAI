@@ -99,6 +99,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The ranked rows take two lines (name and cost, then bar and counts) so the name and "11 runs" are not cut. */
+  .usage-view .usage-where-card .uc-rank-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'name cost'
+      'bar detail';
+    row-gap: var(--space-0h);
+  }
+  .usage-view .usage-where-card .uc-rank-detail {
+    max-width: none;
+    text-align: end;
+    white-space: nowrap;
+  }
 }
 .usage-panel-embedded {
   display: flex;
@@ -109,6 +122,10 @@
 }
 .usage-panel-embedded > .usage-table-details {
   margin-top: auto;
+}
+/* The summary's flex-basis 100% is for the header row; in this column it stretched the line into a tall empty gap. */
+.usage-panel-embedded > .usage-panel-summary {
+  flex: none;
 }
 .usage-panel-embedded .uc-rank-main {
   min-width: 0;

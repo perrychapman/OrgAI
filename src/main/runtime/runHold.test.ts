@@ -44,6 +44,12 @@ describe('holdActionsFor', () => {
     expect(holdActionsFor('budget', { ...ended, continuable: false })).toEqual(['switchModel'])
   })
 
+  it('an unpriced budget hold never offers add budget', () => {
+    expect(holdActionsFor('budget', { ...ended, unpriced: true })).toEqual(['switchModel'])
+    // The flag only means something for a budget hold.
+    expect(holdActionsFor('provider', { ...ended, unpriced: true })).toEqual(['retry', 'switchModel'])
+  })
+
   it('a spend-limit pause resumes only once no cap is reached; an ended one retries', () => {
     expect(holdActionsFor('spend-limit', { ...ended, paused: true, capReached: true })).toEqual(['switchModel'])
     expect(holdActionsFor('spend-limit', { ...ended, paused: true })).toEqual(['resume', 'switchModel'])
@@ -74,6 +80,23 @@ describe('hold builders', () => {
     expect(h).toMatchObject({ kind: 'budget', since: 9, budget: { scope: 'run', limitUsd: 5, spentUsd: 5.1 } })
     expect(h.reason).toContain('$5.00')
     expect(budgetHold({ scope: 'conversation', limitUsd: 5, spentUsd: 5, since: 1, facts: ended }).reason).toContain('conversation')
+  })
+
+  it('budget stopped on an unknown price: exact reason, flagged, and the used-up wording is not used', () => {
+    const h = budgetHold({ scope: 'run', limitUsd: 2.5, spentUsd: 0.007, since: 9, facts: ended, unpriced: true })
+    const plainActions = holdActionsFor('budget', ended)
+    expect(h.reason).toBe("The run stopped because part of it used a model with no known price, so its cost cannot be counted against this run's spending limit ($2.50). Set a price for that model in Settings, or remove the limit.")
+    expect(h.reason).not.toContain('used all of')
+    expect(h.budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: 0.007, unpriced: true })
+    // Raising the limit cannot help an unpriced stop: only the model switch is offered.
+    expect(h.actions).toEqual(['switchModel'])
+    expect(plainActions).toEqual(['addBudget', 'switchModel'])
+    // The ordinary hold keeps its exact wording and carries no flag.
+    const plain = budgetHold({ scope: 'run', limitUsd: 2.5, spentUsd: 2.5, since: 9, facts: ended })
+    expect(plain.reason).toBe("The run stopped because it used all of this run's spending limit ($2.50).")
+    expect(plain.budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: 2.5 })
+    expect(h.reason.length).toBeLessThanOrEqual(500)
+    expect(structuredClone(h)).toEqual(h)
   })
 
   it('spend limit carries the period and when it resets', () => {

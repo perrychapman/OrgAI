@@ -461,7 +461,9 @@ export function menuActionSender<W extends WindowLike>(
  */
 export function navigateSender<W extends WindowLike & { flashFrame?(flag: boolean): void }>(
   getFocused: () => W | null,
-  getWindows: () => [W, unknown][]
+  getWindows: () => [W, unknown][],
+  /** ORGAI_QUIET=1 (quietMode.ts, process start only): no taskbar / Dock attention flash; the event is delivered as usual. */
+  quiet = false
 ): (event: AppNavigateEvent) => boolean {
   const live = (w: WindowLike | null | undefined): w is W => !!w && !w.isDestroyed() && !w.webContents.isDestroyed()
   return (event) => {
@@ -486,7 +488,7 @@ export function navigateSender<W extends WindowLike & { flashFrame?(flag: boolea
           main.focus?.()
         }
       } else {
-        main.flashFrame?.(true)
+        if (!quiet) main.flashFrame?.(true)
       }
       if (main.id !== undefined && !readyWindows.has(main.id)) {
         trackWindow({ id: main.id, once: main.once?.bind(main) })

@@ -241,6 +241,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   `runtime/builtinModel.ts` (deep-tier fallback, one run warning). They are edited in App settings > General > Advanced
   settings > "Assistant models"; the MCP assist dialog hint and the Org retrospective tooltip name them (`lib/assistantModels.ts`).
   The `orgai:settings-section` window event switches a mounted App settings page to the requested pane.
+- Notification test plumbing: `ORGAI_QUIET=1` in the process environment (read once in `index.ts`, `quietMode.ts`) makes
+  `Notifier` (`handle` and `notice`) and `navigateSender` skip the OS toast, the taskbar flash and the Dock bounce at the last
+  step; what would be shown, the categories and the Inbox are unchanged. It is not reachable from settings, project files,
+  IPC, the socket or agents. Unit-tested (`notifications.test.ts`, `appMenu.test.ts`, `quietMode.test.ts`); e2e launches set it.
 - Run titles: `RunSummary.title` (at most `RUN_TITLE_MAX_CHARS` = 32) and the `run.title` event come from
   `src/main/ai/runTitle.ts`. RunManager fires it for work runs with prompt text and never awaits it. It is a one-shot
   `complete({ kind: 'title', model: fast tier, connection })` with a 20 s timeout, cleaned by `cleanTitle`. A failure
@@ -950,15 +954,20 @@ script (set `ORGAI_MOCK_SCRIPT` to `{"delayMs": 50}` only; a custom `work` array
   `ff-s13` done, `ff-w211` waiting (a background Bash card the e2e answers; it then goes thinking), most leads and
   sub-leads delegating (not all: `ff-l1` reads `thinking` by READY, seen in the slice 3 e2e; a parent is set to
   `delegating` per spawn and moves on), the root thinking. READY also follows the plan update, so key a READY snapshot on
-  the plan (`board.blocked` 1) and the pending card, not on `ff-w123` failing (which comes earlier). `ff-w111` is in state `tool` for `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY, then
-  `MOCK_FACTORY_FLOOR_DONE`; the run goes idle. `usage.toolCalls` of `ff-w111` goes 1, 2, 3, 4 (counted when a tool step
+  the plan (`board.blocked` 1) and the pending card, not on `ff-w123` failing (which comes earlier). `ff-w111` is in state `tool` for at least `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY and, in
+  plain `[mock:factory-floor]`, until the card of `ff-w211` is answered (step flag `holdUntilAnswered`; `-pause` keeps
+  the timed hold, it never has the card answered), then `MOCK_FACTORY_FLOOR_DONE`; the run goes idle. The timed hold alone was not
+  readable on a slow machine: a renderer a minute behind applies the tool event and the one 5 s later without a render
+  in between (reproduced under two cores and 6x throttle: the state went from `thinking` to plan blocked plus card pending
+  and never showed the machine), so a standing hold is what a test can wait for. `usage.toolCalls` of `ff-w111` goes 1, 2, 3, 4 (counted when a tool step
   starts, in the same upsert that sets `tool`).
 - Worktree records are synthetic (no git, `agent.upsert` only): `ff-w111` active, `ff-w112` merging, `ff-w113` merged
   (main), `ff-w131` merged (parent `ff-s13`), `ff-w132` review, `ff-w133` held, `ff-w211` empty, `ff-w212` conflict, `ff-w213`
   removed, `ff-s13` waiting-children. A real fixture repo is not needed.
 - Messages: `ff-l1` -> `ff-s11`, `ff-w111` -> `user` (to null), `ff-w112` -> `nobody-here` (to null). Plan: p1 owner
   `ff-l1` in_progress, p2 owner `ff-w111` blocked, p3 pending (plan status stays active; `[mock:exec-blocked]` gives a blocked plan).
-- New generic steps, usable in any custom script: tool `holdMs` (stay in `tool`), `agentState`, `worktree`, `remove`.
+- New generic steps, usable in any custom script: tool `holdMs` (stay in `tool`) with `holdUntilAnswered` (then until every
+  background card is answered; stop releases it), `agentState`, `worktree`, `remove`.
 - Slice 4 e2e (`e2e/factory-floor.mjs`, section "Slice 4"): custom `work` scripts with a gate. The first step is a root
   `tool` with `ask: true` (a Bash card), so the run stands still, the scene mounts and the test state is read at the gate,
   and the e2e answers the card (`.decision-card .decision-footer .btn.primary`) to release the events: no sleeps decide
@@ -1011,7 +1020,13 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   is per session, so a continuation starts a fresh one.
 - **Project budget cap in main:** `checkSpend`'s own cap is `runBudgetUsd`, else `Project.maxBudgetUsd` as the run sees it, on
   every adapter (a project cap alone used to stop only Claude, through the SDK). Unknown or partly unknown price under a cap
-  stops the run (known part on the hold). Both stops make one hold (`spendStopped`). What is compared (`spendOf`): the run's
+  stops the run (known part on the hold; that hold carries `budget.unpriced` and says "no known price", not "used all of" the
+  limit; the scripted mock is never SDK-first exempt, so its default unpriced report stops any capped run; an unpriced hold
+  offers only `switchModel` (`HoldFacts.unpriced`; `addBudget` refuses it in main); a desktop conversation-budget run on an
+  unpriced model holds the same way (`checkExecBudget`); `send()` to an ended run is refused with the hold's reason and a tail
+  chosen by hold kind, "Run is not active" only for an unknown id, and `send()` refuses between the stop (`spendStopped`,
+  `finalizing`, `userStopped`, status `stopping`) and the session's end instead of forwarding to a session being stopped;
+  unit tests in `runManager.projectCap.test.ts`, live providers unverified). Both stops make one hold (`spendStopped`). What is compared (`spendOf`): the run's
   best known cost; with bridged agents also the parent session's best cost plus the bridged agents' known cost (a parent's
   provider total never covers them, on any adapter), and a bridged agent with no known price counts as unknown. A first-party
   Anthropic Claude run under the project's cap compares the SDK's own total (plus bridged agents), so main does not stop it

@@ -8,6 +8,8 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  /* Panes with and without a scrollbar lay out at the same width, so tiles and cards do not jump between them. */
+  scrollbar-gutter: stable;
   padding: var(--space-4);
   /* Contain absolutely positioned descendants (sr-only live regions, native inputs) so they never extend the window. */
   position: relative;
@@ -279,7 +281,8 @@
 }
 .settings-group-title {
   margin: 0;
-  padding-inline: var(--space-1);
+  /* Flush with the section title and the card edge below (a 4 px inset left it off the column). */
+  padding-inline: 0;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   font-weight: var(--weight-semibold);
@@ -360,6 +363,31 @@
 }
 .setting-row.w-select .setting-row-control {
   width: 100%;
+}
+/* Segmented choices sit on the same right edge as the selects, numbers and switches in the rows above and below. */
+.setting-row.w-select .setting-row-control > .seg {
+  margin-left: auto;
+}
+/* A dollar amount: the sign sits inside the field's left edge (UsdInput). */
+.setting-row.w-number .setting-row-control:has(.usd-field) {
+  width: 140px;
+}
+.usd-field {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.usd-field > .input {
+  width: 100%;
+  padding-left: calc(var(--space-3) + var(--space-3));
+}
+.usd-sign {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
 }
 /* Select rows keep label left and control right down to a narrow column: the text gives way before the row wraps. */
 .setting-row.w-select > .setting-row-text,
@@ -901,6 +929,12 @@
     display: none;
   }
 }
+/* The top bar (glass, so its own stacking level) sits above the page below it: the search results drop over the menu and the
+   pane, not behind them. */
+.settings-topbar {
+  position: relative;
+  z-index: var(--z-sheet);
+}
 .settings-search {
   position: relative;
   flex: 1 1 200px;
@@ -945,9 +979,9 @@
   padding: var(--space-1);
   border-radius: var(--radius-lg);
   border: 1px solid var(--glass-line, var(--border-default));
-  background: var(--glass-strong, var(--surface-1));
-  -webkit-backdrop-filter: var(--glass-blur, none);
-  backdrop-filter: var(--glass-blur, none);
+  /* Solid: it opens inside the glass top bar, whose own backdrop filter leaves nothing for this one to blur, so a see-through
+     panel let the menu and the pane show through the results. */
+  background: var(--surface-2);
   box-shadow: var(--elev-2);
 }
 .settings-search-list {
@@ -988,6 +1022,7 @@
 }
 .settings-search-empty {
   margin: 0;
+  overflow-wrap: anywhere;
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-small);
   color: var(--text-secondary);
@@ -1311,7 +1346,8 @@
 }
 .appearance-modes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* Three cards stay on one row down to the 1024 px window (two and one orphan looked unfinished). */
+  grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
   gap: var(--space-3);
 }
 .appearance-mode {
@@ -1364,6 +1400,8 @@
 .appearance-mode[data-mode='system'] .appearance-mode-art {
   --art-pane: color-mix(in srgb, white 30%, color-mix(in srgb, black 30%, transparent));
   background: linear-gradient(90deg, color-mix(in srgb, black 86%, var(--accent)) 50%, color-mix(in srgb, white 92%, var(--accent)) 50%);
+  /* Cover the border too: by default the gradient repeats under the right border and drew a dark line at the edge. */
+  background-origin: border-box;
 }
 .appearance-mode-pane {
   width: 26%;
@@ -1714,9 +1752,13 @@
   font-size: var(--text-body);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
+  /* Two lines before the ellipsis (long skill, template and proxy names differ late); the full name is the title. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .settings-gallery-tag {
   font-size: var(--text-small);
@@ -1729,6 +1771,9 @@
   overflow-wrap: anywhere;
 }
 .settings-gallery-status {
+  /* Pinned to the bottom of the tile so the status lines of tiles in one row line up. */
+  margin-top: auto;
+  align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1h);
@@ -1787,6 +1832,36 @@
     max-height: none;
     overflow: visible;
     max-width: none;
+  }
+}
+/* "Back to the list": only where the panel is stacked below the grid (see DetailBack). The base rule must come before the
+   container rule that shows it, or the later `display: none` wins. */
+.settings-detail-back {
+  display: none;
+  align-items: center;
+  gap: var(--space-1h);
+  align-self: flex-start;
+  min-height: var(--control-sm);
+  margin: calc(-1 * var(--space-1)) 0 calc(-1 * var(--space-2));
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.settings-detail-back:hover {
+  background: var(--surface-2);
+}
+.settings-detail-back:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+@container settings-col (max-width: 780px) {
+  .settings-detail-back {
+    display: inline-flex;
   }
 }
 .settings-detail-head {

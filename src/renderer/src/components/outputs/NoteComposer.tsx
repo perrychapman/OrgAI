@@ -7,6 +7,7 @@ import type { OutputNoteAnchor } from '@shared/types'
 import { OUTPUT_NOTE_TEXT_MAX } from '@shared/types'
 import { Button } from '../ui/Button'
 import { Textarea } from '../ui/Textarea'
+import { focusAfterUnlessMoved } from '../../lib/laterFocus'
 import { NOTE_COUNTER_FROM, clip, noteTextProblem } from '../../lib/outputNotes'
 import { useOutputDetail, type OutputSelection } from './outputDetailContext'
 import '../../styles/outputs-notes.css'
@@ -93,7 +94,8 @@ export default function NoteComposer({ open, selection, anchorEl, onClose }: Not
       const back = opener.current ?? anchorEl
       if (openRef.current && !closing.current) onCloseRef.current(false)
       closing.current = false
-      window.setTimeout(() => back?.focus(), 0)
+      // A window that runs this timer late may already have let the person reopen the composer and start typing.
+      focusAfterUnlessMoved(() => back, 0)
     }
     el.addEventListener('toggle', onToggle)
     return () => el.removeEventListener('toggle', onToggle)

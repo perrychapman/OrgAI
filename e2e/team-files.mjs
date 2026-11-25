@@ -5,7 +5,7 @@
 // Keyboard path, focus after Approve and no page scroll are checked at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { check, cleanup, finish, findProject, git as git0, gitSafe, gotoProjects, launch, log, makeFixtureRepo, openProjectForm, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
+import { check, checkRadio, cleanup, finish, findProject, git as git0, gitSafe, gotoProjects, launch, log, makeFixtureRepo, openProjectForm, projectTab, removeFixture, sleep, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E team files (orgai test)'
@@ -113,8 +113,8 @@ try {
   // ---- 1. New project from a folder that holds a team ----
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-  await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+  await checkRadio(form.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
   await form.locator('input[placeholder*="repo"]').fill(repo)
   await form.locator('input[placeholder*="Defaults to the folder name"]').fill(NAME)
   const found = page.locator('[data-testid=team-found]')

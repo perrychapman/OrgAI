@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, nativeTheme, powerSaveBlocker, safeStorage, screen, shell, type MenuItemConstructorOptions } from 'electron'
 import { buildTextContextMenu } from './textContextMenu'
-import { parseLargerThanScreen, parseWindowHidden, parseWindowInactive, windowPlacement } from './windowPlacement'
+import { parseQuiet } from './quietMode'
+import { parseLargerThanScreen, parseWindowHidden, parseWindowInactive, windowPlacement, windowShowMode } from './windowPlacement'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -218,8 +219,18 @@ function refuseExternal(url: string): void {
 
 function showWindow(win: BrowserWindow): void {
   if (win.isMinimized()) win.restore()
-  win.show()
-  win.focus()
+  // ORGAI_WINDOW_HIDDEN / ORGAI_WINDOW_INACTIVE (test plumbing): never take focus. The one place the show mode is decided.
+  const mode = windowShowMode(WINDOW_HIDDEN, WINDOW_INACTIVE)
+  if (mode === 'ghost') {
+    win.setOpacity(0)
+    win.setIgnoreMouseEvents(true)
+    win.showInactive()
+  } else if (mode === 'inactive') win.showInactive()
+  else if (mode === 'normal') {
+    win.show()
+    win.focus()
+  }
+  // 'never' (hidden on Linux): the window stays hidden.
 }
 
 function showDockIcon(): void {
@@ -259,8 +270,14 @@ function openRunWindow(target: FocusRunTarget): void {
 // test and walkthrough windows open on another monitor without taking focus. Unset = the default behaviour.
 const WINDOW_DISPLAY = process.env.ORGAI_WINDOW_DISPLAY
 const WINDOW_INACTIVE = parseWindowInactive(process.env.ORGAI_WINDOW_INACTIVE)
-// ORGAI_WINDOW_HIDDEN=1: windows load but are never shown (scripts/verify-pack.mjs boots the packed app this way).
-const WINDOW_HIDDEN = parseWindowHidden(process.env.ORGAI_WINDOW_HIDDEN)
+// ORGAI_WINDOW_HIDDEN=1: "ghost" windows (Windows, macOS): shown inactive but opacity 0, click-through and off the taskbar,
+// so they paint and keep frames without appearing or taking focus; on Linux (no setOpacity) they are never shown, as
+// before (scripts/verify-pack.mjs boots the packed app this way). Honoured only with a non-empty ORGAI_DATA_DIR.
+const WINDOW_HIDDEN = parseWindowHidden(process.env.ORGAI_WINDOW_HIDDEN, process.env.ORGAI_DATA_DIR)
+// ORGAI_QUIET=1 (test plumbing, quietMode.ts): no OS notification, taskbar flash or Dock bounce. Environment at process
+// start only: no setting, file, IPC channel, socket call or agent tool reaches it. Also needs ORGAI_DATA_DIR.
+const QUIET = parseQuiet(process.env.ORGAI_QUIET, process.env.ORGAI_DATA_DIR)
+if (WINDOW_HIDDEN || QUIET) log.info(`Test switches active (ORGAI_DATA_DIR is set): ${[WINDOW_HIDDEN ? 'ORGAI_WINDOW_HIDDEN' : '', QUIET ? 'ORGAI_QUIET' : ''].filter(Boolean).join(', ')}.`)
 // ORGAI_WINDOW_LARGER_THAN_SCREEN=1 (CI only, macOS): lets e2e windows exceed a small work area (constructor-only,
 // ignored off macOS). Unset = unchanged.
 const WINDOW_LARGER_THAN_SCREEN = parseLargerThanScreen(process.env.ORGAI_WINDOW_LARGER_THAN_SCREEN)
@@ -311,7 +328,9 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
       preload: join(__dirname, '../preload/index.cjs'),
       sandbox: true,
       contextIsolation: true
-    }
+    },
+    // Test plumbing behind ORGAI_WINDOW_HIDDEN: no taskbar button for the invisible window.
+    ...(WINDOW_HIDDEN ? { skipTaskbar: true } : {})
   })
 
   if (process.platform === 'win32') {
@@ -332,9 +351,8 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     host?.services.outputWatcher?.dropOwner(`window:${webContentsId}`)
   })
   win.on('ready-to-show', () => {
-    if (WINDOW_HIDDEN) return
-    if (WINDOW_INACTIVE) win.showInactive()
-    else win.show()
+    // Test plumbing (ORGAI_WINDOW_HIDDEN=1 ghost: painting but invisible, click-through, never active) lives in showWindow.
+    showWindow(win)
   })
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
@@ -471,7 +489,7 @@ app.whenReady().then(async () => {
       openRunWindow,
       // open_in_app: the live main window only, queued until its renderer is ready; focused only while OrgAI is the
       // foreground app, else flashed (appMenu.ts navigateSender, review M2). No main window open: false, never a new one.
-      navigate: (event) => navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes)(event),
+      navigate: (event) => navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, QUIET)(event),
       // outputs:delete moves the file to the OS trash (the service deletes for good when this is missing or throws).
       trashItem: (p) => shell.trashItem(p),
       teamFilesChanged: (status) => {
@@ -555,7 +573,9 @@ app.whenReady().then(async () => {
       const s = settings.get()
       return category === 'needsMe' ? s.notifyNeedsMe !== false : category === 'runFinished' ? s.notifyRunFinished !== false : s.notifyScheduleFindings !== false
     },
-    iconPath: () => (process.platform === 'linux' ? appIconPath() : undefined)
+    iconPath: () => (process.platform === 'linux' ? appIconPath() : undefined),
+    quiet: QUIET,
+    reveal: showWindow
   })
   // Open at login and keep awake while runs work (appBehaviour.ts); the close behaviour is read in window-all-closed.
   appBehaviour = new AppBehaviour({

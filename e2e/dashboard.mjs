@@ -25,7 +25,7 @@
 // New run from the menu, Enter on a band agent row opens the agent, both sizes and themes, relaunch with a run cut while waiting.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, sleep } from './lib.mjs'
+import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, setThemeAndWait, setWindowSize, sleep, t, checkRadio } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-dash-script-')), 'script.json')
@@ -69,19 +69,12 @@ const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await p
 const text = async (id) => clean(await T(id).first().innerText().catch(() => ''))
 const tileOf = (name) => page.locator(`[data-testid=project-tile][data-name="${name}"]`)
 const live = () => text('dashboard-live')
-const setSize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: 10_000 }).catch(() => {})
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await sleep(500)
-}
-const setTheme = async (theme) => {
-  await page.evaluate(async (t) => {
-    const s = await window.orgai.settings.get()
-    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-  }, theme)
-  await sleep(600)
-}
+// A polite announcement is replaced by the next one and a slow renderer draws it late, so a check waits for the text to show
+// (a standing state while it is there) and does not read the region once after a sleep.
+const liveHas = async (what) => !!(await until(async () => (await live()).includes(what), 4000, 100))
+const liveMatch = async (re) => !!(await until(async () => re.test(await live()), 4000, 100))
+const setSize = (w, h) => setWindowSize(app, page, w, h, 500)
+const setTheme = (theme) => setThemeAndWait(page, theme, 600)
 /** Merge a patch into the saved settings through settings:set (the broadcast re-applies it). */
 const setSettings = async (patch) => {
   await page.evaluate(async (p) => {
@@ -101,7 +94,7 @@ const setAppearance = async (patch) => {
 }
 /** Poll `fn` until truthy (returned) or the deadline passes (null). */
 async function until(fn, ms = 20_000, every = 250) {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   for (;;) {
     const v = await fn().catch(() => null)
     if (v) return v
@@ -111,7 +104,7 @@ async function until(fn, ms = 20_000, every = 250) {
 }
 /** The name popover's input is visible a frame or more before the popover hands it focus; typing earlier loses characters. */
 const nameInputFocused = async () => {
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await T('dash-name-input').waitFor({ timeout: t(5000) })
   await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dash-name-input', 5000, 50)
 }
 const activeInfo = () =>
@@ -130,10 +123,10 @@ const activeInfo = () =>
 const startRun = async (prompt) => {
   await projectTab(page, 'Live').click()
   const ta = page.locator('.composer textarea')
-  await ta.waitFor({ timeout: 10_000 })
+  await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
 }
 const bellCount = async () => Number(/Needs you · (\d+)/.exec(await text('needs-you-row'))?.[1] ?? 0)
 const layoutOf = () =>
@@ -333,10 +326,10 @@ try {
   const primaries = await page.locator('main .btn.primary:visible').count()
   check(primaries === 1, 'first launch has exactly one primary button', String(primaries))
   await shot('first-launch')
-  await T('dash-start-choice').getByRole('radio', { name: 'Chat now' }).check({ force: true })
+  await checkRadio(T('dash-start-choice').getByRole('radio', { name: 'Chat now' }), 'the Chat now choice')
   check(await visible('[data-testid=empty-chat-now]'), 'choosing Chat now shows the Chat now button')
   check((await page.locator('main .btn.primary:visible').count()) === 1, 'still exactly one primary with Chat now chosen')
-  await T('dash-start-choice').getByRole('radio', { name: 'Start a project' }).check({ force: true })
+  await checkRadio(T('dash-start-choice').getByRole('radio', { name: 'Start a project' }), 'the Start a project choice')
 
   // Walk 4 M2: on first launch a saved name shows in the greeting at once, and "Add your name" looks like a control.
   const addBox = await T('dash-name-add').evaluate((el) => {
@@ -402,7 +395,7 @@ try {
   await T('home-target').selectOption({ label: PINNED })
   await T('home-task').fill('Check the home task box')
   await T('home-task').press('Control+Enter')
-  await page.locator('.composer textarea').waitFor({ timeout: 10_000 })
+  await page.locator('.composer textarea').waitFor({ timeout: t(10_000) })
   check((await page.locator('.composer textarea').inputValue()) === 'Check the home task box', 'HM Ctrl+Enter opens that project\'s New run page with the task in the composer')
   check((await page.locator('main .topbar h1').first().innerText()).trim() === PINNED, 'HM the New run page is the chosen project\'s')
   await page.locator('.composer textarea').fill('')
@@ -427,7 +420,7 @@ try {
   await page.keyboard.press('Enter')
   check(!!(await until(async () => (await salutationText()).endsWith(', Sam'), 8000)), 'A7 Enter saves and the salutation shows the name at once', await salutationText())
   // The live region is set in an effect after the salutation changes: poll it rather than read it once (a one-shot read failed intermittently on Windows).
-  check(!!(await until(async () => (await live()).includes('Name saved.'), 3000)), 'A7 saving the name is announced "Name saved."', await live())
+  check(!!(await until(async () => (await liveHas('Name saved.')), 3000)), 'A7 saving the name is announced "Name saved."', await live())
   await until(async () => (await activeInfo()).testid === 'dash-name-edit', 5000, 50)
   check((await activeInfo()).testid === 'dash-name-edit', 'A7 focus lands on the Change your name button after saving', JSON.stringify(await activeInfo()))
   check(!!(await page.evaluate(async () => (await window.orgai.settings.get()).displayName === 'Sam')), 'A7 the name is in the saved settings')
@@ -450,14 +443,14 @@ try {
   await T('dash-name-input').selectText()
   await page.keyboard.insertText('Sam​')
   await page.keyboard.press('Enter')
-  await T('dash-name-error').waitFor({ timeout: 5000 }).catch(() => {})
+  await T('dash-name-error').waitFor({ timeout: t(5000) }).catch(() => {})
   check((await text('dash-name-error')) === 'Use up to 40 letters, numbers or spaces.', 'A7 a hidden character gives "Use up to 40 letters, numbers or spaces."', await text('dash-name-error'))
   check((await T('dash-name-input').inputValue()) === 'Sam​' && (await salutationText()).endsWith(', Sam'), 'A7 the refused field keeps what was typed and the saved name is unchanged')
   await page.keyboard.press('Escape')
   await sleep(300)
   // Settings > General > About you shows the name (A30).
   await openAppSettings(page)
-  await T('display-name-input').waitFor({ timeout: 10_000 })
+  await T('display-name-input').waitFor({ timeout: t(10_000) })
   check(await visible('[data-testid=appsettings-section-about-you]'), 'A30 Settings > General has the About you section')
   check((await T('display-name-input').inputValue()) === 'Sam' && (await T('display-name-input').getAttribute('maxlength')) === '40', 'A30 / A7 display-name-input shows the saved name and stops at 40', await T('display-name-input').inputValue())
   await T('display-name-input').fill('')
@@ -480,7 +473,7 @@ try {
   check(clean(await T('dash-name-save').innerText()) === 'Remove name', 'A7 emptying a saved name offers "Remove name"')
   await page.keyboard.press('Enter')
   check(!!(await until(async () => (await salutationText()) === hourWord, 5000)), 'A7 Remove name clears the name', await salutationText())
-  check(!!(await until(async () => (await live()).includes('Name removed.'), 3000)), 'A7 removing the name is announced', await live())
+  check(!!(await until(async () => (await liveHas('Name removed.')), 3000)), 'A7 removing the name is announced', await live())
   await T('dash-name-add').click()
   await nameInputFocused()
   await page.keyboard.type('Sam')
@@ -517,12 +510,12 @@ try {
   // ---------------------------------------------------------------- A20 pins and A21 customise (no runs yet: empty sections are rows)
   // Pin from the tile's More menu.
   await tileOf(PINNED).locator('[data-testid=project-tile-more]').click()
-  await T('project-tile-pin-item').waitFor({ state: 'visible', timeout: 5000 })
+  await T('project-tile-pin-item').waitFor({ state: 'visible', timeout: t(5000) })
   check(/Pin to top/.test(await text('project-tile-pin-item')), 'A20 the More menu offers "Pin to top"')
   await T('project-tile-pin-item').click()
   await sleep(500)
   check((await page.locator('[data-testid=project-tile]').first().getAttribute('data-name')) === PINNED, 'A20 pinning from More moves the tile first')
-  check((await live()).includes(`Pinned ${PINNED}.`), 'A20 pinning from More announces "Pinned ..."', await live())
+  check((await liveHas(`Pinned ${PINNED}.`)), 'A20 pinning from More announces "Pinned ..."', await live())
   check((await layoutOf())?.pinned?.includes(pinId), 'A20 the pin is stored in orgai.dashboardLayout')
   await until(async () => (await activeInfo()).testid === 'project-tile-more', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-more'), 'A20 focus returns to the same tile control after pinning', JSON.stringify(await activeInfo()))
@@ -542,7 +535,7 @@ try {
   const customise = T('dash-customise')
   check((await customise.getAttribute('aria-expanded')) === 'false', 'A21 dash-customise starts collapsed (aria-expanded=false)')
   await customise.click()
-  await T('dash-customise-bar').waitFor({ timeout: 5000 })
+  await T('dash-customise-bar').waitFor({ timeout: t(5000) })
   check((await customise.getAttribute('aria-expanded')) === 'true' && clean(await customise.innerText()) === 'Done', 'A21 Customise becomes Done with aria-expanded=true')
   check((await slotOrder()).join() === DEFAULT_ORDER.join(), 'CU customise lists all seven arrangeable sections in the default order', (await slotOrder()).join())
   const states = await page.locator('[data-testid=dash-section]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-section'), e.getAttribute('data-state')])))
@@ -567,11 +560,33 @@ try {
   check((await activeInfo()).testid === 'project-tile-pin', 'PR the pin toggle is the next Tab stop after the tile Open button', JSON.stringify(await activeInfo()))
   await page.keyboard.press('Enter')
   await sleep(300)
-  check((await live()).includes(`Pinned ${WAIT}.`) && (await pinBtn.getAttribute('aria-pressed')) === 'true' && (await pinBtn.getAttribute('aria-label')) === `Pin ${WAIT}`, 'PR Enter on the pin toggle pins, announces and keeps its name', await live())
-  check(/It is pin 2 of 2\./.test(await live()), 'PR the announcement says where a second pin went', await live())
+  check((await liveHas(`Pinned ${WAIT}.`)) && (await pinBtn.getAttribute('aria-pressed')) === 'true' && (await pinBtn.getAttribute('aria-label')) === `Pin ${WAIT}`, 'PR Enter on the pin toggle pins, announces and keeps its name', await live())
+  check((await liveMatch(/It is pin 2 of 2\./)), 'PR the announcement says where a second pin went', await live())
   check((await layoutOf())?.pinned?.join() === `${pinId},${waitId}`, 'A20 pins are stored in the order they were pinned', JSON.stringify((await layoutOf())?.pinned))
   await until(async () => (await activeInfo()).testid === 'project-tile-pin', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-pin'), 'A20 focus stays on the pin toggle after pinning', JSON.stringify(await activeInfo()))
+
+  // The focus a pin hands back runs two animation frames later. A busy or throttled window (the macOS CI runner: the focus
+  // landed on the pin after the check had moved on to Move up) runs those frames late; the person has moved on by then and
+  // must not be pulled back. Hold the frames for a second, unpin, move to Move up, wait the frames out, pin again.
+  await page.evaluate(() => {
+    const real = window.requestAnimationFrame.bind(window)
+    window.__realRaf = real
+    window.requestAnimationFrame = (cb) => real(() => void setTimeout(() => real(cb), 1000))
+  })
+  await pinBtn.focus()
+  await page.keyboard.press('Enter')
+  await ctl('week', 'dash-section-up').focus()
+  await sleep(2600)
+  const lateFocus = await activeInfo()
+  check(lateFocus.testid === 'dash-section-up' && lateFocus.section === 'week', 'PR a pin\'s late focus hand-back does not pull focus off the control the person moved to', JSON.stringify(lateFocus))
+  await page.evaluate(() => {
+    window.requestAnimationFrame = window.__realRaf
+  })
+  await pinBtn.focus()
+  await page.keyboard.press('Enter')
+  await sleep(300)
+  check((await layoutOf())?.pinned?.join() === `${pinId},${waitId}`, 'PR the pin is back after the late-focus check', JSON.stringify((await layoutOf())?.pinned))
 
   // Keyboard-only path: Tab from the Customise button to Reset, then the first section's controls.
   await customise.focus()
@@ -588,11 +603,11 @@ try {
   check((await ctl('week', 'dash-section-up').getAttribute('aria-disabled')) === 'true' && (await ctl('week', 'dash-section-up').getAttribute('disabled')) === null, 'CU the first section\'s Move up is aria-disabled (not disabled)')
   await page.keyboard.press('Enter')
   await sleep(300)
-  check((await live()).includes('Your week is already first.') && (await activeInfo()).testid === 'dash-section-up', 'CU at the top, Move up says "is already first." and keeps focus', `${await live()} ${JSON.stringify(await activeInfo())}`)
+  check((await liveHas('Your week is already first.')) && (await activeInfo()).testid === 'dash-section-up', 'CU at the top, Move up says "is already first." and keeps focus', `${await live()} ${JSON.stringify(await activeInfo())}`)
   await ctl('todos', 'dash-section-down').focus()
   await page.keyboard.press('Enter')
   await sleep(300)
-  check((await ctl('todos', 'dash-section-down').getAttribute('aria-disabled')) === 'true' && (await live()).includes('To-dos is already last.'), 'CU at the bottom, Move down says "is already last."', await live())
+  check((await ctl('todos', 'dash-section-down').getAttribute('aria-disabled')) === 'true' && (await liveHas('To-dos is already last.')), 'CU at the bottom, Move down says "is already last."', await live())
   // Move down: focus stays on the pressed button.
   await ctl('week', 'dash-section-down').focus()
   await page.keyboard.press('Enter')
@@ -600,13 +615,13 @@ try {
   let ai = await activeInfo()
   check((await slotOrder()).join() === 'pickup,week,upnext,projects,engagements,commits,todos', 'CU Move down moves the section one place', (await slotOrder()).join())
   check(ai.testid === 'dash-section-down' && ai.section === 'week', 'CU after Move down focus stays on the pressed button', JSON.stringify(ai))
-  check((await live()).includes('Your week moved down. Position 2 of 7.'), 'CU Move down announces "moved down. Position 2 of 7."', await live())
+  check((await liveHas('Your week moved down. Position 2 of 7.')), 'CU Move down announces "moved down. Position 2 of 7."', await live())
   await ctl('week', 'dash-section-up').focus()
   await page.keyboard.press('Enter')
   await sleep(400)
   ai = await activeInfo()
   check((await slotOrder()).join() === DEFAULT_ORDER.join() && ai.testid === 'dash-section-up' && ai.section === 'week', 'CU Move up restores the order and keeps focus on the pressed button', `${(await slotOrder()).join()} ${JSON.stringify(ai)}`)
-  check((await live()).includes('moved up. Position 1 of 7.'), 'CU Move up announces "moved up. Position 1 of 7."', await live())
+  check((await liveHas('moved up. Position 1 of 7.')), 'CU Move up announces "moved up. Position 1 of 7."', await live())
   check((await page.locator('[data-testid=dash-section][data-section=week].motion-ring').count()) <= 1, 'a moved section carries at most one ring')
   // Hide and Show move focus to each other.
   await ctl('upnext', 'dash-section-hide').focus()
@@ -614,17 +629,17 @@ try {
   await sleep(400)
   ai = await activeInfo()
   check(ai.testid === 'dash-section-show' && ai.section === 'upnext', 'CU Hide moves focus to that section\'s Show', JSON.stringify(ai))
-  check((await live()).includes('Up next hidden.') && (await page.locator('[data-testid=dash-section][data-section=upnext]').getAttribute('data-state')) === 'hidden', 'CU Hide announces "Up next hidden." and collapses the section', await live())
+  check((await liveHas('Up next hidden.')) && (await page.locator('[data-testid=dash-section][data-section=upnext]').getAttribute('data-state')) === 'hidden', 'CU Hide announces "Up next hidden." and collapses the section', await live())
   check(/Up next, hidden/.test(clean(await page.locator('[data-testid=dash-section][data-section=upnext]').innerText())), 'CU a hidden section reads "Up next, hidden"')
   check((await layoutOf())?.hidden?.join() === 'upnext', 'CU the hidden list is stored')
   await page.keyboard.press('Enter')
   await sleep(400)
   ai = await activeInfo()
-  check(ai.testid === 'dash-section-hide' && ai.section === 'upnext' && (await live()).includes('Up next shown.'), 'CU Show moves focus back to Hide and announces "Up next shown."', `${JSON.stringify(ai)} ${await live()}`)
+  check(ai.testid === 'dash-section-hide' && ai.section === 'upnext' && (await liveHas('Up next shown.')), 'CU Show moves focus back to Hide and announces "Up next shown."', `${JSON.stringify(ai)} ${await live()}`)
   // The focus figure: a radio group; the choice is stored and announced.
   await page.getByRole('radio', { name: 'Runs' }).check({ force: true })
   await sleep(300)
-  check((await layoutOf())?.focus === 'runs' && (await live()).includes('Your week now leads with runs.'), 'CU choosing the Runs focus figure stores it and announces', `${JSON.stringify(await layoutOf())} ${await live()}`)
+  check((await layoutOf())?.focus === 'runs' && (await liveHas('Your week now leads with runs.')), 'CU choosing the Runs focus figure stores it and announces', `${JSON.stringify(await layoutOf())} ${await live()}`)
   await page.getByRole('radio', { name: 'Spend' }).check({ force: true })
   await sleep(200)
   // Esc leaves customise mode and returns focus to the Customise button.
@@ -647,7 +662,7 @@ try {
   const reset = await layoutOf()
   check(reset?.order?.join() === DEFAULT_ORDER.join() && reset?.hidden?.length === 0 && reset?.focus === 'spend' && reset?.pinned?.join() === `${pinId},${waitId}`, 'CU Reset layout restores order, hidden and the focus figure and keeps pins', JSON.stringify(reset))
   await until(async () => (await activeInfo()).testid === 'dash-customise-reset', 5000, 50)
-  check((await activeInfo()).testid === 'dash-customise-reset' && (await live()).includes('Layout reset to the default.'), 'CU Reset layout keeps focus on itself and announces', `${JSON.stringify(await activeInfo())} ${await live()}`)
+  check((await activeInfo()).testid === 'dash-customise-reset' && (await liveHas('Layout reset to the default.')), 'CU Reset layout keeps focus on itself and announces', `${JSON.stringify(await activeInfo())} ${await live()}`)
   // Reload keeps the layout, the focus figure and Pause motion.
   await ctl('projects', 'dash-section-up').click()
   await ctl('upnext', 'dash-section-hide').click()
@@ -655,10 +670,10 @@ try {
   await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), focus: 'decisions' })), LAYOUT_KEY)
   await sleep(300)
   await page.reload()
-  await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   await gotoProjects(page)
   await T('dash-customise').click()
-  await T('dash-customise-bar').waitFor({ timeout: 5000 })
+  await T('dash-customise-bar').waitFor({ timeout: t(5000) })
   check((await slotOrder()).join() === 'week,pickup,projects,upnext,engagements,commits,todos' && (await page.locator('[data-testid=dash-section][data-section=upnext]').getAttribute('data-state')) === 'hidden', 'CU a reload keeps the order and the hidden section', (await slotOrder()).join())
   check(await page.getByRole('radio', { name: 'Decisions' }).isChecked(), 'CU a reload keeps the focus figure (Decisions)')
   await T('dash-customise-reset').click()
@@ -666,7 +681,7 @@ try {
   check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0, 5000, 50)), 'CU Done leaves customise mode')
   // All seven hidden, customise closed: one quiet line and a button that opens customise.
   await T('dash-customise').click()
-  await T('dash-customise-bar').waitFor({ timeout: 5000 })
+  await T('dash-customise-bar').waitFor({ timeout: t(5000) })
   for (const id of DEFAULT_ORDER) {
     const hide = ctl(id, 'dash-section-hide')
     if ((await hide.count()) > 0) await hide.click()
@@ -694,10 +709,10 @@ try {
   for (const [label, raw, want] of corrupt) {
     await page.evaluate(([k, v]) => localStorage.setItem(k, v), [LAYOUT_KEY, raw])
     await page.reload()
-    await page.waitForSelector('.sidebar', { timeout: 60_000 })
+    await page.waitForSelector('.sidebar', { timeout: t(60_000) })
     await gotoProjects(page)
     await T('dash-customise').click()
-    await T('dash-customise-bar').waitFor({ timeout: 5000 })
+    await T('dash-customise-bar').waitFor({ timeout: t(5000) })
     const order = await slotOrder()
     const valid = order.length === DEFAULT_ORDER.length && new Set(order).size === DEFAULT_ORDER.length && order.every((o) => DEFAULT_ORDER.includes(o))
     check(valid && (want === null || order.join() === want), `A21 corrupt storage (${label}) loads a valid layout`, order.join())
@@ -706,7 +721,7 @@ try {
   check(pageErrors.length === errorsBefore, 'A21 corrupt storage raises no page error', pageErrors.slice(errorsBefore).join(' | '))
   await page.evaluate((k) => localStorage.removeItem(k), LAYOUT_KEY)
   await page.reload()
-  await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   await gotoProjects(page)
   // Re-pin: the default layout held no pins; the rest of the run needs the pinned project first.
   await tileOf(PINNED).locator('[data-testid=project-tile-more]').click()
@@ -717,13 +732,33 @@ try {
   // ---------------------------------------------------------------- Runs: a permission card, a deep tree, a schedule proposal
   await openProject(page, WAIT)
   await startRun('First task')
-  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: 20_000 })
+  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: t(20_000) })
   await openProject(page, BUSY)
+  // The deep tree plays 12 steps at the script's pace (400 ms: about 5 s end to end). A slow runner needs longer than that
+  // between "Send" and the Home page drawing its rows, and the band then shows the tree already settled and folded
+  // ("3 done", run Idle). The script is read per run, so this run plays at 2 s a step (the working agents stay up for
+  // about 20 s) and the pace goes back once its agents are on the page.
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 2000 }))
   await startRun('Deep tree [mock:deep-tree]')
   // While the tree runs: working agent rows and breathing marks (A25: none of it animates under reduced motion).
   await gotoProjects(page)
   const workingEarly = await until(async () => (await page.locator('[data-testid=dash-now] [data-testid=dash-agent-row][data-state=working]').count()) >= 1, 15_000, 150)
-  check(!!workingEarly, 'RN Right now lists at least one working agent row while the deep tree runs')
+  check(
+    !!workingEarly,
+    'RN Right now lists at least one working agent row while the deep tree runs',
+    workingEarly
+      ? ''
+      : JSON.stringify(
+          await page.evaluate(() => ({
+            rows: [...document.querySelectorAll('[data-testid=dash-now] [data-testid^=dash-agent]')].map((r) => `${r.getAttribute('data-testid')}:${r.getAttribute('data-state') ?? r.getAttribute('data-count')}`),
+            runs: [...document.querySelectorAll('[data-testid=dash-now] [data-testid=dash-running-row]')].map((r) => `${r.getAttribute('data-status')}/${r.getAttribute('data-group')}`),
+            pulse: [...document.querySelectorAll('[data-testid=dash-pulse-node]')].map((n) => n.getAttribute('data-state')),
+            text: (document.querySelector('[data-testid=dash-now]')?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 300)
+          }))
+        )
+  )
+  // The run has started (its agents are on the page), so the adapter has read the script: back to the usual pace.
+  fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
   // Team pulse: the live org chart in miniature (a picture with a caption; nothing in it takes focus).
   const pulseUp = await until(async () => (await T('dash-pulse-node').count()) >= 2, 15_000, 150)
   const pulse = await page.evaluate(() => {
@@ -771,7 +806,7 @@ try {
   check(loopsPaused.breathing === 0 && loopsPaused.signals === 0 && loopsPaused.infinite === 0, 'MO Pause motion stops the breathing marks, the pulse halos and signals (no looping animation runs)', JSON.stringify(loopsPaused))
   check((await T('dash-pulse-node').count()) >= 2 && /\d/.test(await text('dash-pulse-caption')), 'MO paused: the pulse keeps its static nodes and caption')
   check((await layoutOf())?.motionPaused === true, 'BR Pause motion is saved in the layout', JSON.stringify(await layoutOf()))
-  check((await live()).includes('Motion paused.'), 'BR Pause motion announces "Motion paused."', await live())
+  check((await liveHas('Motion paused.')), 'BR Pause motion announces "Motion paused."', await live())
   await T('dash-pause-motion').click()
   await sleep(300)
   check((await T('dash-pause-motion').getAttribute('aria-pressed')) === 'false' && (await page.locator('.dash-page[data-motion-paused]').count()) === 0, 'BR Pause motion pressed again resumes the page')
@@ -802,7 +837,7 @@ try {
   check(!!schedProject, 'fourth project created for the schedule proposal')
   await openProject(page, SCHED)
   await startRun('Please schedule a check [mock:schedule]')
-  await page.locator('section.frame-tray article.decision-card').first().waitFor({ timeout: 20_000 })
+  await page.locator('section.frame-tray article.decision-card').first().waitFor({ timeout: t(20_000) })
 
   // Today's data: a schedule due later, open and done to-dos, one assistant to-do from a Chat run.
   const later = await page.evaluate(() => {
@@ -826,7 +861,7 @@ try {
   try {
     await app.evaluate(({ Menu }, id) => Menu.getApplicationMenu()?.getMenuItemById(id)?.click(), 'ask-about-orgai')
     const field = page.locator('[data-testid=assistant-start-quick] .composer textarea')
-    await field.waitFor({ timeout: 10_000 })
+    await field.waitFor({ timeout: t(10_000) })
     await field.fill('Please remember this [mock:todo]')
     await field.press('Enter')
     chatTodo = !!(await until(async () => (await store({ kind: 'chat' })).some((i) => i.createdBy === 'agent'), 30_000))
@@ -837,7 +872,7 @@ try {
   check(chatTodo, 'A14 [mock:todo] in a Chat run adds an assistant to-do')
 
   await gotoProjects(page)
-  await T('dash-needs-row').first().waitFor({ timeout: 15_000 })
+  await T('dash-needs-row').first().waitFor({ timeout: t(15_000) })
 
   // ---------------------------------------------------------------- A8 / A10 / A11 Waiting on you, band and tiles
   // Rows drawn plus "Show N more" are every open decision; the heading's count span and the Briefing's sentence say the same number.
@@ -874,7 +909,7 @@ try {
   const runIds = await T('dash-running-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-run')))
   check(new Set(runIds).size === runIds.length, 'each run appears once in the band', JSON.stringify(runIds))
   const waitGroup = page.locator('[data-testid=dash-now] [data-testid=dash-now-project]', { has: page.locator('h3', { hasText: WAIT }) })
-  const needsMarked = await waitGroup.locator('[data-testid=dash-running-row][data-needs]').first().waitFor({ timeout: 5000 }).then(() => true, () => false)
+  const needsMarked = await waitGroup.locator('[data-testid=dash-running-row][data-needs]').first().waitFor({ timeout: t(5000) }).then(() => true, () => false)
   check(needsMarked && (await waitGroup.locator('[data-testid=dash-running-row]').count()) === 1, 'A11 the waiting run is one band row marked data-needs')
   const waitBand = clean(await waitGroup.innerText().catch(() => ''))
   check(/Waiting on you/.test(waitBand) && !/\bcd /.test(waitBand), 'A11 the band run says "Waiting on you" and carries no raw command', waitBand)
@@ -918,13 +953,13 @@ try {
   if (await T('dash-setup-line').count()) {
     check((await T('dash-setup').count()) === 0, 'BR the setup rows stay in the popover until the line is opened')
     await T('dash-setup-line').click()
-    await T('dash-setup').waitFor({ timeout: 5000 })
+    await T('dash-setup').waitFor({ timeout: t(5000) })
     const setupKinds = await T('dash-setup-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
     const lineText = clean(await text('dash-setup-line'))
     check(setupKinds.length >= 1 && new RegExp(`^${setupKinds.length} things? to set up`).test(lineText), 'BR the setup line counts the rows its popover holds', `${lineText} / ${setupKinds.length}`)
     check((await T('dash-setup-action').first().getAttribute('aria-label')) !== null && (await T('dash-setup-action').count()) === setupKinds.length, 'BR every setup row has an action named with its line')
     await page.keyboard.press('Escape')
-    await T('dash-setup').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    await T('dash-setup').waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
     check((await T('dash-setup').count()) === 0 && (await activeInfo()).testid === 'dash-setup-line', 'BR Esc closes the setup popover and returns focus to the line', JSON.stringify(await activeInfo()))
   } else log('note: no setup rows on this machine, so the setup line is not drawn (it only exists when something needs setting up)')
   check((await T('plan-gauges').count()) === 0 && (await T('plan-gauge').count()) === 0, 'BR plan gauges are absent under the mock adapter')
@@ -940,7 +975,7 @@ try {
 
   // ---------------------------------------------------------------- A14 Today
   const todosSection = T('dash-todos')
-  await todosSection.waitFor({ timeout: 10_000 })
+  await todosSection.waitFor({ timeout: t(10_000) })
   check((await todosSection.locator('h2').innerText()).trim() === 'To-dos', 'WK the to-do section is called "To-dos" (own section, not part of Up next)')
   const todoRows = await T('dash-today-todo').evaluateAll((els) => els.map((e) => e.textContent ?? ''))
   check(todoRows.length >= 2 && !todoRows.some((t) => /Already finished thing/.test(t)), 'WK open to-dos from two lists show and a done to-do never does', JSON.stringify(todoRows).slice(0, 300))
@@ -957,7 +992,7 @@ try {
   check(longFacts.clipped && longFacts.title && longFacts.btnInside, 'A6 a long to-do title clips with an ellipsis and a title and the button stays in its row', JSON.stringify(longFacts))
   {
     // Up next: a firing is a row whose one button is named with its name, day, time, target, kind and how far away it is.
-    await T('dash-upnext').waitFor({ timeout: 10_000 })
+    await T('dash-upnext').waitFor({ timeout: t(10_000) })
     check((await T('dash-upnext').locator('h2').innerText()).trim() === 'Up next', 'WK the schedule section is called "Up next"')
     const sRow = page.locator(`[data-testid=dash-upnext-row][data-id="${scheduleId}"]`)
     const sBtn = sRow.locator('[data-testid=dash-upnext-open]')
@@ -971,13 +1006,13 @@ try {
     // The pressed button unmounts: focus goes to its counterpart, never to the body.
     check(!!(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dash-upnext-resume', 3000, 50)), 'WK after Pause all focus moves to Resume schedules', String(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)))
     check(/Schedules are paused\. Nothing will start until you resume them\./.test(await text('dash-upnext-paused')), 'WK the paused line reads "Schedules are paused. Nothing will start until you resume them."')
-    check((await page.evaluate(async () => (await window.orgai.settings.get()).schedulesPaused)) === true && (await live()).includes('All schedules paused.'), 'WK Pause all saves the same schedulesPaused setting and announces', await live())
+    check((await page.evaluate(async () => (await window.orgai.settings.get()).schedulesPaused)) === true && (await liveHas('All schedules paused.')), 'WK Pause all saves the same schedulesPaused setting and announces', await live())
     await T('dash-upnext-resume').click()
     check(!!(await until(async () => (await T('dash-upnext-row').count()) === 1, 5000)) && (await T('dash-upnext-paused').count()) === 0, 'WK Resume schedules brings the row back')
     check(!!(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dash-upnext-pause', 3000, 50)), 'WK after Resume schedules focus moves back to Pause all', String(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)))
     // The row opens its schedule on the Schedules page.
     await sBtn.click()
-    const onSchedules = await page.getByRole('heading', { level: 1, name: /Schedules/ }).waitFor({ timeout: 8000 }).then(() => true, () => false)
+    const onSchedules = await page.getByRole('heading', { level: 1, name: /Schedules/ }).waitFor({ timeout: t(8000) }).then(() => true, () => false)
     check(onSchedules, 'WK a row opens the Schedules page')
     await gotoProjects(page)
     await setSettings({ schedulesPaused: false })
@@ -986,7 +1021,7 @@ try {
   const runsBefore = (await runsOf(pinId)).length
   const startBtn = page.getByRole('button', { name: 'Start session for Draft the project brief' })
   await startBtn.click()
-  await page.locator('.composer textarea').first().waitFor({ timeout: 10_000 })
+  await page.locator('.composer textarea').first().waitFor({ timeout: t(10_000) })
   await sleep(500)
   const draft = await page.locator('.composer textarea').first().inputValue()
   check(/Draft the project brief/.test(draft), 'A14 Start session fills the message box with the to-do', draft.slice(0, 120))
@@ -997,7 +1032,7 @@ try {
 
   // ---------------------------------------------------------------- A17 / A18 Your week
   const week = T('dash-week')
-  await week.waitFor({ timeout: 10_000 })
+  await week.waitFor({ timeout: t(10_000) })
   check((await week.locator('h2').innerText()).trim() === 'Your week', 'WK the section is called "Your week"')
   // The stat cards: Spend leads by default, each card is one native button, none of them reads $0.00 or a bare zero cost.
   const cardFacts = await T('dash-stat').evaluateAll((els) =>
@@ -1020,9 +1055,9 @@ try {
     }))
   const openCard = async (stat, wantPressed) => {
     await gotoProjects(page)
-    await T(`dash-stat-${stat}`).waitFor({ timeout: 10_000 })
+    await T(`dash-stat-${stat}`).waitFor({ timeout: t(10_000) })
     await T(`dash-stat-${stat}`).click()
-    await T('usage-period').waitFor({ timeout: 15_000 })
+    await T('usage-period').waitFor({ timeout: t(15_000) })
     await until(async () => (await usageFacts()).period === '7 days' && (wantPressed === null || (await usageFacts()).pressed.join() === wantPressed), 8000, 100)
     return usageFacts()
   }
@@ -1036,11 +1071,11 @@ try {
   await gotoProjects(page)
   await T('dash-stat-spend').focus()
   await page.keyboard.press('Enter')
-  await T('usage-period').waitFor({ timeout: 15_000 })
+  await T('usage-period').waitFor({ timeout: t(15_000) })
   check((await usageFacts()).period === '7 days', 'WK Enter on a stat card opens Usage')
   // The activity map: 14 local days across, six blocks down, a text alternative, today's column marked.
   await gotoProjects(page)
-  await T('dash-heat').waitFor({ timeout: 10_000 })
+  await T('dash-heat').waitFor({ timeout: t(10_000) })
   const heat = await page.evaluate(() => {
     const cols = [...document.querySelectorAll('[data-testid=dash-heat-col]')]
     const cells = [...document.querySelectorAll('[data-testid=dash-heat-cell]')]
@@ -1068,7 +1103,7 @@ try {
   check(heat.total >= 3 && heat.totalText === `${heat.total} runs · 14 days` && heat.states.includes('some') && /^Today · \d+ runs? started today\./.test(heat.todayText), 'WK the map total, cell counts and the "Today" footer agree', JSON.stringify(heat))
   check(Number(runsCard?.value) === heat.total, 'WK on a one-day history the Runs card equals the map total', `${runsCard?.value} vs ${heat.total}`)
   await T('dash-week-usage').click()
-  await T('usage-period').waitFor({ timeout: 15_000 })
+  await T('usage-period').waitFor({ timeout: t(15_000) })
   await until(async () => (await usageFacts()).period === '30 days', 8000, 100)
   check((await usageFacts()).period === '30 days', 'WK the map link opens Usage on 30 days', JSON.stringify(await usageFacts()))
   await gotoProjects(page)
@@ -1130,7 +1165,7 @@ try {
     }).observe(document.body, { childList: true, subtree: true })
   })
   await tileOf(WAIT).locator('[data-testid=project-tile-more]').click()
-  await T('project-tile-open-folder').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+  await T('project-tile-open-folder').waitFor({ state: 'visible', timeout: t(5000) }).catch(() => {})
   const menu = clean(await page.getByRole('menu').last().innerText().catch(() => ''))
   const menuTrace = await page.evaluate(() => `${(window.__menuTrace ?? []).join(' | ')} | active=${document.activeElement?.tagName}${document.activeElement?.dataset?.testid ? '[' + document.activeElement.dataset.testid + ']' : ''} hasFocus=${document.hasFocus()}`)
   check((await visible('[data-testid=project-tile-open-folder]')) && (await visible('[data-testid=project-tile-delete]')) && /Open folder/.test(menu) && /Delete project/.test(menu), 'the More menu offers Open folder and Delete', `${menu} -- trace: ${menuTrace}`)
@@ -1138,14 +1173,14 @@ try {
   check(await page.evaluate(() => !!document.activeElement?.closest?.('[role=menu]')), 'opening the More menu moves focus into it', menuTrace)
   await T('project-tile-delete').click()
   const dlg = page.getByRole('alertdialog').or(page.getByRole('dialog')).last()
-  await dlg.waitFor({ timeout: 5000 })
+  await dlg.waitFor({ timeout: t(5000) })
   const body = clean(await dlg.innerText())
   check(/Ends 1 open run/.test(body), 'the delete confirm names the open run', body.slice(0, 240))
   await dlg.getByRole('button', { name: 'Cancel' }).click()
   await sleep(300)
   // A Waiting row opens the card.
   await page.locator('[data-testid=dash-needs-row]').first().locator('[data-row-main]').click()
-  await page.locator('section.frame-tray article.decision-card').first().waitFor({ timeout: 10_000 })
+  await page.locator('section.frame-tray article.decision-card').first().waitFor({ timeout: t(10_000) })
   check(true, 'the Waiting on you row opens the decision card')
   await gotoProjects(page)
   // New run from the tile menu: a draft with focus on the page, not on the body.
@@ -1162,7 +1197,7 @@ try {
 
   // ---------------------------------------------------------------- The band: Enter on an agent row opens the agent
   const doneButton = page.locator('[data-testid=dash-now] [data-testid=dash-agent-done][data-count]')
-  await doneButton.first().waitFor({ timeout: 60_000 }).then(
+  await doneButton.first().waitFor({ timeout: t(60_000) }).then(
     () => check(true, 'a settled deep tree folds into a dash-agent-done group'),
     () => check(false, 'a settled deep tree folds into a dash-agent-done group')
   )
@@ -1175,7 +1210,7 @@ try {
       .waitForFunction((id) => {
         const n = document.querySelector(`.react-flow__node[data-id="${id}"]`)
         return !!n && n.classList.contains('selected') && document.activeElement?.closest?.('.react-flow__node')?.getAttribute('data-id') === id
-      }, agentId, { timeout: 10_000 })
+      }, agentId, { timeout: t(10_000) })
       .then(() => true, () => false)
     check(landedNode, 'Enter on a band agent row opens the Live view with that node selected and focused', agentId)
     await gotoProjects(page)
@@ -1190,9 +1225,9 @@ try {
 
   // Escape on the New project dialog.
   await T('new-project').click()
-  await T('new-project-dialog').waitFor({ timeout: 5000 })
+  await T('new-project-dialog').waitFor({ timeout: t(5000) })
   await page.keyboard.press('Escape')
-  await T('new-project-dialog').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+  await T('new-project-dialog').waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
   await sleep(200)
   check((await activeInfo()).testid === 'new-project', 'Escape on the New project dialog returns focus to New project', JSON.stringify(await activeInfo()))
 
@@ -1204,7 +1239,7 @@ try {
       const tag = `at ${w}x${h} ${theme}`
       await setTheme(theme)
       await gotoProjects(page)
-      await T('dash-needs-you').waitFor({ timeout: 10_000 })
+      await T('dash-needs-you').waitFor({ timeout: t(10_000) })
       const m = await page.evaluate(() => {
         const n = document.querySelector('[data-testid=dash-needs-you]').getBoundingClientRect()
         const now = document.querySelector('[data-testid=dash-now]')?.getBoundingClientRect()
@@ -1294,17 +1329,17 @@ try {
   check(!!inline, 'fifth project created for the inline answer')
   await openProject(page, INLINE)
   await startRun('Inline task')
-  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: 20_000 })
+  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: t(20_000) })
   await gotoProjects(page)
   const inlineRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]', { hasText: INLINE })
-  await inlineRow.first().waitFor({ timeout: 15_000 })
+  await inlineRow.first().waitFor({ timeout: t(15_000) })
   check((await inlineRow.first().getAttribute('data-inline')) === 'allow', 'the new permission row offers inline Allow')
   const orderKinds = await needsKinds()
   check(weightsAscend(orderKinds), 'A10 a permission that arrives after the proposal still sorts before it', orderKinds.join())
   const before = await bellCount()
   const rowsBefore = await T('dash-needs-row').count()
   await inlineRow.first().locator('[data-testid=dash-needs-allow]').click()
-  await page.locator('[data-testid=dash-needs-row]', { hasText: INLINE }).first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+  await page.locator('[data-testid=dash-needs-row]', { hasText: INLINE }).first().waitFor({ state: 'detached', timeout: t(15_000) }).catch(() => {})
   check((await page.locator('[data-testid=dash-needs-row]', { hasText: INLINE }).count()) === 0, 'A8 Allow once removes the row')
   await sleep(500)
   const after = await bellCount()
@@ -1314,7 +1349,7 @@ try {
     return { ok: !!a?.matches?.('[data-testid=dash-needs-you] [data-row-main], [data-testid=dash-needs-you] h2'), tag: a?.tagName ?? '', testid: a?.getAttribute?.('data-testid') ?? '' }
   })
   check(focusAfter.ok, 'A8 focus lands on another Waiting row or the heading, not the body', JSON.stringify(focusAfter))
-  check(/Allowed once: /.test(await live()), 'A8 dashboard-live reads "Allowed once: ..."', await live())
+  check((await liveMatch(/Allowed once: /)), 'A8 dashboard-live reads "Allowed once: ..."', await live())
   await openProject(page, INLINE)
   await sleep(800)
   check((await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').count()) === 0, 'the run no longer shows the permission card')
@@ -1325,10 +1360,10 @@ try {
   check(!!compound, 'sixth project created for the compound command')
   await openProject(page, COMPOUND)
   await startRun('Compound [mock:fatigue]')
-  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: 20_000 })
+  await page.locator('section.frame-tray article.decision-card[data-kind="permission"]').first().waitFor({ timeout: t(20_000) })
   await gotoProjects(page)
   const cRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]', { hasText: 'agent-x' })
-  await cRow.first().waitFor({ timeout: 15_000 })
+  await cRow.first().waitFor({ timeout: t(15_000) })
   const cInfo = await cRow.first().evaluate((row) => ({
     inline: row.getAttribute('data-inline'),
     lines: (row.querySelector('.dash-needs-code')?.textContent ?? '').split('\n'),
@@ -1359,13 +1394,13 @@ try {
   const releasedOnRow = await page.evaluate(() => ({ onPrimary: !!document.activeElement?.matches?.('.decision-footer .btn.primary'), card: document.querySelectorAll('section.frame-tray article.decision-card[data-kind="permission"]').length }))
   check(!heldOnRow.onButton && heldOnRow.card === 1 && releasedOnRow.onPrimary && releasedOnRow.card === 1, 'A12 a held Enter on the Waiting-on-you row opens the decision without answering it: no button has focus until key-up, then the primary does', JSON.stringify({ heldOnRow, releasedOnRow }))
   await gotoProjects(page)
-  await cRow.first().waitFor({ timeout: 15_000 })
+  await cRow.first().waitFor({ timeout: t(15_000) })
   await cRow.first().locator('[data-testid=dash-needs-allow]').click()
-  await cRow.first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+  await cRow.first().waitFor({ state: 'detached', timeout: t(15_000) }).catch(() => {})
   check((await cRow.count()) === 0, 'Allow once answers the compound command and removes its row')
-  check(/Allowed once: /.test(await live()), 'dashboard-live reads "Allowed once: ..." for the compound command', await live())
+  check((await liveMatch(/Allowed once: /)), 'dashboard-live reads "Allowed once: ..." for the compound command', await live())
   const editRow = page.locator('[data-testid=dash-needs-row][data-kind=permission]', { hasText: 'README.md' })
-  if (await editRow.first().waitFor({ timeout: 15_000 }).then(() => true, () => false)) {
+  if (await editRow.first().waitFor({ timeout: t(15_000) }).then(() => true, () => false)) {
     check((await editRow.first().getAttribute('data-inline')) === 'none', 'an edit outside the project is not offered inline', String(await editRow.first().getAttribute('data-inline')))
   } else log('SKIP outside-edit row check: the second fatigue card did not arrive')
   await openProject(page, COMPOUND)
@@ -1386,9 +1421,9 @@ try {
   await gotoProjects(page)
   // Pick up: each row is a state word, the run's title and one small button (Continue or Open) named with that title.
   const pausedRow = page.locator(`[data-testid=dash-resume-row][data-kind=paused][data-run="${pausedRun.id}"]`)
-  await T('dash-resume').waitFor({ timeout: 10_000 }).catch(() => {})
+  await T('dash-resume').waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await T('dash-resume').locator('h2').innerText().catch(() => '')).trim() === 'Pick up', 'WK the section is called "Pick up"')
-  if (wasPaused && (await pausedRow.waitFor({ timeout: 10_000 }).then(() => true, () => false))) {
+  if (wasPaused && (await pausedRow.waitFor({ timeout: t(10_000) }).then(() => true, () => false))) {
     const pAction = pausedRow.locator('[data-testid=dash-resume-action]')
     check((await pausedRow.getAttribute('data-status')) === 'Paused' && /Paused/.test(clean(await pausedRow.locator('.dash-pick-state').innerText())), 'WK a paused run row leads with the state word "Paused"', clean(await pausedRow.innerText()))
     const pName = (await pAction.getAttribute('aria-label')) ?? ''
@@ -1398,7 +1433,7 @@ try {
   } else check(false, 'WK a paused run shows a Pick up row', String(wasPaused))
   await gotoProjects(page)
   const outRow = page.locator(`[data-testid=dash-resume-row][data-run="${outRun.id}"]`)
-  if (madeOutput && (await outRow.waitFor({ timeout: 15_000 }).then(() => true, () => false))) {
+  if (madeOutput && (await outRow.waitFor({ timeout: t(15_000) }).then(() => true, () => false))) {
     const oAction = outRow.locator('[data-testid=dash-resume-action]')
     const oName = (await oAction.getAttribute('aria-label')) ?? ''
     check(/^(Finished|Stopped|Ended)/.test((await outRow.getAttribute('data-status')) ?? '') || (await outRow.getAttribute('data-status')) !== null, 'WK an ended run row carries a state word', String(await outRow.getAttribute('data-status')))
@@ -1430,7 +1465,7 @@ try {
   log('relaunched')
   watchErrors(page)
   await gotoProjects(page)
-  await T('dash-resume-row').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  await T('dash-resume-row').first().waitFor({ timeout: t(15_000) }).catch(() => {})
   await sleep(600)
   check((await salutationText()).endsWith(', Sam'), 'A7 the name survives a relaunch', await salutationText())
   check((await text('dash-resume')).startsWith('Pick up'), 'WK after a relaunch the section is called "Pick up"', (await text('dash-resume')).slice(0, 40))
@@ -1463,10 +1498,10 @@ try {
   await sleep(600)
   await gotoProjects(page)
   const waitRow = page.locator('[data-testid=dash-resume-row]', { hasText: WAIT })
-  await waitRow.first().waitFor({ timeout: 10_000 }).catch(() => {})
+  await waitRow.first().waitFor({ timeout: t(10_000) }).catch(() => {})
   check((await waitRow.locator('[data-testid=dash-resume-action][data-action=continue]').count()) === 1, 'A13 the Continue row survives a trip to a project and back')
   await waitRow.locator('[data-testid=dash-resume-action][data-action=continue]').click()
-  await page.locator('.composer textarea').waitFor({ timeout: 15_000 })
+  await page.locator('.composer textarea').waitFor({ timeout: t(15_000) })
   await sleep(500)
   const landed = await page.evaluate(() => ({
     h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? '',
@@ -1494,7 +1529,7 @@ try {
     const lastRun = await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'First task' }), inline.id)
     await gotoProjects(page)
     const lastRows = page.locator('[data-testid=dash-needs-row][data-kind=permission]')
-    if ((await lastRows.first().waitFor({ timeout: 20_000 }).then(() => true, () => false)) && (await T('dash-needs-row').count()) === 1) {
+    if ((await lastRows.first().waitFor({ timeout: t(20_000) }).then(() => true, () => false)) && (await T('dash-needs-row').count()) === 1) {
       await lastRows.first().locator('[data-testid=dash-needs-allow]').focus()
       await page.keyboard.press('Enter')
       await until(async () => (await T('dash-needs-you').count()) === 0, 15_000, 100)
@@ -1504,7 +1539,7 @@ try {
         return { body: !a || a === document.body || a === document.documentElement, testid: a?.getAttribute?.('data-testid') ?? '', id: a?.id ?? '', tag: a?.tagName ?? '', visible: !!a && a.getClientRects().length > 0 }
       })
       check(!landed.body && landed.visible && (landed.id === 'dash-h-now' || landed.testid === 'dash-greeting-brief'), 'A8 after the last decision is answered the Needs you section is gone and focus lands on the Right now heading or the status sentence, not the body', JSON.stringify(landed))
-      check((await live()).includes('Nothing else needs you.'), 'A8 dashboard-live says "Nothing else needs you." once', await live())
+      check((await liveHas('Nothing else needs you.')), 'A8 dashboard-live says "Nothing else needs you." once', await live())
     } else log('SKIP last-decision focus check: the single permission row did not appear', await T('dash-needs-row').count())
     await page.evaluate((id) => window.orgai.runs.stop(id), lastRun.id).catch(() => {})
     await gotoProjects(page)
@@ -1516,7 +1551,7 @@ try {
     await until(async () => (await page.evaluate((id) => window.orgai.runs.get(id), noPrice.id))?.summary?.status === 'finished', 20_000)
     await gotoProjects(page)
     const unpricedRow = page.locator(`[data-testid=dash-resume-row][data-run="${noPrice.id}"]`)
-    if (await unpricedRow.waitFor({ timeout: 15_000 }).then(() => true, () => false)) {
+    if (await unpricedRow.waitFor({ timeout: t(15_000) }).then(() => true, () => false)) {
       const unpriced = await unpricedRow.locator('[data-testid=dash-resume-unpriced]').innerText().catch(() => '')
       check(clean(unpriced) === 'Not priced', 'WK an unpriced run row in Pick up says "Not priced" instead of nothing', clean(await unpricedRow.innerText()))
     } else log('SKIP unpriced Pick up row: the [mock:no-price] run did not list')
@@ -1532,14 +1567,14 @@ try {
     }))
   // The first navigation (a reload starts the session's arrival memory afresh): the hero rises while arriving, then rests.
   await page.reload()
-  const arrived = await page.waitForSelector('[data-testid=dashboard-hero].motion-arrive-hero', { timeout: 20_000 }).then(() => true, () => false)
+  const arrived = await page.waitForSelector('[data-testid=dashboard-hero].motion-arrive-hero', { timeout: t(20_000) }).then(() => true, () => false)
   check(arrived, 'MO on first navigation the Briefing hero carries motion-arrive-hero while the page arrives')
   await sleep(1800)
   const rested = await arrivalFacts()
   check(!rested.hero && rested.bands === 0 && rested.draw === 0 && !rested.flag, 'MO the arrival classes are gone once the page has rested (about 800 ms)', JSON.stringify(rested))
   // Away and back with no data change: no arrival classes at all.
   await page.locator('[data-testid=nav-usage]').click()
-  await T('usage-period').waitFor({ timeout: 15_000 })
+  await T('usage-period').waitFor({ timeout: t(15_000) })
   await sleep(300)
   await gotoProjects(page)
   const back = await arrivalFacts()
@@ -1547,7 +1582,7 @@ try {
   // Pause motion (saved in the layout) also stops the page arrival, not only the loops.
   await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), motionPaused: true })), LAYOUT_KEY)
   await page.reload()
-  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: t(20_000) })
   const pausedArrival = await page.evaluate(() => ({
     hero: !!document.querySelector('.motion-arrive-hero'),
     bands: document.querySelectorAll('.motion-arrive-band').length,
@@ -1558,11 +1593,11 @@ try {
   check(pausedArrival.paused && !pausedArrival.hero && pausedArrival.bands === 0 && !pausedArrival.flag && pausedArrival.trace === 0, 'MO with Pause motion saved, the page stages no arrival (no hero rise, no band rise, no gauge trace)', JSON.stringify(pausedArrival))
   await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), motionPaused: false })), LAYOUT_KEY)
   await page.reload()
-  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: t(20_000) })
   // Reduced motion (Appearance): no arrival, no running animation on the page.
   await setAppearance({ reduceMotion: 'on' })
   await page.reload()
-  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: t(20_000) })
   const reducedFacts = await page.evaluate(() => ({
     hero: !!document.querySelector('.motion-arrive-hero'),
     bands: document.querySelectorAll('.motion-arrive-band').length,
@@ -1573,7 +1608,7 @@ try {
   check(!reducedFacts.hero && reducedFacts.bands === 0 && reducedRun === 0, 'MO with Appearance Reduce motion on, no arrival is staged and no Dashboard animation runs', JSON.stringify({ ...reducedFacts, reducedRun }))
   await setAppearance({ reduceMotion: 'system' })
   await page.reload()
-  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: t(20_000) })
 
   // ---------------------------------------------------------------- MD multi-day history (seeded in this script's own data dir)
   // The mock puts every run on one day. Close the app, move some run records back whole days (the files of this script's
@@ -1606,24 +1641,51 @@ try {
         if (typeof s.endedAt === 'number') s.endedAt -= by
       }
       fs.writeFileSync(r.file, JSON.stringify(r.rec))
-      moved.push({ id: r.rec.summary.id, days: shifts[i] })
+      moved.push({ id: r.rec.summary.id, days: shifts[i], from: r.rec.summary.startedAt + by, to: r.rec.summary.startedAt })
     })
     fs.writeFileSync(indexFile, JSON.stringify(index))
     log('MD shifted run records:', JSON.stringify(moved), `of ${recs.length} work records`)
     ;({ app, page, shot } = await launch({ shotPrefix: 'dashboard', clearPrefs: false }))
     watchErrors(page)
+    // The map buckets by LOCAL calendar day, so a wall clock that passes midnight between the seeding above and the read
+    // below moves every seeded run one column left (CI run 45512226480 started this block at 23:5x UTC and read at 00:01).
+    // The expectations below are therefore computed from each seeded timestamp and the day the page reads as today, never
+    // from a fixed 14 - 1 - N. `E2E_MD_FAKE_AFTER_MIDNIGHT=1` proves that: the page clock is set to 00:02 on the day after
+    // the seeding, the way the failed runs saw it (Date.now only, the same way the A3 hour bands fake it).
+    if (process.env.E2E_MD_FAKE_AFTER_MIDNIGHT) {
+      const next = new Date()
+      next.setHours(24, 2, 0, 0)
+      await page.evaluate((ms) => {
+        Date.now = () => ms
+      }, next.getTime())
+      log('MD page clock faked to', next.toString())
+      await page.locator('[data-testid=nav-usage]').click()
+      await T('usage-period').waitFor({ timeout: t(15_000) })
+    }
     await gotoProjects(page)
-    await T('dash-heat').waitFor({ timeout: 20_000 }).catch(() => {})
+    await T('dash-heat').waitFor({ timeout: t(20_000) }).catch(() => {})
     await sleep(800)
-    const md = await page.evaluate(() => {
+    const md = await page.evaluate((seeded) => {
       const cols = [...document.querySelectorAll('[data-testid=dash-heat-col]')]
       const withRuns = cols.map((c, i) => ({ i, runs: [...c.querySelectorAll('[data-testid=dash-heat-cell]')].reduce((a, x) => a + Number(x.getAttribute('data-runs') || 0), 0) })).filter((c) => c.runs > 0)
       const today = cols.find((c) => c.hasAttribute('data-today'))
       const todayRuns = today ? [...today.querySelectorAll('[data-testid=dash-heat-cell]')].reduce((a, x) => a + Number(x.getAttribute('data-runs') || 0), 0) : -1
-      return { withRuns, todayRuns, total: withRuns.reduce((a, c) => a + c.runs, 0), todayText: document.querySelector('[data-testid=dash-activity-today]')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', totalText: document.querySelector('[data-testid=dash-activity-total]')?.textContent?.trim() ?? '' }
-    })
+      // The column each seeded run belongs in: the page's own list of dates (data-date, local YYYY-MM-DD) searched for the
+      // local day of the run's seeded start. -1 when no column carries that day.
+      const keyOf = (ms) => {
+        const d = new Date(ms)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const dates = cols.map((c) => c.getAttribute('data-date'))
+      const expected = seeded.map((s) => ({ days: s.days, col: dates.indexOf(keyOf(s.to)), origCol: dates.indexOf(keyOf(s.from)) }))
+      return { withRuns, todayRuns, todayCol: cols.indexOf(today), columns: cols.length, expected, total: withRuns.reduce((a, c) => a + c.runs, 0), todayText: document.querySelector('[data-testid=dash-activity-today]')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', totalText: document.querySelector('[data-testid=dash-activity-total]')?.textContent?.trim() ?? '' }
+    }, moved)
     check(moved.length === 4 && md.withRuns.length >= 3, 'MD the activity map shows runs on several day columns after the history is seeded', JSON.stringify(md))
-    check(md.withRuns.some((c) => c.i === 14 - 1 - 3) && md.withRuns.some((c) => c.i === 14 - 1 - 5) && md.withRuns.some((c) => c.i === 14 - 1 - 9), 'MD runs 3, 5 and 9 days back sit in the columns that many places left of today', JSON.stringify(md.withRuns))
+    // A column index is "that many places left of the run's original day"; the original day is wherever the page put it
+    // (today, or yesterday when midnight passed in between), so the check holds on either side of midnight.
+    if (md.todayCol === 13 && md.expected.some((e) => e.origCol !== 13)) log('MD the date changed between seeding and reading (original columns', JSON.stringify(md.expected.map((e) => e.origCol)), '); expected columns follow each seeded timestamp')
+    const mdPlaced = md.expected.every((e) => e.col >= 0 && e.col === e.origCol - e.days && md.withRuns.some((c) => c.i === e.col && c.runs >= md.expected.filter((x) => x.col === e.col).length))
+    check(mdPlaced && md.expected.some((e) => e.days === 3) && md.expected.some((e) => e.days === 5) && md.expected.some((e) => e.days === 9), 'MD runs 3, 5 and 9 days back sit in the columns that many places left of the column of their original day', JSON.stringify({ expected: md.expected, withRuns: md.withRuns, todayCol: md.todayCol }))
     check(md.todayText.includes(`${md.todayRuns} run`) || (md.todayRuns === 0 && /No runs started today yet/.test(md.todayText)), 'MD the "Today" footer reads today\'s own count, not the 14-day total', JSON.stringify(md))
     check(md.totalText === `${md.total} runs · 14 days`, 'MD the map total counts every column', JSON.stringify(md))
     const mdCards = await T('dash-stat').evaluateAll((els) => Object.fromEntries(els.map((li) => [li.getAttribute('data-stat'), { value: li.querySelector('[data-testid=dash-stat-value]')?.textContent?.trim(), dir: li.querySelector('[data-testid=dash-stat-move]')?.getAttribute('data-dir'), move: li.querySelector('[data-testid=dash-stat-move]')?.textContent?.replace(/\s+/g, ' ').trim() }])))
@@ -1641,7 +1703,10 @@ try {
     }, T0).catch(() => -1)
     const sinceBody = sinceMd.replace(/^Since .+?: (?=\d)/, '')
     const sinceCount = [...sinceBody.matchAll(/(\d+) (?:runs? finished|failed|stopped)/g)].map((m) => Number(m[1])).reduce((a, b) => a + b, 0)
-    check(/^Since .+: \d+ .+\.$/.test(sinceMd) && sinceCount >= 1 && sinceCount <= endedAfter, 'MD the since line counts only runs that ended after the last visit (the seeded older ones are not in it)', `${sinceMd} (${endedAfter} work runs ended after the last visit)`)
+    // With the page clock faked up to a day ahead (E2E_MD_FAKE_AFTER_MIDNIGHT) the last visit is a day old and the line is not
+    // the one this check describes, so the proof run leaves it out; every other MD check runs.
+    if (process.env.E2E_MD_FAKE_AFTER_MIDNIGHT) log('MD skipped the since line check: the page clock is faked a day ahead')
+    else check(/^Since .+: \d+ .+\.$/.test(sinceMd) && sinceCount >= 1 && sinceCount <= endedAfter, 'MD the since line counts only runs that ended after the last visit (the seeded older ones are not in it)', `${sinceMd} (${endedAfter} work runs ended after the last visit)`)
     await shot('multi-day')
   }
 
@@ -1699,7 +1764,7 @@ async function setName(name) {
   let ibApp
   const ibClean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
   const ibUntil = async (fn, ms = 20_000, every = 200) => {
-    const end = Date.now() + ms
+    const end = Date.now() + t(ms)
     for (;;) {
       const v = await fn().catch(() => null)
       if (v) return v
@@ -1719,8 +1784,8 @@ async function setName(name) {
     const rowIds = () => rows().evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
     const selectedId = () => ip.evaluate(() => document.querySelector('[data-testid=inbox-row][aria-current=true]')?.getAttribute('data-id') ?? null)
     // A short timeout: an absent badge (no waiting decision, or the rail, which has only nav-rail-count) is 0 at once, not after the 30 s default.
-    const badge = async () => Number(ibClean(await I('nav-inbox-count').first().innerText({ timeout: 1500 }).catch(() => '0')) || 0)
-    const bell = async () => Number(/Needs you · (\d+)/.exec(ibClean(await I('needs-you-row').first().innerText({ timeout: 1500 }).catch(() => '')))?.[1] ?? 0)
+    const badge = async () => Number(ibClean(await I('nav-inbox-count').first().innerText({ timeout: t(1500) }).catch(() => '0')) || 0)
+    const bell = async () => Number(/Needs you · (\d+)/.exec(ibClean(await I('needs-you-row').first().innerText({ timeout: t(1500) }).catch(() => '')))?.[1] ?? 0)
     const summary = async () => ({
       waiting: Number(await I('inbox-summary').getAttribute('data-waiting')),
       finished: Number(await I('inbox-summary').getAttribute('data-finished')),
@@ -1729,26 +1794,16 @@ async function setName(name) {
     const focusIn = (sel) => ip.evaluate((s) => !!document.activeElement?.closest?.(s), sel)
     const focusedRowId = () => ip.evaluate(() => (document.activeElement?.matches?.('[data-testid=inbox-row]') ? document.activeElement.getAttribute('data-id') : null))
     const live = async () => ibClean(await I('inbox-live').innerText().catch(() => ''))
+    const liveMatch = async (re) => !!(await until(async () => re.test(await live()), 4000, 100))
     const openInbox = async () => {
       await I('nav-inbox').click()
-      await I('inbox-view').waitFor({ timeout: 10_000 })
+      await I('inbox-view').waitFor({ timeout: t(10_000) })
       await sleep(400)
     }
     const startViaIpc = (projectId, prompt) => ip.evaluate(({ id, p }) => window.orgai.runs.start({ projectId: id, prompt: p }), { id: projectId, p: prompt })
     const runStatus = (runId) => ip.evaluate((id) => window.orgai.runs.get(id).then((r) => r?.summary?.status ?? null), runId)
-    const setSize = async (w, h) => {
-      await ibApp.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-      await ip.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: 10_000 }).catch(() => {})
-      await ip.evaluate(() => window.dispatchEvent(new Event('resize')))
-      await sleep(500)
-    }
-    const setTheme = async (theme) => {
-      await ip.evaluate(async (t) => {
-        const s = await window.orgai.settings.get()
-        await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
-      }, theme)
-      await sleep(600)
-    }
+    const setSize = (w, h) => setWindowSize(ibApp, ip, w, h, 500)
+    const setTheme = (theme) => setThemeAndWait(ip, theme, 600)
     const overflowX = () => ip.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
 
     // ---- Empty first: nothing waits, nothing is working.
@@ -1767,7 +1822,7 @@ async function setName(name) {
     const runB = await startViaIpc(projB.id, 'Compound [mock:fatigue]')
     await ibUntil(async () => (await badge()) >= 2, 25_000)
     await openInbox()
-    await waitRows().first().waitFor({ timeout: 15_000 })
+    await waitRows().first().waitFor({ timeout: t(15_000) })
     await sleep(500)
 
     // ---- Count consistency: the sidebar badge, the Needs-you popover and the Inbox are one number.
@@ -1808,12 +1863,12 @@ async function setName(name) {
     // that activated the nav row (held, repeating, doubled) reaches neither a row nor a card.
     const waitingBeforeHeld = await waitRows().count()
     await I('nav-home').click()
-    await I('dashboard').waitFor({ timeout: 10_000 })
+    await I('dashboard').waitFor({ timeout: t(10_000) })
     await I('nav-inbox').focus()
     await ip.keyboard.down('Enter')
     await ip.keyboard.down('Enter')
     await ip.keyboard.down('Enter')
-    await I('inbox-view').waitFor({ timeout: 10_000 })
+    await I('inbox-view').waitFor({ timeout: t(10_000) })
     await sleep(500)
     check((await focusedRowId()) === ids0[0], 'IB M5 opening the Inbox from its sidebar row moves focus to the first row', JSON.stringify(await ip.evaluate(() => document.activeElement?.getAttribute('data-testid'))))
     await ip.keyboard.down('Enter')
@@ -1909,6 +1964,29 @@ async function setName(name) {
     await sleep(200)
     check((await focusedRowId()) === ids0[0], 'IB IBH4 Esc returns to the row after the held-Enter test', String(await focusedRowId()))
 
+    // ---- A fresh Enter right after a move always goes into the card, however late the next animation frame is. On a busy
+    // or hidden window the frame can arrive after the person's next key; the move must not depend on it (CI saw Enter land
+    // on a row and then be undone by a late focus hand-back). The frame is held back 300 ms here to make that deterministic.
+    await rows().nth(1).click()
+    check((await selectedId()) === ids0[1] && (await focusedRowId()) === ids0[1], 'IB IBR1 (setup) the second row is selected and focused', `${await selectedId()} / ${await focusedRowId()}`)
+    await ip.evaluate(() => {
+      window.__rafReal = window.requestAnimationFrame
+      window.requestAnimationFrame = (cb) => window.setTimeout(() => cb(performance.now()), 300)
+    })
+    await ip.keyboard.press('ArrowUp')
+    await ip.keyboard.press('Enter')
+    const lateInCard = await focusIn('[data-testid=inbox-detail-pane]')
+    // Two held-back frames have run: whatever the move queued for the next frame has happened by now.
+    await ip.evaluate(() => new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve(null)))))
+    const lateStill = await focusIn('[data-testid=inbox-detail-pane]')
+    await ip.evaluate(() => {
+      window.requestAnimationFrame = window.__rafReal
+    })
+    check(lateInCard && lateStill && (await selectedId()) === ids0[0] && (await waitRows().count()) === heldBefore, 'IB IBR1 K then an immediate Enter moves focus into the card and a late animation frame does not undo it', JSON.stringify({ lateInCard, lateStill, selected: await selectedId(), left: await waitRows().count() }))
+    await ip.keyboard.press('Escape')
+    await ibUntil(async () => (await focusedRowId()) === ids0[0], 3000, 50)
+    check((await focusedRowId()) === ids0[0], 'IB IBR1 Esc returns to the row', String(await focusedRowId()))
+
     // ---- Chips and the project filter.
     const chipTexts = await I('inbox-chips').locator('button').evaluateAll((els) => els.map((e) => ({ label: (e.textContent ?? '').replace(/\s+/g, ' ').trim(), pressed: e.getAttribute('aria-pressed') })))
     check(chipTexts[0]?.pressed === 'true' && /^All\s*\d+$/.test(chipTexts[0].label) && chipTexts.some((c) => /^Permissions\s*\d+$/.test(c.label)) && !chipTexts.some((c) => /^Finished/.test(c.label)), 'IB the chips are a pressed group: All plus only the kinds present', JSON.stringify(chipTexts))
@@ -1981,7 +2059,7 @@ async function setName(name) {
     check(!idsAfter.includes(idsBefore[0]), 'IB answering removes the item from the list', JSON.stringify(idsAfter))
     check((await badge()) === nAfter && (await bell()) === nAfter && (await summary()).waiting === nAfter && nAfter === n - 1 + fresh.length, 'IB the badge, the Needs-you row and the summary all drop by the one answered (plus a follow-up from the same run, if any) and agree', `${await badge()} / ${await bell()} / ${(await summary()).waiting}`)
     check((await selectedId()) === idsAfter[0], 'IB the next item is selected after an answer', String(await selectedId()))
-    check(/^Answered\. Next: .+ \d+ of \d+\.$/.test(await live()), 'IB the live region says what was answered and what is next', await live())
+    check((await liveMatch(/^Answered\. Next: .+ \d+ of \d+\.$/)), 'IB the live region says what was answered and what is next', await live())
     const afterFocus = await ip.evaluate(() => ({ body: document.activeElement === document.body, inView: !!document.activeElement?.closest?.('[data-testid=inbox-view]') }))
     check(afterFocus.inView && !afterFocus.body, 'IB focus stays in the Inbox after an answer (not on the body)', JSON.stringify(afterFocus))
     check((await ip.locator('[data-testid=inbox-detail-pane] article.decision-card').count()) === 1, 'IB the next decision is shown as its card')
@@ -2006,7 +2084,7 @@ async function setName(name) {
     await I('inbox-finished-clear').click()
     await ibUntil(async () => (await fin.count()) === 0, 8000)
     check((await fin.count()) === 0 && (await summary()).finished === 0, 'IB Clear removes the finished run for good')
-    check(/^Cleared\./.test(await live()), 'IB Clear is announced', await live())
+    check((await liveMatch(/^Cleared\./)), 'IB Clear is announced', await live())
     // Marked read: a second failed run, then "Mark all read".
     const fail2 = await startViaIpc(projB.id, 'Break it again [mock:model-switch-error]')
     await ibUntil(async () => (await runStatus(fail2.id)) === 'error', 25_000)
@@ -2066,7 +2144,7 @@ async function setName(name) {
     await launched.shot('empty-dark-1024')
     await setSize(1440, 900)
     await I('inbox-see-running').click()
-    await I('dashboard').waitFor({ timeout: 10_000 }).catch(() => {})
+    await I('dashboard').waitFor({ timeout: t(10_000) }).catch(() => {})
     check((await I('dashboard').count()) === 1 && (await I('inbox-view').count()) === 0, 'IB "See what is running" goes to Home')
     check(ipErrors.length === 0, 'IB no page errors', ipErrors.join(' | ').slice(0, 300))
 

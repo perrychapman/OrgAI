@@ -15,6 +15,7 @@ import { OUTPUT_NOTE_TEXT_MAX } from '@shared/types'
 import { notesOfVersion, useOutputDetail, type OutputDetailValue } from './outputDetailContext'
 import { useOutputRevisions } from './useOutputData'
 import NoteComposer from './NoteComposer'
+import { focusAfterUnlessMoved } from '../../lib/laterFocus'
 import '../../styles/outputs-notes.css'
 
 export interface NotesPanelProps {
@@ -139,7 +140,7 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
               e.preventDefault()
               e.stopPropagation()
               setEditing(null)
-              window.setTimeout(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`)?.focus(), 0)
+              focusAfterUnlessMoved(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`))
             } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
               e.preventDefault()
               void saveEdit(n)
@@ -153,7 +154,7 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
               <p className="output-note-help">{problem ?? `${draftText.length.toLocaleString('en-US')} of ${OUTPUT_NOTE_TEXT_MAX.toLocaleString('en-US')}`}</p>
             )}
             <div className="output-note-actions">
-              <Button size="sm" variant="ghost" onClick={() => { setEditing(null); window.setTimeout(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`)?.focus(), 0) }}>
+              <Button size="sm" variant="ghost" onClick={() => { setEditing(null); focusAfterUnlessMoved(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`)) }}>
                 Cancel
               </Button>
               <Button size="sm" variant="primary" testId="output-note-edit-save" inert={!draftText.trim() || Boolean(problem)} onClick={() => void saveEdit(n)}>
@@ -217,7 +218,7 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
     const ok = await call(() => api.noteUpdate({ ...ref, noteId: n.id, text: draftText.trim() }), 'Note updated.', 'The note could not be saved.')
     if (ok) {
       setEditing(null)
-      window.setTimeout(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`)?.focus(), 0)
+      focusAfterUnlessMoved(() => document.querySelector<HTMLElement>(`[data-id="${n.id}"] [data-testid="output-note-edit"]`))
     }
   }
   const remove = async (n: OutputNote): Promise<void> => {
@@ -231,7 +232,7 @@ function Panel({ ctx, variant }: { ctx: OutputDetailValue; variant: 'tab' | 'dra
         next.delete(n.id)
         return next
       })
-      window.setTimeout(() => heading.current?.focus(), 0)
+      focusAfterUnlessMoved(() => heading.current)
     }
   }
 

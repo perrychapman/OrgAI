@@ -107,12 +107,12 @@
 }
 .connector-chips {
   display: flex;
-  flex-wrap: nowrap;
+  /* Wraps instead of scrolling sideways: a strip with its scrollbar hidden cut the chips off at the edge ("Proje"), and
+     a mouse could not reach the rest. */
+  flex-wrap: wrap;
   flex: 1 1 320px;
   gap: var(--space-1);
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
 .connector-chip {
   flex: none;

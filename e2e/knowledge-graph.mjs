@@ -7,7 +7,7 @@
 // contrast of the resolved theme. Screenshots go to e2e/shots/neural/ (gitignored).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { SHOTS_DIR, TMP, check, findProject, finish, gotoProjects, launch, log, openProject, openProjectForm, projectTab, sleep, windowShift, pickSetup } from './lib.mjs'
+import { SHOTS_DIR, TMP, check, findProject, finish, gotoProjects, launch, log, openProject, openProjectForm, projectTab, sleep, windowShift, pickSetup, t, checkRadio } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-neural-'))
@@ -24,7 +24,7 @@ page.setDefaultTimeout(8000)
 
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
   await sleep(600)
 }
@@ -37,7 +37,7 @@ const setAppearance = async (patch) => {
 }
 const setTheme = (theme) => setAppearance({ theme })
 const until = async (fn, ms = 10_000) => {
-  const end = Date.now() + ms
+  const end = Date.now() + t(ms)
   while (Date.now() < end) {
     try {
       if (await fn()) return true
@@ -64,12 +64,12 @@ const activeTestId = () => page.evaluate(() => document.activeElement?.getAttrib
 async function createEngagement({ name, dir }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
   await pickSetup(form, true)
   await form.getByRole('button', { name: 'Create project', exact: true }).click()
-  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: t(60_000) })
   return findProject(page, name)
 }
 
@@ -138,16 +138,16 @@ const attr = (name) => page.locator(NEURAL).getAttribute(name)
 const num = async (name) => Number(await attr(name))
 const openKnowledgeTab = async () => {
   await page.locator('[data-testid=tab-knowledge]').click()
-  await page.locator('[data-testid=knowledge-view]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=knowledge-view]').waitFor({ timeout: t(10_000) })
   await sleep(400)
 }
 const openGraph = async () => {
   await page.locator('[data-testid=knowledge-view-switch]').getByRole('radio', { name: 'Graph', exact: true }).check({ force: true })
-  await page.locator(NEURAL).waitFor({ timeout: 10_000 })
+  await page.locator(NEURAL).waitFor({ timeout: t(10_000) })
 }
 const openList = async () => {
   await page.locator('[data-testid=knowledge-view-switch]').getByRole('radio', { name: 'List', exact: true }).check({ force: true })
-  await page.locator('[data-testid=knowledge-list]').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=knowledge-list]').waitFor({ timeout: t(10_000) })
 }
 const settled = () => until(async () => (await attr('data-settled')) === 'true', 30_000)
 /** The option data of every drawn node: id, name (from the spoken label), world position, radius, total, colour and mark. */
@@ -495,7 +495,7 @@ try {
   check((await activeTestId()) === 'knowledge-neural-legend-trigger', 'then the Legend button', await activeTestId())
   await page.keyboard.press('Enter')
   const legend = page.locator('[data-testid=knowledge-neural-legend]')
-  await legend.waitFor({ state: 'visible', timeout: 4000 })
+  await legend.waitFor({ state: 'visible', timeout: t(4000) })
   const kindsLegend = await legend.locator('[data-testid=knowledge-neural-legend-kind]').count()
   check(kindsLegend === 12, 'the legend lists the kinds in use (12 with the new one)', String(kindsLegend))
   check(/Dotted line: an inferred link, found by matching names in text; it may be wrong/.test((await legend.innerText()) ?? ''), 'the legend explains inferred links')
@@ -723,7 +723,7 @@ try {
   await page.getByRole('tab', { name: 'Maintenance', exact: true }).click()
   await page.locator('[data-testid=forget-engagement]').click()
   await page.getByRole('button', { name: 'Forget engagement', exact: true }).click()
-  await page.locator('[data-testid=forget-notice]').waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('[data-testid=forget-notice]').waitFor({ state: 'visible', timeout: t(15_000) })
   const gone = await page.evaluate((id) => window.orgai.projects.list().then((l) => !l.some((p) => p.id === id)), lastKeys)
   check(gone, 'the engagement is forgotten')
   const leftOver = await page.evaluate((id) => Object.keys(localStorage).filter((k) => k.startsWith('orgai.knowledge') && k.endsWith(id)), lastKeys)

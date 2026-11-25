@@ -43,9 +43,11 @@ export function targetOptions(opts: OutputReviseOptions | null): TargetOption[] 
   const out: TargetOption[] = []
   for (const r of opts?.runs ?? []) {
     let label: string
-    if (r.state === 'held') label = `${r.label}, waiting for you to answer a question first`
-    else if (r.state === 'continuable') label = `${r.label}, continue the conversation`
-    else label = r.madeCurrent ? `${r.label} (still running)` : `${r.label} (running)`
+    // Main already tags its labels "(still running)" / "(waiting for you)"; the state words below are the renderer's, so drop the tag once.
+    const name = r.label.replace(/\s*\((?:still running|waiting for you)\)\s*$/, '')
+    if (r.state === 'held') label = `${name}, waiting for you to answer a question first`
+    else if (r.state === 'continuable') label = `${name}, continue the conversation`
+    else label = r.madeCurrent ? `${name} (still running)` : `${name} (running)`
     out.push({ value: `run:${r.runId}`, label, held: r.state === 'held' })
   }
   if (opts?.newRunAllowed) out.push({ value: 'new', label: 'A new run', held: false })

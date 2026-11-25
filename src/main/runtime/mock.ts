@@ -95,6 +95,10 @@ import { agentBriefOf, spawnCapRefusal } from './spawnCaps'
  * Revise requests (OUTPUTS_REVISE_TOKEN, no prompt marker needed): a user message, or a started / continued run's
  * prompt, carrying OrgAI's "The user wrote (request rev_...):" line makes the root read_output the named output and
  * produce_output it again at the same file name with a visible change (reviseOutputStep). Peer messages never do.
+ * REVISE_HOLD_TOKEN ([mock:revise-hold]) in the instruction makes the mock ask one permission card first and answer only
+ * once it is answered, so a test can read the "waiting for the team's version" state at any speed (e2e/outputs-notes.mjs).
+ * MODEL_SWITCH_HOLD_TOKEN ([mock:model-switch-hold]) in a later message of a [mock:model-switch] run keeps its turn running
+ * until the interrupt or stop (e2e/model-switch.mjs: "Interrupt and switch" needs a run that is running when it is pressed).
  *
  *
  * Chat (quick) markers (quick runs, default script): [mock:chat-edit] (chatEditSteps): list_projects, then an Edit of
@@ -216,6 +220,11 @@ export type MockStep =
       onDeny?: string
       /** Stay in state 'tool' for this many ms (cut short by interrupt and stop), so a test can observe it. */
       holdMs?: number
+      /**
+       * After `holdMs`, stay in state 'tool' until every background permission card of this run has been answered (stop
+       * releases it): a test that must read the state on a slow machine releases it by answering the card.
+       */
+      holdUntilAnswered?: boolean
     }
   /** Set an agent's state (and activity) as written, for states a script cannot otherwise rest in (starting, idle, error). */
   | { type: 'agentState'; agent: string; state: AgentInstance['state']; activity?: string }
@@ -806,6 +815,15 @@ export const MOCK_HOST_REJECT_REASON = 'This session does not take this change; 
 export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
 export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
 /**
+ * [mock:model-switch-hold] in a LATER message of a [mock:model-switch] run: after its reply the turn stays running (status
+ * 'running', the root thinking) until the user interrupts or stops it, instead of ending after a mock delay. A test that must
+ * press "Interrupt and switch" while the run is running cannot race the mock's own turn end on a slow machine: the interrupt it
+ * is testing is the release (e2e/model-switch.mjs). Not used by a run that never carries a model-switch marker.
+ */
+export const MODEL_SWITCH_HOLD_TOKEN = '[mock:model-switch-hold]'
+/** How long the hold waits at most (the interrupt or stop cuts it short): longer than any e2e run. */
+export const MOCK_MODEL_SWITCH_HOLD_MS = 30 * 60 * 1000
+/**
  * RunHold e2e markers (work runs, default script; UI overhaul). [mock:budget-stop] (budgetStopSteps): one text, then the
  * root turn ends as a Claude turn that hit its spending limit does: ctx.onRootTurnEnded({ ok: false, errorSubtype:
  * 'error_max_budget_usd' }), root state 'error', then run.status 'idle'. RunManager holds the run on 'budget' when the run
@@ -995,7 +1013,7 @@ export const FACTORY_FLOOR_IDS = {
  * agents, three finished sub-trees' workers, then every state left standing at the same time: ff-w121 starting, ff-w122
  * idle, ff-w123 error, ff-w131/2/3 and ff-s13 done, ff-w211 waiting (a background permission card the user answers),
  * leads and sub-leads delegating, and ff-w111 in state 'tool' for FACTORY_FLOOR_TOOL_HOLD_MS after MOCK_FACTORY_FLOOR_READY
- * (its toolCalls rises by one per Read). Worktree records (no git): ff-w111 active, ff-w112 merging, ff-w113 merged into
+ * and, without `pause`, until ff-w211's card is answered (its toolCalls rises by one per Read). Worktree records (no git): ff-w111 active, ff-w112 merging, ff-w113 merged into
  * main, ff-w131 merged into its parent ff-s13, ff-w132 review, ff-w133 held, ff-w211 empty, ff-w212 conflict, ff-w213
  * removed, ff-s13 waiting-children. Messages: lead to sub-lead, worker to the user, worker to an unknown handle. ff-w333 is
  * removed (agent.remove). With `pause` the turn ends at a usage limit (RunManager pauses the run).
@@ -1048,7 +1066,11 @@ export function factoryFloorSteps(leadSlug: string, reportSlug: string, pause = 
   steps.push(
     { type: 'tool', agent: 'ff-w211', name: 'Bash', input: { command: 'npm test' }, ask: true, background: true, result: 'ok' },
     { type: 'text', text: MOCK_FACTORY_FLOOR_READY },
-    { type: 'tool', agent: 'ff-w111', name: 'Read', input: { file_path: 'src/last.ts' }, result: '// last\n', holdMs: FACTORY_FLOOR_TOOL_HOLD_MS },
+    // The hold ends when the user answers ff-w211's card (plain [mock:factory-floor]; the -pause tour never has it answered and
+    // ends at its usage limit): a renderer that is a minute behind still shows ff-w111 at its machine whenever it gets there,
+    // where a timed hold shows nothing once the later event has already arrived (the page applies a backlog without a render
+    // in between). FACTORY_FLOOR_TOOL_HOLD_MS is the least it holds, as before.
+    { type: 'tool', agent: 'ff-w111', name: 'Read', input: { file_path: 'src/last.ts' }, result: '// last\n', holdMs: FACTORY_FLOOR_TOOL_HOLD_MS, ...(pause ? {} : { holdUntilAnswered: true }) },
     { type: 'text', text: MOCK_FACTORY_FLOOR_DONE }
   )
   if (pause) steps.push({ type: 'rateLimit', untilInMs: 60 * 60 * 1000 })
@@ -1235,6 +1257,14 @@ export const OUTPUTS_V2_TOKEN = '[mock:outputs-v2]'
  * prompt) on a default-script work run carrying OrgAI's revise marker line is answered (reviseOutputStep).
  */
 export const OUTPUTS_REVISE_TOKEN = '[mock:outputs-revise]'
+/**
+ * [mock:revise-hold] inside the user's revise instruction: the mock does not answer on its own clock. Before it reads the
+ * output it asks for one permission card (a Bash `npm test`), and it revises only once the card is answered (stop releases
+ * it). The Outputs views show "Waiting for the team's new version" for as long as the card stays open, so a test reads that
+ * state when it gets there, however slow the page is, and releases the answer by answering the card (e2e/outputs-notes.mjs).
+ * Without the token nothing changes: the answer arrives after the mock's own delays.
+ */
+export const REVISE_HOLD_TOKEN = '[mock:revise-hold]'
 /** The root's sentence after the [mock:outputs-all] steps (4 + 7 produced, 1 registered). */
 export const MOCK_OUTPUTS_ALL_DONE = 'I produced 12 outputs.'
 export const MOCK_OUTPUTS_V2_START = 'I will update the deliverables.'
@@ -1631,6 +1661,8 @@ export class MockSession implements RuntimeSession {
   private continueTurns: MockStep[][]
   private continuation: ContinuationDriver
   private wake: (() => void) | null = null
+  /** The background permission asks (tool steps with `ask` and `background`), each settled once the user has answered. */
+  private backgroundAnswers: Promise<void>[] = []
   private stopped = false
   private ended = false
   private interrupted = false
@@ -2257,7 +2289,13 @@ export class MockSession implements RuntimeSession {
         this.emit({ type: 'run.status', runId, status: 'running' })
         if (next.harness) await this.turn(this.continueTurns.shift() ?? [{ type: 'text', text: 'Mock: continuing with the plan.' }])
         else if (this.answersRevisions() && isReviseMessage(next.text)) await this.turn([{ type: 'text', text: MOCK_REVISE_START }, { type: 'reviseOutput', message: next.text }])
-        else await this.turn([{ type: 'text', text: this.modelSwitchMarker() ? `Mock reply (${this.usageModel(ROOT_AGENT_ID)}): ${next.text}` : this.script.reply.replace('{text}', next.text) }])
+        else {
+          const hold = this.modelSwitchMarker() && next.text.includes(MODEL_SWITCH_HOLD_TOKEN)
+          await this.turn([
+            { type: 'text', text: this.modelSwitchMarker() ? `Mock reply (${this.usageModel(ROOT_AGENT_ID)}): ${next.text}` : this.script.reply.replace('{text}', next.text) },
+            ...(hold ? [{ type: 'wait' as const, ms: MOCK_MODEL_SWITCH_HOLD_MS }] : [])
+          ])
+        }
       }
       this.emit({ type: 'run.status', runId, status: 'finished' })
     } catch (e) {
@@ -2772,6 +2810,7 @@ export class MockSession implements RuntimeSession {
     countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
     if (step.holdMs) await this.pause(step.holdMs)
+    if (step.holdUntilAnswered && (await this.untilStopped(Promise.all(this.backgroundAnswers))) === STOPPED) return
     // Same self-control gate as the Claude adapter's PreToolUse (cli-spec 3.4(1)), before every other check, rule and
     // mode: the orgai command and OrgAI's control files are refused outright.
     const selfDenial = this.selfControlDenial(agentId, step.name, input)
@@ -2821,13 +2860,15 @@ export class MockSession implements RuntimeSession {
     if (step.ask && step.background) {
       // Leave the request pending and carry on; the result lands whenever the user answers.
       this.setState(agentId, 'waiting', `Needs approval: ${describeTool(step.name, input)}`)
-      void this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input), ...refField }).then((decision) => {
+      const answered = this.ctx.requestPermission({ agentId, toolName: step.name, input, summary: describeTool(step.name, input), ...refField }).then((decision) => {
         if (this.stopped) return
         const denied = decision.behavior === 'deny'
         this.transcript(agentId, { kind: 'tool_result', toolUseId: id, content: denied ? decision.message : step.result ?? 'ok', isError: denied })
         const a = this.agents.get(agentId)
         if (a && a.state === 'waiting') this.setState(agentId, 'thinking', 'Thinking…')
       })
+      this.backgroundAnswers.push(answered.then(() => undefined, () => undefined))
+      void answered
       return
     }
     if (step.ask || ref?.forced) {
@@ -3375,6 +3416,11 @@ export class MockSession implements RuntimeSession {
     if (!req.fileName) {
       await this.step({ type: 'text', text: MOCK_REVISE_REGISTERED })
       return
+    }
+    if (message.includes(REVISE_HOLD_TOKEN)) {
+      // The hold: one foreground permission card; the step returns when it is answered (or the session stopped).
+      await this.step({ type: 'tool', name: 'Bash', input: { command: 'npm test' }, ask: true, result: 'ok' })
+      if (this.stopped || this.interrupted) return
     }
     const read = await this.harnessStep({ type: 'harness', name: OUTPUT_TOOLS.read, args: { action: 'read', outputId: req.outputId }, retryOnRevise: false })
     if (this.stopped || this.interrupted) return

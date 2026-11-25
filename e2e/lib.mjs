@@ -29,6 +29,135 @@ export const SHOTS_DIR = path.join(E2E_DIR, 'shots')
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
 
+// ---------- One slow-runner scale for every wait ----------
+// The CI runners are two cores and a software GPU; the same product code passed or failed a script depending on how slow the
+// runner happened to be (a 65 to 92 minute chain, a different script red each time). TIME_SCALE stretches how long a WAIT may
+// take, never how long anything is allowed to sleep for ordering: a wait ends the moment its state is there, so a fast machine
+// loses nothing, and a slow one gets room. E2E_TIME_SCALE=N sets it; the default is 1, and 3 when CI is set.
+// It is applied to Playwright's default timeout and navigation timeout on EVERY window of a launched app (the app's 'window'
+// event, so a window a script opens later is covered), to any page.setDefaultTimeout a script calls afterwards (the call is
+// scaled, so `page.setDefaultTimeout(8000)` means 8 s at scale 1), and to the shared helpers below. Scripts use t(ms) for their
+// own explicit timeouts: `{ timeout: t(8000) }`, the deadline of a poll loop. Do NOT wrap a sleep that orders two things in t():
+// wait on the state instead (a MutationObserver installed before the action, a standing state, a mock hold).
+const scaleEnv = Number(process.env.E2E_TIME_SCALE)
+export const TIME_SCALE = Number.isFinite(scaleEnv) && scaleEnv > 0 ? scaleEnv : process.env.CI ? 3 : 1
+export const t = (ms) => (ms === 0 || !Number.isFinite(ms) ? ms : Math.round(ms * TIME_SCALE))
+let scaleLogged = false
+const logScaleOnce = () => {
+  if (scaleLogged) return
+  scaleLogged = true
+  log(`time scale ${TIME_SCALE} (E2E_TIME_SCALE; default 3 when CI is set, else 1): every wait may take ${TIME_SCALE} times as long`)
+}
+
+/**
+ * Scale one Playwright page: its default timeout and navigation timeout (Playwright's 30 s times the scale), and any later
+ * page.setDefaultTimeout call by a script. Safe to call twice on a page.
+ */
+export function scalePage(page) {
+  if (page.__orgaiScaled) return page
+  page.__orgaiScaled = true
+  const setTimeoutOrig = page.setDefaultTimeout.bind(page)
+  let defaultTimeout = t(30_000)
+  page.setDefaultTimeout = (ms) => setTimeoutOrig((defaultTimeout = t(ms)))
+  setTimeoutOrig(defaultTimeout)
+  page.setDefaultNavigationTimeout(t(30_000))
+  // page.waitForFunction(async () => ...) does NOT poll: Playwright awaits the returned promise once and then treats the
+  // (truthy) promise as success, whatever it resolved to (measured: `async () => false` returns in 4 ms). Every such wait was
+  // a single read. A script that waited for "idle" this way went on with the run still running (the model-switch macOS CI
+  // failure 2026-11-24). An async predicate is therefore polled here, by timer, until its resolved value is truthy.
+  page.waitForFunction = function waitForFunction(fn, arg, options = {}) {
+    const proto = Object.getPrototypeOf(page)
+    if (typeof fn !== 'function' || !/^\s*async\b/.test(Function.prototype.toString.call(fn))) return proto.waitForFunction.call(page, fn, arg, options)
+    return pollAsyncPredicate(page, fn, arg, options.timeout ?? defaultTimeout, options.polling)
+  }
+  return page
+}
+
+async function pollAsyncPredicate(page, fn, arg, timeout, polling) {
+  const every = typeof polling === 'number' && polling > 0 ? polling : 100
+  const end = timeout === 0 ? Infinity : Date.now() + timeout
+  for (;;) {
+    try {
+      if (await page.evaluate(fn, arg)) return
+    } catch (error) {
+      // A page that is navigating or reloading answers on the next poll; any other throw is the predicate's own.
+      const message = String(error?.message)
+      if (/Target closed|has been closed/i.test(message) || !/context was destroyed|navigation/i.test(message)) throw error
+    }
+    if (Date.now() >= end) {
+      const error = new Error(`page.waitForFunction: Timeout ${timeout}ms exceeded.\nCall log:\n  - waiting for async function to resolve truthy (polled by timer: ${fn.toString().slice(0, 160)})`)
+      error.name = 'TimeoutError'
+      throw error
+    }
+    await sleep(every)
+  }
+}
+
+/**
+ * Waits that do not need the renderer to draw frames. Playwright's `locator.waitFor()` and `page.waitForFunction()` poll with
+ * requestAnimationFrame, so a renderer that draws a frame every half second (the Factory Floor's software-GL scene mounting
+ * on two cores: 2 to 3 frames per 1.5 s for the first 45 s, measured) answers them late or not at all while the element has been
+ * there and visible all along (`isVisible()` true, the run header drawn; the same wait waited 300 s on windows-latest). Calling
+ * this once makes both of them poll by timer instead (every 100 / 250 ms): the same states, the same timeouts, no frames needed.
+ * Opt-in, for scripts that mount the 3D scene; changes nothing for the others. Actions (click, fill) are unchanged.
+ */
+export function domPollWaits(page) {
+  const locatorProto = Object.getPrototypeOf(page.locator('html'))
+  const pageProto = Object.getPrototypeOf(page)
+  if (!locatorProto.__orgaiPolled) {
+    locatorProto.__orgaiPolled = true
+    locatorProto.waitFor = async function waitFor(options = {}) {
+      const state = options.state ?? 'visible'
+      const limit = options.timeout === 0 ? Infinity : (options.timeout ?? t(30_000))
+      const end = Date.now() + limit
+      for (;;) {
+        const ok =
+          state === 'visible' ? await this.isVisible() : state === 'hidden' ? !(await this.isVisible()) : state === 'attached' ? (await this.count()) > 0 : (await this.count()) === 0
+        if (ok) return
+        if (Date.now() >= end) {
+          const err = new Error(`locator.waitFor: Timeout ${limit}ms exceeded.\nCall log:\n  - waiting for ${String(this)} to be ${state} (polled by timer, not by frames)`)
+          err.name = 'TimeoutError'
+          throw err
+        }
+        await sleep(100)
+      }
+    }
+  }
+  if (!pageProto.__orgaiPolled) {
+    pageProto.__orgaiPolled = true
+    const original = pageProto.waitForFunction
+    pageProto.waitForFunction = function waitForFunction(fn, arg, options = {}) {
+      return original.call(this, fn, arg, { polling: 250, ...options })
+    }
+  }
+}
+
+/**
+ * Scale every window of an Electron app: those open now and any opened later (a run window, a second window), so no script
+ * can miss one. launch() calls this; a script that starts Electron itself calls it right after electron.launch().
+ */
+export function scaleApp(app) {
+  logScaleOnce()
+  for (const w of app.windows()) scalePage(w)
+  app.on('window', (w) => scalePage(w))
+  return app
+}
+
+/** Poll `fn` (sync or async; a throw counts as false) until it returns something truthy, which is returned; null after `ms` (scaled). */
+export async function until(fn, ms = 10_000, every = 150) {
+  const end = Date.now() + t(ms)
+  for (;;) {
+    try {
+      const v = await fn()
+      if (v) return v
+    } catch {
+      /* keep polling */
+    }
+    if (Date.now() > end) return null
+    await sleep(every)
+  }
+}
+
 /** os.tmpdir() with symlinks resolved (macOS: /var/folders/... is /private/var/folders/...), as the app reports paths. */
 export const TMP = fs.realpathSync.native(os.tmpdir())
 
@@ -75,6 +204,19 @@ export function check(ok, what, detail = '') {
     log(`FAIL ${what}${detail ? ` -- ${detail}` : ''}`)
   }
   return ok
+}
+
+/**
+ * An error as one detail line for check(): the first line of its message, the last lines of Playwright's call log (what the
+ * action waited on, and what stood in its way) and the script line that made the call. A bare "Timeout 8000ms exceeded" tells
+ * nothing about which click it was, and a CI run cannot be repeated to find out.
+ */
+export function errDetail(e) {
+  const text = String(e?.message ?? e)
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  const callLog = lines.slice(1).filter((l) => !/^Call log:/.test(l)).slice(-4)
+  const at = String(e?.stack ?? '').split('\n').find((l) => /e2e[\\/][^\\/]+\.mjs:\d+/.test(l))?.trim()
+  return [lines[0] ?? '', ...callLog, at].filter(Boolean).join(' | ').slice(0, 700)
 }
 
 /** Print the summary and set the exit code. */
@@ -232,7 +374,7 @@ export async function ensureDefaultViewport(app, page) {
   const clamp = /^(\d+)x(\d+)$/.exec(process.env.E2E_CLAMP_WINDOW ?? '')
   if (clamp) {
     await app.evaluate(({ BrowserWindow }, [nw, nh]) => BrowserWindow.getAllWindows()[0].setContentSize(nw, nh), [Number(clamp[1]), Number(clamp[2])])
-    await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, Number(clamp[1]), { timeout: 10_000 }).catch(() => {})
+    await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, Number(clamp[1]), { timeout: t(10_000) }).catch(() => {})
   }
   const [cw, ch] = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentSize())
   if (cw >= DEFAULT_CONTENT.width && ch >= DEFAULT_CONTENT.height) return
@@ -240,20 +382,56 @@ export async function ensureDefaultViewport(app, page) {
   const h = Math.max(ch, DEFAULT_CONTENT.height)
   log(`window opened at ${cw}x${ch}; widening to ${w}x${h} (a small screen clamps the default window)`)
   await app.evaluate(({ BrowserWindow }, [nw, nh]) => BrowserWindow.getAllWindows()[0].setContentSize(nw, nh), [w, h])
-  await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((x) => Math.abs(window.innerWidth - x) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+}
+
+let windowModeLogged = false
+/**
+ * The environment of an app launch. Locally (CI not set, E2E_FOREGROUND not 1) the windows are hidden
+ * (ORGAI_WINDOW_HIDDEN=1, honoured only with the ORGAI_DATA_DIR set just below: on Windows and macOS a "ghost" window, shown
+ * inactive but opacity 0, click-through and off the taskbar so it still paints and keeps its frames; on Linux never shown).
+ * `window: 'inactive'` is the per-script opt-out for a script that needs a real, shown window (ORGAI_WINDOW_INACTIVE=1:
+ * shown without taking focus); `window: 'foreground'` (a review session a person looks at) leaves the app's default.
+ * A value the caller already set (ORGAI_WINDOW_HIDDEN or ORGAI_WINDOW_INACTIVE, any value) is never overridden, and CI
+ * is unchanged. Scripts that start Electron themselves spread this into their `env`.
+ */
+export function appEnv({ window: windowMode = 'hidden' } = {}) {
+  const env = { ...process.env, ORGAI_DATA_DIR: DATA_DIR }
+  const local = !process.env.CI && process.env.E2E_FOREGROUND !== '1'
+  const callerSet = process.env.ORGAI_WINDOW_HIDDEN !== undefined || process.env.ORGAI_WINDOW_INACTIVE !== undefined
+  let mine = ''
+  if (local && !callerSet && windowMode !== 'foreground') {
+    if (windowMode === 'inactive') env.ORGAI_WINDOW_INACTIVE = '1'
+    else env.ORGAI_WINDOW_HIDDEN = '1'
+    mine = ', the local default'
+  }
+  // No OS notification, taskbar flash or Dock bounce from a test run (ORGAI_QUIET=1, src/main/quietMode.ts), locally and in
+  // CI. E2E_NOTIFY=1 opts out; a value the caller set stays; a person's review session (window: 'foreground') is the real app.
+  const quiet = windowMode !== 'foreground' && process.env.E2E_NOTIFY !== '1' && process.env.ORGAI_QUIET === undefined
+  if (quiet) env.ORGAI_QUIET = '1'
+  if (!windowModeLogged) {
+    windowModeLogged = true
+    log(`OS notifications are ${env.ORGAI_QUIET === '1' ? 'off (ORGAI_QUIET=1)' : 'on'}; E2E_NOTIFY=1 turns them on`)
+    const mode =env.ORGAI_WINDOW_HIDDEN === '1' ? `hidden (ORGAI_WINDOW_HIDDEN=1${mine})` : env.ORGAI_WINDOW_INACTIVE === '1' ? `inactive (ORGAI_WINDOW_INACTIVE=1${mine || ', set by the caller'})` : 'foreground (default placement)'
+    log(`app windows are ${mode}${env.ORGAI_WINDOW_DISPLAY ? `, display ${env.ORGAI_WINDOW_DISPLAY}` : ''}; E2E_FOREGROUND=1 shows them in front`)
+  }
+  return env
 }
 
 /**
  * Launch the built app and wait until the renderer is up. Returns { app, page, shot }.
  * Dialogs (confirm()) are accepted automatically; renderer console errors are logged.
  */
-export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome = false } = {}) {
+export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome = false, window: windowMode = 'hidden' } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
-  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
+  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: t(60_000), env: appEnv({ window: windowMode }) })
+  // Before anything is awaited on a window: the scale covers this window and every one the app opens later.
+  scaleApp(app)
   const page = await app.firstWindow()
+  scalePage(page)
   page.on('dialog', (d) => {
     log('dialog:', d.message().slice(0, 100))
     void d.accept()
@@ -262,8 +440,16 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
     if (m.type() === 'error') log('console.error:', m.text().slice(0, 200))
   })
   page.on('pageerror', (e) => log('pageerror:', e.message.slice(0, 200)))
-  await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   await ensureDefaultViewport(app, page)
+  // E2E_CPU_THROTTLE=4 slows the renderer four times (CDP Emulation.setCPUThrottlingRate), to reproduce on a fast machine the
+  // races a slow CI runner shows. Opt-in; nothing changes without it.
+  const throttle = Number(process.env.E2E_CPU_THROTTLE)
+  if (throttle > 1) {
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: throttle })
+    log('cpu throttle', throttle)
+  }
   // A shared ORGAI_DATA_DIR (CI) keeps the renderer's localStorage between scripts, so an earlier script's UI choices
   // (orgai.sidebar, orgai.sidePanel.*, widths) would leak into this one. Start every script from auto state; projects
   // and runs live in the main process data and are untouched.
@@ -275,7 +461,7 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
   if (cleared.length) {
     log('cleared stale UI preferences from a shared data dir:', cleared.join(', '))
     await page.reload()
-    await page.waitForSelector('.sidebar', { timeout: 60_000 })
+    await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   }
   // First launch opens on the three setup steps (FirstLaunch, ui-overhaul Welcome). Scripts start past them, on the
   // start choice and its New project form, unless they ask for the steps with `welcome: true`.
@@ -286,11 +472,11 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
     })
     if (onSetup) {
       await page.reload()
-      await page.waitForSelector('.sidebar', { timeout: 60_000 })
+      await page.waitForSelector('.sidebar', { timeout: t(60_000) })
     }
   }
   // A relaunch on existing data may open on the dashboard or a run.
-  if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: 60_000 })
+  if (clearPrefs) await page.waitForSelector('[data-testid=dashboard], .editor', { timeout: t(60_000) })
   let n = 0
   const shot = (name) => screenshot(page, `${shotPrefix}-${String(++n).padStart(2, '0')}-${name}`)
   return { app, page, shot }
@@ -301,9 +487,9 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true, welcome =
  * so open tabs and widths are restored). Returns { app, page, shot } like launch(). Runs that were live when the app
  * quit come back as 'Ended when OrgAI closed'.
  */
-export async function relaunch(app, { shotPrefix = 'shot' } = {}) {
+export async function relaunch(app, { shotPrefix = 'shot', window: windowMode = 'hidden' } = {}) {
   await app.close().catch(() => {})
-  return launch({ shotPrefix, clearPrefs: false })
+  return launch({ shotPrefix, clearPrefs: false, window: windowMode })
 }
 
 export async function screenshot(page, name) {
@@ -322,7 +508,7 @@ export async function gotoProjects(page) {
     .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
     .first()
     .click()
-  await page.waitForSelector('[data-testid=dashboard]', { timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { timeout: t(10_000) })
 }
 
 /**
@@ -334,7 +520,7 @@ export async function openProjectForm(page) {
   if (await trigger.count()) {
     await trigger.click()
     const form = page.locator('[data-testid=new-project-dialog] form')
-    await form.waitFor({ timeout: 10_000 })
+    await form.waitFor({ timeout: t(10_000) })
     return form
   }
   // First launch on the setup steps (a script that launched the app itself): skip to the start choice.
@@ -344,7 +530,7 @@ export async function openProjectForm(page) {
   const choice = page.locator('[data-testid=dash-start-choice]').getByRole('radio', { name: 'Start a project' })
   if (!(await choice.isChecked())) await choice.check({ force: true })
   const form = page.locator('[data-testid=dashboard] form.project-form')
-  await form.waitFor({ state: 'visible', timeout: 10_000 })
+  await form.waitFor({ state: 'visible', timeout: t(10_000) })
   return form
 }
 
@@ -357,19 +543,60 @@ export async function openProjectForm(page) {
 export async function pickSetup(form, skipSetup) {
   const box = form.locator('[data-testid=architect-setup]')
   const fieldset = form.locator('[data-testid=setup-choice]')
-  await box.or(fieldset).first().waitFor({ timeout: 30_000 })
-  if (await box.count()) {
-    if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: /Set up with the Architect|Start with the setup interview/ }).click()
-    if ((await box.isChecked()) === skipSetup) throw new Error('could not toggle "Set up with the Architect"')
-    return
+  // The options area is one of the two while the form loads what decides it (templates, importable agents, the kind chosen
+  // above): a click on one can land as it is replaced by the other, which Playwright reports as "Clicking the checkbox did
+  // not change its state" (CI macOS 2026-11-24, self-help: the radio resolved, was clicked and nothing changed). So each
+  // try finds out which one is there NOW, acts on it and verifies; a lost click is tried again, saying so in the log.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await box.or(fieldset).first().waitFor({ timeout: t(30_000) })
+      if (await box.count()) {
+        if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: /Set up with the Architect|Start with the setup interview/ }).click({ timeout: t(10_000) })
+        if (await until(async () => (await box.count()) === 0 || (await box.isChecked()) !== skipSetup, 3000, 100)) {
+          if ((await box.count()) === 0) throw new Error('the options changed to the "How should the team start?" choice under the click')
+          return
+        }
+        throw new Error('could not toggle "Set up with the Architect"')
+      }
+      const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
+      // The form's submit row is sticky: Playwright's own scroll can leave the last radio underneath it, and a forced click
+      // then lands on "Create project" (it created the project with the Architect choice). Centre the radio first.
+      await radio.waitFor({ state: 'attached', timeout: t(5000) })
+      await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: t(5000) })
+      await radio.check({ force: true, timeout: t(10_000) })
+      if (await until(() => radio.isChecked(), 3000, 100)) return
+      throw new Error(`the "${skipSetup ? 'default' : 'architect'}" setup choice did not stay chosen`)
+    } catch (e) {
+      if (attempt >= 3) throw e
+      log(`create project: the setup choice did not stick (${String(e.message).split('\n')[0]}); looking again`)
+      await sleep(500)
+    }
   }
-  const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
-  // The form's submit row is sticky: Playwright's own scroll can leave the last radio underneath it, and a forced click
-  // then lands on "Create project" (it created the project with the Architect choice). Centre the radio first.
-  await radio.waitFor({ state: 'attached' })
-  await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }))
-  await radio.check({ force: true })
-  if (!(await radio.isChecked())) throw new Error(`could not pick the "${skipSetup ? 'default' : 'architect'}" setup choice`)
+}
+
+/**
+ * Choose a radio of a form so it stays chosen, on any speed of renderer. A forced click lands on whatever is on top at the
+ * radio's centre and the form's submit row is sticky, so the radio is centred first; Playwright then verifies the state right
+ * after the click, and a controlled radio whose re-render is a frame or more behind (a slow CI runner, or the first-launch
+ * form re-rendering under the click) reads "Clicking the checkbox did not change its state" although nothing is wrong. The
+ * locator is resolved again on each try, so a radio that was replaced by a re-render is found, and a try that finds it already
+ * chosen clicks nothing. Says so in the log when a second try was needed. (CI macOS 2026-11-24: self-help; two runs earlier:
+ * maintenance, on the "Existing code" radio.) Every script that picks a radio of the project form goes through this.
+ */
+export async function checkRadio(radio, what = 'radio') {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await radio.waitFor({ state: 'attached', timeout: t(10_000) })
+      await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: t(10_000) })
+      await radio.check({ force: true, timeout: t(10_000) })
+      if (await until(() => radio.isChecked(), 3000, 100)) return
+      throw new Error(`${what} did not stay chosen`)
+    } catch (e) {
+      if (attempt >= 3) throw e
+      log(`${what}: the choice did not stick (${String(e.message).split('\n')[0]}); choosing again`)
+      await sleep(500)
+    }
+  }
 }
 
 /**
@@ -388,10 +615,7 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   // stick, saying so in the log, instead of failing the whole script on one lost click.
   const kindRadio = form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]')
   const modeRadio = form.getByRole('radio', { name: mode === 'new' ? 'New idea' : 'Existing code', exact: true })
-  const choose = async (radio) => {
-    await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }), undefined, { timeout: 10_000 })
-    await radio.check({ force: true, timeout: 10_000 })
-  }
+  const choose = (radio) => checkRadio(radio, 'create project: the kind / mode choice')
   for (let attempt = 0; ; attempt++) {
     try {
       await choose(kindRadio)
@@ -436,16 +660,84 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   return await findProject(page, name)
 }
 
+/**
+ * Turn "Hide finished agents" off in the run view that is on screen. With it on (the default) a report folds into its parent's
+ * "done" group COLLAPSE_GRACE_MS (6 s) after it ended, so a check that reads an agent's node, its provider tag or its name at
+ * some later moment depends on how fast the machine got there: a quick one reads the node, a slow one (a CI runner) finds a
+ * group. A user looking for a named agent turns the fold off; with it off the node is there at any speed. Call it right after
+ * the run header is up, before the agents can finish. The choice is the renderer's own (localStorage orgai.collapseFinished).
+ */
+export async function showFinishedAgents(page, show = true) {
+  // The switch lives in the run toolbar's View menu and appears once the run has a second agent: open the menu until it is there.
+  const want = show ? 'false' : 'true'
+  let lastError = ''
+  const done = await until(async () => {
+    try {
+      const panel = await openViewMenu(page)
+      const fold = panel.getByRole('switch', { name: 'Hide finished agents' })
+      if ((await fold.count()) === 0) {
+        lastError = 'the View menu has no Hide finished agents switch (yet)'
+        await page.keyboard.press('Escape')
+        return false
+      }
+      if ((await fold.getAttribute('aria-checked')) !== want) await fold.click()
+      return (await fold.getAttribute('aria-checked')) === want
+    } catch (e) {
+      lastError = String(e?.message ?? e).split('\n')[0]
+      throw e
+    }
+  }, 15_000, 400)
+  await page.keyboard.press('Escape')
+  await until(async () => (await page.locator('.run-body [data-testid=canvas-style-button]').getAttribute('aria-expanded')) !== 'true', 3000)
+  if (!done) {
+    // What the page showed, so a failure on a runner is a diagnosis and not a bare timeout.
+    const seen = await page
+      .evaluate(() => ({
+        stored: localStorage.getItem('orgai.collapseFinished'),
+        trigger: document.querySelector('.run-body [data-testid=canvas-style-button]')?.getAttribute('aria-expanded') ?? null,
+        switches: [...document.querySelectorAll('.run-body [role=switch]')].map((s) => `${s.getAttribute('aria-label')}=${s.getAttribute('aria-checked')}`),
+        agents: document.querySelectorAll('.react-flow__node .agent-node').length,
+        groups: document.querySelectorAll('[data-testid=done-group]').length
+      }))
+      .catch(() => ({}))
+    throw new Error(`showFinishedAgents(${show}): the Hide finished agents switch did not reach the wanted state (${lastError}) ${JSON.stringify(seen)}`)
+  }
+}
+
+/**
+ * Give the "Hide finished agents" choice its default back (on) without the View menu: the choice is the renderer's own
+ * localStorage key, read when a run view mounts (a new run, a reload). Use it to start a fold check from a known state; it does
+ * not change a run view that is already mounted, so call it before the run that checks the fold starts, or reload.
+ */
+export async function resetFinishedAgentsChoice(page) {
+  await page.evaluate(() => localStorage.removeItem('orgai.collapseFinished'))
+}
+
+/**
+ * Open the run view's View menu, the canvas toolbar's one popover for the options it has no room for in the row: Hide finished
+ * agents, the Show filter and zoom steps in a narrow frame, the layout toggle while the dock is hidden, Canvas style and the
+ * legend. Its trigger keeps the test id `canvas-style-button`, its panel `canvas-style-popover`. Idempotent; returns the panel.
+ */
+export async function openViewMenu(page) {
+  const trigger = page.locator('.run-body [data-testid=canvas-style-button]')
+  await trigger.waitFor({ state: 'visible', timeout: t(5000) })
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click()
+  const panel = page.locator('.run-body [data-testid=canvas-style-popover]')
+  await panel.waitFor({ state: 'visible', timeout: t(5000) })
+  return panel
+}
+
 /** The project as the main process stores it, looked up by name. */
 export async function findProject(page, name) {
   const list = await page.evaluate(() => window.orgai.projects.list())
   return list.find((p) => p.name === name)
 }
 
-/** Open a project from the sidebar. */
+/** Open a project from the sidebar and land on its Live tab. The name row itself opens the project's Home. */
 export async function openProject(page, name) {
   await page.locator(`.sidebar [data-testid=nav-project][data-name="${name.replace(/"/g, '\\"')}"]`).first().click()
-  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: t(10_000) })
+  await page.locator('[data-testid=tab-live]').click()
 }
 
 /** Delete every project tile with this name. Returns how many tiles remain (0 on success). */
@@ -454,20 +746,25 @@ export async function deleteProject(page, name) {
   const tiles = () => page.locator(`[data-testid=project-tile][data-name="${name.replace(/"/g, '\\"')}"]`)
   for (let i = 0; i < 5; i++) {
     const tile = tiles().first()
-    if (!(await tile.count())) break
+    const before = await tiles().count()
+    if (!before) break
     await tile.locator('[data-testid=project-tile-more]').click()
     await page.locator('[data-testid=project-tile-delete]').click()
     await page.getByRole('button', { name: /^(Delete project|Forget engagement)$/ }).click()
-    await sleep(700)
+    // The tile goes once the main process has removed the project (a fixed sleep read the count too early on a slow runner).
+    await until(async () => (await tiles().count()) < before, 10_000)
+    await sleep(300)
   }
   return tiles().count()
 }
 
-/** End a live session if the button is there. */
-export async function endSession(page) {
+/** End a live session if the button is there. `timeout` is for the click (a renderer busy with a very large run answers late). */
+export async function endSession(page, { timeout } = {}) {
   const end = page.getByRole('button', { name: 'End session' })
   if (await end.count()) {
-    await end.click()
+    await end.click(timeout ? { timeout } : undefined)
+    // The button goes when the session has ended; callers go on from there (a fixed sleep alone was a guess on a slow runner).
+    await end.first().waitFor({ state: 'detached', timeout: t(8000) }).catch(() => {})
     await sleep(1500)
   }
 }
@@ -560,7 +857,7 @@ export function projectTab(page, name) {
 /** Open the project's Team tab (`tab-team`). */
 export async function openTeam(page) {
   await page.locator('[data-testid=tab-team]').click()
-  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: t(10_000) })
 }
 
 /** The Role | Catalog tab of the Team side panel. */
@@ -607,8 +904,41 @@ export async function setReduceMotion(page, mode) {
   }, mode)
   // lib/theme.ts writes data-reduce-motion='on' only for 'on' and removes it otherwise.
   await page
-    .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: 5000 })
+    .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: t(5000) })
     .catch(() => {})
+}
+
+/**
+ * Let the renderer catch up after a change the script made: wait at least `minMs`, then until the finite animations are done
+ * and two frames have been drawn (a layout, a theme or a resize handler that was queued behind a busy main thread has run by
+ * then). A fixed sleep alone is a guess that a slow runner loses; this never waits less than the sleep it replaces and never
+ * more than a few scaled seconds. Takes the page whose renderer is read.
+ */
+export async function settleUI(page, minMs = 300) {
+  await sleep(minMs)
+  await settleMotion(page, t(1500))
+  await Promise.race([
+    page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))),
+    sleep(t(3000))
+  ]).catch(() => {})
+}
+
+/** Resize the window to a content size and wait until the renderer has it and has settled (see settleUI). */
+export async function setWindowSize(app, page, w, h, minMs = 500) {
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+  await settleUI(page, minMs)
+}
+
+/** Save the theme in settings and wait until <html data-theme> follows and the renderer has settled (see settleUI). */
+export async function setThemeAndWait(page, theme, minMs = 500) {
+  await page.evaluate(async (th) => {
+    const s = await window.orgai.settings.get()
+    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: th } })
+  }, theme)
+  await page.waitForFunction((th) => document.documentElement.getAttribute('data-theme') === th, theme, { timeout: t(5000) }).catch(() => {})
+  await settleUI(page, minMs)
 }
 
 /** Shortcut: reduced motion on. */

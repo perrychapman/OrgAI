@@ -5,7 +5,7 @@
 // clients, collapse state, rail dividers, tile and topbar client). Run at 1600x1000 and 1024x640, dark and light.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, createProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, sleep, windowShift, pickSetup } from './lib.mjs'
+import { TMP, check, checkRadio, createProject, findProject, finish, gotoProjects, launch, makeFixtureRepo, openProject, openProjectForm, projectTab, sleep, t, until, windowShift, pickSetup } from './lib.mjs'
 import { engagementHomeChecks } from './home-checks.mjs'
 
 process.env.ORGAI_MOCK = '1'
@@ -50,7 +50,7 @@ const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 async function createEngagement({ name, client, dir, refs = [] }) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
   await form.getByLabel('Name', { exact: true }).fill(name)
   if (client) await form.locator('[data-testid=new-project-client]').fill(client)
   await form.getByLabel('Working folder', { exact: true }).fill(dir)
@@ -95,7 +95,7 @@ try {
     check(clean(await form.locator('fieldset.project-kind legend').innerText()) === 'What is this project for?', 'the kind fieldset is named "What is this project for?"')
     check((await form.getByLabel('Name', { exact: true }).count()) === 0, 'first launch: no name or folder fields before a kind is chosen')
     await shot('first-launch')
-    await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+    await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
     check((await form.getByLabel('Name', { exact: true }).getAttribute('placeholder')) === 'Name this engagement', 'engagement: Name placeholder is "Name this engagement"')
     check(clean(await form.locator('label[for$="-path"]').innerText()) === 'Working folder' && !/\bgit\b/i.test(await form.locator('label[for$="-path"]').locator('xpath=..').innerText()), 'engagement: "Working folder" label with no git wording')
     check((await form.getByRole('button', { name: 'Create and start interview' }).count()) === 1, 'engagement: submit reads "Create and start interview" with the interview on')
@@ -114,7 +114,7 @@ try {
     check((await form.locator('[data-testid=new-project-ref-row]').count()) === 0, 'the inside folder was not added to the list')
     await form.locator('[data-testid=new-project-ref-input]').fill('')
     // Switching to Code swaps the fields back.
-    await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
+    await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
     check((await form.getByRole('radio', { name: 'Existing code', exact: true }).count()) === 1 && (await form.getByRole('radio', { name: 'New idea', exact: true }).count()) === 1, 'code: the sub-switch reads New idea / Existing code')
     check((await form.locator('[data-testid=new-project-client]').count()) === 0, 'code: no client field')
   }
@@ -386,7 +386,7 @@ try {
       const form = page.locator('[data-testid=new-project-dialog] form')
       await form.waitFor()
       await sleep(300)
-      await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+      await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]'), 'the Engagement kind')
       await form.locator('[data-testid=new-project-ref-input]').fill(refFolder)
       await form.locator('[data-testid=new-project-ref-add]').click()
       await sleep(200)
@@ -423,10 +423,32 @@ try {
     }
   }
 
-  // ---- Home tab of an engagement (UI overhaul; the shared block is e2e/home-checks.mjs). Last, because it starts a run. ----
+  // ---- The sidebar name opens Home, a run row opens that run (an engagement and a code project, a live run present). ----
   await setSize(1600, 1000)
   await setTheme('dark')
-  await page.locator(`.sidebar [data-testid=nav-project][data-name="${AUDIT}"]`).first().click()
+  const nameRow = (n) => page.locator(`.sidebar [data-testid=nav-project][data-name="${n}"]`).first()
+  const navTab = (id) => page.locator(`[data-testid=tab-${id}]`).first().getAttribute('aria-selected')
+  const auditPid = (await findProject(page, AUDIT)).id
+  await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'Sidebar navigation probe' }), auditPid)
+  await page.locator(`.sidebar [data-testid=nav-run]`).first().waitFor({ state: 'attached', timeout: t(15_000) })
+  await nameRow(CODE).click()
+  check(await until(async () => (await page.locator('[data-testid=project-home]').count()) === 1, 10_000), 'sidebar: the code project name opens its Home')
+  await nameRow(AUDIT).click()
+  check(await until(async () => (await page.locator('[data-testid=engagement-home]').count()) === 1 && (await navTab('home')) === 'true', 10_000), 'sidebar: the engagement name opens its Home although a run is live')
+  await sleep(500)
+  check((await page.locator('[data-testid=engagement-home]').count()) === 1, 'sidebar: Home stays shown once the project has settled')
+  await page.locator('.sidebar [data-testid=nav-run]').first().click()
+  check(await until(async () => (await page.locator('[data-testid=engagement-home]').count()) === 0 && (await navTab('live')) === 'true', 10_000), 'sidebar: a run row opens that run, not Home')
+  await nameRow(AUDIT).focus()
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.locator('[data-testid=engagement-home]').count()) === 1, 10_000), 'sidebar: Enter on the engagement name opens Home from a run')
+  await page.evaluate(async () => {
+    for (const r of await window.orgai.runs.listLive()) await window.orgai.runs.stop(r.id)
+  })
+  await sleep(800)
+
+  // ---- Home tab of an engagement (UI overhaul; the shared block is e2e/home-checks.mjs). Last, because it starts a run. ----
+  await nameRow(AUDIT).click()
   await sleep(500)
   await engagementHomeChecks({ app, page, shot, name: AUDIT, client: 'Acme Corp', refFolderName: path.basename(refFolder) })
 } catch (e) {

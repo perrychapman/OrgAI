@@ -186,8 +186,10 @@ fixes that change the notes above".
   `.run-meta-next-list` rule.
 - **Home "Start run"** still opens New run with the text and never sends. "Save as a schedule" carries what a schedule can hold
   (model, permission mode except Bypass, limit, single) and names what it could not carry (`scheduleSeed`,
-  `schedule-not-kept-note`); the Inbox focuses its first row on arrival (J / K work) with a dwell that swallows the opening Enter and
-  names the teams with a run going when empty; Home "Your week" says "No prior data" instead of growth from zero; History
+  `schedule-not-kept-note`); the Inbox focuses its first row on arrival (J / K work); a fresh Enter on a row always moves focus into the card, except
+  while the key that opened the Inbox is still down (the hold ends at its key-up through `keys.whenReleased`, not on a timer; a
+  held key's repeats are always swallowed), and J / K / Esc move row focus at once (a pending animation frame once undid a fast
+  Enter; checked by `e2e/dashboard.mjs` IBR1 with the frame held back 300 ms, which failed before). It names the teams with a run going when empty; Home "Your week" says "No prior data" instead of growth from zero; History
   has separate "Run it again" (opens New run) and "Try again" (continues a failed run, confirms first) with a line under each.
 - **Team tab.** The selected-role toolbar stays inside the visible chart and is the next Tab stop after its role; a new role
   is panned into view; Add group opens "Add group lead"; the header shows the Theme control compactly at 1024; the zoom
@@ -216,10 +218,24 @@ macOS, live providers.
   reply or decision that arrived while hidden. Chat, setup, Tools helper and Skills helper keep the conversation-first layout.
 - **Stage.** What stays on the stage under the canvas: the decision tray and `RunHoldCard` (dock shown or not) and the
   `PlanStrip` in the frame footer; compact tray threshold 570 px. The decision tray stays so a hidden dock never hides a card.
-- **CanvasThemeMenu.** Replaces the presentation radios (same `saveCanvas` setting), Live only. Toolbar fit by frame width:
-  Show filter hides under 1100, Find under 900, the theme name is clipped (kept in the accessible name) under 1000, the
-  "Theme" word under 680, the swatch under 340, the group under 320 (then App settings > Canvas). `impl-run.md` first said
-  520 for the name: the CSS (`canvas-chrome.css`) is the source.
+- **CanvasThemeMenu.** Replaces the presentation radios (same `saveCanvas` setting), Live only. It is the scene switch of
+  the canvas toolbar: swatch and the scene's name (the trigger's name is "Canvas theme: Org chart"), name dropped when the
+  plan says compact, the whole group hidden under 320 (then App settings > Canvas).
+- **Canvas toolbar declutter (2026-11-24, `docs/design/canvas-toolbar-declutter.md`).** `lib/canvasToolbar.ts`
+  (`planToolbar`, pure, `canvasToolbar.test.ts`) decides which controls the 32 px row draws and in what form; LiveRunView
+  measures the run frame (ResizeObserver, 8 px steps, read in a layout effect so no wrong form paints) and renders the plan.
+  Row: scene switch (CanvasThemeMenu), Find (icon button, only with more than 5 agents), the Show filter and Zoom out / Zoom in
+  (only from a 1100 px frame, else in the View menu), Fit, `CanvasViewMenu`, then after a separator the Conversation button
+  (`dock-show`, dock hidden or rail) or the layout toggle (`run-layout-toggle`; while the dock is hidden it sits in the View
+  menu, so there is one speech-bubble button, not two). **View menu** = the old Canvas style popover under the same test ids
+  (`canvas-style-button` trigger, `canvas-style-popover` panel, now named "View options") with rows above: Find, Show,
+  zoom steps, layout toggle, Hide finished agents (`view-fold-row`, label `view-fold-label` carries the count; the switch is
+  still the `Hide finished agents` switch), then a Canvas style row (`canvas-style-disclosure`, the seven presets fold behind
+  it), the legend (`canvas-legend-trigger` / `canvas-legend`, a disclosure now, not a popover) and More canvas settings.
+  Focus enters on the first row (`ViewRows`), not on the checked preset, so the rows are not scrolled out of sight. e2e:
+  `openViewMenu(page)` in `e2e/lib.mjs`; `showFinishedAgents` goes through it. A control is in exactly one place (unit
+  tested), and the View menu button and its zoom / Fit hide with the stage while an expanded proposal collapses it
+  (`layout.css`). Pause motion stays in the Pocket Office log head and the Factory floor control row (scene-owned).
 - **AgentFilter / Find / AgentList.** `AgentFilter` (All / Working / Waiting, counts, "N of M agents shown") dims other
   nodes with `.node-dim` (0.35 opacity), never hides. Find an agent opens the Agents tab (`openAgentFinder`): search, sort
   and the flat `AgentList` ("Showing 40 of 40" on the mock). Scenes keep their own Find and filter; the org-chart Show
@@ -466,6 +482,19 @@ screenshots; it did not complete a first-time keyboard walkthrough. Canvas radio
 entry/reopen, Usage Projects-to-Kinds light dismissal and Add Service custom-dialog
 focus handoff remain root QA checks, not locally verified claims.
 Live providers, screen-reader speech, zoom and cross-platform behavior are unverified.
+
+## Late focus hand-backs (2026-11-24)
+
+A focus call that runs a frame or a timer after the handler (`requestAnimationFrame`, `setTimeout`) runs late on a busy or
+throttled window, after the person has moved on. A hand-back to the control that opened something (Esc or Cancel on a
+composer or dialog, Done on an editor, a declined confirm, Show fewer) must go through `lib/laterFocus.ts`:
+`focusLaterUnlessMoved` (frames) or `focusAfterUnlessMoved` (timer). Both take `from` when called and focus only if focus is
+still there, fell to the page or `from` left the page. Moving focus forward to something that has just mounted (a new
+field, the heading of the next item, an error summary) stays a plain call. The note composer's Esc hand-back was unguarded:
+Esc, reopen at once and type could land the keys on the opener (reproduced by holding timers of 100 ms or less for 1.5 s in
+`e2e/outputs-notes.mjs`, all four size and theme passes failed before the guard). Guarded: NoteComposer, NotesPanel,
+OutputsView, VersionsPanel, ExternalEditStatus, KitImportDialog, EngagementPlanSection, TeamView, DashboardView, TodosSection,
+UpNextSection, ConnectorGallery, the three knowledge sections, LivePermissionMode, MaintenanceSection, TranscriptPanel.
 
 ## Unified proxy setup (2026-11-10)
 
@@ -1216,3 +1245,10 @@ One section for what two leads wrote in parts (`docs/design/ui-overhaul/impl-set
   `connections`, `connectors`, `presets`, `skills`, `permissions`, `maintenance`, `engagement2`, `multi-provider`,
   `project-connection`; Reviewer approve with fixes. **Unverified:** a screen reader on any pane; macOS; narrow
   (1024x640) screenshots of Skills and Templates; the packaged login item and power blocker; live providers.
+- **Factory Floor e2e, transient states (2026-11-25):** a state that lasts only a timed mock hold (a 2.5 s tool call) is not
+  a fixture: a renderer behind applies the backlog in one render and a poll waits behind it. Assert loops, poses and lamps on
+  a standing hold (`holdUntilAnswered` with a background card), and read absence checks (leaks, caps, quiet invariants) from the
+  in-page recorder (`collector().record()` / `.merge()` in `e2e/factory-floor.mjs`). Day-bucketed checks (Home activity map)
+  compute expected columns from the seeded timestamps and the page's `data-date`, never `14 - 1 - N`, because the map buckets
+  by local day and a clock that passes midnight between seeding and reading moves every column (`E2E_MD_FAKE_AFTER_MIDNIGHT=1`
+  proves it). Checked: unit tests `activityMap.test.ts` (four zones, midnight) and the dashboard e2e both ways.

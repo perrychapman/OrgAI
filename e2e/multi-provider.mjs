@@ -10,7 +10,7 @@
 // Static checks run at 1024x640 and 1600x1000 in dark and light, with no page scroll.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, sleep, teamPanelTab } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, findProject, gotoProjects, launch, log, makeFixtureRepo, openProject, openTeam, projectTab, removeFixture, runRecordsDir, setWindowSize, showFinishedAgents, sleep, teamPanelTab, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const M = 'E2E multi mock (orgai test)'
@@ -29,44 +29,31 @@ const noOverflow = async (what) => {
   check(ov.sw <= ov.cw && ov.sh <= ov.ch + 1, `no page scroll or overflow: ${what}`, JSON.stringify(ov))
 }
 const resize = async (w, h) => {
-  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
-  await sleep(400)
+  await setWindowSize(app, page, w, h, 400)
 }
 
 async function selectReviewer() {
   await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().click()
   await teamPanelTab(page, 'Role').waitFor()
-  // The Model fold starts closed on short windows; re-open it if a re-render remounts the panel.
-  await page.waitForFunction(
-    () => {
-      // The Runs on select sits in the Model section's "Choose an exact model" reveal.
-      const fold = document.querySelector('[data-testid=role-model-advanced]')
-      if (fold && !fold.open) fold.open = true
-      const sel = document.querySelector('[data-testid=role-runs-on]')
-      return !!sel && sel.getClientRects().length > 0
-    },
-    undefined,
-    { timeout: 20_000, polling: 100 }
-  )
+  await openModelReveal()
 }
 
-/** Open the Model reveal if a re-render closed it and wait until the Runs on select has a box. */
-async function openRunsOn() {
-  const wasClosed = await page.evaluate(() => {
-    const fold = document.querySelector('[data-testid=role-model-advanced]')
-    return !!fold && !fold.open
-  })
-  if (wasClosed) log('the Model reveal was closed by a re-render; opening it again')
-  await page.waitForFunction(
-    () => {
-      const fold = document.querySelector('[data-testid=role-model-advanced]')
-      if (fold && !fold.open) fold.open = true
-      const sel = document.querySelector('[data-testid=role-runs-on]')
-      return !!sel && sel.getClientRects().length > 0
-    },
-    undefined,
-    { timeout: 20_000, polling: 100 }
-  )
+const modelFold = () => page.locator('[data-testid=role-model-advanced]')
+/**
+ * The Runs on select sits in the Model section's "Choose an exact model" reveal. It opens by itself only while the role's
+ * connection is not connected (CI has no login, so it does there); on a logged-in machine it starts closed and a person
+ * opens it with a click on its summary, as here. Once open it must stay open: nothing below re-opens it.
+ */
+async function openModelReveal() {
+  await modelFold().waitFor({ state: 'attached', timeout: t(20_000) })
+  if (!(await modelFold().evaluate((d) => d.open))) await modelFold().locator('summary').first().click()
+  await page.locator('[data-testid=role-runs-on]').waitFor({ state: 'visible', timeout: t(20_000) })
+}
+/** The reveal is still open, and the Runs on select is on screen, with nothing having re-opened it. */
+async function revealStillOpen(what) {
+  const open = await modelFold().evaluate((d) => d.open).catch(() => false)
+  check(open, `the Model reveal stays open ${what}`)
+  await page.locator('[data-testid=role-runs-on]').waitFor({ state: 'visible', timeout: t(20_000) })
 }
 
 /** Pin the Reviewer of `name` to `id` through the Runs on select; returns the stored role. */
@@ -119,12 +106,12 @@ try {
   check(![proxyId, otherId].includes(projM.provider.connection) && ![proxyId, otherId].includes(projR.provider.connection), 'neither project is on a test proxy')
   // The proxies appear in the open views once the store reloads its connection list.
   await page.reload()
-  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(30_000) })
 
   const pinnedM = await pinReviewer(M, proxyId)
   check(pinnedM?.connection === proxyId, 'picking the proxy in Runs on stores Role.connection', String(pinnedM?.connection))
   const chip = page.locator(`[data-testid=role-model-chip][data-connection="${proxyId}"]`)
-  await chip.waitFor({ timeout: 10_000 })
+  await chip.waitFor({ timeout: t(10_000) })
   check(((await chip.textContent()) ?? '').includes(PROXY), 'the node chip adds the provider ("Everyday · <proxy>")', (await chip.textContent()) ?? '')
   check(/^Runs on /.test((await chip.getAttribute('title')) ?? ''), 'the chip tooltip names the provider in full', (await chip.getAttribute('title')) ?? '')
   const sentence = (await page.locator('[data-testid=role-model-sentence]').innerText()).replace(/\s+/g, ' ')
@@ -135,45 +122,48 @@ try {
   const describedBy = await page.locator('[data-testid=role-runs-on]').getAttribute('aria-describedby')
   check(!!describedBy && (await page.locator(`[id="${describedBy}"]`).count()) === 1, 'Runs on keeps aria-describedby on the hint', String(describedBy))
   check((await page.locator('[data-testid=role-section-model] [data-testid=role-model-sentence]').count()) === 1, 'one Model and effort sentence')
-  // Keyboard: Runs on is a focusable native select. It sits in the "Choose an exact model" reveal, which RoleInspector opens
-  // by itself only while the role's connection is not connected (open={notConnected}). On macOS CI the select was "not
-  // visible" here and in the selectOption calls below, so the reveal had closed after selectReviewer opened it (a flip of
-  // that prop when the pinned proxy is connected would do it; not reproduced on Windows, where the log line below never
-  // appears). Open it again, as selectReviewer does, before touching the select; the log line says when that was needed.
-  await openRunsOn()
+  // Keyboard: Runs on is a focusable native select in the "Choose an exact model" reveal. The reveal opens by itself while
+  // the role's connection is not connected (CI) and used to fold away when pinning a connected provider flipped that rule
+  // (macOS CI: "not visible" below). It must now stay open under the person once opened, so nothing re-opens it here.
+  await revealStillOpen('after pinning a connected provider')
   await page.locator('[data-testid=role-runs-on]').focus()
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'role-runs-on'), 'Runs on takes keyboard focus')
   await shot('team-pinned')
 
   // Project default clears the pin, then pin again.
-  await openRunsOn()
+  await revealStillOpen('on the keyboard step')
   await page.locator('[data-testid=role-runs-on]').selectOption('')
   await sleep(900)
   const said = await page.evaluate(() => [...document.querySelectorAll('[role=status]')].map((e) => e.textContent).join(' | '))
   check(/Runs on the project default/.test(said), 'changing Runs on is announced through a polite status region', said.slice(0, 200))
   check((await findProject(page, M)).roles.find((r) => r.name === 'Reviewer')?.connection === undefined, '"Project default" clears Role.connection')
-  await openRunsOn()
+  await revealStillOpen('after "Project default" clears the pin')
   await page.locator('[data-testid=role-runs-on]').selectOption(proxyId)
   await sleep(900)
+  await revealStillOpen('after pinning the provider again')
 
   // The root has no Runs on; its Model section says where it runs.
   await page.locator('.react-flow__node', { hasText: 'Orchestrator' }).first().click()
-  await page.waitForFunction(() => !!document.querySelector('[data-testid=role-section-model]'), undefined, { timeout: 10_000 })
-  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-model-advanced]'); if (f) f.open = true })
+  await page.waitForFunction(() => !!document.querySelector('[data-testid=role-section-model]'), undefined, { timeout: t(10_000) })
+  // Another role opens its own reveal (a person clicks the summary when it starts closed).
+  await modelFold().waitFor({ state: 'attached', timeout: t(10_000) })
+  if (!(await modelFold().evaluate((d) => d.open))) await modelFold().locator('summary').first().click()
   const rootLine = page.locator('[data-testid=role-runs-on-root]')
-  await rootLine.waitFor({ timeout: 10_000 })
+  await rootLine.waitFor({ timeout: t(10_000) })
   check(/The orchestrator runs on the project's connection \(.+\); change it in Project settings > Connection\./.test((await rootLine.textContent()) ?? ''), 'the root role shows its one quiet "runs on" line', (await rootLine.textContent()) ?? '')
   check((await page.locator('[data-testid=role-runs-on]').count()) === 0, 'the root has no Runs on select')
 
   // --- Bridged run: the Reviewer runs as a bridged report on the proxy
   await projectTab(page, 'Live').click()
-  await page.locator('.new-run').waitFor({ timeout: 10_000 })
+  await page.locator('.new-run').waitFor({ timeout: t(10_000) })
   const ta = page.locator('.composer textarea')
   await ta.fill('Bridged check [mock:bridged]')
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: t(15_000) })
+  // The report folds into a done group 6 s after it ended; the tag is read from its node, so keep the node (a standing state).
+  await showFinishedAgents(page)
   const tag = page.locator(`.agent-node [data-testid=agent-connection][data-connection="${proxyId}"]`).first()
-  await tag.waitFor({ timeout: 30_000 }).catch(() => {})
+  await tag.waitFor({ timeout: t(30_000) }).catch(() => {})
   check((await tag.count()) === 1 && ((await tag.textContent()) ?? '').includes(PROXY), 'the bridged agent shows its provider tag on the canvas')
   check(((await tag.getAttribute('title')) ?? '').includes(PROXY), 'the agent tag title names the provider in full')
   const handleW = await tag.evaluate((t) => t.parentElement?.firstElementChild?.getBoundingClientRect().width ?? 0)
@@ -182,7 +172,7 @@ try {
   await page.waitForFunction(() => {
     const n = [...document.querySelectorAll('.agent-node')].find((e) => e.querySelector('[data-testid=agent-connection]'))
     return !!n && n.classList.contains('state-done')
-  }, undefined, { timeout: 30_000 }).catch(() => {})
+  }, undefined, { timeout: t(30_000) }).catch(() => {})
   check(/state-done/.test((await bridgedNode.getAttribute('class')) ?? ''), 'the bridged report finishes', (await bridgedNode.getAttribute('class')) ?? '')
   // The child's answer reaches the run record (the bridged agent's transcript and the root's delegate_agent result).
   let answered = false
@@ -195,7 +185,7 @@ try {
   // The side panel inspector of the bridged agent says where it runs.
   await bridgedNode.click()
   const meta = page.locator('[data-testid=agent-meta] [data-testid=agent-connection], .side-panel [data-testid=agent-connection]').first()
-  await meta.waitFor({ timeout: 5000 }).catch(() => {})
+  await meta.waitFor({ timeout: t(5000) }).catch(() => {})
   check((await meta.count()) === 1, 'the agent inspector names the provider')
   await shot('bridged-run')
   await endSession(page)
@@ -204,7 +194,7 @@ try {
   await projectTab(page, 'Settings').click()
   await page.getByRole('tab', { name: 'Basics', exact: true }).click()
   const rolesLine = page.locator('[data-testid=project-connection-roles-line]')
-  await rolesLine.waitFor({ timeout: 10_000 })
+  await rolesLine.waitFor({ timeout: t(10_000) })
   check(/1 runs on its own connection/.test((await rolesLine.textContent()) ?? ''), 'the roles line counts the pinned role', (await rolesLine.textContent()) ?? '')
   const note = page.locator('[data-testid=project-connection-bridged-note]')
   check((await note.count()) === 1 && /cannot be messaged/.test((await note.textContent()) ?? ''), 'the bridged limit note sits beside the roles line')
@@ -214,17 +204,17 @@ try {
   check(pinnedR?.connection === proxyId, 'Reviewer pinned on the real-adapter project')
   await projectTab(page, 'Settings').click()
   await page.getByRole('tab', { name: 'Basics', exact: true }).click()
-  await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
+  await page.waitForSelector('#settings-section-connection', { timeout: t(10_000) })
   await page.locator(`[data-testid=project-connection-option][data-id="${otherId}"]`).click()
   await page.getByRole('button', { name: 'Review changes', exact: true }).click()
   const dlg = page.locator('[data-testid=remap-preview]')
-  await dlg.waitFor({ timeout: 5000 })
+  await dlg.waitFor({ timeout: t(5000) })
   const kept = dlg.locator('[data-testid=remap-kept-role]')
   check((await dlg.locator('[data-testid=remap-kept]').count()) === 1 && /Reviewer stays on/.test((await kept.first().textContent()) ?? ''), 'the switch preview lists the pinned role under "Not changed (own connection)"', (await kept.first().textContent().catch(() => '')) ?? '')
   check(((await kept.first().textContent()) ?? '').includes(PROXY), 'the kept row names the role\'s own provider')
   await shot('remap-kept')
   await page.keyboard.press('Escape')
-  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  await dlg.waitFor({ state: 'hidden', timeout: t(5000) })
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 
   // --- Turn the pinned proxy off: the refusal shows before Start, Start stays enabled
@@ -244,16 +234,16 @@ try {
       await projectTab(page, 'Settings').click()
       await page.getByRole('tab', { name: 'Basics', exact: true }).click()
       const refusal = page.locator('[data-testid=project-start-refusal]')
-      await refusal.waitFor({ timeout: 10_000 }).catch(() => {})
+      await refusal.waitFor({ timeout: t(10_000) }).catch(() => {})
       const rt = (await refusal.textContent().catch(() => '')) ?? ''
       check(/Reviewer runs on/.test(rt) && rt.includes(PROXY), `Project settings shows the role's connection refusal at ${at}`, rt)
       await noOverflow(`Project settings ${at}`)
       await shot(`settings-${w}x${h}-${theme}`)
 
       await projectTab(page, 'Live').click()
-      await page.locator('.new-run').waitFor({ timeout: 10_000 })
+      await page.locator('.new-run').waitFor({ timeout: t(10_000) })
       const nr = page.locator('[data-testid=new-run-start-refusal]')
-      await nr.waitFor({ timeout: 10_000 }).catch(() => {})
+      await nr.waitFor({ timeout: t(10_000) }).catch(() => {})
       check(((await nr.textContent().catch(() => '')) ?? '').includes('Reviewer'), `New run shows the refusal before Start at ${at}`)
       // Start stays enabled once there is a prompt (the run's own refusal is the truth); nothing is started here.
       await page.locator('.composer textarea').fill('Not started')

@@ -1,5 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FileText, SearchX } from 'lucide-react'
 import type { Project, RunOutput } from '@shared/types'
 import { runName } from '@shared/view/runLabels'
 import { overlayOwnsEscape } from '../lib/outputToolbar'
@@ -8,6 +9,7 @@ import { OUTPUTS_SORT_OPTIONS, outputsSortKey, readSortMode, sortOutputs } from 
 import { Select } from '../components/ui/Select'
 import { EMPTY_OUTPUTS_FILTER, OUTPUTS_COUNT_ANNOUNCE_MS, OUTPUTS_PRODUCED_ANNOUNCE_MS, countLine, deletedText, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, newOutputIds, outputsViewKey, producedText, readViewMode, resolveOutputFocus, runOptions, selectedText, updatedText, updatedVersions } from '../lib/outputsList'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
+import { focusLaterUnlessMoved, mayRestoreFocus } from '../lib/laterFocus'
 import { SidePanel } from '../components/layout/SidePanel'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -31,9 +33,12 @@ const VIEW_OPTIONS: { value: OutputsViewMode; label: string }[] = [
   { value: 'grid', label: 'Grid' }
 ]
 
-/** Focus whatever `find` returns once the DOM has settled (two frames: React commit, then layout). */
+/**
+ * Focus whatever `find` returns once the DOM has settled (two frames: React commit, then layout), unless the person has
+ * moved focus on in the meantime (a busy window runs the frames late; lib/laterFocus.ts).
+ */
 function focusLater(find: () => HTMLElement | null | undefined): void {
-  requestAnimationFrame(() => requestAnimationFrame(() => find()?.focus()))
+  focusLaterUnlessMoved(find, 2)
 }
 
 const visible = (el: HTMLElement | null): el is HTMLElement => !!el && el.getClientRects().length > 0
@@ -172,7 +177,10 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     })
   }, [])
   const focusRow = useCallback((id: string | null): void => {
-    requestAnimationFrame(() => listRef.current?.focusRow(id))
+    const from = document.activeElement
+    requestAnimationFrame(() => {
+      if (mayRestoreFocus(from, document.activeElement, document.body)) listRef.current?.focusRow(id)
+    })
   }, [])
   useEffect(() => {
     if (!notice) return undefined
@@ -258,7 +266,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
   const leaveSelect = useCallback((focus: boolean): void => {
     setSelectMode(false)
     setChecked(new Set())
-    if (focus) requestAnimationFrame(() => selectToggle.current?.focus())
+    if (focus) focusLaterUnlessMoved(() => selectToggle.current)
   }, [])
   const onMainKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key !== 'Escape' || !selectMode || e.defaultPrevented) return
@@ -385,10 +393,11 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
         {!loaded ? (
           <p className="panel-note outputs-loading">Looking…</p>
         ) : empty ? (
-          <EmptyState compact testId="outputs-empty" title="No files yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
+          <EmptyState compact icon={FileText} testId="outputs-empty" title="No files yet." description="When agents produce documents, workbooks or diagrams, they appear here." />
         ) : noMatch ? (
           <EmptyState
             compact
+            icon={SearchX}
             testId="outputs-empty-filter"
             title="No files match."
             actions={

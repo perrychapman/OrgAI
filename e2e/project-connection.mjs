@@ -4,7 +4,7 @@
 // themes, no page scroll. Keyboard: the Select and the radio list.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, deleteProject, finish, gotoProjects, launch, makeFixtureRepo, openProjectForm, pickSetup, projectTab, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, checkRadio, cleanup, deleteProject, finish, gotoProjects, launch, makeFixtureRepo, openProjectForm, pickSetup, projectTab, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const A = 'E2E proxy project A (orgai test)'
@@ -28,8 +28,8 @@ const noOverflow = async (what) => {
 async function makeProject(name, dir) {
   await gotoProjects(page)
   const form = await openProjectForm(page)
-  await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-  await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+  await checkRadio(form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+  await checkRadio(form.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
   await form.locator('input[placeholder*="repo"]').fill(dir)
   await form.locator('input[placeholder*="Defaults to the folder name"]').fill(name)
   await pickSetup(form, true)

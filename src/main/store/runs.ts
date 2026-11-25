@@ -118,7 +118,7 @@ export function cleanRunHold(v: unknown): RunHold | undefined {
   if (v.budget !== undefined) {
     const b = v.budget
     if (!isPlainObject(b) || typeof b.scope !== 'string' || !HOLD_SCOPES.includes(b.scope) || !fin(b.limitUsd) || !fin(b.spentUsd) || !optFin(b.resetsAt)) return undefined
-    out.budget = { scope: b.scope as 'run', limitUsd: b.limitUsd, spentUsd: b.spentUsd, ...(b.resetsAt !== undefined ? { resetsAt: b.resetsAt as number } : {}) }
+    out.budget = { scope: b.scope as 'run', limitUsd: b.limitUsd, spentUsd: b.spentUsd, ...(b.resetsAt !== undefined ? { resetsAt: b.resetsAt as number } : {}), ...(b.unpriced === true ? { unpriced: true as const } : {}) }
   }
   if (v.provider !== undefined) {
     const p = v.provider

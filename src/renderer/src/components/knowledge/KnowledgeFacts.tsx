@@ -5,6 +5,7 @@ import type { KnowledgeFact, KnowledgeFactInput, KnowledgeNode } from '@shared/t
 import { KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_NODE_FACTS_MAX } from '@shared/types'
 import { factsInOrder } from '../../lib/knowledge'
 import { withFactRetired, withFactText, withNewFact, withoutFact } from '../../lib/knowledgeList'
+import { focusLaterUnlessMoved } from '../../lib/laterFocus'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
@@ -36,7 +37,7 @@ export function KnowledgeFacts({
   const full = node.facts.length >= KNOWLEDGE_NODE_FACTS_MAX
   /** Focus "Add a fact" (after a save, Esc or a removal that unmounted the focused row). */
   const focusAdd = (): void => {
-    requestAnimationFrame(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-fact-add]')?.focus())
+    focusLaterUnlessMoved(() => sectionRef.current?.querySelector<HTMLElement>('[data-testid=knowledge-fact-add]'))
   }
   return (
     <section ref={sectionRef} className="knowledge-section" aria-labelledby={`${uid}-h`} data-testid="knowledge-facts">
@@ -141,6 +142,7 @@ function FactRow({
           invalid={!!error}
           aria-describedby={error ? `${uid}-err` : undefined}
           autoComplete="off"
+          title={draft.length > 36 ? draft : undefined}
           data-testid="knowledge-fact-input"
           onChange={(v) => {
             setDraft(v)

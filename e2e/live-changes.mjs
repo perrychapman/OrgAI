@@ -8,7 +8,7 @@
 // and that nothing shows without a live run.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, createProject, finish, findProject, git, gotoProjects, launch, log, makeFixtureRepo, openProject, openProjectForm, openTeam, projectTab, sleep, teamPanelTab, writeFile } from './lib.mjs'
+import { TMP, check, checkRadio, cleanup, createProject, finish, findProject, git, gotoProjects, launch, log, makeFixtureRepo, openProject, openProjectForm, openTeam, projectTab, sleep, teamPanelTab, writeFile } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-live-changes-script-')), 'script.json')
@@ -432,8 +432,8 @@ try {
   {
     await gotoProjects(page)
     const form2 = await openProjectForm(page)
-    await form2.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
-    await form2.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+    await checkRadio(form2.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]'), 'the Code kind')
+    await checkRadio(form2.getByRole('radio', { name: 'Existing code', exact: true }), 'the Existing code choice')
     await form2.locator('input[placeholder*="repo"]').fill(repo2)
     await form2.locator('input[placeholder*="Defaults to the folder name"]').fill(NAME2)
     await page.locator('[data-testid=team-found]').waitFor({ timeout: 15_000 })

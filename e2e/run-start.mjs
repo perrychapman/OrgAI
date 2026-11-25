@@ -8,7 +8,7 @@
 //   1 defaults   2 pick model / effort / permission / goal then Start   3 a start refusal keeps the draft
 //   4 widening on the start page   5 mid-run narrowing   6 mid-run widening, confirm and cancel
 //   7 ended run: saved for the next message   8 mock markers   9 keyboard pass   V sizes x themes
-import { check, cleanup, finish, launch, log, makeFixtureRepo, openProject, projectTab, removeFixture, setReduceMotion, sleep } from './lib.mjs'
+import { check, cleanup, finish, launch, log, makeFixtureRepo, openProject, projectTab, removeFixture, setReduceMotion, sleep, t } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E run start (orgai test)'
@@ -41,7 +41,7 @@ const mainSize = async (w, h) => {
     const win = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().includes('#/run/'))
     win.setContentSize(cw, ch)
   }, [w, h])
-  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction((cw) => Math.abs(window.innerWidth - cw) <= 1, w, { timeout: t(10_000) }).catch(() => {})
   // The height may not be granted exactly (macOS): wait until it is stable across two reads instead.
   let last = -1
   for (let i = 0; i < 20; i++) {
@@ -64,14 +64,14 @@ const setTheme = (theme) =>
 /** Reload the renderer (the store re-reads projects), open the project's New run page. */
 async function reopen() {
   await page.reload()
-  await page.waitForSelector('.sidebar', { timeout: 60_000 })
+  await page.waitForSelector('.sidebar', { timeout: t(60_000) })
   await openProject(page, NAME)
   await projectTab(page, 'Live').click()
   if (!(await page.locator('.new-run').count())) await page.keyboard.press('Control+t')
-  await page.locator('.new-run').waitFor({ timeout: 10_000 })
-  await page.locator(START_ROW).waitFor({ timeout: 10_000 })
+  await page.locator('.new-run').waitFor({ timeout: t(10_000) })
+  await page.locator(START_ROW).waitFor({ timeout: t(10_000) })
   // The default model needs the project's connection catalog.
-  await page.waitForFunction(() => !/Project default/.test(document.querySelector('[data-testid=run-model-current]')?.textContent ?? ''), null, { timeout: 10_000 }).catch(() => {})
+  await page.waitForFunction(() => !/Project default/.test(document.querySelector('[data-testid=run-model-current]')?.textContent ?? ''), null, { timeout: t(10_000) }).catch(() => {})
 }
 
 const saveProject = (patch) =>
@@ -97,7 +97,7 @@ async function newestRunAfter(count) {
   return undefined
 }
 const waitStatus = (id, statuses, timeout = 25_000) =>
-  page.waitForFunction(async ({ id, statuses }) => statuses.includes((await window.orgai.runs.get(id))?.summary.status), { id, statuses }, { timeout, polling: 200 })
+  page.waitForFunction(async ({ id, statuses }) => statuses.includes((await window.orgai.runs.get(id))?.summary.status), { id, statuses }, { timeout: t(timeout), polling: 200 })
 const startViaApi = async (prompt, extra = {}) => {
   const run = await page.evaluate((a) => window.orgai.runs.start(a), { projectId: project.id, prompt, ...extra })
   await waitStatus(run.id, ['idle'])
@@ -115,7 +115,7 @@ async function openRunWindow(run, size) {
   }
   if (!view) throw new Error('Run window did not open')
   view.setDefaultTimeout(10_000)
-  await view.waitForSelector('.composer textarea', { timeout: 20_000 })
+  await view.waitForSelector('.composer textarea', { timeout: t(20_000) })
   if (size) {
     await app.evaluate(({ BrowserWindow }, { id, w, h }) => BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().includes(id))?.setContentSize(w, h), { id: run.id, w: size[0], h: size[1] })
     await sleep(300)
@@ -135,7 +135,7 @@ const activeTestId = (p) =>
     const el = document.activeElement
     return el?.getAttribute('data-testid') ?? (el?.tagName === 'TEXTAREA' ? 'TEXTAREA' : (el?.getAttribute('aria-label') ?? el?.tagName))
   })
-const text = async (p, sel) => ((await p.locator(sel).first().innerText({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+const text = async (p, sel) => ((await p.locator(sel).first().innerText({ timeout: t(5000) }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
 
 /**
  * Move keyboard focus to `selector` inside an open popover (a radio other than the one the Popover focused first),
@@ -158,7 +158,7 @@ async function pickStartModel(modelId, connection) {
   await page.locator(T('run-model-change')).click()
   await page.locator(T('run-model-picker')).waitFor({ state: 'visible' })
   const choice = page.locator(`${T('run-model-choice')}[value="${modelId}"][data-connection="${connection}"]`)
-  await choice.waitFor({ timeout: 15_000 })
+  await choice.waitFor({ timeout: t(15_000) })
   // The Popover is placed once; a catalog that loads after that can grow the panel past the window edge (see the V check).
   // Place it again so the rest of the flow can reach "Use this model".
   await page.evaluate(() => window.dispatchEvent(new Event('resize')))
@@ -241,18 +241,18 @@ try {
     await page.getByRole('button', { name: 'Keep current mode', exact: true }).click()
     await page.locator(T('run-permission-confirm')).waitFor({ state: 'hidden' })
     check((await text(page, T('run-permission-current'))) === MODE_NAME.default, '4 "Keep current mode" keeps the old mode', await text(page, T('run-permission-current')))
-    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'run-permission-change', null, { timeout: 3000 }).catch(() => {})
+    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'run-permission-change', null, { timeout: t(3000) }).catch(() => {})
     check((await activeTestId(page)) === 'run-permission-change', '4 focus returns to the permission chip after Keep current mode', await activeTestId(page))
     await chooseMode(page, 'bypassPermissions')
     await page.locator(T('run-permission-confirm')).click()
-    await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-current]')?.textContent === 'Skip all checks', null, { timeout: 5000 }).catch(() => {})
+    await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-current]')?.textContent === 'Skip all checks', null, { timeout: t(5000) }).catch(() => {})
     check((await text(page, T('run-permission-current'))) === MODE_NAME.bypassPermissions, '4 confirming sets Bypass', await text(page, T('run-permission-current')))
     const chip = page.locator(T('run-permission-change'))
     check((await chip.getAttribute('data-tone')) === 'danger' && (await chip.getAttribute('data-default')) === 'false', '4 Bypass shows data-tone=danger (not the warning amber) and data-default=false')
     await shot('widen-bypass')
     // Back to the project's mode: that is the default again and is not a widening.
     await chooseMode(page, 'default')
-    await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-change]')?.getAttribute('data-default') === 'true', null, { timeout: 5000 }).catch(() => {})
+    await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-change]')?.getAttribute('data-default') === 'true', null, { timeout: t(5000) }).catch(() => {})
     check((await chip.getAttribute('data-default')) === 'true' && (await chip.getAttribute('data-tone')) === null, '4 choosing the project mode again is the default without a confirmation')
   })
 
@@ -296,7 +296,7 @@ try {
     check((await page.locator('.composer .btn.primary').count()) === 1 && (await page.locator(`.composer ${T('new-run-who')} ${T('new-run-start')}`).count()) === 1, 'W there is one Start and it is the aside one, inside .composer')
     check(/^Start run/.test(await text(page, T('new-run-start'))), 'W the Start reads "Start run"', await text(page, T('new-run-start')))
     check((await page.locator(T('new-run-start')).isDisabled()), 'W Start is off with an empty draft')
-    await page.waitForFunction(() => document.querySelector('[data-testid=new-run-estimate]')?.getAttribute('data-state') !== 'loading', null, { timeout: 10_000 }).catch(() => {})
+    await page.waitForFunction(() => document.querySelector('[data-testid=new-run-estimate]')?.getAttribute('data-state') !== 'loading', null, { timeout: t(10_000) }).catch(() => {})
     const cost = await text(page, T('new-run-estimate-cost'))
     const time = await text(page, T('new-run-estimate-time'))
     check(cost === 'Unknown' || /^(about )?\$[\d.]+( to \$[\d.]+)?$/.test(cost), 'W the cost is Unknown or a real range, never invented', cost)
@@ -319,7 +319,7 @@ try {
       await limit.fill(String(info.cap + 1))
       check((await page.locator(T('new-run-limit-error')).count()) === 1, 'W a limit above the project limit shows its reason')
       await page.locator(T('new-run-start')).click()
-      await page.locator(T('composer-error')).waitFor({ state: 'visible', timeout: 5000 })
+      await page.locator(T('composer-error')).waitFor({ state: 'visible', timeout: t(5000) })
       check((await runsOf()).length === before && (await page.locator('.composer textarea').inputValue()) === text1, 'W a refused limit sends nothing and keeps the draft')
     }
     await limit.fill('0')
@@ -381,7 +381,7 @@ try {
           await page.locator(T(trigger)).click()
           await page.locator(T(picker)).waitFor({ state: 'visible' })
           // Measure the panel with its content: the model list loads after the panel opens.
-          await page.locator(`${T(picker)} input[type=radio]`).first().waitFor({ timeout: 15_000 })
+          await page.locator(`${T(picker)} input[type=radio]`).first().waitFor({ timeout: t(15_000) })
           await sleep(300)
           const box = await page.locator(T(picker)).boundingBox()
           const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
@@ -448,7 +448,7 @@ try {
     check(JSON.stringify(rec.transcript).includes('Mock root model: claude-sonnet-5-5'), '2 the mock root ran on the picked model', JSON.stringify(rec.transcript.map((t) => t.block?.text).filter(Boolean)).slice(0, 200))
 
     // The live row (the same page, now showing the run).
-    await page.locator(T('run-meta')).waitFor({ timeout: 15_000 })
+    await page.locator(T('run-meta')).waitFor({ timeout: t(15_000) })
     await sleep(500)
     check((await page.locator(LIVE_ROW).count()) === 1, '2 (live row) the live composer has the settings row')
     check(((await page.locator(T('live-model-change')).getAttribute('title').catch(() => '')) ?? '').includes('claude-sonnet-5-5'), '2 (live row) the live model chip shows the picked model')
@@ -480,7 +480,7 @@ try {
     const removed = await page.evaluate((id) => window.orgai.connections.removeProxy(id).then(() => 'ok', (e) => String(e.message ?? e)), gatewayB)
     check(removed === 'ok', '3 the spare gateway was removed so main will refuse its model', removed)
     await page.locator('.composer .btn.primary').click()
-    await page.locator(T('composer-error')).waitFor({ state: 'visible', timeout: 10_000 })
+    await page.locator(T('composer-error')).waitFor({ state: 'visible', timeout: t(10_000) })
     const err = await text(page, T('composer-error'))
     check(err.length > 0 && /model|connection/i.test(err), '3 composer-error shows main\'s refusal', err)
     check((await page.locator('.composer textarea').inputValue()) === draft, '3 the textarea keeps the draft')
@@ -523,7 +523,7 @@ try {
       // The shared Popover moves focus into the panel on the very first open too: to the checked radio when there is one
       // (permission: the project's mode), else the first control (effort / goal with nothing checked: the first radio;
       // the model picker keeps focusing its search box).
-      await page.waitForFunction((p) => !!document.querySelector(`[data-testid=${p}]`)?.contains(document.activeElement), picker, { timeout: 3000 }).catch(() => {})
+      await page.waitForFunction((p) => !!document.querySelector(`[data-testid=${p}]`)?.contains(document.activeElement), picker, { timeout: t(3000) }).catch(() => {})
       const where = await page.evaluate((p) => {
         const panel = document.querySelector(`[data-testid=${p}]`)
         const el = document.activeElement
@@ -542,7 +542,7 @@ try {
     const run = await newestRunAfter(before)
     check(!!run, '9 Enter in the textarea starts the run')
     if (run) {
-      await page.locator(T('run-meta')).waitFor({ timeout: 15_000 })
+      await page.locator(T('run-meta')).waitFor({ timeout: t(15_000) })
       await sleep(600)
       const focus = await page.evaluate(() => {
         const el = document.activeElement
@@ -563,11 +563,11 @@ try {
   await section('mid-run-narrowing', async () => {
     const run = await startViaApi(`${IDLE_MARK} narrowing`)
     const v = await openRunWindow(run, [1024, 640])
-    await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ timeout: t(10_000) })
     check(true, '5 (live row) the live composer has the settings row')
     check((await text(v, T('run-permission-current'))) === MODE_NAME.default, '5 (live row) the live chip starts at the project mode', await text(v, T('run-permission-current')))
     await chooseMode(v, 'plan')
-    await v.waitForFunction(() => /Permission mode is now Plan only\./.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+    await v.waitForFunction(() => /Permission mode is now Plan only\./.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: t(8000) }).catch(() => {})
     check((await text(v, T('run-permission-note'))) === 'Permission mode is now Plan only.' || (await text(v, T('run-permission-note'))).startsWith('Permission mode is now Plan only.'), '5 (merged mock) run-permission-note says "Permission mode is now Plan only."', await text(v, T('run-permission-note')))
     const rec = await getRun(run.id)
     check(rec.summary.permissionMode === 'plan' && rec.summary.permissionModeChosen === true, '5 (merged mock) runs.get permissionMode is plan', `${rec.summary.permissionMode}`)
@@ -585,7 +585,7 @@ try {
   await section('mid-run-widening', async () => {
     const run = await startViaApi(`${IDLE_MARK} widening`)
     const v = await openRunWindow(run)
-    await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ timeout: t(10_000) })
     await chooseMode(v, 'acceptEdits')
     await v.locator(T('run-permission-confirm')).waitFor({ state: 'visible' })
     check(true, '6 (live row) widening a live run asks for confirmation')
@@ -598,7 +598,7 @@ try {
     await chooseMode(v, 'acceptEdits')
     await v.locator(T('run-permission-confirm')).click()
     const acceptNote = `Permission mode is now ${MODE_NAME.acceptEdits}.`
-    await v.waitForFunction((want) => (document.querySelector('[data-testid=run-permission-note]')?.textContent ?? '').includes(want), acceptNote, { timeout: 8000 }).catch(() => {})
+    await v.waitForFunction((want) => (document.querySelector('[data-testid=run-permission-note]')?.textContent ?? '').includes(want), acceptNote, { timeout: t(8000) }).catch(() => {})
     check((await text(v, T('run-permission-note'))).startsWith(acceptNote), '6 (merged mock) confirming applies the wider mode', await text(v, T('run-permission-note')))
     check((await getRun(run.id)).summary.permissionMode === 'acceptEdits', '6 (merged mock) runs.get permissionMode is acceptEdits')
     check((await v.locator(T('run-permission-change')).getAttribute('data-tone')) === 'warning', '6 (merged mock) a permissive live mode shows data-tone=warning')
@@ -611,10 +611,10 @@ try {
     await page.evaluate((id) => window.orgai.runs.stop(id), run.id)
     await waitStatus(run.id, ['finished'])
     const v = await openRunWindow(run)
-    await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ timeout: t(10_000) })
     check(!/Next message:/.test(await text(v, T('run-permission-change'))), '7 (live row) an ended run with no pending choice shows its mode without a "Next message:" prefix', await text(v, T('run-permission-change')))
     await chooseMode(v, 'plan')
-    await v.waitForFunction(() => /applies from your next message/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+    await v.waitForFunction(() => /applies from your next message/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: t(8000) }).catch(() => {})
     check((await text(v, T('run-permission-note'))).includes('Plan only applies from your next message.'), '7 (live row) run-permission-note says "Plan only applies from your next message."', await text(v, T('run-permission-note')))
     check(/^Permission:\s*Next message:/.test(await text(v, T('run-permission-change'))) &&(await text(v, T('run-permission-current'))) === MODE_NAME.plan, '7 (live row) a saved choice reads "Permission: Next message: Plan only"', await text(v, T('run-permission-change')))
     const rec = await getRun(run.id)
@@ -622,7 +622,7 @@ try {
     // The next message carries it.
     await v.locator('.composer textarea').fill(`${IDLE_MARK} continue in plan mode`)
     await v.locator('.composer textarea').press('Enter')
-    await page.waitForFunction(async (id) => (await window.orgai.runs.listLive()).some((r) => r.resumedFrom === id), run.id, { timeout: 20_000 }).catch(() => {})
+    await page.waitForFunction(async (id) => (await window.orgai.runs.listLive()).some((r) => r.resumedFrom === id), run.id, { timeout: t(20_000) }).catch(() => {})
     const successor = await page.evaluate(async (id) => (await window.orgai.runs.listLive()).find((r) => r.resumedFrom === id), run.id)
     check(successor?.permissionMode === 'plan' && successor?.permissionModeChosen === true, '7 the continuation starts in the saved mode', JSON.stringify({ m: successor?.permissionMode, c: successor?.permissionModeChosen }))
     if (successor) await page.evaluate((id) => window.orgai.runs.stop(id), successor.id)
@@ -632,11 +632,11 @@ try {
   await section('mock-markers', async () => {
     const refuse = await startViaApi(`[mock:mode-refuse] ${IDLE_MARK}`)
     let v = await openRunWindow(refuse)
-    await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ timeout: t(10_000) })
     await chooseMode(v, 'plan')
     // A provider refusal arrives either thrown (run-permission-error) or as a refused result (run-permission-note).
     const refusalSel = `${T('run-permission-error')}, ${T('run-permission-note')}`
-    await v.locator(refusalSel).first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {})
+    await v.locator(refusalSel).first().waitFor({ state: 'visible', timeout: t(8000) }).catch(() => {})
     const refusal = await text(v, refusalSel)
     check(refusal.includes('This provider applies a new permission mode from the next session.') || refusal.includes('The session could not change its permission mode now.'), "8 (merged mock) [mock:mode-refuse] shows main's refusal (the mock's sentence or the fixed one) in run-permission-error", refusal)
     check((await text(v, T('run-permission-current'))) === MODE_NAME.default && (await getRun(refuse.id)).summary.permissionMode === 'default', '8 (merged mock) a refused change keeps the old mode on the chip and in runs.get')
@@ -645,9 +645,9 @@ try {
 
     const unchanged = await startViaApi(`[mock:mode-reports-unchanged] ${IDLE_MARK}`)
     v = await openRunWindow(unchanged)
-    await v.locator(LIVE_ROW).waitFor({ timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ timeout: t(10_000) })
     await chooseMode(v, 'plan')
-    await v.waitForFunction(() => /keeps? the earlier mode until (they|it) finish/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+    await v.waitForFunction(() => /keeps? the earlier mode until (they|it) finish/.test(document.querySelector('[data-testid=run-permission-note]')?.textContent ?? ''), null, { timeout: t(8000) }).catch(() => {})
     check(/keeps? the earlier mode until (they|it) finish/.test(await text(v, T('run-permission-note'))),'8 (merged mock) [mock:mode-reports-unchanged] says running reports keep the earlier mode', await text(v, T('run-permission-note')))
     await page.evaluate((id) => window.orgai.runs.stop(id), unchanged.id)
   })
@@ -667,7 +667,7 @@ try {
       b.click()
       b.click()
     })
-    await page.locator(T('run-permission-confirm')).waitFor({ state: 'visible', timeout: 5000 })
+    await page.locator(T('run-permission-confirm')).waitFor({ state: 'visible', timeout: t(5000) })
     await sleep(300)
     check((await page.locator(T('run-permission-confirm')).count()) === 1 && (await page.locator('dialog[open], [role=dialog][aria-modal=true]').count()) <= 1, '10 a double click on "Use this mode" opens one confirmation', String(await page.locator(T('run-permission-confirm')).count()))
     await page.getByRole('button', { name: 'Keep current mode', exact: true }).click()
@@ -679,7 +679,7 @@ try {
     await waitStatus(ended.id, ['finished'])
     const ev = await openRunWindow(ended)
     // The permission chip never folds into the "more" menu: it is visible (icon at least) at the run window's default width.
-    await ev.locator(T('run-meta-permission')).waitFor({ state: 'visible', timeout: 10_000 })
+    await ev.locator(T('run-meta-permission')).waitFor({ state: 'visible', timeout: t(10_000) })
     check(/^Next message:\s*Plan only/.test(await text(ev, T('run-meta-permission'))) && (await ev.locator(T('run-meta-permission')).getAttribute('data-next')) === 'true', '10 an ended run\'s RunMeta reads "Next message: Plan only", like the chip', await text(ev, T('run-meta-permission')))
 
     await page.evaluate((id) => window.orgai.runs.stop(id), ended.id).catch(() => {})
@@ -717,13 +717,13 @@ try {
     // Fresh profile, smallest window, rail sidebar (run view about 968 px): the dock is open.
     await page.evaluate((k) => { localStorage.removeItem(k); localStorage.removeItem('orgai.sidebar') }, KEY)
     let v = await openRunWindow(run, [1024, 640])
-    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: t(10_000) })
     expectShown(await info(v), 'run window 1024x640')
     await v.screenshot({ path: 'e2e/shots/run-start-dock-default-1024.png' })
     // The sidebar expanded leaves the run view under 900 px: the rail layout, composer under the canvas.
     await page.evaluate(() => localStorage.setItem('orgai.sidebar', 'expanded'))
     v = await openRunWindow(run, [1024, 640])
-    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: t(10_000) })
     const narrow = await info(v)
     check(narrow.bodyW < 900 && narrow.dock === 'rail', '11 a run view under 900 px with no saved choice is the rail layout', JSON.stringify(narrow))
     expectShown(narrow, 'run window with the sidebar expanded')
@@ -733,7 +733,7 @@ try {
     await page.evaluate(() => localStorage.removeItem('orgai.sidebar'))
     // Explicit Hide (the default wide case): hidden, the Conversation button restores, the choice survives a reload.
     v = await openRunWindow(run, [1600, 1000])
-    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 10_000 })
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: t(10_000) })
     expectShown(await info(v), 'run window 1600x1000')
     await v.getByRole('button', { name: /^Hide run panel/ }).click()
     await sleep(700)
@@ -741,12 +741,12 @@ try {
     check(h.dock === 'hidden' && !h.textarea && !h.row && h.button, '11 an explicit Hide hides the composer and the settings row and shows the Conversation button', JSON.stringify(h))
     check((await activeTestId(v)) === 'dock-show', '11 Hide moves focus to the Conversation button', await activeTestId(v))
     await v.reload()
-    await v.waitForSelector('.run-body', { timeout: 20_000 })
+    await v.waitForSelector('.run-body', { timeout: t(20_000) })
     await sleep(800)
     h = await info(v)
     check(h.dock === 'hidden' && !h.textarea && h.button, '11 the hidden choice survives a reload', JSON.stringify(h))
     await v.locator(T('dock-show')).click()
-    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: 5000 })
+    await v.locator(LIVE_ROW).waitFor({ state: 'visible', timeout: t(5000) })
     expectShown(await info(v), 'after the Conversation button')
     await page.evaluate((k) => localStorage.removeItem(k), KEY)
     await page.evaluate((id) => window.orgai.runs.stop(id), run.id)

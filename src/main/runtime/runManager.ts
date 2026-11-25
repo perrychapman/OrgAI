@@ -734,6 +734,9 @@ export const PROVIDER_RETRY_ATTEMPT_MAX = 1000
 
 export const SKIP_REVIEW_TEXT ='The user chose to skip review for the current change. Go ahead without the review step.'
 
+/** runActions.addBudget refused for a budget hold on an unknown price: more budget would only buy spend nothing can count. */
+const UNPRICED_ADD_BUDGET_REFUSAL = 'This run stopped because part of it has no known price, so adding to its limit would not help. Set a price for that model in Settings, or switch the model, then continue it from the run page.'
+
 /**
  * How long one peer delivery may wait on the recipient session's receive(). A receive that never settles would
  * otherwise stall the run's flush chain: the sender's message_run and every later peer message to that run.
@@ -3561,6 +3564,13 @@ export class RunManager {
       if (model) {
         const message = `Model ${logText(model)} has no known price, so the budget cannot be enforced; the run ends.`
         log.warn(`Run ${runId}: ${message}`)
+        // A desktop run (not exec) waits on the user: the hold says the price is unknown, with the known part of the spend.
+        if (!a.summary.overrides?.execMode) {
+          const known = this.spendOf(a).usd
+          const total = a.summary.conversationBudgetUsd
+          if (total !== undefined) this.setBudgetHold(a, 'conversation', total, this.priorChainUsd(a) + known, true)
+          else this.setBudgetHold(a, 'run', budget, known, true)
+        }
         a.emit({ type: 'log', runId, level: 'warn', message })
         void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
         return
@@ -6002,6 +6012,9 @@ export class RunManager {
     if (!from) throw new Error('Run not found')
     if (LIVE_STATUSES.has(from.status)) throw new Error('This run is still working. You can add budget once it has stopped.')
     if (from.hold?.kind !== 'budget') throw new Error('This run did not stop on its spending limit, so there is nothing to add to.')
+    // A stop on an unknown price is not a limit that was used up: more budget cannot be counted either, so it is never accepted
+    // (the hold's actions leave it out as well; main does not trust the list the renderer saw).
+    if (from.hold.budget?.unpriced === true) throw new Error(UNPRICED_ADD_BUDGET_REFUSAL)
     const addUsd: unknown = input.addUsd
     return this.withResumeLease(async () => {
       const project = await this.continueProject(from)
@@ -6247,7 +6260,7 @@ export class RunManager {
   private holdFacts(s: RunSummary): HoldFacts {
     const quickLike = !!s.quick || !!s.buildWorkspace
     const spend = this.spendNow(this.liveCapProject(s.projectId, quickLike, this.runs.get(s.id)?.liveProject?.()))
-    return { live: isOpenStatus(s.status), paused: s.status === 'paused', continuable: !!(s.sessionId || s.modelSelection), capReached: !!spend && capsReached(spend).length > 0 }
+    return { live: isOpenStatus(s.status), paused: s.status === 'paused', continuable: !!(s.sessionId || s.modelSelection), capReached: !!spend && capsReached(spend).length > 0, ...(s.hold?.kind === 'budget' && s.hold.budget?.unpriced === true ? { unpriced: true } : {}) }
   }
 
   /** Store and broadcast a hold (unchanged holds send nothing; the same kind keeps when it began). */
@@ -6337,8 +6350,8 @@ export class RunManager {
     if (actions.join() !== cur.actions.join()) this.setHold(a, { ...cur, actions })
   }
 
-  private setBudgetHold(a: ActiveRun, scope: 'run' | 'conversation', limitUsd: number, spentUsd: number): void {
-    this.setHold(a, budgetHold({ scope, limitUsd, spentUsd, since: Date.now(), facts: this.holdFacts(a.summary) }))
+  private setBudgetHold(a: ActiveRun, scope: 'run' | 'conversation', limitUsd: number, spentUsd: number, unpriced = false): void {
+    this.setHold(a, budgetHold({ scope, limitUsd, spentUsd, since: Date.now(), facts: this.holdFacts(a.summary), ...(unpriced ? { unpriced: true } : {}) }))
   }
 
   /** The blocked plan (and the failed agent behind it) as a hold; cleared when the plan is no longer blocked. */
@@ -6474,7 +6487,7 @@ export class RunManager {
     // the SDK, so an unpriced one still stops the run.
     const unknownOwn = (s.usage?.costSource === 'unknown' || s.usage?.costPartial) && !firstPartyClaude
     if (ownCap !== undefined && (unknownOwn || spent.unknown) && !s.overrides?.allowUnpricedBudget) {
-      this.setBudgetHold(a, 'run', ownCap, cost)
+      this.setBudgetHold(a, 'run', ownCap, cost, true)
       a.spendStopped = true
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: `Part of this run has no known price, so its spending limit (${money(ownCap)}) cannot be enforced and the run stopped. Set a model price in Settings, or remove the limit.` })
       void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
@@ -6526,10 +6539,39 @@ export class RunManager {
     return { tests, ...(detail ? { testDetail: detail } : {}), review }
   }
 
+  /**
+   * Why `send` cannot reach a run, in OrgAI's words: still opening, ended (with the reason of the hold it ended on, e.g. a
+   * spending limit) or unknown. A run held on its spending limit has ended its session, so a message is refused; the user
+   * continues it from the run page (which can add budget).
+   */
+  private notActiveText(runId: string, opening: boolean): string {
+    if (opening) return 'This run is still starting. Send your message again in a moment.'
+    const s = this.summary(runId)
+    if (!s) return 'Run is not active'
+    const hold = s.hold
+    if (!hold) return 'This run has ended, so it cannot take a message. Continue it from the run page.'
+    // The tail is chosen by what the hold really offers (holdOf's actions, worked out now), never by a stored list.
+    const actions = this.holdOf(runId)?.actions ?? hold.actions
+    // A paused run (the provider's usage limit, or a spending limit that pauses): it waits for its reset, it did not "end".
+    if (s.status === 'paused' && (hold.kind === 'usage-limit' || hold.kind === 'spend-limit')) {
+      return `${hold.reason} It cannot take a message while it is paused. ${actions.includes('resume') ? 'Resume it from the run page.' : 'Continue it from the run page.'}`
+    }
+    let tail = 'Continue it from the run page.'
+    if (hold.kind === 'budget' && hold.budget?.unpriced === true) tail = 'Set a price for that model in Settings, or switch the model, then continue it from the run page.'
+    else if (actions.includes('addBudget')) tail = 'Add budget or continue it from the run page.'
+    return `${hold.reason} The run has ended, so it cannot take a message. ${tail}`
+  }
+
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     this.refuseWhileQuitting()
     const active = this.runs.get(runId)
-    if (!active?.session) throw new Error('Run is not active')
+    // "Still starting" only while the run really is opening: a run that is finalizing without a session (a pre-launch budget
+    // refusal waiting on its title, say) is ending, not starting.
+    if (!active?.session) throw new Error(this.notActiveText(runId, !!active && (!!active.opening || (active.summary.status === 'starting' && !active.finalizing))))
+    // Between a stop (a spending limit, the user's End session, the finalizer) and the session's end the session still exists,
+    // but it is being stopped: a message must not reach it. An interrupt is not a stop (it sets none of these), so a send after
+    // an interrupt still goes through, as does the send that lifts a usage-limit pause (the session is open and no stop began).
+    if (active.spendStopped || active.finalizing || active.userStopped || active.summary.status === 'stopping') throw new Error(this.notActiveText(runId, false))
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(text, images)) throw new Error('Nothing to send')
     active.emit({ type: 'run.status', runId, status: 'running' })
