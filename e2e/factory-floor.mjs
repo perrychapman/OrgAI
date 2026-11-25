@@ -236,7 +236,10 @@ const startLiveRun = async (prompt, metaTimeout = 60_000) => {
   const ta = page.locator('.composer textarea')
   await ta.waitFor({ timeout: t(10_000) })
   await ta.fill(prompt)
-  await page.locator('.composer .btn.primary').click()
+  // noWaitAfter: Playwright's post-click "waiting for scheduled navigations to finish" needs the renderer to answer, and a run
+  // that staffs 122 agents keeps it busy for minutes. CI windows-latest 2026-11-25 (run 45573883463) logged "click action
+  // done", then waited the click's whole 90 s and failed with the run starting; the header poll below is the real wait.
+  await page.locator('.composer .btn.primary').click({ noWaitAfter: true, timeout: t(metaTimeout) })
   const metaFrom = Date.now()
   // The ready state is the run header MOUNTED for the new run (the composer is gone and a run-meta is in the DOM), read by
   // interval polling inside the page. It used to be Playwright's "visible" wait on run-meta, which (a) polls with
