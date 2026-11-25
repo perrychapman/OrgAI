@@ -453,7 +453,9 @@ async function findWalk(label, st) {
   await findBtn.click()
   await input.waitFor({ timeout: t(5000) })
   await page.keyboard.press('Escape')
-  await sleep(300)
+  // The panel stays mounted (inert) for one exit duration; on a starved renderer (CI, Windows 2026-11-25 run 45610059017)
+  // that outlasted a fixed 300 ms, so wait for the input to leave the DOM instead.
+  await input.waitFor({ state: 'detached', timeout: t(5000) }).catch(() => {})
   check((await input.count()) === 0, `${label}: Escape closes Find`)
   check(await page.evaluate(() => document.activeElement?.closest('[data-testid=factory-find]') !== null || document.activeElement?.matches('[data-testid=factory-find]')), `${label}: Escape returns focus to Find`)
 }
