@@ -19,6 +19,8 @@ export interface HoldFacts {
   continuable: boolean
   /** A daily or monthly cap of the project is reached now (a continuation would be refused). */
   capReached: boolean
+  /** The hold is a budget stop on an unknown price: raising the limit cannot help, so 'addBudget' is never offered. */
+  unpriced?: boolean
 }
 
 /** Kinds that belong to a live run (the user answers the run itself, the session stays open). */
@@ -29,6 +31,7 @@ export function isLiveHoldKind(kind: RunHoldKind): boolean {
 /**
  * The actions main accepts for a hold of `kind` right now. Only what the run can really do:
  * - 'addBudget' and 'retry' need an ended run that can continue and no cap in the way (continueRun refuses otherwise);
+ *   'addBudget' is also never offered for a budget hold on an unknown price (`facts.unpriced`);
  * - 'resume' only a paused run; 'switchModel' is always saved for the next continuation (never for a live run's hold);
  * - 'end' only while the session is open.
  */
@@ -37,7 +40,8 @@ export function holdActionsFor(kind: RunHoldKind, f: HoldFacts): RunHoldAction[]
   const canContinue = !f.live && f.continuable && !f.capReached
   switch (kind) {
     case 'budget':
-      if (canContinue) out.push('addBudget')
+      // An unpriced stop is not a limit that was used up: more budget would only buy uncounted spend (see budgetHold).
+      if (canContinue && !f.unpriced) out.push('addBudget')
       if (!f.live) out.push('switchModel')
       break
     case 'spend-limit':
@@ -81,7 +85,7 @@ export function budgetHold(input: { scope: 'run' | 'conversation'; limitUsd: num
       ? `The run stopped because part of it used a model with no known price, so its cost cannot be counted against ${what} (${money(input.limitUsd)}). Set a price for that model in Settings, or remove the limit.`
       : `The run stopped because it used all of ${what} (${money(input.limitUsd)}).`,
     budget: { scope: input.scope, limitUsd: input.limitUsd, spentUsd: input.spentUsd, ...(unpriced ? { unpriced: true as const } : {}) },
-    actions: holdActionsFor('budget', input.facts)
+    actions: holdActionsFor('budget', { ...input.facts, unpriced })
   }
 }
 

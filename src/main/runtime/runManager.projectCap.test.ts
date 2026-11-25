@@ -32,28 +32,40 @@ const CATALOG: ProviderModel[] = [
   { id: 'unpriced-model', label: 'Unknown', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }
 ]
 
-function recorder(id: ProviderId) {
+/** `slow`: stop() waits for release() before the session ends (the window between a stop and `finished`); `sent` records every message the session got. */
+function recorder(id: ProviderId, slow = false) {
   const ctxs: RuntimeContext[] = []
+  const sent: string[] = []
   let end = (): void => {}
+  let open = (): void => {}
+  const gate = new Promise<void>((r) => (open = r))
   const adapter: RuntimeAdapter = {
     id,
     complete: async () => '',
     start: async (ctx) => {
       ctxs.push(ctx)
       ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
-      const session: RuntimeSession = { send: async () => {}, interrupt: async () => {}, stop: async () => end(), finished: new Promise<void>((r) => (end = r)) }
+      const session: RuntimeSession = {
+        send: async (text) => void sent.push(text),
+        interrupt: async () => {},
+        stop: async () => {
+          if (slow) await gate
+          end()
+        },
+        finished: new Promise<void>((r) => (end = r))
+      }
       return session
     }
   }
-  return { adapter, ctxs }
+  return { adapter, ctxs, sent, release: () => open() }
 }
 
-function rig(adapter: ProviderId, extra: RunManagerOptions = {}) {
-  const rec = recorder(adapter)
+function rig(adapter: ProviderId, extra: RunManagerOptions = {}, slow = false) {
+  const rec = recorder(adapter, slow)
   const setup = { applyProposal: vi.fn(), markScaffolded: vi.fn(), markArchitectureUpdated: vi.fn(), hiddenContext: vi.fn(() => ''), complete: vi.fn(), prepare: vi.fn(async (x: Project) => x) } as unknown as SetupService
   const own = events
   const m = new RunManager({ [adapter]: rec.adapter }, (e) => void own.push(e), new RunStore(join(dir, 'data')), setup, () => 100, { dataDir: join(dir, 'data'), catalog: () => CATALOG, ...extra })
-  return { m, ctx: () => rec.ctxs.at(-1)! }
+  return { m, ctx: () => rec.ctxs.at(-1)!, sent: rec.sent, release: rec.release }
 }
 
 /** A one-role project on the given model; `cap` is Project.maxBudgetUsd. */
@@ -443,6 +455,27 @@ describe('rules that must keep holding', () => {
   })
 })
 
+describe('L5: a desktop conversation-budget run that meets an unpriced model holds on it', () => {
+  it('sets the unpriced budget hold (known part of the chain spend, switchModel only) and ends the run with no exec outcome', async () => {
+    const { m, ctx } = rig('codex')
+    const p = team('gpt-5', 10)
+    const store = (m as unknown as { store: RunStore }).store
+    store.upsert({ id: 'prev', projectId: p.id, kind: 'work', prompt: 'x', status: 'error', startedAt: 1, totalCostUsd: 3, connection: 'anthropic', modelSelection: { model: 'gpt-5', connection: 'openai' } } as never)
+    const run = await m.continueRun(p, 'prev', 'Recover')
+    expect(m.summary(run.id)?.conversationBudgetUsd).toBe(10)
+    spend(ctx(), rootUsing('gpt-5', 0.5, [{ model: 'unexpected-unpriced-model' }]))
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+    const hold = m.summary(run.id)?.hold
+    expect(hold).toMatchObject({ kind: 'budget', budget: { scope: 'conversation', limitUsd: 10, unpriced: true }, actions: ['switchModel'] })
+    expect(hold?.budget?.spentUsd).toBeCloseTo(3.5, 6)
+    expect(hold?.reason).toContain("this conversation's spending limit ($10.00)")
+    expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+    expect(events.some((e) => e.type === 'run.finalized' && e.runId === run.id)).toBe(false)
+    expect(holdsOf(run.id)).toHaveLength(1)
+    await m.stopAll()
+  })
+})
+
 // An unpriced model under a cap stops the run (the documented rule); the hold must say that, not "used all of" the limit, and a
 // message to the ended run must be refused in words instead of a bare "Run is not active".
 describe('a run stopped on an unknown price says so, and a message to it is refused clearly', () => {
@@ -461,7 +494,9 @@ describe('a run stopped on an unknown price says so, and a message to it is refu
     const hold = m.summary(run.id)?.hold
     expect(hold).toMatchObject({ kind: 'budget', reason: UNPRICED_REASON, budget: { scope: 'run', limitUsd: 2.5, unpriced: true } })
     expect(hold?.budget?.spentUsd).toBeCloseTo(0.007, 6)
-    expect(hold?.actions).toEqual(['addBudget', 'switchModel'])
+    // Raising the limit cannot help an unpriced stop: only the model switch is offered.
+    expect(hold?.actions).toEqual(['switchModel'])
+    expect(m.holdOf(run.id)?.actions).toEqual(['switchModel'])
     expect(holdsOf(run.id)).toHaveLength(1)
     // The stored copy carries the flag too (a reload keeps the wording and the card's title).
     expect(new RunStore(join(dir, 'data')).get(run.id)?.hold?.budget?.unpriced).toBe(true)
@@ -484,7 +519,10 @@ describe('a run stopped on an unknown price says so, and a message to it is refu
     spend(ctx(), rootUsing('gpt-5', 2.6))
     await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
     expect(m.summary(run.id)?.hold?.reason).toBe("The run stopped because it used all of this run's spending limit ($2.50).")
-    expect(m.summary(run.id)?.hold?.budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: expect.any(Number) })
+    const budget = m.summary(run.id)?.hold?.budget
+    expect(budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: expect.any(Number) })
+    expect(budget?.spentUsd).toBeCloseTo(2.6, 6)
+    expect(m.summary(run.id)?.hold?.actions).toEqual(['addBudget', 'switchModel'])
     await m.stopAll()
   })
 
@@ -493,8 +531,154 @@ describe('a run stopped on an unknown price says so, and a message to it is refu
     const run = await startedWithSession(m, ctx, 2.5)
     spend(ctx(), rootUsing('gpt-5', 0.007, [{ model: 'unexpected-unpriced-model' }]))
     await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
-    await expect(m.send(run.id, 'Thanks, and one more thing')).rejects.toThrow(`${UNPRICED_REASON} The run has ended, so it cannot take a message. Add budget or continue it from the run page.`)
+    // Adding budget would not help an unpriced stop, so the text points at the price and the model instead.
+    await expect(m.send(run.id, 'Thanks, and one more thing')).rejects.toThrow(`${UNPRICED_REASON} The run has ended, so it cannot take a message. Set a price for that model in Settings, or switch the model, then continue it from the run page.`)
     await m.stopAll()
+  })
+
+  it('a priced budget stop still offers add budget in the refusal text', async () => {
+    const { m, ctx } = rig('codex')
+    const run = await startedWithSession(m, ctx, 2.5)
+    spend(ctx(), rootUsing('gpt-5', 2.6))
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+    await expect(m.send(run.id, 'more')).rejects.toThrow("The run stopped because it used all of this run's spending limit ($2.50). The run has ended, so it cannot take a message. Add budget or continue it from the run page.")
+    await m.stopAll()
+  })
+
+  it('M1: a send between the unpriced stop and the end of the session is refused and never reaches the session', async () => {
+    const { m, ctx, sent, release } = rig('codex', {}, true)
+    const run = await startedWithSession(m, ctx, 2.5)
+    spend(ctx(), rootUsing('gpt-5', 0.007, [{ model: 'unexpected-unpriced-model' }]))
+    // The stop began (the hold is set) but the session has not ended: the run is not "finished" yet.
+    await vi.waitFor(() => expect(m.summary(run.id)?.hold?.kind).toBe('budget'))
+    expect(finishedOf(run.id)).toHaveLength(0)
+    await expect(m.send(run.id, 'one more thing')).rejects.toThrow(`${UNPRICED_REASON} The run has ended, so it cannot take a message. Set a price for that model in Settings, or switch the model, then continue it from the run page.`)
+    expect(sent).toEqual([])
+    release()
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+    expect(sent).toEqual([])
+    await m.stopAll()
+  })
+
+  it('M1: a send to a priced budget stop that is still ending is refused the same way, and a healthy run still takes a message', async () => {
+    const { m, ctx, sent, release } = rig('codex', {}, true)
+    const run = await startedWithSession(m, ctx, 2.5)
+    await m.send(run.id, 'first')
+    expect(sent).toEqual(['first'])
+    spend(ctx(), rootUsing('gpt-5', 2.6))
+    await vi.waitFor(() => expect(m.summary(run.id)?.hold?.kind).toBe('budget'))
+    // Still ending: a continuation is not accepted yet, so the text does not offer to add budget.
+    await expect(m.send(run.id, 'second')).rejects.toThrow("The run stopped because it used all of this run's spending limit ($2.50). The run has ended, so it cannot take a message. Continue it from the run page.")
+    expect(sent).toEqual(['first'])
+    release()
+    await m.stopAll()
+  })
+
+  it('M1: a send after the user ended the session (End session, before it finishes) is refused', async () => {
+    const { m, ctx, sent, release } = rig('codex', {}, true)
+    const run = await startedWithSession(m, ctx, undefined)
+    const stopping = m.stop(run.id)
+    await expect(m.send(run.id, 'late')).rejects.toThrow('This run has ended, so it cannot take a message. Continue it from the run page.')
+    expect(sent).toEqual([])
+    release()
+    await stopping
+    await m.stopAll()
+  })
+
+  it('M2: addBudget on a stored unpriced hold is refused in main, whatever actions the stored hold lists', async () => {
+    const { m } = rig('codex')
+    const store = (m as unknown as { store: RunStore }).store
+    store.upsert({ id: 'unp', projectId: 'pc', kind: 'work', prompt: 'x', status: 'finished', startedAt: 1, sessionId: 's1', endedBy: 'budget', hold: { kind: 'budget', since: 1, reason: 'r', budget: { scope: 'run', limitUsd: 2.5, spentUsd: 0.007, unpriced: true }, actions: ['addBudget', 'switchModel'] } } as never)
+    store.upsert({ id: 'priced', projectId: 'pc', kind: 'work', prompt: 'x', status: 'finished', startedAt: 1, sessionId: 's1', endedBy: 'budget', hold: { kind: 'budget', since: 1, reason: 'r', budget: { scope: 'run', limitUsd: 2.5, spentUsd: 2.6 }, actions: ['addBudget', 'switchModel'] } } as never)
+    expect(m.holdOf('unp')?.actions).toEqual(['switchModel'])
+    expect(m.holdOf('priced')?.actions).toEqual(['addBudget', 'switchModel'])
+    await expect(m.addBudget({ runId: 'unp', addUsd: 2 })).rejects.toThrow('This run stopped because part of it has no known price, so adding to its limit would not help. Set a price for that model in Settings, or switch the model, then continue it from the run page.')
+  })
+
+  it('L1: a send to a run that is still starting says so; a run that is finalizing without a session says it ended', async () => {
+    let release = (): void => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const adapter: RuntimeAdapter = {
+      id: 'codex',
+      complete: async () => '',
+      start: async (ctx) => {
+        await gate
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }
+      }
+    }
+    const setup = { applyProposal: vi.fn(), markScaffolded: vi.fn(), markArchitectureUpdated: vi.fn(), hiddenContext: vi.fn(() => ''), complete: vi.fn(), prepare: vi.fn(async (x: Project) => x) } as unknown as SetupService
+    const m = new RunManager({ codex: adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), setup, () => 100, { dataDir: join(dir, 'data'), catalog: () => CATALOG })
+    const starting = m.start({ project: team('gpt-5', undefined), prompt: 'go' })
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'run.status' && e.status === 'starting')).toBe(true))
+    const runId = events.find((e) => e.type === 'run.status' && e.status === 'starting')!.runId
+    await expect(m.send(runId, 'hi')).rejects.toThrow('This run is still starting. Send your message again in a moment.')
+    // Before the adapter is called (no start in flight yet, status still 'starting') it is still starting; finalizing with no
+    // session and no start in flight, it is ending.
+    const active = (m as unknown as { runs: Map<string, { opening?: Promise<unknown>; finalizing?: Promise<void> }> }).runs.get(runId)!
+    const opening = active.opening
+    active.opening = undefined
+    await expect(m.send(runId, 'hi')).rejects.toThrow('This run is still starting. Send your message again in a moment.')
+    active.finalizing = Promise.resolve()
+    await expect(m.send(runId, 'hi')).rejects.toThrow('This run has ended, so it cannot take a message. Continue it from the run page.')
+    active.finalizing = undefined
+    active.opening = opening
+    release()
+    await starting
+    await m.stopAll()
+  })
+
+  it('L1: a pre-launch budget refusal that ends the run is not told it is "still starting"', async () => {
+    const { m } = rig('codex')
+    // The chain's model has no known price: the conversation budget cannot be enforced, so the run ends before its adapter starts.
+    const p = team('unpriced-model', 10)
+    const store = (m as unknown as { store: RunStore }).store
+    store.upsert({ id: 'prev', projectId: p.id, kind: 'work', prompt: 'x', status: 'error', startedAt: 1, totalCostUsd: 1, connection: 'anthropic', modelSelection: { model: 'unpriced-model', connection: 'openai' } } as never)
+    const attempts: Promise<string>[] = []
+    const push = events.push.bind(events)
+    events.push = (...items: RunEvent[]): number => {
+      for (const e of items) if (e.type === 'run.status' && e.status === 'finished' && attempts.length === 0) attempts.push(m.send(e.runId, 'hi').then(() => 'sent', (err: Error) => err.message))
+      return push(...items)
+    }
+    const run = await m.continueRun(p, 'prev', 'Recover')
+    expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' })
+    expect(await Promise.all(attempts)).toEqual(['This run has ended, so it cannot take a message. Continue it from the run page.'])
+    await m.stopAll()
+  })
+
+  describe('L2: the refusal tail follows the hold kind, and a paused run is not told it "has ended"', () => {
+    const put = (m: RunManager, id: string, status: 'paused' | 'finished' | 'error', hold: Record<string, unknown>, sessionId: string | undefined = 's1'): void => {
+      const store = (m as unknown as { store: RunStore }).store
+      store.upsert({ id, projectId: 'pc', kind: 'work', prompt: 'x', status, startedAt: 1, ...(sessionId ? { sessionId } : {}), hold: { since: 1, ...hold } } as never)
+    }
+    const USAGE = "The provider's usage limit was reached, so the run is paused until it resets."
+    const DAILY = 'The daily spending limit is reached.'
+
+    it('a usage-limit pause: resume it', async () => {
+      const { m } = rig('codex')
+      put(m, 'u', 'paused', { kind: 'usage-limit', reason: USAGE, actions: ['resume', 'switchModel'] })
+      await expect(m.send('u', 'hi')).rejects.toThrow(`${USAGE} It cannot take a message while it is paused. Resume it from the run page.`)
+    })
+
+    it('a spending-limit pause: resume it', async () => {
+      const { m } = rig('codex')
+      put(m, 's', 'paused', { kind: 'spend-limit', reason: DAILY, budget: { scope: 'day', limitUsd: 5, spentUsd: 5, resetsAt: 9 }, actions: ['resume', 'switchModel'] })
+      await expect(m.send('s', 'hi')).rejects.toThrow(`${DAILY} It cannot take a message while it is paused. Resume it from the run page.`)
+    })
+
+    it('a paused run with nothing to resume from is pointed at the run page without a promise to resume', async () => {
+      const { m } = rig('codex')
+      put(m, 'n', 'paused', { kind: 'usage-limit', reason: USAGE, actions: ['switchModel'] }, '')
+      await expect(m.send('n', 'hi')).rejects.toThrow(`${USAGE} It cannot take a message while it is paused. Continue it from the run page.`)
+    })
+
+    it('a spending limit that stopped the run (not paused), a provider error and a plan hold: the run ended, continue it', async () => {
+      const { m } = rig('codex')
+      put(m, 'e1', 'finished', { kind: 'spend-limit', reason: DAILY, budget: { scope: 'day', limitUsd: 5, spentUsd: 5 }, actions: ['retry', 'switchModel'] })
+      put(m, 'e2', 'error', { kind: 'provider', reason: 'The provider could not be reached or answered with an error. Retry, or choose another model.', actions: ['retry', 'switchModel'] })
+      await expect(m.send('e1', 'hi')).rejects.toThrow(`${DAILY} The run has ended, so it cannot take a message. Continue it from the run page.`)
+      await expect(m.send('e2', 'hi')).rejects.toThrow('Retry, or choose another model. The run has ended, so it cannot take a message. Continue it from the run page.')
+    })
   })
 
   it('send to an ended run with no hold says it ended; an unknown run keeps the old text', async () => {

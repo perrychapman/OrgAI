@@ -72,7 +72,8 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   // One polite line when a hold appears, through the frame's announcer. The same hold is never said twice (a remounted
   // card stays quiet); without a frame the head keeps its own status role.
   const announcer = useFrameAnnounce()
-  useAnnounceOnce(`run-hold:${runId}:${hold?.kind ?? ''}`, hold ? `${hold.word}. ${hold.title}` : null)
+  // A priced budget hold replaced by an unpriced one (same kind) is a new thing to say, so the key carries a marker for it.
+  useAnnounceOnce(`run-hold:${runId}:${hold?.kind ?? ''}${summary?.hold?.budget?.unpriced ? ':unpriced' : ''}`, hold ? `${hold.word}. ${hold.title}` : null)
   if (!hold) return null
 
   const act = async (fn: () => Promise<void> | void): Promise<void> => {

@@ -64,6 +64,11 @@ const SCOPE_WORDS: Record<NonNullable<MainRunHold['budget']>['scope'], string> =
   month: 'for this month'
 }
 
+/** The known part of a spend: a real amount too small for two decimals reads "under $0.01", never "$0.00". */
+function knownMoney(usd: number): string {
+  return usd > 0 && usd < 0.005 ? 'under $0.01' : money(usd)
+}
+
 function usageFacts(summary: SummaryFields, now: number): HoldFact[] {
   const facts: HoldFact[] = []
   const until = summary.pausedUntil
@@ -83,17 +88,21 @@ function fromHold(h: MainRunHold, summary: SummaryFields, now: number): RunHoldV
       const b = h.budget
       const facts: HoldFact[] = []
       let title = h.kind === 'budget' ? 'Paused at the spending limit' : 'Paused at the project spending limit'
+      let word = 'Paused'
       if (b?.unpriced) {
         // Stopped because the cost cannot be counted, not because the limit was used up: never say "Paused at the $X limit".
         title = 'Stopped: part of this run has no known price'
-        facts.push({ label: 'Known cost', value: money(b.spentUsd) }, { label: 'Limit', value: money(b.limitUsd) })
+        word = 'Stopped'
+        facts.push({ label: 'Known cost', value: knownMoney(b.spentUsd) }, { label: 'Limit', value: money(b.limitUsd) })
       } else if (b) {
         title = `Paused at the ${money(b.limitUsd)} limit ${SCOPE_WORDS[b.scope]}`
         facts.push({ label: 'Spent', value: money(b.spentUsd) }, { label: 'Limit', value: money(b.limitUsd) })
         if (b.resetsAt) facts.push({ label: 'Resets', value: day(b.resetsAt) })
       }
       facts.push(since)
-      return { kind: h.kind, word: 'Paused', tone: 'waiting', title, text: h.reason, facts, safe: SAFE, actions: h.actions, limitUsd: b?.limitUsd }
+      // Defensive: an unpriced stop never offers "Add to the limit" (main refuses it too), even from a stale action list.
+      const actions = b?.unpriced ? h.actions.filter((a) => a !== 'addBudget') : h.actions
+      return { kind: h.kind, word, tone: 'waiting', title, text: h.reason, facts, safe: SAFE, actions, limitUsd: b?.limitUsd }
     }
     case 'usage-limit':
       return {
