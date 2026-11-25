@@ -786,11 +786,12 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const record = runs.get(input.runId)
     if (!record || record.summary.projectId !== existing.id) throw new Error('Run not found')
     const project = await setup.prepare(existing)
+    const crossRun = await setup.retroEvolveContext(project.id)
     return runs.start({
       project,
       kind: 'setup',
       prompt: setup.retroPrompt(record),
-      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record, project)}`
+      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record, project)}${crossRun ? `\n\n${crossRun}` : ''}`
     })
   })
   handle(

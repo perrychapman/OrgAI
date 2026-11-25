@@ -399,7 +399,12 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       applyLibraryProposal: (payload, o) => mcp.applyLibraryProposal(payload, o)
     },
     skills: { applyProposal: (projectId, payload, o) => skills.applyProposal(projectId, payload, o) },
-    templates: () => templates.list()
+    templates: () => templates.list(),
+    // Retrospective cross-run picture: read-only (analyze 'deterministic' never applies, settles or writes the ledger).
+    retroEvolve: async (projectId) => {
+      if (!evolveService) throw new Error('Team evolution is not available.')
+      return { analysis: await evolveService.analyze({ projectId, strategy: 'deterministic' }), history: evolveService.history(projectId) }
+    }
   }))
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
