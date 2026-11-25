@@ -870,7 +870,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     complete: (project, input) => rm.completeForProject(project, input),
     listRuns: (projectId) => rm.list(projectId),
     getRun: (runId) => rm.get(runId),
-    progress: (event) => events.emit(IPC.capabilitiesProgress, event),
+    // The review's run evidence reads cached digests: only a run never digested is parsed (the one that just ended).
+    getDigest: (runId) => runStore.getDigest(runId),
+    progress:(event) => events.emit(IPC.capabilitiesProgress, event),
     reviewUpdated: (summary) => events.emit(IPC.capabilitiesReviewUpdated, summary),
     onProjectChanged: emitProject,
     // ORGAI_MOCK=1 only: local discovery reads seeded fixtures under the data dir, never the real home.

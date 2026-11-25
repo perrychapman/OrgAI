@@ -89,8 +89,12 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     (run before and after, compared with the field removed).
   - Fewer parses: with the host's ports a second analysis calls `getRecord` for no run, and after a new run only for that
     run; settling a trial parses only a window run that was never digested (unit tested, `evolve/digestSource.test.ts`,
-    a real RunStore on a temp folder). A run first digested by its trial settlement is parsed once; the Team review and
-    skill evaluation still parse records until they are switched (next half of step 1).
+    a real RunStore on a temp folder). A run first digested by its trial settlement is parsed once. The Team review's
+    evidence reads digests too (2026-11-25, second half: `getDigest` dep, `capabilities/evidence.ts`; a pass after one new
+    run calls `getRecord` for that run only, unit tested in `capabilities/service.test.ts`), and `skills/evaluate.ts`
+    `gapFindings` is the one implementation of repeated sequences and corrections for both (see
+    `docs/agent-notes/assistants-skills.md` "Evidence from digests"). The skill evaluation is switched in the next commit
+    of the same change (see below).
   - Cache key: `DIGEST_VERSION`, the record file's size, mtime in ns and inode, and the run's `endedAt` in the index, so a
     continued run (its record rewritten) is digested again; the transcript length the handoff suggested is capped at
     5,000 entries and could not tell a continued run at the cap (unit tested: continued run, open run not cached).

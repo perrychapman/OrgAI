@@ -4,7 +4,7 @@ import { pathOverlaps, type GraphStepLike } from '../../shared/planGraph'
 import type { AgentInstance, ExecOutcome, RunEndedBy, RunRecord, RunSummary } from '../../shared/types'
 import { clampText } from '../capabilities/sanitize'
 import { redactEvidence } from '../skills/suggest'
-import { tokenSet } from '../skills/evaluate'
+import { tokenSet } from '../skills/tokens'
 
 /**
  * One finished run, reduced once to what the self-healing loops read (Team evolution's telemetry, the Team review's

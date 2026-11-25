@@ -71,6 +71,7 @@ import {
 import { collectEvidence, EVIDENCE_MAX_RUNS } from './evidence'
 import { publicReview, readReview, removeReview, REVIEW_MAX_SEEN_EVIDENCE, reviewSummary, writeReview, type ModelSeen, type StoredReview } from './reviewStore'
 import { clampText, mcpSpecDigest } from './sanitize'
+import { digestRun, type RunDigest } from '../store/runDigest'
 
 /** What index.ts hands the service. */
 export interface CapabilityServiceDeps {
@@ -88,6 +89,11 @@ export interface CapabilityServiceDeps {
   /** The project's persisted run summaries (RunManager.list) and one record with its transcript (RunManager.get). */
   listRuns(projectId: string): RunSummary[]
   getRun(runId: string): RunRecord | null
+  /**
+   * One finished run's digest (RunStore.getDigest: cached beside the record, so only a run never digested is parsed).
+   * Absent or null = the run is read through getRun and digested here.
+   */
+  getDigest?(runId: string): RunDigest | null
   /** A saved project reaches every window (index.ts broadcasts a project.updated RunEvent). */
   onProjectChanged(project: Project): void
   /** The user's home dir; under ORGAI_MOCK=1 index.ts passes `<data>/mock-home` (seeded fixtures). */
@@ -1094,14 +1100,33 @@ export class CapabilityService implements CapabilityServiceApi {
     }
   }
 
-  private recentRecords(projectId: string): RunRecord[] {
+  /**
+   * The newest finished work runs as digests. A digest is cached beside its record (RunStore.getDigest), so a pass parses
+   * only a record never digested before (in practice the run that just ended). A run without a digest (no digest port, or
+   * the store has none) is read through getRun and digested here.
+   */
+  private recentDigests(projectId: string): RunDigest[] {
     try {
       const summaries = this.deps
         .listRuns(projectId)
         .filter((r) => r.kind === 'work' && r.endedAt !== undefined)
         .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
         .slice(0, EVIDENCE_MAX_RUNS)
-      return summaries.map((s) => this.deps.getRun(s.id)).filter((r): r is RunRecord => !!r)
+      const out: RunDigest[] = []
+      for (const s of summaries) {
+        try {
+          const digest = this.deps.getDigest?.(s.id)
+          if (digest) {
+            out.push(digest)
+            continue
+          }
+          const record = this.deps.getRun(s.id)
+          if (record) out.push(digestRun(record))
+        } catch {
+          // One unreadable run is left out; the others still count.
+        }
+      }
+      return out
     } catch {
       return []
     }
@@ -1162,11 +1187,12 @@ export class CapabilityService implements CapabilityServiceApi {
     // No room for an automatic model step's picks: do not spend tokens on it.
     if (!opts.useModel && opts.trigger === 'runEnded' && skip === undefined && room === 0) skip = 'pendingFull'
 
-    // Run evidence (up to 20 record reads) only when its result is used: the noChange decision, a model step or a
-    // review the user asked for or opened. A pass already skipped keeps the stored list (a first pass has none to keep).
+    // Run evidence (20 digests; a record is parsed only for a run never digested) only when its result is used: the
+    // noChange decision, a model step or a review the user asked for or opened. A pass already skipped keeps the stored
+    // list (a first pass has none to keep).
     let evidence: TeamEvidence[]
     if (skip !== undefined && prev && !prev.stub) evidence = prev.evidence
-    else evidence = collectEvidence(project, this.recentRecords(projectId))
+    else evidence = collectEvidence(project, this.recentDigests(projectId))
     let modelHash: string | undefined
     if (!opts.useModel && opts.trigger === 'runEnded' && skip === undefined) {
       modelHash = modelInputHash(project, items)

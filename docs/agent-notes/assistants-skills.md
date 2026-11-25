@@ -66,7 +66,7 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
   - Team review skip order (self-healing efficiency step 2, 2026-11-25): `runReview` reads the stored review once
     (the 'opened' throttle's read is handed over when no review is queued ahead) and decides `autoOff` / `autoFree` /
     `mockFree` / `everyRuns` first; discovery still runs on every pass; `pendingFull` follows the refined pending
-    list; run evidence is collected (up to 20 `getRun` reads) only on a manual or opened review, a first review or an
+    list; run evidence is collected (20 run digests, see "Evidence from digests" below) only on a manual or opened review, a first review or an
     eligible automatic pass, and a skipped pass carries the stored evidence list forward (so the tray's signal count
     can lag until the next eligible, manual or opened review). `noChange` now compares a main-only `modelSeen`
     (`reviewStore.ts` `StoredReview`: hash of project name and brief, roles and recommendable candidates, plus evidence
@@ -85,6 +85,23 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     it was. `modelInputHash` leaves out outside candidates (registry, GitHub): only a manual Re-check discovers them,
     so the hash it records is one an automatic pass reproduces. `cleanSeen` keeps only evidence ids of the exact shape
     `evidence.ts` makes (`ev-` and 16 lowercase hex digits).
+  - Evidence from digests (self-healing efficiency step 1, second half, 2026-11-25): `collectEvidence(project, runs)`
+    takes records or digests (`RunRecord | RunDigest`; a record is digested with `digestRun`, so there is one
+    implementation); the host passes digests from `CapabilityServiceDeps.getDigest` (`runStore.getDigest`, cached beside
+    the record), and a run without one is read through `getRun` and digested in the service. Role ids are matched through
+    `digestKey`; the evidence carries the project's own role id. Repeated sequences and corrections are
+    `skills/evaluate.ts` `gapFindings`, the same helper the skill evaluation uses; the transcript scan that used to sit in
+    `evidence.ts` is gone. Checked by unit tests: evidence from records, from digests and from digests that went through
+    JSON are equal for a fixture set (`evidence.test.ts`); a real `RunStore` wired as `bootstrap.ts` wires it shows a pass
+    after one new finished run calls `getRecord` for that run only and a second pass for none (`service.test.ts`
+    "run evidence from cached digests"). Known, accepted change: an evidence key is built from redacted text, so a rule
+    request or connection search whose text held a secret or a home folder gets a new id once (ids for plain text are
+    unchanged, tested against the old hash recipe), and a repeated correction's key comes from its redacted excerpt. A
+    stored review's `modelSeen` then lists the old id as missing, which is news: one model step at the `everyRuns`
+    cadence (the skip order is untouched, so `autoOff`, `autoFree` and `everyRuns` still come first), after which the new
+    id is recorded and `noChange` holds again (tested at `everyRuns` 1 and 3: one extra call, none after). Unlike before, a
+    run's digest holds at most 200 distinct signals and its tool names at most 1,000 (a run past either is not seen to
+    the end; no real run found reaches them). Live Claude/Codex runs and a real run history were not exercised.
   ORGAI_MOCK=1 uses `<data>/mock-home` and outside fixtures; the first finished mock work run fills the review from the
   keyword fallback without tokens. Verified by unit tests and the mock adapter (claude.ts / codex.ts `complete()`
   accept 'recommend' with no tools and an honoured signal, read and fake-tested). Unverified: real config files on a

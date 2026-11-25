@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +22,8 @@ import {
 import { McpService } from '../mcp/service'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { ProjectStore } from '../store/projects'
+import { RunStore } from '../store/runs'
+import { runDigester } from '../store/runDigest'
 import { SecretStore } from '../store/secrets'
 import { SkillService } from '../skills/service'
 import { MockAdapter } from '../runtime/mock'
@@ -952,6 +955,77 @@ describe('review', () => {
       expect(onDisk().modelSeen).toBeDefined()
       await ended(svc)
       expect(rig.complete).toHaveBeenCalledTimes(2)
+    })
+
+    describe('run evidence from cached digests (a real RunStore wired as host/bootstrap.ts wires it)', () => {
+      let store: RunStore
+      beforeEach(() => {
+        store = new RunStore(join(rig.root, 'run-data'))
+        store.digester = runDigester
+      })
+      const saveRun = (id: string, rules?: string[]): void => {
+        const d = denial(id, rig.clock.t + store.list('p1').length + 1)
+        if (rules) d.record.transcript.push({ id: `${id}-3`, agentId: 'eng', at: 1002, block: { kind: 'tool_use', id: 'b', name: 'mcp__orgai__request_permission_rules', input: { rules } } } as never)
+        store.upsert(d.summary)
+        store.saveRecord(d.record)
+      }
+      const hosted = (everyRuns: number): CapabilityService => {
+        const svc = rig.make({ mock: false, listRuns: (pid) => store.list(pid), getRun: (id) => store.getRecord(id), getDigest: (id) => store.getDigest(id) })
+        rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: 200_000, everyRuns } })
+        return svc
+      }
+
+      it('a pass after one new finished run parses that run only', async () => {
+        for (let i = 0; i < 6; i++) saveRun(`old-${i}`)
+        const svc = hosted(1)
+        const read = vi.spyOn(store, 'getRecord')
+        await ended(svc)
+        expect(read).toHaveBeenCalledTimes(6)
+        const first = svc.lastReview('p1')!.evidence
+        expect(first).toHaveLength(1)
+        expect(first[0]).toMatchObject({ kind: 'permissionDenied', count: 6 })
+        read.mockClear()
+        await ended(svc)
+        expect(read).not.toHaveBeenCalled()
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+        saveRun('fresh')
+        read.mockClear()
+        await ended(svc)
+        expect(read.mock.calls.map((c) => c[0])).toEqual(['fresh'])
+        expect(svc.lastReview('p1')!.evidence[0]).toMatchObject({ count: 7, runIds: expect.arrayContaining(['fresh']) })
+        // The new signal count is news: one more model step, then it settles.
+        expect(rig.complete).toHaveBeenCalledTimes(2)
+        read.mockClear()
+        await ended(svc)
+        expect(read).not.toHaveBeenCalled()
+        expect(rig.complete).toHaveBeenCalledTimes(2)
+      })
+
+      it('an evidence id that changed because the key is now redacted costs one model step, then settles', async () => {
+        const secret = 'Bash(curl -H "Authorization: Bearer sk-abcdefghijklmnop1234" x:*)'
+        saveRun('r1', [secret])
+        const svc = hosted(1)
+        await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(1)
+        // Rewrite the record of what the model saw as the unredacted keys produced it: every id differs from today's.
+        const file = join(rig.data, 'team-reviews', 'p1.json')
+        const review = onDisk() as { modelSeen: { evidence: { id: string; count: number }[] }; evidence: { id: string; kind: string; count: number }[] }
+        const rule = review.evidence.find((e) => e.kind === 'ruleRequest')!
+        const oldId = `ev-${createHash('sha256').update(`ruleRequest\0${ENG}\0${secret}`).digest('hex').slice(0, 16)}`
+        expect(oldId).not.toBe(rule.id)
+        review.modelSeen.evidence = review.modelSeen.evidence.map((e) => (e.id === rule.id ? { ...e, id: oldId } : e))
+        writeFileSync(file, JSON.stringify(review))
+        // At everyRuns 3 the renamed signal waits for the cadence like any other change.
+        rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: 200_000, everyRuns: 3 } })
+        await ended(svc)
+        await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(1)
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'everyRuns' })
+        // One extra step for the renamed signal at the cadence, none after that.
+        for (let i = 0; i < 7; i++) await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(2)
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: expect.stringMatching(/^(noChange|everyRuns)$/) })
+      })
     })
   })
 

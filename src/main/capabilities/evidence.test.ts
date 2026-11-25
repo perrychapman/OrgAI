@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, RunRecord, TranscriptBlock, TranscriptEntry } from '@shared/types'
 import { project as makeProject, role, runSummary } from '../runtime/testHelpers'
+import { digestRun, type RunDigest } from '../store/runDigest'
 import { EVIDENCE_MAX_ITEMS, EVIDENCE_MAX_RUNS, collectEvidence, hasNewEvidence } from './evidence'
 
 const project = makeProject({
@@ -113,6 +115,69 @@ describe('collectEvidence', () => {
   it('caps the list', () => {
     const t = Array.from({ length: 80 }, (_, i) => [use('eng', `u${i}`, `FancyTool${i}`), result('eng', `u${i}`, 'No such tool available')]).flat()
     expect(collectEvidence(project, [record('a', t)])).toHaveLength(EVIDENCE_MAX_ITEMS)
+  })
+
+  describe('from digests', () => {
+    const idOf = (kind: string, roleId: string | undefined, key: string): string => `ev-${createHash('sha256').update(`${kind}\0${roleId ?? ''}\0${key}`).digest('hex').slice(0, 16)}`
+    const fixture = (): RunRecord[] => {
+      const seqRun = (id: string, at: number): RunRecord =>
+        record(
+          id,
+          [
+            use('root', `${id}1`, 'Read'),
+            use('root', `${id}2`, 'Grep'),
+            use('root', `${id}3`, 'Edit'),
+            use('root', `${id}4`, 'Bash'),
+            use('eng', `${id}5`, 'Bash', { command: 'npm test' }),
+            result('eng', `${id}5`, 'Permission denied for Bash'),
+            use('eng', `${id}6`, 'mcp__orgai__request_permission_rules', { rules: ['Bash(npm test:*)'] }),
+            use('root', `${id}7`, 'mcp__orgai__search_mcp_registry', { query: 'Linear' }),
+            use('eng', `${id}8`, 'FancyTool'),
+            result('eng', `${id}8`, 'Error: No such tool available: FancyTool'),
+            entry('root', { kind: 'user', text: 'First task' }),
+            entry('root', { kind: 'user', text: 'No, use tabs instead of spaces in every file' })
+          ],
+          { endedAt: at }
+        )
+      return [seqRun('a', 3000), seqRun('b', 3100), seqRun('c', 3200), record('setup', [], { kind: 'setup' })]
+    }
+
+    it('gives the same evidence as the records, also after the digest went through JSON (the sidecar)', () => {
+      const records = fixture()
+      const fromRecords = collectEvidence(project, records)
+      const digests = records.map((r) => JSON.parse(JSON.stringify(digestRun(r))) as RunDigest)
+      expect(fromRecords.length).toBeGreaterThan(5)
+      expect(collectEvidence(project, digests)).toEqual(fromRecords)
+      // A mix of both is fine too.
+      expect(collectEvidence(project, [records[0]!, digests[1]!, digests[2]!, digests[3]!])).toEqual(fromRecords)
+    })
+
+    it('keeps the ids the records gave for plain text (no secret, no home folder)', () => {
+      const ev = collectEvidence(project, fixture())
+      const ids = new Set(ev.map((e) => e.id))
+      expect(ids.has(idOf('permissionDenied', 'r-eng', 'Bash'))).toBe(true)
+      expect(ids.has(idOf('missingTool', 'r-eng', 'FancyTool'))).toBe(true)
+      expect(ids.has(idOf('ruleRequest', 'r-eng', 'Bash(npm test:*)'))).toBe(true)
+      expect(ids.has(idOf('missingConnection', 'r-lead', 'search_mcp_registry:linear'))).toBe(true)
+      expect(ids.has(idOf('repeatedSequence', undefined, 'Read>Grep>Edit>Bash'))).toBe(true)
+      expect(ev.find((e) => e.kind === 'permissionDenied')).toMatchObject({ count: 3, runIds: ['c', 'b', 'a'] })
+    })
+
+    it('a secret in a rule gives the redacted key, so that one signal gets a new id once', () => {
+      const raw = 'Bash(curl -H "Authorization: Bearer sk-abcdefghijklmnop1234" x:*)'
+      const rec = record('run-a', [use('eng', 'a', 'mcp__orgai__request_permission_rules', { rules: [raw] })])
+      const [e] = collectEvidence(project, [rec])
+      expect(e!.id).not.toBe(idOf('ruleRequest', 'r-eng', raw))
+      expect(e!.summary).not.toContain('sk-abcdefghijklmnop1234')
+      expect(collectEvidence(project, [digestRun(rec)])[0]!.id).toBe(e!.id)
+    })
+
+    it('maps a role the project does not have to no role, as before', () => {
+      const rec = record('run-a', [use('ghost', 'a', 'Bash'), result('ghost', 'a', 'Permission denied')])
+      rec.agents.ghost = agent('ghost', 'r-gone')
+      expect(collectEvidence(project, [rec])).toMatchObject([{ kind: 'permissionDenied', summary: 'An agent was denied Bash.' }])
+      expect(collectEvidence(project, [rec])[0]).not.toHaveProperty('roleId')
+    })
   })
 
   it('never throws on odd records', () => {
