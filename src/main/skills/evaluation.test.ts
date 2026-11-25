@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, RunRecord, SkillInfo, TranscriptEntry } from '@shared/types'
 import { project, runSummary } from '../runtime/testHelpers'
+import { RunStore } from '../store/runs'
+import { runDigester } from '../store/runDigest'
 import { SkillEvaluationService, confinedPathExists, type SkillEvaluationDeps } from './evaluation'
 import type { SkillServiceApi } from './types'
 
@@ -247,5 +249,74 @@ describe('SkillEvaluationService.dispose', () => {
     expect(svc.last('p1')?.modelAssisted).toBe(true)
     expect(svc.last('p1')?.suggestions).toHaveLength(1)
     await expect(svc.evaluate('p1')).rejects.toThrow(/shutting down/)
+  })
+})
+
+// Self-healing efficiency step 1, second half: the evaluation reads the digests RunStore caches beside each record.
+describe('SkillEvaluationService reads cached run digests', () => {
+  const user = (text: string): TranscriptEntry => ({ id: `e${n++}`, agentId: 'a', at: n, block: { kind: 'user', text } })
+  const finished = (id: string, startedAt: number, skills?: { skillId: string; loads: number }[]): RunRecord => ({
+    summary: runSummary({ id, startedAt, endedAt: startedAt + 5, status: 'finished', ...(skills ? { usage: { skills: skills.map((s) => ({ ...s, name: s.skillId, roles: [] })) } as never } : {}) }),
+    agents: {},
+    transcript: [user('Add a login page'), ...['Read', 'Grep', 'Edit', 'Bash'].map(tool), user('No, always run the linter before you commit the change')],
+    logs: []
+  })
+  let store: RunStore
+  const fill = (count: number): RunRecord[] => {
+    const out = Array.from({ length: count }, (_, i) => finished(`d${i}`, 100 + i, i === 3 ? [{ skillId: 'sk1', loads: 2 }] : undefined))
+    for (const r of out) {
+      store.upsert(r.summary)
+      store.saveRecord(r)
+    }
+    return out
+  }
+  const hosted = (): void =>
+    build({
+      listRuns: (pid) => store.list(pid),
+      getRun: (id) => store.getRecord(id),
+      getDigest: (id) => store.getDigest(id)
+    })
+  beforeEach(() => {
+    store = new RunStore(temp())
+    store.digester = runDigester
+  })
+
+  it('over 20 already-digested runs parses no record', async () => {
+    const recs = fill(20)
+    for (const r of recs) expect(store.getDigest(r.summary.id)).not.toBeNull()
+    hosted()
+    const read = vi.spyOn(store, 'getRecord')
+    const report = await svc.evaluate('p1')
+    expect(read).not.toHaveBeenCalled()
+    expect(report.runsConsidered).toBe(20)
+    expect(report.findings.map((f) => f.kind)).toEqual(expect.arrayContaining(['repeatedToolSequence', 'repeatedCorrection']))
+    // The next evaluation after one new run parses that run only.
+    const fresh = finished('fresh', 500)
+    store.upsert(fresh.summary)
+    store.saveRecord(fresh)
+    read.mockClear()
+    const next = await svc.evaluate('p1')
+    expect(read.mock.calls.map((c) => c[0])).toEqual(['fresh'])
+    expect(next.runsConsidered).toBe(20)
+  })
+
+  it('gives the same findings as the records do', async () => {
+    fill(8)
+    hosted()
+    const viaDigests = await svc.evaluate('p1')
+    // The same runs through the records (no digest port, the bench's way).
+    build({ listRuns: (pid) => store.list(pid), getRun: (id) => store.getRecord(id) })
+    const viaRecords = await svc.evaluate('p1')
+    expect(viaDigests.findings.length).toBeGreaterThan(2)
+    expect(viaDigests.findings).toEqual(viaRecords.findings)
+    expect(viaDigests.runsConsidered).toBe(viaRecords.runsConsidered)
+  })
+
+  it('a run with no readable record still counts, from its summary', async () => {
+    const [r] = fill(1)
+    store.upsert({ ...r.summary, id: 'ghost', startedAt: 50 })
+    hosted()
+    const report = await svc.evaluate('p1')
+    expect(report.runsConsidered).toBe(2)
   })
 })

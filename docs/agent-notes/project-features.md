@@ -93,8 +93,9 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     evidence reads digests too (2026-11-25, second half: `getDigest` dep, `capabilities/evidence.ts`; a pass after one new
     run calls `getRecord` for that run only, unit tested in `capabilities/service.test.ts`), and `skills/evaluate.ts`
     `gapFindings` is the one implementation of repeated sequences and corrections for both (see
-    `docs/agent-notes/assistants-skills.md` "Evidence from digests"). The skill evaluation is switched in the next commit
-    of the same change (see below).
+    `docs/agent-notes/assistants-skills.md` "Evidence from digests"). The skill evaluation reads digests as well
+    (`SkillEvaluationDeps.getDigest`; over 20 already-digested runs it parses no record, unit tested in
+    `skills/evaluation.test.ts`; findings from digests equal findings from records, `evaluate.test.ts`).
   - Cache key: `DIGEST_VERSION`, the record file's size, mtime in ns and inode, and the run's `endedAt` in the index, so a
     continued run (its record rewritten) is digested again; the transcript length the handoff suggested is capped at
     5,000 entries and could not tell a continued run at the cap (unit tested: continued run, open run not cached).

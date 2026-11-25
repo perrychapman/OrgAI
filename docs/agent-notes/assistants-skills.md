@@ -32,7 +32,15 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     'skills'`) runs only when `skillEvaluationOf(project).enabled` (an unset `enabled` follows the Team assistant
     setting, `teamReviewOf(project).auto === 'ai'`; see Self-configuration) and the estimate fits its `tokenBudget`. Evidence is
     redacted, the report persists at `<data>/skill-evaluations/<pid>.json`, suggestions apply only on the user's call.
-    No A/B replay.
+    No A/B replay. The checks read per-run digests (`evaluateSkills` takes `RunDigest`s or `{ summary, transcript }`, the
+    latter digested first; `SkillEvaluationDeps.getDigest` is `runStore.getDigest`, with a `getRun` fallback and, for a
+    run with no readable record, a digest of its summary alone so it still counts in `runsConsidered`). Skill ids are
+    compared through `digestKey`; thresholds and result shapes are unchanged (the whole existing suite passes with
+    unchanged expectations). A tool name that is not a plain identifier shows as `#` and a hash in a sequence finding, and
+    a correction excerpt is the digest's redacted one (at most 160 characters). Checked by unit tests: over 20
+    already-digested runs a real `RunStore` is asked for no record, after one new run for that one; findings from digests,
+    from digests that went through JSON and from records are equal (`evaluation.test.ts`, `evaluate.test.ts`). Live
+    provider behaviour is unverified.
   - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
     readable by any agent with Read or Bash. Verified by unit tests and the mock adapter only.
 - Team assistant (`src/main/capabilities/`, `CapabilityService`, capabilities:* IPC; see ARCHITECTURE.md "Capabilities

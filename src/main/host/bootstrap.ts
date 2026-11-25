@@ -744,6 +744,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     project: (projectId) => projects.get(projectId),
     listRuns: (projectId) => rm.list(projectId),
     getRun: (runId) => rm.get(runId),
+    // The evaluation reads cached digests: only a run never digested is parsed.
+    getDigest: (runId) => runStore.getDigest(runId),
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
   }), { except: ['inFlightCount', 'dispose'] })

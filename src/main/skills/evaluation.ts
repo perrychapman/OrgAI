@@ -3,7 +3,8 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { SKILL_EVALUATION_RUNS, SKILL_MAX_SUGGESTIONS, isSafeId, skillEvaluationOf } from '@shared/defaults'
 import type { Project, RunRecord, RunSummary, SkillEvaluationReport, SkillFinding, SkillSuggestion } from '@shared/types'
 import type { ProjectCompletionInput } from '../runtime/runManager'
-import { evaluateSkills, type EvalRun, type EvalSkill } from './evaluate'
+import { digestRun, type RunDigest } from '../store/runDigest'
+import { evaluateSkills, type EvalSkill } from './evaluate'
 import { buildSuggestionPrompt, estimateTokens, parseSuggestions, redactEvidence } from './suggest'
 import type { SkillEvaluationApi, SkillServiceApi } from './types'
 
@@ -16,6 +17,11 @@ export interface SkillEvaluationDeps {
   listRuns(projectId: string): RunSummary[]
   /** One run with its transcript (RunManager.get). */
   getRun(runId: string): RunRecord | null
+  /**
+   * One run's digest (RunStore.getDigest: cached beside the record, so only a run never digested is parsed). Absent or
+   * null = the run is read through getRun and digested here.
+   */
+  getDigest?(runId: string): RunDigest | null
   skills: SkillServiceApi
   /** One-shot completion on the project's connection (RunManager.completeForProject). */
   complete(project: Project, input: ProjectCompletionInput): Promise<{ text: string; model?: string }>
@@ -117,14 +123,17 @@ export class SkillEvaluationService implements SkillEvaluationApi {
       .filter((r) => r.kind === 'work')
       .sort((a, b) => b.startedAt - a.startedAt)
       .slice(0, SKILL_EVALUATION_RUNS)
-    const runs: EvalRun[] = summaries.map((summary) => {
-      let rec: RunRecord | null = null
+    // Digests (cached beside each record by RunStore.getDigest): a pass parses only a record never digested. A run with
+    // no digest is read through getRun; one with no readable record still counts, from its summary alone.
+    const runs: RunDigest[] = summaries.map((summary) => {
       try {
-        rec = this.deps.getRun(summary.id)
+        const digest = this.deps.getDigest?.(summary.id)
+        if (digest) return digest
+        const rec = this.deps.getRun(summary.id)
+        return digestRun(rec ?? { summary, agents: {}, transcript: [], logs: [] })
       } catch {
-        rec = null
+        return digestRun({ summary, agents: {}, transcript: [], logs: [] })
       }
-      return { summary: rec?.summary ?? summary, transcript: rec?.transcript ?? [] }
     })
 
     const skills: EvalSkill[] = this.deps.skills.list(projectId).map((info) => {
