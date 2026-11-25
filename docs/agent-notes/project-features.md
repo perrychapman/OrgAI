@@ -78,6 +78,25 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
   `e2e/cli-tui.mjs` (default to medium asks "Press y to save"); the evolve flow by unit tests
   (`spend.test.ts`, `service.test.ts` "spend raises need the person", `dispatcherEvolve.test.ts` args and scope gate)
   with fake runs and fake completions; no live provider run.
+- Hybrid evolve call (2026-11-25, self-healing efficiency step 5; `docs/design/self-healing-efficiency.md`; the "digest"
+  here is `synthesizer.ts` `buildDigest`, the text sent to the model, not a `RunDigest`). Facts, each with how it was checked:
+  - Cooldown hint: roles in cooldown are listed on one `do not change` line (slugs through `safeLine`, deduplicated, at most
+    12, absent when none cool); the digest stays under 2,800 characters and one fence (unit tested, `synthesizer.test.ts`,
+    with a fence-breaking, key-bearing slug).
+  - Memo: the ledger keeps `hybridMemo { digestHash, outcome, at }` (sha256 hex, `empty` | `refused` | `unusable`, newest only).
+    `empty` = the answer proposed nothing; `unusable` = not parseable JSON, or every proposed patch trimmed away; `refused` =
+    the gate refused the plan. A failed or timed-out call stores nothing. An identical digest hash makes no call and returns
+    the deterministic plan with a rationale saying so; any change to the digest (runs, team, rejected list, cooldown) calls
+    again (unit tested, `synthesizer.test.ts`).
+  - Where written: `applyCore`, so the post-run pass and an explicit apply, under the project's serial chain through
+    `writeLedger`. `analyze` reads the memo from its read-only ledger and never writes it (unit tested: analyze leaves no
+    memo, a later pass writes one, a later analyze makes no call). Two post-run passes on an unchanged digest make one call
+    after an empty or unparseable answer, two after a changed digest, two after a usable answer (unit tested,
+    `service.test.ts` "hybrid memo", using team files in 'pending' so nothing changes between passes).
+  - Storage: shape-checked on read (64 hex, enum, finite number; bad = dropped), an old ledger without it loads equal to an
+    empty one (unit tested, `ratchet.test.ts`).
+  - Unchanged: the deterministic strategy and the bench: `npm run bench:heal -- --seed 1` gave an identical `results.json`
+    (without `generatedAt`) before and after. It only removes calls; live model answers were not run.
 - Run digests (2026-11-25, self-healing efficiency step 1, first half; `docs/design/self-healing-efficiency.md`, ARCHITECTURE.md
   "Team evolution"): `src/main/store/runDigest.ts` `digestRun(record)` is the one place a finished run is reduced for the
   self-healing loops; `RunStore.getDigest(runId)` caches its body beside the record (`runs/<runId>/digest.json`) and the

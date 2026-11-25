@@ -555,6 +555,20 @@ describe('ledger', () => {
     writeLedger(d, emptyLedger('p2'))
     expect(readLedger(d, 'p2', undefined, undefined, { readOnly: true })).toEqual(emptyLedger('p2'))
   })
+  it('keeps a hybrid memo through a write and read, shape-checks it, and loads an old ledger without one', () => {
+    const d = tmp()
+    const hash = 'a'.repeat(64)
+    const l = emptyLedger('p1')
+    l.hybridMemo = { digestHash: hash, outcome: 'empty', at: 5 }
+    writeLedger(d, l)
+    expect(readLedger(d, 'p1').hybridMemo).toEqual({ digestHash: hash, outcome: 'empty', at: 5 })
+    for (const bad of [{ digestHash: 'short', outcome: 'empty', at: 1 }, { digestHash: hash, outcome: 'nope', at: 1 }, { digestHash: hash, outcome: 'empty', at: 'x' }, 'str', null]) {
+      writeFileSync(ledgerPath(d, 'p1'), JSON.stringify({ version: 1, generations: [], rejectedHypotheses: [], hybridMemo: bad }))
+      expect(readLedger(d, 'p1').hybridMemo).toBeUndefined()
+    }
+    writeFileSync(ledgerPath(d, 'p1'), JSON.stringify({ version: 1, generations: [], rejectedHypotheses: [] }))
+    expect(readLedger(d, 'p1')).toEqual(emptyLedger('p1'))
+  })
   it('drops malformed entries instead of failing', () => {
     const d = tmp()
     mkdirSync(join(d, 'evolution'))

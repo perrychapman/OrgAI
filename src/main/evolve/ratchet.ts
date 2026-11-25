@@ -513,6 +513,23 @@ export interface Ledger {
   projectId: string
   generations: StoredGeneration[]
   rejectedHypotheses: EvolutionRejectedHypothesis[]
+  /** The newest hybrid answer that gave nothing usable (only a hash of the digest text, never the text). Absent in older ledgers. */
+  hybridMemo?: HybridMemo
+}
+
+export const HYBRID_MEMO_OUTCOMES = ['empty', 'refused', 'unusable'] as const
+export interface HybridMemo {
+  /** sha256 hex of the digest text the model was given. */
+  digestHash: string
+  outcome: (typeof HYBRID_MEMO_OUTCOMES)[number]
+  at: number
+}
+
+/** Shape-check a stored memo; anything off is dropped (the next pass simply calls the model again). */
+function sanitizeMemo(raw: unknown): HybridMemo | undefined {
+  if (!isObj(raw) || typeof raw.digestHash !== 'string' || !/^[0-9a-f]{64}$/.test(raw.digestHash)) return undefined
+  if (!(HYBRID_MEMO_OUTCOMES as readonly unknown[]).includes(raw.outcome) || typeof raw.at !== 'number' || !Number.isFinite(raw.at)) return undefined
+  return { digestHash: raw.digestHash, outcome: raw.outcome as HybridMemo['outcome'], at: raw.at }
 }
 
 export const emptyLedger = (projectId: string): Ledger => ({ version: 1, projectId, generations: [], rejectedHypotheses: [] })
@@ -531,7 +548,8 @@ function sanitizeLedger(raw: unknown, projectId: string): Ledger | null {
   const keep = new Set(gens.slice(-MAX_GENERATIONS))
   const trial = gens.find((g) => g.status === 'trial')
   if (trial) keep.add(trial)
-  return { version: 1, projectId, generations: gens.filter((g) => keep.has(g)), rejectedHypotheses: rej.slice(-MAX_REJECTED) }
+  const memo = sanitizeMemo(raw.hybridMemo)
+  return { version: 1, projectId, generations: gens.filter((g) => keep.has(g)), rejectedHypotheses: rej.slice(-MAX_REJECTED), ...(memo ? { hybridMemo: memo } : {}) }
 }
 
 /**

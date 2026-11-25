@@ -216,6 +216,13 @@ Done when: a unit test shows the card appears after N unused runs, not before, a
 Done when: `synthesizer.test.ts` covers both; a service test shows two consecutive post-run passes on an unchanged
 digest make one model call.
 
+Status (2026-11-25): items 1 and 2 done; item 3 left as is. `buildDigest` takes the cooldown slugs; the ledger keeps one
+`hybridMemo` (sha256 of the digest text, outcome empty / refused / unusable, time), written only by apply and the post-run
+pass, read (never written) by analyze. Checked by `synthesizer.test.ts`, `service.test.ts` "hybrid memo" (one call for two
+passes on an unchanged digest, two after a change or a usable answer) and `ratchet.test.ts` (shape check, old ledger);
+`bench:heal --seed 1` `results.json` identical before and after. Open: a failed or timed-out call is not memoised (it may be
+transient); the memo has no expiry, it ends when the digest changes; live model answers not run.
+
 ### Step 6. Give the retrospective the cross-run picture
 
 Append to the retro session's context a short block from evolve `analyze` with strategy `deterministic` (no tokens):

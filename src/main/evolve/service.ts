@@ -37,6 +37,7 @@ import {
   validateEvolutionPlan,
   writeLedger,
   type GateOptions,
+  type HybridMemo,
   type Ledger,
   type StoredGeneration
 } from './ratchet'
@@ -389,7 +390,9 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const { diagnosis, gate } = gateFor(project, input, ledger, src)
     const { cooldownSlugs } = gate
     const minWaste = typeof input.minWaste === 'number' && Number.isFinite(input.minWaste) ? Math.min(100, Math.max(0, input.minWaste)) : MIN_WASTE_DEFAULT
-    let plan = await synthesize({ project, diagnosis, strategy, rejected: ledger.rejectedHypotheses, minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs })
+    // The hybrid memo is read here and only reported back (`unusable`); the caller that holds the write lock stores it.
+    let unusable: { digestHash: string; outcome: HybridMemo['outcome'] } | undefined
+    let plan = await synthesize({ project, diagnosis, strategy, rejected: ledger.rejectedHypotheses, minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs, ...(ledger.hybridMemo ? { memo: ledger.hybridMemo } : {}), onUnusable: (m) => { unusable = m } })
     // Deleting a project skill is reported, never applied: a skill's folder can hold more than SKILL.md (scripts,
     // references) and an enabled flag, which a generation's snapshot does not keep, so a rollback could not put it back
     // as it was. Removing it stays the user's call.
@@ -405,17 +408,18 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       plan = validateEvolutionPlan(project, { ...plan, newSkills: [] }, gate)
       plan.gate.violations.push({ rule: 'skill_needs_review', message: `Suggested skills not applied (they need review): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
     }
-    return { diagnosis, plan, minWaste, gate }
+    return { diagnosis, plan, minWaste, gate, unusable }
   }
 
   async function analyze(input: EvolveAnalyzeInput): Promise<EvolveAnalyzeResult> {
     const project = projectOf(input.projectId)
     const ledger = ledgerForRead(project.id)
     const strategy = input.strategy ?? 'deterministic'
-    const { diagnosis, plan } = await planFor(project, input, ledger, strategy, runSource(project.id))
+    // Read-only: honours the hybrid memo but never writes it (the post-run / apply pass does).
+    const { diagnosis, plan, gate } = await planFor(project, input, ledger, strategy, runSource(project.id))
     plan.spendRaises = spendRaisesOf(project, plan)
     if (strategy === 'hybrid' && plan.gate.ok && !plan.empty) remember(project, plan)
-    return { diagnosis, plan, digest: buildDigest(project, diagnosis, ledger.rejectedHypotheses) }
+    return { diagnosis, plan, digest: buildDigest(project, diagnosis, ledger.rejectedHypotheses, gate.cooldownSlugs) }
   }
 
   /** Why the team cannot be written now (team files waiting for approval, or a problem), else undefined. */
@@ -468,6 +472,15 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       diagnosis = made.diagnosis
       plan = made.plan
       gate = made.gate
+      // An answer that gave nothing usable is remembered by the digest's hash (this pass holds the project's write chain).
+      if (made.unusable) {
+        ledger.hybridMemo = { ...made.unusable, at: now() }
+        try {
+          writeLedger(deps.dataDir, ledger)
+        } catch (e) {
+          log('warn', `Evolution could not store the hybrid memo: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
     }
     plan.spendRaises = spendRaisesOf(project, plan)
     let held: EvolutionSpendRaise[] = []

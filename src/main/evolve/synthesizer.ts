@@ -36,7 +36,8 @@ import {
   managedBlockEdited,
   upsertScopeBlock
 } from './plan'
-import { validateEvolutionPlan } from './ratchet'
+import { createHash } from 'node:crypto'
+import { validateEvolutionPlan, type HybridMemo } from './ratchet'
 import { safeLine } from './telemetry'
 import type { EvolveCompleteRequest, EvolveCompleteResult } from './service'
 
@@ -61,7 +62,14 @@ export interface SynthesizeInput {
   timeoutMs?: number
   /** Roles patched in either of the last two decided generations (the gate leaves them alone). */
   cooldownSlugs?: readonly string[]
+  /** The last hybrid answer that gave nothing usable. The same digest text is not sent again. */
+  memo?: Pick<HybridMemo, 'digestHash' | 'outcome'>
+  /** Told when a model answer gave nothing usable (the caller decides whether and where to store it). */
+  onUnusable?: (memo: Pick<HybridMemo, 'digestHash' | 'outcome'>) => void
 }
+
+/** sha256 hex of the digest text. */
+export const digestHashOf = (digest: string): string => createHash('sha256').update(digest).digest('hex')
 
 // ---------- deterministic prompt compression ----------------------------------------------------------------------------
 
@@ -303,7 +311,7 @@ export const HYBRID_SYSTEM = `You tune an AI agent team's configuration from mea
 Omit any optional field you are not changing (do not send empty strings, empty arrays, maxConcurrentSubagents 0, or staffing.minTier unless raising the floor for a tier_underprovisioned role). Optional "maxConcurrentSubagents" (integer 1..32) is omitted unless raising concurrency for a serial_bottleneck.`
 
 /** The telemetry digest a hybrid call would send: redacted, fenced and strictly under 2,800 characters. */
-export function buildDigest(project: Project, diagnosis: TeamEvolutionDiagnosis, rejected: readonly Pick<EvolutionRejectedHypothesis, 'fingerprint' | 'summary'>[] = []): string {
+export function buildDigest(project: Project, diagnosis: TeamEvolutionDiagnosis, rejected: readonly Pick<EvolutionRejectedHypothesis, 'fingerprint' | 'summary'>[] = [], cooldownSlugs: readonly string[] = []): string {
   const m = diagnosis.metrics
   const head = [
     `project: ${safeLine(project.name, 60)} | goal ${diagnosis.goal} | waste ${diagnosis.wasteScore}/100 | runs ${m.runs}`,
@@ -315,7 +323,8 @@ export function buildDigest(project: Project, diagnosis: TeamEvolutionDiagnosis,
     return `${i + 1}. ${f.kind}${f.roleSlug ? ` ${safeLine(f.roleSlug, 40)}` : ''}${tag} sev ${f.severity}: ${safeLine(f.summary, 140)} [${f.evidence.slice(0, 2).map((e) => safeLine(e, 70)).join('; ')}]`
   })
   const rej = rejected.slice(-5).map((r) => `- ${safeLine(r.fingerprint, 16)} ${safeLine(r.summary, 80)}`)
-  const sections = [head, ['roles:', ...roles], ['findings:', ...findings], rej.length ? ['rejectedHypotheses (do not repeat):', ...rej] : []]
+  const cool = [...new Set(cooldownSlugs.slice(0, 12).map((s) => safeLine(s, 40)))].filter(Boolean)
+  const sections = [head, ['roles:', ...roles], cool.length ? [`do not change (recently changed, the gate trims any patch to them): ${cool.join(', ')}`] : [], ['findings:', ...findings], rej.length ?['rejectedHypotheses (do not repeat):', ...rej] : []]
   const open = '<telemetry>'
   const close = '</telemetry>'
   let body = ''
@@ -434,13 +443,23 @@ export async function synthesize(input: SynthesizeInput): Promise<EvolutionPlan>
   if (base.empty && diagnosis.findings.length > 0 && diagnosis.findings.every(isAdvisoryOnlyFinding)) return base
   const note = (why: string): EvolutionPlan => ({ ...base, rationale: safeLine(`${base.rationale} | hybrid unavailable: ${why}`, 1200) })
   if (!input.complete) return note('no model adapter, used the deterministic plan')
+  const digest = buildDigest(project, diagnosis, rejected, input.cooldownSlugs)
+  const digestHash = digestHashOf(digest)
+  if (input.memo && input.memo.digestHash === digestHash) return note(`the same telemetry got no usable answer last time (${input.memo.outcome}), used the deterministic plan (no model call)`)
+  const unusable = (outcome: HybridMemo['outcome']): void => {
+    try {
+      input.onUnusable?.({ digestHash, outcome })
+    } catch {
+      // memo bookkeeping must never break a plan
+    }
+  }
 
   const ctl = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   let res: EvolveCompleteResult
   try {
     res = await Promise.race([
-      input.complete({ system: HYBRID_SYSTEM, prompt: `${buildDigest(project, diagnosis, rejected)}\n\nPropose the JSON now.`, effort: 'medium', signal: ctl.signal }),
+      input.complete({ system: HYBRID_SYSTEM, prompt: `${digest}\n\nPropose the JSON now.`, effort: 'medium', signal: ctl.signal }),
       new Promise<never>((_, rej) => {
         timer = setTimeout(() => {
           ctl.abort()
@@ -463,7 +482,11 @@ export async function synthesize(input: SynthesizeInput): Promise<EvolutionPlan>
   }
   const deltas = parseModelDeltas(res.text, project)
   const withUsage = (p: EvolutionPlan): EvolutionPlan => (usage ? { ...p, usage } : p)
-  if (!deltas) return withUsage(note('the answer was not valid JSON, used the deterministic plan'))
+  if (!deltas) {
+    unusable('unusable')
+    return withUsage(note('the answer was not valid JSON, used the deterministic plan'))
+  }
+  if (!deltas.rolePatches.length && !deltas.newSkills.length && !deltas.pruneSkillIds.length && deltas.maxConcurrentSubagents === undefined) unusable('empty')
 
   // Overlay the model's deltas on the deterministic patches (the model wins per field).
   const merged = new Map(base.rolePatches.map((p) => [p.slug, { ...p }]))
@@ -486,7 +509,10 @@ export async function synthesize(input: SynthesizeInput): Promise<EvolutionPlan>
   }
   const gated = validateEvolutionPlan(project, plan, { rejected, diagnosis, cooldownSlugs: input.cooldownSlugs })
   if (!gated.gate.ok) {
+    unusable('refused')
     return withUsage({ ...note(`the model's proposal was refused by the safety gate (${gated.gate.violations.filter((v) => v.action === 'rejected').map((v) => v.rule).join(', ')})`) })
   }
+  // Every proposed patch trimmed away (and nothing from the deterministic plan left): nothing usable either.
+  if (gated.empty && (deltas.rolePatches.length || deltas.newSkills.length || deltas.pruneSkillIds.length)) unusable('unusable')
   return gated
 }
