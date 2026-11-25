@@ -1017,9 +1017,12 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
 - **Project budget cap in main:** `checkSpend`'s own cap is `runBudgetUsd`, else `Project.maxBudgetUsd` as the run sees it, on
   every adapter (a project cap alone used to stop only Claude, through the SDK). Unknown or partly unknown price under a cap
   stops the run (known part on the hold; that hold carries `budget.unpriced` and says "no known price", not "used all of" the
-  limit; the scripted mock is never SDK-first exempt, so its default unpriced report stops any capped run; `send()` to an
-  ended run is refused with the hold's reason, "Run is not active" only for an unknown id; unit tests in
-  `runManager.projectCap.test.ts`, live providers unverified). Both stops make one hold (`spendStopped`). What is compared (`spendOf`): the run's
+  limit; the scripted mock is never SDK-first exempt, so its default unpriced report stops any capped run; an unpriced hold
+  offers only `switchModel` (`HoldFacts.unpriced`; `addBudget` refuses it in main); a desktop conversation-budget run on an
+  unpriced model holds the same way (`checkExecBudget`); `send()` to an ended run is refused with the hold's reason and a tail
+  chosen by hold kind, "Run is not active" only for an unknown id, and `send()` refuses between the stop (`spendStopped`,
+  `finalizing`, `userStopped`, status `stopping`) and the session's end instead of forwarding to a session being stopped;
+  unit tests in `runManager.projectCap.test.ts`, live providers unverified). Both stops make one hold (`spendStopped`). What is compared (`spendOf`): the run's
   best known cost; with bridged agents also the parent session's best cost plus the bridged agents' known cost (a parent's
   provider total never covers them, on any adapter), and a bridged agent with no known price counts as unknown. A first-party
   Anthropic Claude run under the project's cap compares the SDK's own total (plus bridged agents), so main does not stop it
