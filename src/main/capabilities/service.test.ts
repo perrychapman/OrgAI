@@ -11,8 +11,10 @@ import {
   TEAM_REVIEW_PROACTIVE_LIMIT,
   type CapabilityDiscovery,
   type CapabilityItem,
+  type AgentInstance,
   type McpServerSpec,
   type Project,
+  type RunRecord,
   type RunSummary,
   type TeamReviewSummary
 } from '@shared/types'
@@ -716,6 +718,215 @@ describe('review', () => {
     const partial = await c
     expect(partial.discovery.partial).toBe(true)
     expect(live.lastReview('p1')!.checkedAt).not.toBe(partial.checkedAt)
+  })
+
+  describe('the model step runs only on input it has not seen', () => {
+    // A finished work run whose Bash call was denied for the engineer: one `permissionDenied` signal per record.
+    const denial = (id: string, endedAt: number): { summary: RunSummary; record: RunRecord } => {
+      const summary = work(id, endedAt)
+      const agent = (aid: string, roleId: string): AgentInstance => ({ id: aid, roleId, roleSlug: aid, name: aid, parentId: null, spawnToolUseId: null, state: 'done', activity: '', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 0 })
+      const record = {
+        summary,
+        agents: { root: agent('root', LEAD), eng: agent('eng', ENG) },
+        transcript: [
+          { id: `${id}-1`, agentId: 'eng', at: 1000, block: { kind: 'tool_use', id: 'a', name: 'Bash', input: { command: 'npm test' } } },
+          { id: `${id}-2`, agentId: 'eng', at: 1001, block: { kind: 'tool_result', toolUseId: 'a', content: 'The user denied permission', isError: true } }
+        ],
+        logs: []
+      } as unknown as RunRecord
+      return { summary, record }
+    }
+    const records = new Map<string, RunRecord>()
+    const getRun = vi.fn((id: string): RunRecord | null => records.get(id) ?? null)
+    beforeEach(() => {
+      records.clear()
+      getRun.mockClear()
+    })
+    const live = (everyRuns: number, auto: 'ai' | 'free' = 'ai'): CapabilityService => {
+      const svc = rig.make({ mock: false, getRun })
+      rig.store.save({ ...stored(), teamReview: { auto, tokenBudget: 200_000, everyRuns } })
+      return svc
+    }
+    const ended = async (svc: CapabilityService, n = 1): Promise<void> => {
+      for (let i = 0; i < n; i++) svc.runEnded('p1', `run-${i}`)
+      await new Promise((r) => setTimeout(r, 40))
+      await svc.idle('p1')
+    }
+    const addDenial = (id: string): void => {
+      const d = denial(id, rig.clock.t + rig.runs.length + 1)
+      rig.runs.push(d.summary)
+      records.set(id, d.record)
+    }
+    const onDisk = (): Record<string, unknown> => JSON.parse(readFileSync(join(rig.data, 'team-reviews', 'p1.json'), 'utf8')) as Record<string, unknown>
+
+    it('does not call the model again on identical input at everyRuns 1 (also after a skipped pass)', async () => {
+      const svc = live(1)
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+      expect(svc.lastReview('p1')).toMatchObject({ mode: 'model', runsSinceModel: 0 })
+      const seen = onDisk().modelSeen as { hash: string }
+      expect(seen.hash).toMatch(/^[0-9a-f]{64}$/)
+      for (let i = 0; i < 3; i++) {
+        await ended(svc)
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+      }
+      // Before this change the second skipped pass lost the record and asked the model again.
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+      expect((onDisk().modelSeen as { hash: string }).hash).toBe(seen.hash)
+    })
+
+    it('does not call the model again on identical input at everyRuns 3', async () => {
+      const svc = live(3)
+      await ended(svc, 3)
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+      for (let round = 0; round < 3; round++) {
+        for (let i = 0; i < 3; i++) await ended(svc)
+        // The third pass of each round is eligible and finds nothing new (the count keeps growing until a model step succeeds).
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange', runsSinceModel: 3 * (round + 1) })
+      }
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps the main-only record out of what the renderer and the host receive', async () => {
+      const svc = live(1)
+      await ended(svc)
+      expect(onDisk().modelSeen).toBeDefined()
+      expect(svc.lastReview('p1')).not.toHaveProperty('modelSeen')
+      expect(await svc.review({ projectId: 'p1', trigger: 'manual' })).not.toHaveProperty('modelSeen')
+      expect(await svc.review({ projectId: 'p1', trigger: 'opened' })).not.toHaveProperty('modelSeen')
+      expect(await svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })).not.toHaveProperty('modelSeen')
+      expect(onDisk().modelSeen).toBeDefined()
+      expect(rig.summaries.every((s) => !('modelSeen' in s))).toBe(true)
+    })
+
+    it('a failed call (error, unreadable answer) is retried on the next eligible pass and then settles', async () => {
+      const svc = live(1)
+      rig.complete.mockRejectedValueOnce(new Error('boom'))
+      await ended(svc)
+      expect(svc.lastReview('p1')).toMatchObject({ mode: 'free', modelSkipped: 'error', modelInput: 'proactive' })
+      expect(onDisk().modelSeen).toBeUndefined()
+      rig.complete.mockResolvedValueOnce({ text: 'not json at all' })
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(2)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'error' })
+      expect(onDisk().modelSeen).toBeUndefined()
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(3)
+      expect(svc.lastReview('p1')).toMatchObject({ mode: 'model' })
+      expect(onDisk().modelSeen).toBeDefined()
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(3)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+    })
+
+    it('a failure after a success keeps the earlier record, so nothing is asked twice for the same input', async () => {
+      const svc = live(1)
+      await ended(svc)
+      const seen = onDisk().modelSeen
+      // A new signal makes the next pass eligible; the call fails; the record of what the answer saw stays.
+      addDenial('run-d1')
+      rig.complete.mockRejectedValueOnce(new Error('boom'))
+      await ended(svc)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'error' })
+      expect(onDisk().modelSeen).toEqual(seen)
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(3)
+    })
+
+    it('a pass skipped as everyRuns or autoFree reads no run record', async () => {
+      addDenial('run-a')
+      addDenial('run-b')
+      const svc = live(3)
+      await ended(svc, 3)
+      expect(getRun).toHaveBeenCalled()
+      const before = svc.lastReview('p1')!
+      expect(before.evidence).toHaveLength(1)
+      getRun.mockClear()
+      await ended(svc)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'everyRuns', runsSinceModel: 1 })
+      expect(getRun).not.toHaveBeenCalled()
+      expect(svc.lastReview('p1')!.evidence).toEqual(before.evidence)
+      // Free-only reviews carry the list the same way; a manual or opened review reads again.
+      rig.store.save({ ...stored(), teamReview: { auto: 'free', tokenBudget: 200_000, everyRuns: 1 } })
+      await ended(svc)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'autoFree' })
+      expect(getRun).not.toHaveBeenCalled()
+      await svc.review({ projectId: 'p1', trigger: 'manual' })
+      expect(getRun).toHaveBeenCalled()
+    })
+
+    it('a first pass has nothing to carry, so it still collects evidence even when skipped', async () => {
+      addDenial('run-a')
+      const svc = live(3, 'free')
+      await ended(svc)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'autoFree' })
+      expect(svc.lastReview('p1')!.evidence).toHaveLength(1)
+    })
+
+    it('a changed role, candidate or new evidence asks the model again; less evidence does not', async () => {
+      const svc = live(1)
+      await ended(svc)
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+      // A role changes (the prompt shows its description).
+      rig.store.save({ ...stored(), roles: stored().roles.map((r) => (r.id === ENG ? { ...r, description: 'Writes code, tests and release notes' } : r)) })
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(2)
+      expect(svc.lastReview('p1')!.modelSkipped).toBeUndefined()
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(2)
+      // A candidate changes (its fingerprint differs).
+      put(join(rig.repo, '.claude', 'skills', 'repo-helper', 'SKILL.md'), SKILL_MD('repo-helper', 'Now it does something different entirely.'))
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(3)
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(3)
+      // New run evidence.
+      addDenial('run-d1')
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(4)
+      expect(svc.lastReview('p1')!.evidence).toHaveLength(1)
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(4)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+      // The signal falling out of the window is not news.
+      rig.runs.length = 0
+      await ended(svc)
+      expect(svc.lastReview('p1')!.evidence).toHaveLength(0)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+      expect(rig.complete).toHaveBeenCalledTimes(4)
+    })
+
+    it('dismissing a card does not ask the model again', async () => {
+      const svc = live(1)
+      const cand = pick(await svc.discover({ projectId: 'p1' }), 'skill', 'repo-helper')
+      rig.complete.mockResolvedValueOnce({ text: answer([{ candidateId: cand.id, roleIds: [ENG], reason: 'Fits.' }]) })
+      await ended(svc)
+      const first = svc.lastReview('p1')!
+      expect(first.pendingCount).toBe(1)
+      svc.dismiss({ projectId: 'p1', recommendationId: first.recommendations[0]!.id })
+      expect(onDisk().modelSeen).toBeDefined()
+      await ended(svc)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+    })
+
+    it('an old stored review without the record loads and asks the model once', async () => {
+      const svc = live(1)
+      await ended(svc)
+      const file = join(rig.data, 'team-reviews', 'p1.json')
+      const old = onDisk()
+      delete old.modelSeen
+      writeFileSync(file, JSON.stringify(old))
+      expect(readReview(rig.data, 'p1')).toMatchObject({ projectId: 'p1', modelInput: 'proactive' })
+      expect(readReview(rig.data, 'p1')!.modelSeen).toBeUndefined()
+      expect(svc.lastReview('p1')).toMatchObject({ mode: 'model' })
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(2)
+      expect(onDisk().modelSeen).toBeDefined()
+      await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(2)
+    })
   })
 
   it('manual re-check with useModel sends everything and marks modelInput full', async () => {

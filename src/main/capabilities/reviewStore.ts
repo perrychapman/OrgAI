@@ -24,6 +24,42 @@ const KINDS: ReadonlySet<string> = new Set<CapabilityKind>(['skill', 'mcp', 'con
 const isKind = (v: unknown): v is CapabilityKind => isStr(v) && KINDS.has(v)
 const SKIPS: ReadonlySet<string> = new Set<TeamReviewModelSkip>(['autoOff', 'autoFree', 'noChange', 'everyRuns', 'budget', 'error', 'timeout', 'cancelled', 'mockFree', 'pendingFull'])
 
+/** Most evidence entries `modelSeen` keeps (a stored file is untrusted; collectEvidence returns far fewer). */
+export const REVIEW_MAX_SEEN_EVIDENCE = 100
+
+/**
+ * What the last successful model step saw, main-only (never in the shared TeamReview, stripped by `publicReview`):
+ * `hash` over the roles and recommendable candidates, `evidence` the id and count of each signal at that time.
+ * Carried forward unchanged across reviews whose model step did not succeed.
+ */
+export interface ModelSeen {
+  hash: string
+  evidence: Array<{ id: string; count: number }>
+}
+
+/** A review as stored: the shared shape plus main-only bookkeeping. */
+export type StoredReview = TeamReview & { modelSeen?: ModelSeen }
+
+/** The review as the renderer, the CLI and the host see it: the main-only fields removed. */
+export function publicReview(r: TeamReview): TeamReview {
+  const { modelSeen: _drop, ...rest } = r as StoredReview
+  return rest
+}
+
+function cleanSeen(v: unknown): ModelSeen | null {
+  if (!v || typeof v !== 'object' || isArr(v)) return null
+  const x = v as Record<string, unknown>
+  if (!isStr(x.hash) || !/^[0-9a-f]{64}$/.test(x.hash) || !isArr(x.evidence)) return null
+  const evidence: ModelSeen['evidence'] = []
+  for (const e of x.evidence.slice(0, REVIEW_MAX_SEEN_EVIDENCE)) {
+    if (!e || typeof e !== 'object') continue
+    const y = e as Record<string, unknown>
+    if (!isStr(y.id) || y.id.length > 64 || !Number.isFinite(y.count) || (y.count as number) < 0) continue
+    evidence.push({ id: y.id, count: Math.floor(y.count as number) })
+  }
+  return { hash: x.hash, evidence }
+}
+
 /** A stored recommendation rebuilt field by field, or null when its id, candidate, kind or roles are unusable. */
 function cleanRec(v: unknown): CapabilityRecommendation | null {
   if (!v || typeof v !== 'object' || isArr(v)) return null
@@ -42,7 +78,7 @@ function cleanRec(v: unknown): CapabilityRecommendation | null {
 }
 
 /** The review when it has the expected shape for this project, else null. */
-export function normalizeReview(v: unknown, projectId: string): TeamReview | null {
+export function normalizeReview(v: unknown, projectId: string): StoredReview | null {
   if (!v || typeof v !== 'object' || isArr(v)) return null
   const r = v as Partial<TeamReview>
   if (r.projectId !== projectId || !isStr(r.checkedAt) || !isStr(r.digest)) return null
@@ -69,6 +105,7 @@ export function normalizeReview(v: unknown, projectId: string): TeamReview | nul
     if (rec) out.recommendation = rec
     dismissed.push(out)
   }
+  const seen = cleanSeen((v as { modelSeen?: unknown }).modelSeen)
   // Only the known keys; unknown ones in the file are dropped.
   return {
     projectId,
@@ -87,11 +124,12 @@ export function normalizeReview(v: unknown, projectId: string): TeamReview | nul
     runsSinceModel: Number.isFinite(r.runsSinceModel) && (r.runsSinceModel as number) >= 0 ? Math.floor(r.runsSinceModel as number) : 0,
     ...(Number.isFinite(r.tokensUsed) && (r.tokensUsed as number) >= 0 ? { tokensUsed: r.tokensUsed } : {}),
     ...(r.modelInput === 'proactive' || r.modelInput === 'full' ? { modelInput: r.modelInput } : {}),
-    ...(r.stub === true ? { stub: true as const } : {})
+    ...(r.stub === true ? { stub: true as const } : {}),
+    ...(seen ? { modelSeen: seen } : {})
   }
 }
 
-export function readReview(dataDir: string, projectId: string): TeamReview | null {
+export function readReview(dataDir: string, projectId: string): StoredReview | null {
   const file = reviewFile(dataDir, projectId)
   if (!file) return null
   try {

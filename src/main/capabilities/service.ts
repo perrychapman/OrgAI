@@ -33,6 +33,7 @@ import {
   type RunSummary,
   type TeamDismissInput,
   type TeamDismissal,
+  type TeamEvidence,
   type TeamRecommendations,
   type TeamRestoreInput,
   type TeamReview,
@@ -67,8 +68,8 @@ import {
   registryQueries,
   scopeRoleIds
 } from './recommend'
-import { collectEvidence, EVIDENCE_MAX_RUNS, hasNewEvidence } from './evidence'
-import { readReview, removeReview, reviewSummary, writeReview } from './reviewStore'
+import { collectEvidence, EVIDENCE_MAX_RUNS } from './evidence'
+import { publicReview, readReview, removeReview, REVIEW_MAX_SEEN_EVIDENCE, reviewSummary, writeReview, type ModelSeen, type StoredReview } from './reviewStore'
 import { clampText, mcpSpecDigest } from './sanitize'
 
 /** What index.ts hands the service. */
@@ -167,6 +168,26 @@ export function fingerprintOf(item: Pick<CapabilityItem, 'id' | 'digest' | 'vers
     .update(`${candidateId}\0${item?.digest ?? ''}\0${item?.version ?? ''}\0${item?.target ?? ''}`)
     .digest('hex')
     .slice(0, 16)
+}
+
+/**
+ * What an automatic model step is told, as one hash: the project and its roles (as the prompt shows them) and the
+ * recommendable candidates (fingerprint, origin, text, who holds them). Dismissed candidates are not left out, so
+ * dismissing or restoring a card never makes the model run again. Evidence is compared apart, in `evidenceIsNew`.
+ */
+export function modelInputHash(project: Pick<Project, 'name' | 'brief' | 'roles'>, items: CapabilityItem[]): string {
+  const roles = project.roles.map((r) => [r.id, r.name, r.reportsTo === null, r.tools.join(','), (r.skills ?? []).length, r.description, (r.responsibilities ?? []).join(';')])
+  const candidates = recommendable(items)
+    .map((i) => [fingerprintOf(i, i.id), i.kind, i.origin, i.name, i.description ?? '', i.inProject?.grantedTo.join(',') ?? '', i.flags.join(','), i.readOnlyAvailable ?? null])
+    .map((c) => JSON.stringify(c))
+    .sort()
+  return createHash('sha256').update(JSON.stringify([project.name, project.brief ?? '', roles, candidates])).digest('hex')
+}
+
+/** A signal the last model step did not see: a new id or a higher count (a smaller count is not news). */
+function evidenceIsNew(seen: ModelSeen['evidence'], now: TeamEvidence[]): boolean {
+  const before = new Map(seen.map((e) => [e.id, e.count]))
+  return now.some((e) => (before.get(e.id) ?? 0) < e.count)
 }
 
 /** Candidates of `items` whose persisted dismissal (a stub review counts) still matches their fingerprint. */
@@ -902,7 +923,8 @@ export class CapabilityService implements CapabilityServiceApi {
 
   lastReview(projectId: string): TeamReview | null {
     if (isVirtualProjectId(projectId)) return null
-    return readReview(this.deps.dataDir, projectId)
+    const stored = readReview(this.deps.dataDir, projectId)
+    return stored ? publicReview(stored) : null
   }
 
   private publish(review: TeamReview): void {
@@ -982,7 +1004,7 @@ export class CapabilityService implements CapabilityServiceApi {
     const recommendations = base.recommendations.filter((r) => r.id !== rec?.id && r.candidateId !== candidateId)
     const next: TeamReview = { ...base, recommendations, pendingCount: recommendations.length, dismissed }
     this.publish(next)
-    return next
+    return publicReview(next)
   }
 
   restore(input: TeamRestoreInput): TeamReview {
@@ -1003,7 +1025,7 @@ export class CapabilityService implements CapabilityServiceApi {
     }
     const next: TeamReview = { ...review, recommendations, pendingCount: recommendations.length, dismissed }
     this.publish(next)
-    return next
+    return publicReview(next)
   }
 
   /** A review with nothing pending, bound to a held discovery: only to persist a dismissal before any review ran. */
@@ -1041,9 +1063,12 @@ export class CapabilityService implements CapabilityServiceApi {
   async review(input: TeamReviewInput): Promise<TeamReview> {
     const project = this.project(input.projectId)
     const trigger = input.trigger === 'opened' ? 'opened' : 'manual'
+    // The throttle's read is handed to the pass when no other review of the project is queued ahead of it (one read per pass).
+    let stored: StoredReview | null | undefined
     if (trigger === 'opened') {
       const prev = readReview(this.deps.dataDir, project.id)
-      if (prev && !prev.stub && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return prev
+      if (prev && !prev.stub && this.now() - Date.parse(prev.checkedAt) < TEAM_REVIEW_OPEN_THROTTLE_MS && !this.changedSince(project, prev)) return publicReview(prev)
+      if (!this.chains.has(project.id)) stored = prev
     }
     const requestId = this.requestIdOf(input.requestId)
     const ac = this.track(requestId)
@@ -1056,7 +1081,8 @@ export class CapabilityService implements CapabilityServiceApi {
           useModel: trigger === 'manual' && input.useModel === true,
           runsAdded: 0,
           requestId,
-          signal: ac.signal
+          signal: ac.signal,
+          ...(stored !== undefined ? { stored } : {})
         })
       )
     } finally {
@@ -1080,36 +1106,34 @@ export class CapabilityService implements CapabilityServiceApi {
 
   private async runReview(
     projectId: string,
-    opts: { trigger: TeamReviewTrigger; includeOutside: boolean; useModel: boolean; runsAdded: number; requestId: string; signal: AbortSignal }
+    opts: { trigger: TeamReviewTrigger; includeOutside: boolean; useModel: boolean; runsAdded: number; requestId: string; signal: AbortSignal; stored?: StoredReview | null }
   ): Promise<TeamReview> {
     const project = this.project(projectId)
-    const prev = readReview(this.deps.dataDir, projectId)
+    // The stored review is read once here and passed down; only the dismissals are re-read right before saving.
+    const prev = opts.stored !== undefined ? opts.stored : readReview(this.deps.dataDir, projectId)
     const emit = this.emitter(projectId, opts.requestId)
-    const snap = await this.discoverSnap(project, { includeOutside: opts.includeOutside, requestId: opts.requestId, signal: opts.signal, emit })
-    const items = snap.discovery.items
-    const byId = new Map(items.map((i) => [i.id, i]))
-    const evidence = collectEvidence(project, this.recentRecords(projectId))
-    const prevIds = new Set((prev?.discovery.items ?? []).map((i) => i.id))
-    const newCandidateIds = prev ? items.filter((i) => i.origin !== 'project' && !prevIds.has(i.id)).map((i) => i.id) : []
-    let dismissed = prev?.dismissed ?? []
     const settings = teamReviewOf(project)
-    let runsSinceModel = (prev?.runsSinceModel ?? 0) + opts.runsAdded
-    const excluded = dismissedIds({ dismissed }, items)
-    const stillUseful = (r: CapabilityRecommendation): boolean => refineRecommendation(r, project.roles, byId, excluded) !== null
+    const runsSinceModel0 = (prev?.runsSinceModel ?? 0) + opts.runsAdded
+    const automatic = opts.trigger !== 'manual'
 
+    // Skips that need neither discovery nor evidence come first, from the stored review and the project's settings.
     let skip: TeamReviewModelSkip | undefined
     if (!opts.useModel && opts.trigger === 'runEnded') {
       if (settings.auto === 'off') skip = 'autoOff'
       else if (settings.auto === 'free') skip = 'autoFree'
       else if (this.deps.mock) skip = 'mockFree'
-      else if (runsSinceModel < settings.everyRuns) skip = 'everyRuns'
-      // Nothing new since a review whose model step already looked at these candidates (a free-only previous review has not).
-      else if (prev?.modelInput && !hasNewEvidence(prev.evidence, evidence) && newCandidateIds.length === 0) skip = 'noChange'
-      else {
-        const { system, prompt } = buildRecommendPrompt(project, items, {}, { localDetail: 'minimal' })
-        if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'
-      }
+      else if (runsSinceModel0 < settings.everyRuns) skip = 'everyRuns'
     }
+    // Every pass still discovers: the saved review shows fresh candidates and keeps its cards bound to them.
+    const snap = await this.discoverSnap(project, { includeOutside: opts.includeOutside, requestId: opts.requestId, signal: opts.signal, emit })
+    const items = snap.discovery.items
+    const byId = new Map(items.map((i) => [i.id, i]))
+    const prevIds = new Set((prev?.discovery.items ?? []).map((i) => i.id))
+    const newCandidateIds = prev ? items.filter((i) => i.origin !== 'project' && !prevIds.has(i.id)).map((i) => i.id) : []
+    let dismissed = prev?.dismissed ?? []
+    let runsSinceModel = runsSinceModel0
+    const excluded = dismissedIds({ dismissed }, items)
+    const stillUseful = (r: CapabilityRecommendation): boolean => refineRecommendation(r, project.roles, byId, excluded) !== null
 
     // Pending recommendations carried over: the previous review's, and on a manual Re-check also the newest recommend
     // result still held in memory (what the user is looking at). Each is kept only while its candidate is unchanged
@@ -1131,15 +1155,32 @@ export class CapabilityService implements CapabilityServiceApi {
     }
     let recommendations = carried.map((r) => refineRecommendation(r, project.roles, byId, excluded)).filter((r): r is CapabilityRecommendation => !!r).slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
     // An automatic review never drops what is pending and adds new ones only up to TEAM_REVIEW_PROACTIVE_LIMIT.
-    const automatic = opts.trigger !== 'manual'
     const room = automatic ? Math.max(0, TEAM_REVIEW_PROACTIVE_LIMIT - recommendations.length) : CAPABILITY_MAX_RECOMMENDATIONS
     // No room for an automatic model step's picks: do not spend tokens on it.
     if (!opts.useModel && opts.trigger === 'runEnded' && skip === undefined && room === 0) skip = 'pendingFull'
+
+    // Run evidence (up to 20 record reads) only when its result is used: the noChange decision, a model step or a
+    // review the user asked for or opened. A pass already skipped keeps the stored list (a first pass has none to keep).
+    let evidence: TeamEvidence[]
+    if (skip !== undefined && prev && !prev.stub) evidence = prev.evidence
+    else evidence = collectEvidence(project, this.recentRecords(projectId))
+    let modelHash: string | undefined
+    if (!opts.useModel && opts.trigger === 'runEnded' && skip === undefined) {
+      modelHash = modelInputHash(project, items)
+      // The last successful model step saw exactly this (a failed or free-only one never recorded it): nothing to ask.
+      if (prev?.modelSeen && prev.modelSeen.hash === modelHash && !evidenceIsNew(prev.modelSeen.evidence, evidence)) skip = 'noChange'
+      else {
+        const { system, prompt } = buildRecommendPrompt(project, items, {}, { localDetail: 'minimal' })
+        if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'
+      }
+    }
     const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
     let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))
     let mode: TeamReview['mode'] = 'free'
     let tokensUsed = prev?.tokensUsed
     let modelInput: TeamReviewModelInput | undefined
+    // Carried forward unchanged unless this pass's model step succeeds.
+    let modelSeen: ModelSeen | undefined = prev?.modelSeen
     if (skip === 'mockFree') {
       // No model under the mock: deterministic keyword matches stand in, so the first review has something pending.
       const have = new Set(recommendations.map((r) => r.candidateId))
@@ -1172,6 +1213,8 @@ export class CapabilityService implements CapabilityServiceApi {
         }
         gaps = outcome.gaps
         runsSinceModel = 0
+        // A usable answer was applied: remember what it was given. A fallback (error, timeout, cancelled, unreadable) never does.
+        modelSeen = { hash: modelHash ?? modelInputHash(project, items), evidence: evidence.slice(0, REVIEW_MAX_SEEN_EVIDENCE).map((e) => ({ id: e.id, count: e.count })) }
       } else {
         skip = outcome.fallbackReason === 'timeout' ? 'timeout' : outcome.fallbackReason === 'cancelled' ? 'cancelled' : outcome.fallbackReason === 'noCandidates' ? 'noChange' : 'error'
       }
@@ -1201,7 +1244,7 @@ export class CapabilityService implements CapabilityServiceApi {
       recommendations = [...restored, ...recommendations].slice(0, CAPABILITY_MAX_RECOMMENDATIONS)
     }
     for (const r of recommendations) snap.recs.set(r.id, r)
-    const review: TeamReview = {
+    const review: StoredReview = {
       projectId,
       checkedAt: new Date(this.now()).toISOString(),
       trigger: opts.trigger,
@@ -1217,11 +1260,12 @@ export class CapabilityService implements CapabilityServiceApi {
       pendingCount: recommendations.length,
       runsSinceModel,
       ...(tokensUsed !== undefined ? { tokensUsed } : {}),
-      ...(modelInput ? { modelInput } : {})
+      ...(modelInput ? { modelInput } : {}),
+      ...(modelSeen ? { modelSeen } : {})
     }
     // A review cut short (cancelled or superseded) is returned but never saved over the last complete one.
     if (!snap.discovery.partial) this.publish(review)
-    return review
+    return publicReview(review)
   }
 
   runEnded(projectId: string, _runId: string): void {
