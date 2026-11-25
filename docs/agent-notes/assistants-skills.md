@@ -117,7 +117,12 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     tokens, overBudget }`. With a budget (an automatic pass: `Project.teamReview.tokenBudget`) the list is cut from the
     tail until `estimateRecommendTokens` fits; the step is skipped as `budget` only when the roles plus the smallest list
     (`RECOMMEND_MIN_CANDIDATES` = 10, or all when fewer exist) do not fit. Evidence is trimmed before candidates. The
-    manual Re-check and `capabilities:recommend` have no budget, only the 150 cap. The evidence block is `<evidence>`
+    manual Re-check and `capabilities:recommend` have no budget, only the 150 cap, and list candidates in discovery
+    order (`buildRecommendPrompt` `order: 'discovery'`; the ranking only decides which survive past 150): the e2e mock
+    adapter answers with the first registry candidate in prompt order, so a ranked manual prompt picked `test-runner`
+    for `github-tools` and `e2e/team.mjs` lost its "Needs: GITHUB_TOKEN" card (found 2026-11-25; the fallback itself was
+    unchanged, checked by running the bf71a04b scorer against the new one on the mock fixtures, scoped and unscoped, in
+    both discovery orders; pinned by `recommend.test.ts` "mock fixtures" and `service.test.ts`). The evidence block is `<evidence>`
     between `</roles>` and `<candidates>`, one `evidence <kind> | role=<id|none> | count=<n> | text=<redacted>` line per
     signal (at most 12 lines, text at most 200 characters, every text through the same `field()` as roles and
     candidates, so no newline, `|`, `=` or angle bracket; absent when there is none). Data classes: an automatic

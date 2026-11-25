@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CAPABILITY_MAX_GAPS, CAPABILITY_MAX_RECOMMENDATIONS, type CapabilityItem, type TeamEvidence } from '@shared/types'
 import { MockAdapter } from '../runtime/mock'
 import { project as makeProject, role } from '../runtime/testHelpers'
+import { discoverRegistry } from './outside'
 import {
   RECOMMEND_EVIDENCE_MAX_ITEMS,
   RECOMMEND_EVIDENCE_TEXT_MAX,
@@ -661,5 +662,74 @@ describe('evidence block (Step 3, C4)', () => {
       const text = await new MockAdapter().complete({ system: built.system, prompt: built.prompt, kind: 'recommend' } as never)
       expect(parseRecommendAnswer(text, items, project.roles, {}, 's').ok).toBe(true)
     })
+  })
+})
+
+describe('mock fixtures: the fallback and a manual recommend keep their picks (regression for Step 3)', () => {
+  // The mock registry (outside.ts) in discovery order: github-tools (needs GITHUB_TOKEN), test-runner, docs-search, unpinned-tool.
+  const team = makeProject({
+    roles: [
+      role({ id: 'r-lead', slug: 'lead', name: 'Lead', canSpawn: true, spawnable: ['r-qa', 'r-rev'] }),
+      role({ id: 'r-qa', slug: 'qa', name: 'QA', description: 'Runs the test suite and reports failures', reportsTo: 'r-lead' }),
+      role({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', description: 'Reviews pull requests', reportsTo: 'r-lead' })
+    ]
+  })
+  const mockFs = item({ id: 'cap-mock-fs', kind: 'mcp', origin: 'local', source: 'claude-code-mcp', name: 'mock-fs', description: '', transport: 'stdio', target: 'npx -y mock-fs-server@1.0.0' })
+  const catalogGithub = item({ id: 'cap-catalog-github', kind: 'connector', origin: 'catalog', source: 'catalog', name: 'GitHub', description: 'Pull requests and issues' })
+  const registry = async (): Promise<CapabilityItem[]> => (await discoverRegistry({ mock: true, queries: [], fetch } as never)).candidates.map((c) => c.item)
+  const nameOf = (items: CapabilityItem[], id: string): string => items.find((i) => i.id === id)?.name ?? id
+  const cardsOf = async (prompt: string, system: string, items: CapabilityItem[]): Promise<string[]> => {
+    const text = await new MockAdapter().complete({ system, prompt, kind: 'recommend' } as never)
+    const parsed = parseRecommendAnswer(text, items, team.roles, {}, 's')
+    if (!parsed.ok) throw new Error('unreadable mock answer')
+    return parsed.recommendations.map((r) => `${r.kind}:${nameOf(items, r.candidateId)}`)
+  }
+
+  it('pins the keyword fallback: the same picks, order and reason as before Step 3', async () => {
+    const reg = await registry()
+    expect(reg.map((i) => i.name)).toEqual(['github-tools', 'test-runner', 'docs-search', 'unpinned-tool'])
+    const all = [mockFs, ...reg, catalogGithub]
+    const recs = fallbackRecommend(all, team.roles, {}, 's')
+    expect(recs.map((r) => [nameOf(all, r.candidateId), r.roleIds, r.reason])).toEqual([
+      ['test-runner', ['r-qa'], 'Matches QA on: test, suite, failures.'],
+      ['GitHub', ['r-rev'], 'Matches Reviewer on: pull, requests.']
+    ])    // Anything rankCandidates / buildRecommendPrompt do (they only read) leaves the fallback alone, and so does the discovery order.
+    const before = JSON.stringify(recs)
+    rankCandidates(all, team.roles, {}, { nameOnlyLocal: true })
+    buildRecommendPrompt(team, all, {}, { localDetail: 'minimal', budget: 1 })
+    expect(JSON.stringify(fallbackRecommend(all, team.roles, {}, 's'))).toBe(before)
+    expect(JSON.stringify(fallbackRecommend([...all].reverse(), team.roles, {}, 's'))).toBe(before)
+  })
+
+  it('a manual recommend lists candidates in discovery order, so the mock still picks github-tools with its GITHUB_TOKEN need', async () => {
+    const reg = await registry()
+    const all = [mockFs, ...reg, catalogGithub]
+    const built = buildRecommendPrompt(team, all, {}, { localDetail: 'full', order: 'discovery' })
+    const order = built.prompt.split('\n').filter((l) => l.startsWith('candidate ')).map((l) => l.split(' ')[1])
+    expect(order).toEqual(recommendable(all).map((i) => i.id))
+    expect(order).toHaveLength(5) // all but the unpinned (blocked) registry entry
+    expect(await cardsOf(built.prompt, built.system, all)).toEqual(['mcp:mock-fs', 'mcp:github-tools', 'connector:GitHub'])
+    expect(all.find((i) => i.name === 'github-tools')?.needsSecrets).toContain('GITHUB_TOKEN')
+  })
+
+  it('the ranked order (default, for a trimmed automatic pass) is a different list; discovery order is a choice of the caller', async () => {
+    const reg = await registry()
+    const all = [mockFs, ...reg, catalogGithub]
+    const ranked = buildRecommendPrompt(team, all, {}, { localDetail: 'full' })
+    expect(ranked.prompt.indexOf('name=test-runner')).toBeLessThan(ranked.prompt.indexOf('name=github-tools'))
+    // A budget always ranks, whatever order was asked for.
+    const budgeted = buildRecommendPrompt(team, all, {}, { localDetail: 'full', order: 'discovery', budget: 500_000 })
+    expect(budgeted.prompt).toBe(ranked.prompt)
+  })
+
+  it('over the 150 cap the ranking still picks the survivors, which then keep discovery order', () => {
+    const pool = Array.from({ length: RECOMMEND_PROMPT_MAX_CANDIDATES + 20 }, (_, i) => item({ id: `cap-${String(i).padStart(3, '0')}`, name: `thing-${i}`, description: 'unrelated' }))
+    // The last candidate is the only one that matches a role: it must survive the cap even though it came last.
+    pool[pool.length - 1] = item({ id: 'cap-zz-match', name: 'test-runner', description: 'Runs the test suite and reports failures' })
+    const built = buildRecommendPrompt(team, pool, {}, { order: 'discovery' })
+    const order = built.prompt.split('\n').filter((l) => l.startsWith('candidate ')).map((l) => l.split(' ')[1]!)
+    expect(order).toHaveLength(RECOMMEND_PROMPT_MAX_CANDIDATES)
+    expect(order[order.length - 1]).toBe('cap-zz-match')
+    expect(order.slice(0, -1)).toEqual(pool.slice(0, RECOMMEND_PROMPT_MAX_CANDIDATES - 1).map((i) => i.id))
   })
 })
