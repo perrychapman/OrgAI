@@ -509,7 +509,7 @@ export class CapabilityService implements CapabilityServiceApi {
     if (!recommendable(items, scopeRoleIds(project.roles, scope)).length) return { mode: 'fallback', recommendations: [], gaps: [], fallbackReason: 'noCandidates' }
     if (signal.aborted) return fallback('cancelled')
     emit('model', 'running')
-    const { system, prompt } = built.prompt ?? buildRecommendPrompt(project, items, scope, { localDetail, evidence: built.evidence })
+    const { system, prompt } = built.prompt ?? buildRecommendPrompt(project, items, scope, { localDetail, evidence: built.evidence, order: 'discovery' })
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), CAPABILITY_RECOMMEND_TIMEOUT_MS)
     let tokens: number | undefined
@@ -1224,7 +1224,7 @@ export class CapabilityService implements CapabilityServiceApi {
       else if (built.overBudget) skip = 'budget'
     } else if (opts.useModel) {
       // A manual Re-check with the model: no budget (the user asked), the same evidence block.
-      built = buildRecommendPrompt(project, promptItems, {}, { localDetail: 'full', evidence })
+      built = buildRecommendPrompt(project, promptItems, {}, { localDetail: 'full', evidence, order: 'discovery' })
     }
     const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
     let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))

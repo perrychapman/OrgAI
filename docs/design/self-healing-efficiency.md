@@ -218,7 +218,7 @@ fixtures in the existing recommend tests still pass.
 Status (2026-11-25): done. Details and per-fact checks in `docs/agent-notes/assistants-skills.md` "Ranked, budgeted
 recommend prompt with run evidence" and ARCHITECTURE.md "recommend" / "Proactive model data classes". Choices: the list
 is ranked by the fallback's scorer (one `scoreCandidates`; the prompt order is score, kind, origin, id, the fallback's
-own order is unchanged) and cut from the tail to `tokenBudget`; the smallest list is 10 candidates (or all when fewer),
+own order is unchanged; a manual pass without a budget keeps discovery order) and cut from the tail to `tokenBudget`; the smallest list is 10 candidates (or all when fewer),
 the evidence block is at most 12 lines of 200 characters and is cut before candidates; `budget` stays only when the roles
 plus that minimum do not fit. `modelInputHash` is not changed by trimming (it covers every recommendable candidate), so
 identical passes give an identical prompt and hash and `noChange` still holds at `everyRuns` 1 and 3; a change to a

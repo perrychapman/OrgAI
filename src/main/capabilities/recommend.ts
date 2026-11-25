@@ -122,6 +122,13 @@ export interface RecommendPromptOptions {
    * even the roles plus that minimum do not fit. Without it only RECOMMEND_PROMPT_MAX_CANDIDATES applies.
    */
   budget?: number
+  /**
+   * Order of the candidate lines. 'ranked' (default) lists them best first. 'discovery' is for a pass the user asked for
+   * (no budget, so nothing is trimmed by rank): when more than RECOMMEND_PROMPT_MAX_CANDIDATES exist the ranking still
+   * decides which survive, but the survivors keep the order discovery gave them, as the prompt did before Step 3, so the
+   * answer to an identical manual request does not change with the ranking. Ignored when a `budget` is given.
+   */
+  order?: 'ranked' | 'discovery'
 }
 
 export interface BuiltRecommendPrompt {
@@ -208,7 +215,12 @@ export function buildRecommendPrompt(project: Project, items: CapabilityItem[], 
   }
   lines.push('</roles>')
   const pool = recommendable(items, scopeRoleIds(project.roles, scope))
-  const picks = rankCandidates(pool, project.roles, scope, { nameOnlyLocal: minimal }).slice(0, RECOMMEND_PROMPT_MAX_CANDIDATES)
+  const ranked = rankCandidates(pool, project.roles, scope, { nameOnlyLocal: minimal }).slice(0, RECOMMEND_PROMPT_MAX_CANDIDATES)
+  let picks = ranked
+  if (opts.order === 'discovery' && opts.budget === undefined) {
+    const keep = new Set(ranked.map((c) => c.id))
+    picks = pool.filter((c) => keep.has(c.id))
+  }
   const candidateLines: string[] = []
   for (const c of picks) {
     const local = minimal && c.origin === 'local'

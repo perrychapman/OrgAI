@@ -363,6 +363,20 @@ describe('recommend', () => {
     await expect(svc.recommend({ projectId: 'p1', scope: { roleId: 'ghost' } })).rejects.toThrow(/Role not found/)
   })
 
+  it('a manual recommend sends the candidates in discovery order, not re-ordered by the ranking (the mock picks stay the same)', async () => {
+    const sent: string[] = []
+    const mock = new MockAdapter()
+    const complete = vi.fn(async (_p: Project, input: { system: string; prompt: string; kind: 'recommend' }) => {
+      sent.push(input.prompt)
+      return { text: await mock.complete(input as never) }
+    })
+    const svc = rig.make({ complete: complete as unknown as CapabilityServiceDeps['complete'] })
+    const discovery = await svc.discover({ projectId: 'p1' })
+    await svc.recommend({ projectId: 'p1' })
+    const order = sent[0]!.split('\n').filter((l) => l.startsWith('candidate ')).map((l) => l.split(' ')[1])
+    expect(order).toEqual(discovery.items.filter((i) => !i.blockedReason).map((i) => i.id))
+  })
+
   it('aborts an older interactive discovery of the same project', async () => {
     const first = rig.svc.discover({ projectId: 'p1', requestId: 'a' })
     const second = rig.svc.discover({ projectId: 'p1', requestId: 'b' })
