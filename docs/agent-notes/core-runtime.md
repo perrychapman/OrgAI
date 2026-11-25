@@ -727,6 +727,13 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     mention are kept (removal only through propose_org_chart `remove`), and an edited role keeps its model and tier
     unless the draft names a different resolving tier or listed id; a new role's unmapped tier never silently becomes
     'inherit' while a listed model or the root's model exists. Unit-tested only; no live Architect run.
+    Cross-run block (2026-11-25): `SetupService.retroEvolveContext` (dispatcher `setupRetro` appends it) formats
+    `evolveService.analyze({strategy:'deterministic'})` plus `history` through the `retroEvolve` hook wired in
+    `bootstrap.ts`. Read-only by code: analyze reads the ledger with `readOnly: true`, a deterministic plan is never
+    remembered, and nothing applies or settles a trial. Values go through `promptDatum` inside one `<<< >>>` fence;
+    caps 3,000 chars, 5 findings, 4 generations, 5 rejections, whole lines dropped. Covered by `retroEvolve.test.ts`
+    (present, bounded, absent under 3 runs / port missing or throwing, injection strings stay one line); the
+    retrospective effect on a live Architect is unverified.
     Revision guidance (2026-11-19): the design principles apply only to added roles and changed fields; a role changes
     only when the run record or user shows a problem with it, and a clean run proposes nothing. Wording only; unverified by a benchmark rerun.
   - Patches and references (2026-11-19, benchmark tuning): `completeDrafts` (harnessTools.ts) runs before any

@@ -16,6 +16,7 @@ import { mergeOrgChart } from './orgMerge'
 import { scanAgentSources } from './import/scan'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 import type { LibraryProposalOptions } from '../mcp/service'
+import { retroEvolveBlock, type RetroEvolveData } from './retroEvolve'
 
 /** A role's model for the Architect: `tier <t>: <id>`, `model <id>` without a tier, or `inherit`. Quoted as data. */
 export function roleModelLabel(r: Pick<Project['roles'][number], 'model' | 'tier'>): string {
@@ -184,6 +185,11 @@ export class SetupService {
       }
       /** Saved team templates (TemplateService.list in index.ts), listed in the Architect's hidden context. */
       templates?(): OrgTemplateInfo[]
+      /**
+       * Read-only team evolution picture for a retrospective (evolve analyze with strategy 'deterministic' plus
+       * history; no model call, no ledger write). Absent where evolution is not available.
+       */
+      retroEvolve?(projectId: string): Promise<RetroEvolveData>
     } = {}
   ) {}
 
@@ -281,6 +287,19 @@ export class SetupService {
     if (finalText) lines.push('', 'Final report from the orchestrator:', finalText.trim().slice(0, 2500))
     const text = lines.join('\n')
     return text.length > 14000 ? `${text.slice(0, 14000)}\n… (run record truncated)` : text
+  }
+
+  /**
+   * The cross-run block of a retrospective's hidden context (retroEvolve.ts), or '' when the port is missing, fails
+   * or fewer than three runs were measured. Never throws: the retrospective starts without it.
+   */
+  async retroEvolveContext(projectId: string): Promise<string> {
+    try {
+      const data = await this.hooks.retroEvolve?.(projectId)
+      return data ? retroEvolveBlock(data) : ''
+    } catch {
+      return ''
+    }
   }
 
   /** Context appended to the first message but kept out of the transcript. */
