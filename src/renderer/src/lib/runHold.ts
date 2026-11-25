@@ -83,7 +83,11 @@ function fromHold(h: MainRunHold, summary: SummaryFields, now: number): RunHoldV
       const b = h.budget
       const facts: HoldFact[] = []
       let title = h.kind === 'budget' ? 'Paused at the spending limit' : 'Paused at the project spending limit'
-      if (b) {
+      if (b?.unpriced) {
+        // Stopped because the cost cannot be counted, not because the limit was used up: never say "Paused at the $X limit".
+        title = 'Stopped: part of this run has no known price'
+        facts.push({ label: 'Known cost', value: money(b.spentUsd) }, { label: 'Limit', value: money(b.limitUsd) })
+      } else if (b) {
         title = `Paused at the ${money(b.limitUsd)} limit ${SCOPE_WORDS[b.scope]}`
         facts.push({ label: 'Spent', value: money(b.spentUsd) }, { label: 'Limit', value: money(b.limitUsd) })
         if (b.resetsAt) facts.push({ label: 'Resets', value: day(b.resetsAt) })

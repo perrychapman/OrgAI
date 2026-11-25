@@ -54,6 +54,12 @@ describe('holdOf with summary.hold', () => {
     expect(h?.facts).toContainEqual({ label: 'Spent', value: '$5.01' })
     expect(h?.facts).toContainEqual({ label: 'Limit', value: '$5.00' })
   })
+  it('budget stopped on an unknown price: says so, shows the known cost, never "Paused at the $X limit"', () => {
+    const hold = mk({ kind: 'budget', reason: 'No known price.', budget: { scope: 'run', limitUsd: 2.5, spentUsd: 0.007, unpriced: true }, actions: ['addBudget', 'end'] })
+    const h = holdOf({ ...base, hold }, null)
+    expect(h).toMatchObject({ kind: 'budget', title: 'Stopped: part of this run has no known price', text: 'No known price.', limitUsd: 2.5 })
+    expect(h?.facts).toEqual([{ label: 'Known cost', value: '$0.01' }, { label: 'Limit', value: '$2.50' }, { label: 'Since', value: expect.any(String) }])
+  })
   it('spend-limit: day scope and a reset time', () => {
     const hold = mk({ kind: 'spend-limit', budget: { scope: 'day', limitUsd: 20, spentUsd: 20, resetsAt: 2_000_000 } })
     const h = holdOf({ ...base, hold }, null)
