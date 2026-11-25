@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { SkillInfo, TranscriptEntry } from '@shared/types'
+import type { RunRecord, SkillInfo, TranscriptEntry } from '@shared/types'
 import { role, runSummary } from '../runtime/testHelpers'
+import { digestRun, type RunDigest } from '../store/runDigest'
 import { correctionFindings, evaluateSkills, qualityFindings, referencedPaths, relativePathCandidate, toolSequenceFindings, vagueReason, type EvalInput, type EvalRun } from './evaluate'
 
 const GOOD = 'Use when filling in or reading PDF forms, extracting text and merging documents.'
@@ -188,6 +189,26 @@ describe('gap findings', () => {
     expect(f).toHaveLength(1)
     const quoted = f[0].detail.match(/"([^"]*)"/)![1]
     expect(quoted.length).toBeLessThanOrEqual(160)
+  })
+
+  it('gives the same findings from digests as from records, also after a JSON round trip', () => {
+    const rec = (id: string, skills?: { skillId: string; loads: number }[]): EvalRun =>
+      run(
+        id,
+        [user('Please add a login page'), ...seq.map((nm) => tool('a', nm)), user("No, don't use var, always use const for declarations"), tool('b', 'odd name!'), tool('b', 'Read')],
+        skills
+      )
+    const records = ['1', '2', '3', '4'].map((id) => rec(id, id === '2' ? [{ skillId: 'sk a', loads: 1 }] : undefined))
+    const digests = records.map((r) => JSON.parse(JSON.stringify(digestRun({ ...r, agents: {}, logs: [] } as RunRecord))) as RunDigest)
+    const roles = [role({ id: 'r', slug: 'r', skills: ['sk a'] })]
+    const skills = [{ info: skill('sk a', {}, { grantedTo: ['r'] }), skillMd: '' }]
+    const fromRecords = evaluateSkills(input({ roles, skills, runs: records }))
+    const fromDigests = evaluateSkills(input({ roles, skills, runs: digests }))
+    expect(fromRecords.gaps.map((g) => g.kind)).toEqual(['repeatedToolSequence', 'repeatedCorrection'])
+    expect(fromDigests).toEqual(fromRecords)
+    // A skill id that is not a plain identifier is compared through its digest key, so its load still counts.
+    expect(fromDigests.quality.map((f) => f.kind)).not.toContain('neverLoaded')
+    expect(evaluateSkills(input({ roles, skills, runs: digests.map((d) => ({ ...d, skillLoads: [] })) })).quality.map((f) => f.kind)).toContain('neverLoaded')
   })
 
   it('is linear-time on a large transcript', () => {

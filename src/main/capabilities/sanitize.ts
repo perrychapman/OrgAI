@@ -15,7 +15,8 @@ const HIDDEN_BASE = '[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u
 // Built with fromCodePoint so neither appears literally in this file; multi-line fields keep allowing them like LF (the
 // renderer's mirror covers that multi-line set, which is unchanged).
 const HIDDEN_CLASS = HIDDEN_BASE.replace(']', `${String.fromCodePoint(0x2028, 0x2029)}]`)
-const HIDDEN_RUN = new RegExp(`${HIDDEN_CLASS}+`, 'gu')
+/** Runs of those characters, global (replace only: a global regex keeps `lastIndex` between `test` calls). */
+export const HIDDEN_RUN = new RegExp(`${HIDDEN_CLASS}+`, 'gu')
 /** True when the text holds a control, zero-width, bidi or other invisible character. */
 export const HIDDEN_CHARS = new RegExp(HIDDEN_CLASS, 'u')
 // The same set with tab, line feed and carriage return allowed (the renderer's lib/hiddenChars.ts mirrors it).

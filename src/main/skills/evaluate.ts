@@ -1,9 +1,18 @@
-import type { Role, RunSummary, SkillFinding, SkillInfo, TranscriptEntry } from '@shared/types'
+import type { Role, RunRecord, RunSummary, SkillFinding, SkillInfo, TranscriptEntry } from '@shared/types'
+import { digestKey, digestRun, isRunDigest, type RunDigest } from '../store/runDigest'
+import { jaccard, tokenSet } from './tokens'
+
+export { jaccard, tokenSet }
 
 /**
  * Pure, deterministic skill checks for skills:evaluate. Linear in the input (the overlap check is quadratic over at
  * most SKILL_MAX_PER_PROJECT skills). No fs: path probing goes through the injected `pathExists`. Everything read
  * from transcripts and SKILL.md is untrusted text and is only ever compared, counted or quoted, never executed.
+ *
+ * The run-derived checks (repeated tool sequences, repeated corrections) read per-run digests (store/runDigest.ts,
+ * cached beside each record by RunStore.getDigest), so a pass parses no record twice. A run given as a summary and a
+ * transcript is digested first (`evalDigest`), so there is one implementation. The Team review's evidence
+ * (capabilities/evidence.ts) calls the same `gapFindings`.
  */
 
 /** neverLoaded needs at least this many considered runs, else it would flag skills in a young project. */
@@ -20,15 +29,14 @@ export const MAX_STALE_PATHS = 50
 /** Tool sequences: window length, the runs a window must appear in, entries read per run, findings kept. */
 export const SEQUENCE_WINDOW = 4
 export const SEQUENCE_MIN_RUNS = 3
-export const MAX_TRANSCRIPT_ENTRIES = 5000
 export const MAX_GAP_FINDINGS = 5
-/** Corrections: similarity to join a group, runs a group must span, candidates per run and overall, excerpt length. */
+/**
+ * Corrections: similarity to join a group, runs a group must span, candidates overall. (Per run: at most 50, their
+ * text length and the excerpt length are fixed when the run is digested, runDigest.ts.)
+ */
 export const CORRECTION_SIMILARITY = 0.5
 export const CORRECTION_MIN_RUNS = 2
-const MAX_CORRECTIONS_PER_RUN = 50
 const MAX_CORRECTIONS_TOTAL = 400
-const CORRECTION_TEXT_CHARS = 500
-export const EXCERPT_CHARS = 160
 
 export interface EvalSkill {
   info: SkillInfo
@@ -39,40 +47,25 @@ export interface EvalRun {
   summary: RunSummary
   transcript: TranscriptEntry[]
 }
+/** A run as the checks read it: a digest (what the host passes) or a summary with its transcript (digested here). */
+export type EvalRunInput = EvalRun | RunDigest
 export interface EvalInput {
   roles: Pick<Role, 'id' | 'skills'>[]
   skills: EvalSkill[]
-  runs: EvalRun[]
+  runs: EvalRunInput[]
   /** Project-relative, '/'-separated, already screened (no absolute or '..' paths). Must not throw. */
   pathExists(relPath: string): boolean
 }
 
-const STOPWORDS = new Set(
-  ('a an the and or but of to in on for with at by from as is are was were be been it its this that these those you your we our they them their ' +
-    'i me my can could should would will may might do does did done not no if then than so such into onto over under up down out about any all ' +
-    'also just only more most other some each every which who whom what where how why there here has have had having use used using when whenever').split(' ')
-)
+/** The digest of a run given as a digest or as a summary and transcript. */
+export function evalDigest(r: EvalRunInput): RunDigest {
+  if (isRunDigest(r)) return r
+  return digestRun({ summary: r.summary, transcript: r.transcript, agents: {}, logs: [] } as RunRecord)
+}
+
 const GENERIC = new Set(['helper', 'helpers', 'utility', 'utilities', 'stuff', 'various', 'misc', 'miscellaneous', 'things', 'thing', 'general', 'common', 'tasks', 'task', 'tool', 'tools', 'etc', 'work', 'help'])
 /** A "when to use" cue. Bare "for" is not one: "helper for misc stuff" says nothing about when. */
 const TRIGGER = /\b(?:when|whenever|use|used|using|if|before|after|while|during|once)\b/i
-
-/** Lowercased alphanumeric words minus stopwords, as a set. */
-export function tokenSet(text: string): Set<string> {
-  const out = new Set<string>()
-  for (const w of text.toLowerCase().split(/[^\p{L}\p{N}]+/u)) if (w.length > 1 && !STOPWORDS.has(w)) out.add(w)
-  return out
-}
-
-export function jaccard(a: Set<string>, b: Set<string>): number {
-  if (!a.size || !b.size) return 0
-  let inter = 0
-  const [small, large] = a.size <= b.size ? [a, b] : [b, a]
-  for (const x of small) if (large.has(x)) inter++
-  return inter / (a.size + b.size - inter)
-}
-
-const oneLine = (s: string): string => s.replace(/[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/g, ' ').replace(/\s+/g, ' ').trim()
-const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 
 /**
  * Why a description is too thin for an agent to know when to load the skill, or null. Flags only genuinely vague
@@ -148,8 +141,10 @@ export function qualityFindings(input: EvalInput): SkillFinding[] {
   }
   const granted = new Set<string>()
   for (const r of input.roles) for (const id of r.skills ?? []) granted.add(id)
+  const runs = input.runs.map(evalDigest)
+  // Skill ids are compared as a digest holds them (digestKey: as written when plain, else a hash).
   const loads = new Map<string, number>()
-  for (const run of input.runs) for (const u of run.summary.usage?.skills ?? []) loads.set(u.skillId, (loads.get(u.skillId) ?? 0) + u.loads)
+  for (const run of runs) for (const u of run.skillLoads) loads.set(u.skillId, (loads.get(u.skillId) ?? 0) + u.loads)
 
   for (const { info, skillMd } of input.skills) {
     const spec = info.spec
@@ -160,8 +155,8 @@ export function qualityFindings(input: EvalInput): SkillFinding[] {
     if (spec.enabled && !isGranted) {
       push({ kind: 'neverGranted', severity: 'info', skillIds: [spec.id], title: `${spec.name} is not granted to any role`, detail: 'No role may load this skill, so no agent ever uses it. Grant it to a role or remove it.' })
     }
-    if (spec.enabled && isGranted && !info.libraryMissing && input.runs.length >= MIN_RUNS_FOR_NEVER_LOADED && !(loads.get(spec.id) ?? 0)) {
-      push({ kind: 'neverLoaded', severity: 'info', skillIds: [spec.id], title: `${spec.name} was never loaded`, detail: `Granted to a role but not loaded in the last ${input.runs.length} runs. Its description may not match the work, or it may not be needed.`, evidence: { runIds: input.runs.map((r) => r.summary.id) } })
+    if (spec.enabled && isGranted && !info.libraryMissing && runs.length >= MIN_RUNS_FOR_NEVER_LOADED && !(loads.get(digestKey(spec.id)) ?? 0)) {
+      push({ kind: 'neverLoaded', severity: 'info', skillIds: [spec.id], title: `${spec.name} was never loaded`, detail: `Granted to a role but not loaded in the last ${runs.length} runs. Its description may not match the work, or it may not be needed.`, evidence: { runIds: runs.map((r) => r.summary.id) } })
     }
     const vague = vagueReason(spec.description)
     if (vague) {
@@ -198,20 +193,14 @@ export function qualityFindings(input: EvalInput): SkillFinding[] {
 
 // ---------- gaps ----------
 
-export function toolSequenceFindings(runs: EvalRun[]): SkillFinding[] {
+export function toolSequenceFindings(runs: readonly EvalRunInput[]): SkillFinding[] {
   const byWindow = new Map<string, { names: string[]; runIds: string[] }>()
-  for (const run of runs) {
-    const perAgent = new Map<string, string[]>()
-    const t = run.transcript
-    for (let i = 0; i < t.length && i < MAX_TRANSCRIPT_ENTRIES; i++) {
-      const b = t[i].block
-      if (b.kind !== 'tool_use') continue
-      const list = perAgent.get(t[i].agentId) ?? []
-      list.push(String(b.name))
-      perAgent.set(t[i].agentId, list)
-    }
+  for (const raw of runs) {
+    const run = evalDigest(raw)
     const seen = new Set<string>()
-    for (const names of perAgent.values()) {
+    // Each agent's calls in order (names as a digest holds them); a window with two or more distinct names counts once per run.
+    for (const seq of run.toolSequences) {
+      const names = seq.map((i) => run.toolNames[i] ?? '')
       for (let i = 0; i + SEQUENCE_WINDOW <= names.length; i++) {
         const win = names.slice(i, i + SEQUENCE_WINDOW)
         if (new Set(win).size < 2) continue
@@ -240,33 +229,20 @@ export function toolSequenceFindings(runs: EvalRun[]): SkillFinding[] {
     }))
 }
 
-const CORRECTION =
-  /(?:^|[\s,.;!(])(?:no[,.!]|nope|don'?t|do not|doesn'?t|didn'?t|instead|wrong|not what|again|stop|i said|as i said|remember to|always|never)(?=$|[\s,.;!?)])/i
-
-export function correctionFindings(runs: EvalRun[]): SkillFinding[] {
+export function correctionFindings(runs: readonly EvalRunInput[]): SkillFinding[] {
   interface Cand {
     runId: string
+    /** The digest's excerpt: redacted, at most 160 characters. */
     text: string
+    /** Hashed words: Jaccard over them equals Jaccard over the words. */
     tokens: Set<string>
   }
   const cands: Cand[] = []
-  for (const run of runs) {
-    let first = true
-    let n = 0
-    const t = run.transcript
-    for (let i = 0; i < t.length && i < MAX_TRANSCRIPT_ENTRIES && n < MAX_CORRECTIONS_PER_RUN && cands.length < MAX_CORRECTIONS_TOTAL; i++) {
-      const e = t[i]
-      if (e.block.kind !== 'user' || e.source === 'harness') continue
-      if (first) {
-        first = false
-        continue
-      }
-      const text = oneLine(e.block.text.slice(0, CORRECTION_TEXT_CHARS * 2))
-      if (!text || !CORRECTION.test(text)) continue
-      const tokens = tokenSet(text.slice(0, CORRECTION_TEXT_CHARS))
-      if (tokens.size < 2) continue
-      cands.push({ runId: run.summary.id, text, tokens })
-      n++
+  for (const raw of runs) {
+    const run = evalDigest(raw)
+    for (const c of run.corrections) {
+      if (cands.length >= MAX_CORRECTIONS_TOTAL) break
+      cands.push({ runId: run.summary.id, text: c.excerpt, tokens: new Set(c.tokens) })
     }
   }
   const groups: { rep: Cand; members: Cand[] }[] = []
@@ -286,12 +262,19 @@ export function correctionFindings(runs: EvalRun[]): SkillFinding[] {
       severity: 'info' as const,
       skillIds: [],
       title: `The same correction came up in ${runIds.length} runs`,
-      detail: `Users said things like: "${clip(g.rep.text, EXCERPT_CHARS)}". A skill could carry this guidance so it need not be repeated.`,
+      detail: `Users said things like: "${g.rep.text}". A skill could carry this guidance so it need not be repeated.`,
       // count only when it adds a fact (more mentions than runs); equal, it would repeat the title's run count.
       evidence: g.members.length > runIds.length ? { runIds, count: g.members.length } : { runIds }
     }))
 }
 
+/** The skill gaps of a set of runs: repeated tool sequences, then repeated corrections. The Team review's evidence reuses it. */
+export function gapFindings(runs: readonly EvalRunInput[]): SkillFinding[] {
+  const digests = runs.map(evalDigest)
+  return [...toolSequenceFindings(digests), ...correctionFindings(digests)]
+}
+
 export function evaluateSkills(input: EvalInput): { quality: SkillFinding[]; gaps: SkillFinding[] } {
-  return { quality: qualityFindings(input), gaps: [...toolSequenceFindings(input.runs), ...correctionFindings(input.runs)] }
+  const runs = input.runs.map(evalDigest)
+  return { quality: qualityFindings({ ...input, runs }), gaps: gapFindings(runs) }
 }

@@ -108,8 +108,13 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     (run before and after, compared with the field removed).
   - Fewer parses: with the host's ports a second analysis calls `getRecord` for no run, and after a new run only for that
     run; settling a trial parses only a window run that was never digested (unit tested, `evolve/digestSource.test.ts`,
-    a real RunStore on a temp folder). A run first digested by its trial settlement is parsed once; the Team review and
-    skill evaluation still parse records until they are switched (next half of step 1).
+    a real RunStore on a temp folder). A run first digested by its trial settlement is parsed once. The Team review's
+    evidence reads digests too (2026-11-25, second half: `getDigest` dep, `capabilities/evidence.ts`; a pass after one new
+    run calls `getRecord` for that run only, unit tested in `capabilities/service.test.ts`), and `skills/evaluate.ts`
+    `gapFindings` is the one implementation of repeated sequences and corrections for both (see
+    `docs/agent-notes/assistants-skills.md` "Evidence from digests"). The skill evaluation reads digests as well
+    (`SkillEvaluationDeps.getDigest`; over 20 already-digested runs it parses no record, unit tested in
+    `skills/evaluation.test.ts`; findings from digests equal findings from records, `evaluate.test.ts`).
   - Cache key: `DIGEST_VERSION`, the record file's size, mtime in ns and inode, and the run's `endedAt` in the index, so a
     continued run (its record rewritten) is digested again; the transcript length the handoff suggested is capped at
     5,000 entries and could not tell a continued run at the cap (unit tested: continued run, open run not cached).
@@ -119,14 +124,28 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     best effort; it is a derived cache, so it is not under the data folder's write lock (several `orgai` sessions write the
     same content; a record rewritten while it was read is not cached: the key is taken again before writing). The
     two-session race itself is not tested.
-  - No run text: slugs, role ids, tool names and skill ids are `digestKey` (plain identifiers kept, anything else
-    `#` + 16 hex of sha256); plan step ids are opaque and staff roles hashed; error repeat keys and correction words are
-    hashed; changed-file prefixes and unavailable tool names go through telemetry's existing sanitizers (`dirPrefix`,
-    `safeName`); evidence text (permission rules asked for, connection searches) goes through the Team review's redaction
-    (`redactEvidence`, home folders to `~`, `clampText`, 200 chars) and correction excerpts through `safeLine` with home
-    folders hidden (160 chars). Unit tested with an injection-shaped fixture (transcript, tool inputs and errors, plan,
-    results, role slug and tool name) and a secrets / home-folder fixture. Hashes of short names (a role called
-    "builder") can be guessed by trying names; they are equality keys, not secrets.
+  - Short redacted run text, nothing else (version 2, Reviewer Lows): slugs, role ids, tool names and skill ids are
+    `digestKey` (plain identifiers kept, anything else `#` + 16 hex of sha256); plan step ids are opaque and staff roles
+    hashed; error repeat keys are hashed; changed-file prefixes and unavailable tool names go through telemetry's
+    existing sanitizers (`dirPrefix`, which now hides home folders first, `safeName`). Run text IS kept in two places,
+    redacted: evidence text (permission rules asked for, connection searches: `redactEvidence`, home folders to `~`
+    (`hideHome`: drive, UNC with either slash, `/Users`, `/home`), hidden characters removed, 200 chars) and correction
+    excerpts (`safeLine` with home folders hidden, 160 chars, angle brackets removed). Correction words are hashed from
+    that same redacted text (before, from the raw text: a secret or PIN would have become a hash someone could test
+    guesses against). Hidden characters are the set in `capabilities/sanitize.ts` (`HIDDEN_RUN` / `HIDDEN_CHARS`:
+    controls, soft hyphen, Arabic letter mark, Mongolian vowel separator, Hangul fillers, bidi, zero-width, tag
+    characters, line separators), used for writing and for the shape check on read (`runDigest.ts` already imported
+    `sanitize.ts` for `clampText`, so no new dependency). `DIGEST_VERSION` is 2: sidecars of version 1 are recomputed on
+    first use. A secret `redactEvidence` does not recognise stays in an excerpt. Unit tested with an injection-shaped
+    fixture, a secrets / home-folder fixture, hidden characters in a rule, a search and a correction (written and
+    refused on read), a UNC and a `/home/alice` changed path, and `<` in a rule (kept as text, sidecar still valid).
+    Hashes of short names (a role called "builder") can be guessed by trying names; they are equality keys, not secrets.
+  - Two store races (Reviewer Lows): a sidecar write checks that the run is still in the index and its record file still
+    exists before it creates the run's folder, and after the write takes back its own file (and the folder only if empty)
+    when the run vanished in between, so a write racing `removeRecord` / `removeProject` leaves no orphan folder (unit
+    tested with the guards off to see the test fail; the true two-thread race is not tested). A record rewritten with the
+    same `endedAt` is digested again because the key holds the file's size, mtime and inode (unit tested with a same-size
+    rewrite and set file times).
   - The summary part (status, project, timings, cost, skills loaded) is never cached: it is read from the run index on
     every call, so `moveToProject` and legacy usage normalization show at once (unit tested for a move).
   - The digest code is handed to RunStore as `runStore.digester` (`runDigester`), so `cli/client/readOnlyStore.ts`, which

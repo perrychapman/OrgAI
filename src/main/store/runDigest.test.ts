@@ -3,7 +3,8 @@ import type { PlanStep, RunRecord, TranscriptEntry } from '../../shared/types'
 import { diagnose, measure } from '../evolve/telemetry'
 import { entry, project, role, run } from '../evolve/fixtures'
 import { correctionFindings, toolSequenceFindings } from '../skills/evaluate'
-import { DIGEST_VERSION, digestBody, digestHash, digestKey, digestRun, isRunDigest, parseDigestBody, runDigester, type RunDigest } from './runDigest'
+import { jaccard, tokenSet } from '../skills/tokens'
+import { DIGEST_VERSION, digestBody, digestHash, digestKey, digestRun, dirPrefix, hideHome, isRunDigest, parseDigestBody, runDigester, safeLine, type RunDigest } from './runDigest'
 
 const step = (id: string, over: Partial<PlanStep> = {}): PlanStep => ({ id, title: id, status: 'done', ...over }) as PlanStep
 const use = (agentId: string, id: string, name: string, input: unknown = {}): TranscriptEntry => entry(agentId, { kind: 'tool_use', id, name, input })
@@ -128,6 +129,71 @@ describe('digestRun', () => {
     expect(c.excerpt.length).toBeLessThanOrEqual(160)
     expect(c.excerpt).not.toMatch(/[<>\u0000-\u001f]/)
     expect(c.tokens.every((t) => /^[0-9a-f]{12}$/.test(t))).toBe(true)
+  })
+
+  // Characters that hide text from a reader but not from a model or a hash: soft hyphen, Arabic letter mark, Mongolian
+  // vowel separator, Hangul filler, a Unicode tag character, a line separator.
+  const HIDDEN = '\u00ad\u061c\u180e\u3164\u{e0041}\u2028'
+
+  it('removes hidden characters from the evidence and correction text it keeps, and refuses them on read', () => {
+    const r = run({
+      agents: [{ slug: 'dev', id: 'd1' }],
+      transcript: [
+        user('the task'),
+        use('d1', 't1', 'request_permission_rules', { rules: [`Bash(npm${HIDDEN} test:*)`] }),
+        use('d1', 't2', 'search_mcp_registry', { query: `lin${HIDDEN}ear` }),
+        user(`No${HIDDEN}, always use${HIDDEN} tabs in every file`)
+      ]
+    })
+    const d = digestRun(r)
+    const text = JSON.stringify(d)
+    for (const ch of [...HIDDEN]) expect(text).not.toContain(ch)
+    expect(d.evidence.find((e) => e.kind === 'ruleRequest')).toMatchObject({ rules: ['Bash(npm test:*)'] })
+    expect(d.corrections).toHaveLength(1)
+    expect(d.corrections[0].excerpt).not.toMatch(/[\u00ad\u061c\u180e\u3164\u2028\u{e0000}-\u{e007f}]/u)
+    // A sidecar that still holds one is not trusted.
+    const body = JSON.parse(JSON.stringify(digestBody(r))) as ReturnType<typeof digestBody>
+    for (const ch of ['\u00ad', '\u061c', '\u180e', '\u3164', '\u{e0041}']) {
+      const rule = body.evidence.map((e) => (e.kind === 'ruleRequest' ? { ...e, rules: [`Bash(x${ch}y)`] } : e))
+      expect(parseDigestBody({ ...body, evidence: rule })).toBeUndefined()
+      expect(parseDigestBody({ ...body, corrections: [{ ...body.corrections[0], excerpt: `no${ch}` }] })).toBeUndefined()
+    }
+    expect(parseDigestBody(body)).toBeDefined()
+  })
+
+  it('hashes correction words from the redacted text, so a secret never becomes a guessable hash', () => {
+    const secret = 'sk-live-abcdefghijklmnop1234'
+    const msg = `No, don't ship with ${secret} in the config, always use the vault instead`
+    const mk = (m: string): RunRecord => run({ agents: [{ slug: 'dev', id: 'd1' }], transcript: [user('the task'), user(m)] })
+    const d = digestRun(mk(msg))
+    expect(d.corrections).toHaveLength(1)
+    const hashes = new Set(d.corrections[0].tokens)
+    for (const w of tokenSet(secret)) expect(hashes.has(digestHash(w, 12))).toBe(false)
+    expect(hashes.has(digestHash(secret.toLowerCase(), 12))).toBe(false)
+    // Jaccard over the hashes is Jaccard over the redacted words.
+    const redacted = tokenSet(safeLine(msg, 1000))
+    expect([...hashes].sort()).toEqual([...redacted].map((w) => digestHash(w, 12)).sort())
+    const other = digestRun(mk(`No, don't ship with the secret in the config, always use the vault instead`)).corrections[0]
+    const words = (m: string): Set<string> => tokenSet(safeLine(m, 1000))
+    expect(jaccard(new Set(d.corrections[0].tokens), new Set(other.tokens))).toBe(
+      jaccard(new Set([...words(msg)].map((w) => digestHash(w, 12))), new Set([...words(`No, don't ship with the secret in the config, always use the vault instead`)].map((w) => digestHash(w, 12))))
+    )
+  })
+
+  it('hides home folders in path prefixes too (UNC included) and in text', () => {
+    expect(hideHome('\\\\nas\\share\\Users\\alice\\docs')).toBe('~\\docs')
+    expect(hideHome('//nas/share/home/alice/docs')).toBe('~/docs')
+    expect(hideHome('C:\\Users\\alice\\x and /home/bob/y and /Users/carol/z')).toBe('~\\x and ~/y and ~/z')
+    expect(hideHome('https://example.com/home/x/y')).toBe('https://example.com~/y')
+    for (const file of ['/home/alice/proj/src/a.ts', 'C:\\Users\\alice\\proj\\src\\a.ts', '\\\\nas\\share\\Users\\alice\\proj\\src\\a.ts', '/Users/alice/proj/src/a.ts']) {
+      expect(dirPrefix(file)).toBe('proj/src')
+    }
+    expect(dirPrefix('src/a/b.ts')).toBe('src/a')
+    // In a digest: conflicting agents under an absolute home path share a prefix without naming the user.
+    const r = run({ agents: [{ slug: 'dev', id: 'd1', conflict: true, files: ['/home/alice/proj/src/a.ts'] }, { slug: 'dev', id: 'd2', files: ['/home/alice/proj/src/b.ts'] }] })
+    const d = digestRun(r)
+    expect(d.conflict?.overlap).toEqual(['proj/src'])
+    expect(JSON.stringify(d)).not.toContain('alice')
   })
 
   it('keeps what the skill evaluation needs: tool sequences and corrections give the same findings', () => {

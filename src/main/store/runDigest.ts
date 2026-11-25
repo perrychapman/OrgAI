@@ -2,21 +2,23 @@ import { createHash } from 'node:crypto'
 import { agentProducedNothing } from '../../shared/defaults'
 import { pathOverlaps, type GraphStepLike } from '../../shared/planGraph'
 import type { AgentInstance, ExecOutcome, RunEndedBy, RunRecord, RunSummary } from '../../shared/types'
-import { clampText } from '../capabilities/sanitize'
+import { clampText, HIDDEN_CHARS, HIDDEN_RUN } from '../capabilities/sanitize'
 import { redactEvidence } from '../skills/suggest'
-import { tokenSet } from '../skills/evaluate'
+import { tokenSet } from '../skills/tokens'
 
 /**
  * One finished run, reduced once to what the self-healing loops read (Team evolution's telemetry, the Team review's
  * evidence, the skill evaluation's gaps). Pure (no I/O, no clock). RunStore.getDigest caches the record part in a
  * sidecar beside the record so a pass parses no full record twice.
  *
- * Run text never reaches a digest. What is kept: counts and timings; role slugs, role ids, tool names and skill ids as
- * KEYS (kept as written when they are plain identifiers, else a hash, see digestKey); path prefixes and missing tool
- * names through the same sanitizers telemetry used; hashes for anything compared only for equality (error repeat keys,
- * plan step roles, correction words); and, for the Team review and skill evaluation, short excerpts that go through
- * the redaction those consumers apply (redactEvidence, home folders hidden, control characters and angle brackets
- * removed, bounded).
+ * Run text is kept only in a few short, redacted places; the rest is counts, keys and hashes. What is kept: counts and
+ * timings; role slugs, role ids, tool names and skill ids as KEYS (kept as written when they are plain identifiers, else
+ * a hash, see digestKey); path prefixes and missing tool names through the same sanitizers telemetry used (home folders
+ * hidden); hashes for anything compared only for equality (error repeat keys, plan step roles, correction words, hashed
+ * from the redacted text); and, for the Team review and skill evaluation, short EXCERPTS OF RUN TEXT: the permission
+ * rules a role asked for, the connection it searched for and the user's correction messages, each through the
+ * redaction those consumers apply (redactEvidence, home folders hidden, hidden and control characters removed, bounded;
+ * corrections also lose angle brackets). A secret redactEvidence does not recognise would be kept.
  *
  * Two parts: the BODY (from agents, transcript, plan, staffing, delegation: cached) and the SUMMARY part (status,
  * project, timings, usage: always taken from the run index as it is now, because a summary changes without the record:
@@ -24,7 +26,7 @@ import { tokenSet } from '../skills/evaluate'
  */
 
 /** Bump when the body's shape or meaning changes: every cached sidecar is then recomputed. */
-export const DIGEST_VERSION = 1
+export const DIGEST_VERSION = 2
 
 /** Transcript entries read per run (the record keeps at most this many: RunStore MAX_TRANSCRIPT_ENTRIES). */
 export const DIGEST_TRANSCRIPT_LIMIT = 5000
@@ -48,7 +50,7 @@ export const POLL_TOOLS: ReadonlySet<string> = new Set(['ListAgents', 'list_team
 /** One safe line of evidence: control characters, angle brackets and secrets removed, bounded. */
 export function safeLine(s: string, max = EVIDENCE_LINE_MAX): string {
   const t = redactEvidence(String(s))
-    .replace(/[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/g, ' ')
+    .replace(HIDDEN_RUN, ' ')
     .replace(/[<>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -74,9 +76,15 @@ export function digestKey(s: unknown): string {
   return KEY_PLAIN.test(v) ? v : `#${digestHash(v)}`
 }
 
-/** Home directories name the user: C:\Users\x, /Users/x and /home/x become ~ (capabilities/evidence.ts's rule). */
-function hideHome(text: string): string {
-  return text.replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"')]+/gi, '~').replace(/\/(?:Users|home)\/[^/\s"')]+/g, '~')
+/**
+ * Home directories name the user: C:\Users\x, \\server\share\Users\x (UNC, either slash), /Users/x and /home/x become ~
+ * (the Team review's rule, which capabilities/evidence.ts uses through this function).
+ */
+export function hideHome(text: string): string {
+  return text
+    .replace(/(?<![:\w])(?:\\\\|\/\/)[^\\/\s"')]+[\\/]+[^\\/\s"')]+[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/gi, '~')
+    .replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"')]+/gi, '~')
+    .replace(/[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/g, '~')
 }
 
 /** The Team review's redaction (capabilities/evidence.ts summary()), bounded. */
@@ -99,7 +107,8 @@ export function classifyError(text: string): ErrorCategory {
 
 /** The first two directory levels of a changed file, sanitized (merge conflict evidence). */
 export function dirPrefix(file: string): string {
-  const parts = file.replace(/\\/g, '/').split('/').filter((x) => x && x !== '.')
+  // A home folder never lands on disk (an absolute changed path would keep `home/alice`): it becomes `~`, then nothing.
+  const parts = hideHome(file.replace(/\\/g, '/')).split('/').filter((x) => x && x !== '.' && x !== '~')
   const dirs = parts.length > 1 ? parts.slice(0, -1) : parts
   return safeLine(dirs.slice(0, 2).join('/').replace(/[^A-Za-z0-9._/-]/g, ''), 40)
 }
@@ -366,7 +375,7 @@ const agentInTokens = (a: AgentInstance): number =>
 
 const CORRECTION =
   /(?:^|[\s,.;!(])(?:no[,.!]|nope|don'?t|do not|doesn'?t|didn'?t|instead|wrong|not what|again|stop|i said|as i said|remember to|always|never)(?=$|[\s,.;!?)])/i
-const oneLine = (s: string): string => s.replace(/[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/g, ' ').replace(/\s+/g, ' ').trim()
+const oneLine = (s: string): string => s.replace(HIDDEN_RUN, ' ').replace(/\s+/g, ' ').trim()
 const toolBase = (name: string): string => name.replace(/^mcp__orgai__/, '')
 
 /** The cached part of a run's digest. Pure; reads at most DIGEST_TRANSCRIPT_LIMIT transcript entries. */
@@ -556,7 +565,8 @@ export function digestBody(r: RunRecord): RunDigestBody {
       if (corrections.length >= MAX_CORRECTIONS_PER_RUN) continue
       const text = oneLine(String(b.text ?? '').slice(0, CORRECTION_TEXT_CHARS * 2))
       if (!text || !CORRECTION.test(text)) continue
-      const tokens = tokenSet(text.slice(0, CORRECTION_TEXT_CHARS))
+      // Words are hashed from the redacted text, so a secret or a PIN in a correction never becomes a guessable hash.
+      const tokens = tokenSet(safeLine(hideHome(text), CORRECTION_TEXT_CHARS * 2).slice(0, CORRECTION_TEXT_CHARS))
       if (tokens.size < 2) continue
       corrections.push({ tokens: [...tokens].map((w) => digestHash(w, 12)), excerpt: safeLine(hideHome(text), CORRECTION_EXCERPT_CHARS) })
     }
@@ -623,7 +633,8 @@ export function asDigest(r: RunRecord | RunDigest): RunDigest {
 const KEY_RE = /^(?:[A-Za-z0-9_.:-]{0,128}|#[0-9a-f]{16})$/
 const HASH_RE = /^[0-9a-f]{12,16}$/
 const OPAQUE_RE = /^s[0-9]{1,6}$/
-const UNSAFE_TEXT = /[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/
+/** Hidden and control characters (capabilities/sanitize.ts: controls, soft hyphen, bidi, zero-width, Hangul fillers, tag characters, line separators). */
+const UNSAFE_TEXT = HIDDEN_CHARS
 const CATEGORIES: readonly string[] = ['missing_tool', 'bad_flag', 'missing_path', 'other']
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)

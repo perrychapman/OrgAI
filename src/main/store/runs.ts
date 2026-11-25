@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
 import { renameSyncRetry } from '../host/fsRetry'
 import { RunBusyError, type SessionRecord } from '../host/sessions'
@@ -787,16 +787,34 @@ export class RunStore {
     }
   }
 
+  /** The run is in the index (as it is on disk now) and its record file exists. */
+  private runStillStored(runId: string): boolean {
+    this.fresh()
+    return this.runs.some((r) => r.id === runId) && existsSync(this.recordPath(runId))
+  }
+
   /** Best effort: a sidecar that cannot be written is recomputed next time. A unique temp name, then an atomic rename. */
   private writeDigestBody(runId: string, key: string, body: ReturnType<RunDigester['body']>, version: number): void {
     const file = this.digestPath(runId)
     const text = JSON.stringify({ version, runId, key, body })
     if (text.length > DIGEST_FILE_MAX_BYTES) return
     const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+    // A run removed (index entry or record gone) while its digest was computed must not get its folder back.
+    if (!this.runStillStored(runId)) return
     try {
       mkdirSync(dirname(file), { recursive: true })
       writeFileSync(tmp, text, 'utf8')
       renameSyncRetry(tmp, file)
+      // Removed in the moment between the check and the write: take back only what was just written (the folder only
+      // when it holds nothing else; a non-empty folder is left alone).
+      if (!this.runStillStored(runId)) {
+        rmSync(file, { force: true })
+        try {
+          rmdirSync(dirname(file))
+        } catch {
+          /* not empty, or already gone */
+        }
+      }
     } catch (e) {
       console.warn(`The digest of run ${runId} could not be saved (${e instanceof Error ? e.name : 'Error'}); it is recomputed next time.`)
       try {

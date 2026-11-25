@@ -155,11 +155,27 @@ IPC), `RunStore.getDigest` with the sidecar, and the evolution consumers (`diagn
 `evaluateActiveTrial`, the service's `RunSource`, host ports `listRunDigests` / `getRunDigest`). Bench seed 1 unchanged.
 Deviations from the plan above: the cache key uses the record file's size, mtime and inode plus `endedAt` (the
 transcript length is capped at 5,000 and cannot tell a continued run at the cap); the sidecar lives in the run's
-directory, which the store now creates when it is missing (it existed only for runs with images). Left for the second
-half: `collectEvidence` and `evaluateSkills` reading `RunDigest.evidence`, `toolNames` / `toolSequences`,
-`corrections` and `skillLoads` (compare their own role ids, tool names and skill ids through `digestKey`); then delete
-the duplicated sequence / correction code in `evidence.ts` (A2). Evidence keys built from the redacted text can differ
-from today's ids where the raw key held a secret or a home folder, and correction excerpts are now redacted.
+directory, which the store now creates when it is missing (it existed only for runs with images). Evidence keys built from the redacted text can differ from today's ids where the raw key held a secret or a home
+folder, and correction excerpts are now redacted.
+
+Status (2026-11-25): second half done. `collectEvidence` (Team review) and `evaluateSkills` / `SkillEvaluationService`
+(skill evaluation) read digests: both hosts get a `getDigest` dep wired to `runStore.getDigest` (`host/bootstrap.ts`),
+and a run without a digest falls back to `getRun` and is digested in the service, so the bench-style callers that pass
+records still work. Role ids, tool names and skill ids are compared through `digestKey`. A2 is closed: the transcript
+scan in `evidence.ts` is gone and `skills/evaluate.ts` `gapFindings` (repeated tool sequences, repeated corrections) is
+the one implementation both use; a run given as a record is digested first. `tokenSet` / `jaccard` moved to
+`skills/tokens.ts` (re-exported by `evaluate.ts`) so `runDigest.ts` and `evaluate.ts` do not import each other. Done
+condition met for these two consumers: after one finished run a Team review pass and a skill evaluation parse only that
+run's record (unit tested with a real `RunStore`), and findings and evidence from digests equal those from records for
+fixture sets. Accepted change: evidence ids built from redacted text differ for a signal whose rule or search text held
+a secret or home folder; the review's `modelSeen` then sees a new signal and asks the model once, at the `everyRuns`
+cadence (tested at 1 and 3); neverLoaded and tool-name text for names that are not plain identifiers show a `#` hash.
+Not verified: a live provider run or a real run history. `npm run bench:heal -- --seed 1` gives the same
+`results.json` (apart from `generatedAt` and `sha`) on the dev head, after the two consumer commits and after the digest
+fixes below. Digest fixes (Reviewer Lows, `DIGEST_VERSION` 2): hidden characters (soft hyphen, Arabic letter mark,
+Mongolian vowel separator, Hangul filler, tag characters, line separators) are removed from every kept text and refused on
+read; correction words are hashed from the redacted text; `hideHome` covers UNC paths and `dirPrefix` hides home
+folders; a sidecar write racing a removal leaves no orphan folder.
 
 ### Step 2. Team review: two bugs and the skip order
 
