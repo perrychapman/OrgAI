@@ -150,6 +150,17 @@ Watch for: the bench drives `createEvolveService` with simulated records through
 working (derive digests from records when the host gives no digest port). If the digest type goes in
 `src/shared/types.ts`, that is a hot file: claim it first.
 
+Status (2026-11-25): first half done. `src/main/store/runDigest.ts` (type in `src/main`, not types.ts: nothing crosses
+IPC), `RunStore.getDigest` with the sidecar, and the evolution consumers (`diagnose`, `measure`,
+`evaluateActiveTrial`, the service's `RunSource`, host ports `listRunDigests` / `getRunDigest`). Bench seed 1 unchanged.
+Deviations from the plan above: the cache key uses the record file's size, mtime and inode plus `endedAt` (the
+transcript length is capped at 5,000 and cannot tell a continued run at the cap); the sidecar lives in the run's
+directory, which the store now creates when it is missing (it existed only for runs with images). Left for the second
+half: `collectEvidence` and `evaluateSkills` reading `RunDigest.evidence`, `toolNames` / `toolSequences`,
+`corrections` and `skillLoads` (compare their own role ids, tool names and skill ids through `digestKey`); then delete
+the duplicated sequence / correction code in `evidence.ts` (A2). Evidence keys built from the redacted text can differ
+from today's ids where the raw key held a secret or a home folder, and correction excerpts are now redacted.
+
 ### Step 2. Team review: two bugs and the skip order
 
 1. (C2) Persist what the last model step actually saw as a hash of (roles, recommendable candidate fingerprints,

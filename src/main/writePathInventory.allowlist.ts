@@ -68,6 +68,12 @@ const WRITE_LOCK_CACHE =
   "write lock: a whole-file cache replaced under the data folder's write lock (storeSync.ts SyncedFile.replace; nothing to merge, any writer's content is valid)"
 const RUN_HOST =
   'run host: a run record and its images are written only by the session that hosts the run (the run index `owners`), or by one that changes an ended run of a project it holds'
+// Self-healing efficiency step 1 (store/runDigest.ts): runs/<runId>/digest.json, a derived cache of an ENDED run's
+// record. Any session may write it; every writer computes the same content from the same record, and the file carries a
+// key (version, record size, mtime, inode, endedAt) that a reader checks before trusting it, so a lost race or a stale
+// write is recomputed, never used. Unique temp name, then an atomic rename; best effort.
+const RUN_DIGEST_CACHE =
+  'run digest cache: runs/<runId>/digest.json of an ended run, same content from any writer, keyed by the record stat and shape-checked on read; unique temp name + rename, best effort'
 const RUN_REMOVAL =
   'run removal: files of runs the index no longer lists (dropped under the write lock), and the orphan sweep only by a session that is alone on the folder, inside the startup mutex'
 const SESSION_OWN = "sessions: a session's own record, written while it holds its <id>.lock (own temp name + rename)"
@@ -384,6 +390,10 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/store/runs.ts:RunStore.storeImage:writeFileSync': RUN_HOST,
   'src/main/store/runs.ts:RunStore.sweepOrphans:rmSync': RUN_REMOVAL,
   'src/main/store/runs.ts:RunStore.sweepOrphans:unlinkSync': RUN_REMOVAL,
+  'src/main/store/runs.ts:RunStore.writeDigestBody:mkdirSync': RUN_DIGEST_CACHE,
+  'src/main/store/runs.ts:RunStore.writeDigestBody:renameSyncRetry': RUN_DIGEST_CACHE,
+  'src/main/store/runs.ts:RunStore.writeDigestBody:rmSync': RUN_DIGEST_CACHE,
+  'src/main/store/runs.ts:RunStore.writeDigestBody:writeFileSync': RUN_DIGEST_CACHE,
   'src/main/store/secrets.ts:SecretStore.moveAside:renameDurable': VAULT_ALONE,
   'src/main/store/secrets.ts:SecretStore.writeStep:unlinkDurable': VAULT_LOCKED,
   'src/main/store/secrets.ts:SecretStore.writeStep:writeFileDurable': VAULT_LOCKED,

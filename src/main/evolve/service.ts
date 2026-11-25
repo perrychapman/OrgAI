@@ -43,8 +43,9 @@ import {
 import { draftProblem } from '../skills/skillMd'
 import { holdSpendRaises, spendRaisesOf } from './spend'
 import { buildDigest, synthesize } from './synthesizer'
-import { diagnose, isMeasuredRun, isTrialRun } from './telemetry'
+import { diagnose, isMeasuredRun, isTrialRun, type SummaryOf } from './telemetry'
 import { withNamedLock } from '../store/shared/namedLock'
+import { digestRun, type RunDigest } from '../store/runDigest'
 
 export interface EvolveAfterRunInput {
   projectId: string
@@ -99,6 +100,13 @@ export interface EvolveServiceDeps {
   listRunSummaries?(projectId: string, limit: number): RunSummary[]
   /** One stored record by run id (undefined when missing). Used with listRunSummaries. */
   getRunRecord?(runId: string): RunRecord | undefined
+  /**
+   * listRunRecords' runs as digests (src/main/store/runDigest.ts; RunStore.getDigest caches them beside the record), so a
+   * pass parses no full record it digested before. Absent = the records from listRunRecords are digested per operation.
+   */
+  listRunDigests?(projectId: string, limit: number): RunDigest[]
+  /** One run's digest by run id (undefined when missing). Preferred over getRunRecord. */
+  getRunDigest?(runId: string): RunDigest | undefined
   /** The project's staffing profile (Project.staffing and staffingGoal as defaults.ts reads them). Default auto / balanced. */
   staffingProfile?(projectId: string): { mode: StaffingMode; goal: StaffingGoal }
   /** Deterministic skill findings (src/main/skills/evaluate.ts evaluateSkills quality + gaps) for the project. Absent = none. */
@@ -148,7 +156,7 @@ export const COOLDOWN_MS = 7 * 24 * 3_600_000
  * recent: fewer than COOLDOWN_RUNS measured runs have finished since it was decided; when no run records are available
  * (nothing to count), COOLDOWN_MS after the decision. Each generation expires on its own.
  */
-export function cooldownOf(l: Ledger, records: readonly Pick<RunRecord, 'summary'>[], nowMs: number): string[] {
+export function cooldownOf(l: Ledger, records: readonly SummaryOf[], nowMs: number): string[] {
   const measured = newestMeasured(records)
   const slugs = new Set<string>()
   for (const g of l.generations.filter((x) => x.status !== 'trial').slice(-2)) {
@@ -162,7 +170,7 @@ export function cooldownOf(l: Ledger, records: readonly Pick<RunRecord, 'summary
 }
 
 /** The newest `max` measured runs (telemetry.measuredRuns' rule), newest first; summaries are enough. */
-function newestMeasured<T extends Pick<RunRecord, 'summary'>>(runs: readonly T[], max = 50): T[] {
+function newestMeasured<T extends SummaryOf>(runs: readonly T[], max = 50): T[] {
   return runs
     .filter(isMeasuredRun)
     .sort((a, b) => b.summary.startedAt - a.summary.startedAt)
@@ -170,7 +178,7 @@ function newestMeasured<T extends Pick<RunRecord, 'summary'>>(runs: readonly T[]
 }
 
 /** The newest `max` trial-eligible runs (measured runs plus interrupted/timed-out trial runs), newest first. */
-function newestTrial<T extends Pick<RunRecord, 'summary'>>(runs: readonly T[], max = 50): T[] {
+function newestTrial<T extends SummaryOf>(runs: readonly T[], max = 50): T[] {
   return runs
     .filter(isTrialRun)
     .sort((a, b) => b.summary.startedAt - a.summary.startedAt)
@@ -184,17 +192,18 @@ const REVIEWED_PLANS_KEPT = 4
 
 /**
  * The runs one operation reads, loaded at most once per operation (one post-run pass, apply or rollback): summaries for
- * counting and finding a trial's window, full records only for the runs measured.
+ * counting and finding a trial's window, digests (cached by the host's RunStore, else made here from records) only for
+ * the runs measured.
  */
 interface RunSource {
   /** Measured runs (summary only), newest first, at most 50. */
-  summaries(): Pick<RunRecord, 'summary'>[]
+  summaries(): SummaryOf[]
   /** Trial-eligible runs (summary only, includes interrupted/timed-out runs), newest first, at most 50. */
-  trialSummaries(): Pick<RunRecord, 'summary'>[]
-  /** Full records of the newest `n` measured runs. */
-  records(n: number): RunRecord[]
-  /** Full records of these runs (missing ones left out). */
-  byIds(ids: readonly string[]): RunRecord[]
+  trialSummaries(): SummaryOf[]
+  /** Digests of the newest `n` measured runs. */
+  digests(n: number): RunDigest[]
+  /** Digests of these runs (missing ones left out). */
+  byIds(ids: readonly string[]): RunDigest[]
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -257,9 +266,18 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
   const runSource = (id: string): RunSource => {
     let recs: RunRecord[] | undefined
     let recLimit = 0
-    let sums: Pick<RunRecord, 'summary'>[] | undefined
+    let digs: RunDigest[] | undefined
+    let digLimit = 0
+    let sums: SummaryOf[] | undefined
     let rawSums: RunSummary[] | undefined
-    let trialSums: Pick<RunRecord, 'summary'>[] | undefined
+    let trialSums: SummaryOf[] | undefined
+    // A record is digested at most once per operation.
+    const digested = new WeakMap<RunRecord, RunDigest>()
+    const digestOf = (r: RunRecord): RunDigest => {
+      let d = digested.get(r)
+      if (!d) digested.set(r, (d = digestRun(r)))
+      return d
+    }
     const loadRawRecords = (n: number): RunRecord[] => {
       const want = Math.min(50, Math.max(1, Math.floor(n)))
       // Reloaded only when more are wanted than were asked for and the store had that many to give.
@@ -269,32 +287,54 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       }
       return recs
     }
-    const cheap = !!deps.listRunSummaries && !!deps.getRunRecord
+    /** The newest `n` listed runs as digests: the host's cached digests, else this operation's records digested. */
+    const loadDigests = (n: number): RunDigest[] => {
+      const want = Math.min(50, Math.max(1, Math.floor(n)))
+      if (!deps.listRunDigests) return loadRawRecords(want).map(digestOf)
+      if (!digs || (want > digLimit && digs.length >= digLimit)) {
+        digs = tryRead(() => deps.listRunDigests!(id, want), [] as RunDigest[])
+        digLimit = want
+      }
+      return digs
+    }
+    const cheap = !!deps.listRunSummaries && (!!deps.getRunRecord || !!deps.getRunDigest)
     const rawSummaries = (): RunSummary[] => {
       if (!rawSums) rawSums = tryRead(() => deps.listRunSummaries!(id, 50), [] as RunSummary[])
       return rawSums
     }
+    /** Without summaries, counting reads the listed runs: digests when the host has them (no record parsed twice). */
+    const listed = (): SummaryOf[] => (deps.listRunDigests ? loadDigests(50) : loadRawRecords(50))
     return {
       summaries() {
-        if (!sums) sums = cheap ? newestMeasured(rawSummaries().map((summary) => ({ summary }))) : newestMeasured(loadRawRecords(50), 50)
+        if (!sums) sums = cheap ? newestMeasured(rawSummaries().map((summary) => ({ summary }))) : newestMeasured(listed(), 50)
         return sums
       },
       trialSummaries() {
-        if (!trialSums) trialSums = cheap ? newestTrial(rawSummaries().map((summary) => ({ summary }))) : newestTrial(loadRawRecords(50), 50)
+        if (!trialSums) trialSums = cheap ? newestTrial(rawSummaries().map((summary) => ({ summary }))) : newestTrial(listed(), 50)
         return trialSums
       },
-      records(n) {
+      digests(n) {
         const want = Math.min(50, Math.max(1, Math.floor(n)))
-        return newestMeasured(loadRawRecords(want), want)
+        return newestMeasured(loadDigests(want), want)
       },
       byIds(ids) {
         if (!cheap) {
           const want = new Set(ids)
-          return loadRawRecords(50).filter((r) => want.has(r.summary.id))
+          return loadDigests(50).filter((r) => want.has(r.summary.id))
         }
-        const out: RunRecord[] = []
+        const out: RunDigest[] = []
         for (const runId of ids) {
-          const hit = recs?.find((r) => r.summary.id === runId) ?? tryRead(() => deps.getRunRecord!(runId), undefined)
+          const known = digs?.find((r) => r.summary.id === runId)
+          const rec = known ? undefined : recs?.find((r) => r.summary.id === runId)
+          const hit =
+            known ??
+            (rec ? digestOf(rec) : undefined) ??
+            (deps.getRunDigest
+              ? tryRead(() => deps.getRunDigest!(runId), undefined)
+              : (() => {
+                  const r = tryRead(() => deps.getRunRecord!(runId), undefined)
+                  return r ? digestOf(r) : undefined
+                })())
           if (hit) out.push(hit)
         }
         return out
@@ -338,8 +378,8 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     } catch {
       findings = []
     }
-    const records = src.records(Math.min(50, Math.max(1, Math.floor(input.runs ?? 10))))
-    const diagnosis = diagnose({ project, runs: records, staffingProfile: profile, skillFindings: findings, goal: input.goal, now: now(), maxRuns: input.runs ?? 10 })
+    const digests = src.digests(Math.min(50, Math.max(1, Math.floor(input.runs ?? 10))))
+    const diagnosis = diagnose({ project, runs: digests, staffingProfile: profile, skillFindings: findings, goal: input.goal, now: now(), maxRuns: input.runs ?? 10 })
     const cooldownSlugs = cooldownOf(ledger, src.summaries(), now())
     return { diagnosis, gate: { rejected: ledger.rejectedHypotheses, diagnosis, cooldownSlugs } }
   }
