@@ -19,7 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio, domPollWaits } from './lib.mjs'
+import { APP_DIR, SHOTS_DIR, appEnv, TMP, check, cleanup, createProject, electronBinary, endSession as endSessionLib, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, scaleApp, scalePage, setReduceMotion, sleep, t, checkRadio, domPollWaits } from './lib.mjs'
 // A run of 40 to 122 agents leaves the renderer busy for many seconds (a normal desktop: about 20 s to end the large team; a
 // two-core runner with the renderer throttled three times: over 30 s, the click's default budget). Every click that starts
 // or ends such a run waits for the renderer to answer instead of timing out at the default.
@@ -34,6 +34,8 @@ process.env.ORGAI_MOCK_SCRIPT = scriptFile
 const NAME = 'E2E factory floor (orgai test)'
 const repo = makeFixtureRepo('factory')
 const SWGL = process.env.E2E_FACTORY_SWGL !== '0'
+// The window mode of this script's own launch (lib.mjs appEnv): hidden unless a run needs it shown (see e2e/README.md).
+const FF_WINDOW = 'hidden'
 // E2E_FACTORY_PLAN=1 forces the floor plan for the whole run (the developer key below is set before the first mount), so
 // every slice 2 case also runs on the path a runner without WebGL2 (GitHub's macOS) takes. Default: the machine's own path.
 const PLAN = process.env.E2E_FACTORY_PLAN === '1'
@@ -51,7 +53,7 @@ const app = await electron.launch({
   args: ['--use-mock-keychain', ...(SWGL ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : []), APP_DIR],
   cwd: APP_DIR,
   timeout: t(60_000),
-  env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR }
+  env: appEnv({ window: FF_WINDOW })
 })
 scaleApp(app)
 const page = await app.firstWindow()
@@ -926,9 +928,17 @@ try {
     }
     return null
   }
-  /** Accumulates what the polls saw: every cue ever listed, the most stations looping, any message text in the state. */
+  /**
+   * Accumulates what the polls saw: every cue ever listed, the most stations looping, any message text in the state.
+   * A poll from here waits behind the renderer's own work (windows-latest read one state in 203 s of a burst), so
+   * `record()` also starts a recorder INSIDE the page that reads every write of the test state with a MutationObserver, and
+   * `merge()` folds what it saw into the same fields. What it records is evidence about what was WRITTEN: a state the
+   * renderer never commits (it applies a backlog in one render) is in no write, so a check that needs a state to be shown
+   * waits on a standing hold instead (see "a running station loops" below), and a recorder only widens ABSENCE checks
+   * (no leak, no cue under reduced motion, caps) and the cue list.
+   */
   const collector = () => {
-    const c = { cues: new Map(), maxLooping: 0, kinds: new Set(), leaked: false, each: null }
+    const c = { cues: new Map(), maxLooping: 0, kinds: new Set(), leaked: false, each: null, pageStates: [], pageWrites: 0 }
     c.each = (st) => {
       for (const q of [...(st.recentCues ?? []), ...(st.cues ?? [])]) c.cues.set(JSON.stringify(q), q)
       const looping = st.workers.filter((w) => w.ambient && w.ambient !== 'none')
@@ -938,6 +948,58 @@ try {
       if (TAILS.some((t) => json.includes(t))) c.leaked = true
     }
     c.has = (kind, from, to) => [...c.cues.values()].some((q) => q.kind === kind && q.from === from && (to === undefined || q.to === to))
+    /** Start the in-page recorder (the scene must stay mounted until `merge`). */
+    c.record = () =>
+      page.evaluate((tails) => {
+        window.__ffRec?.observer?.disconnect()
+        const el = document.querySelector('[data-testid=factory-state]')
+        const rec = { writes: 0, kinds: [], maxLooping: 0, leaked: false, cues: new Map(), states: new Map(), observer: null }
+        window.__ffRec = rec
+        if (!el) return false
+        const take = () => {
+          const json = el.textContent || ''
+          let s
+          try {
+            s = JSON.parse(json || '{}')
+          } catch {
+            return // a half-written state: the next write is read again
+          }
+          if (!Array.isArray(s.workers)) return
+          rec.writes++
+          if (tails.some((x) => json.includes(x))) rec.leaked = true
+          for (const q of [...(s.recentCues ?? []), ...(s.cues ?? [])]) rec.cues.set(JSON.stringify(q), q)
+          const looping = s.workers.filter((w) => w.ambient && w.ambient !== 'none')
+          rec.maxLooping = Math.max(rec.maxLooping, looping.length)
+          for (const w of looping) if (!rec.kinds.includes(`${w.id}:${w.ambient}`)) rec.kinds.push(`${w.id}:${w.ambient}`)
+          // Only what the quiet-run invariants read, one entry per distinct combination (never the whole state per write).
+          const slim = { cues: (s.cues ?? []).length, cuesStarted: s.cuesStarted, recent: (s.recentCues ?? []).length, workers: s.workers.map((w) => ({ id: w.id, ambient: w.ambient, barrier: w.barrier, lamp: w.lamp, pose: w.pose, shutter: w.shutter, crate: w.crate ?? null, fenced: w.fenced })) }
+          const key = JSON.stringify(slim)
+          if (rec.states.size < 400 && !rec.states.has(key)) rec.states.set(key, slim)
+        }
+        take()
+        rec.observer = new MutationObserver(take)
+        rec.observer.observe(el, { childList: true, characterData: true, subtree: true })
+        return true
+      }, TAILS)
+    /** Stop the recorder and fold its record into the fields above. */
+    c.merge = async () => {
+      const r = await page
+        .evaluate(() => {
+          const rec = window.__ffRec
+          rec?.observer?.disconnect()
+          return rec ? { writes: rec.writes, kinds: rec.kinds, maxLooping: rec.maxLooping, leaked: rec.leaked, cues: [...rec.cues.values()], states: [...rec.states.values()] } : null
+        })
+        .catch(() => null)
+      if (!r) return c
+      c.pageWrites = r.writes
+      c.maxLooping = Math.max(c.maxLooping, r.maxLooping)
+      for (const k of r.kinds) c.kinds.add(k)
+      if (r.leaked) c.leaked = true
+      for (const q of r.cues) c.cues.set(JSON.stringify(q), q)
+      // Pseudo-states in the shape quietViolations reads (lengths stand in for the lists).
+      c.pageStates = r.states.map((x) => ({ cues: { length: x.cues }, cuesStarted: x.cuesStarted, recentCues: { length: x.recent }, workers: x.workers }))
+      return c
+    }
     return c
   }
   const allowGate = async () => {
@@ -1079,8 +1141,11 @@ try {
   chk4((await logBefore.count()) === 1 && (await logBefore.evaluate((d) => d.tagName === 'DETAILS' && !d.open)), 'the floor log is a closed details by default', await logBefore.count())
   const col = collector()
   col.each(basePre ?? { recentCues: [], cues: [], workers: [] })
+  await col.record()
   await allowGate()
   const fullDone = await watch(cueDone, 90_000, col.each)
+  await col.merge()
+  log('full motion run: the page recorder read', col.pageWrites, 'writes of the test state; stations seen looping:', [...col.kinds].join(', ') || 'none')
   chk4(!!fullDone, 'full motion run: the events finished', await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
   const fin = fullDone ?? (await state())
   chk4(fin.cuesStarted > basePre.cuesStarted, 'events after mount start cues (cuesStarted grows)', { before: basePre.cuesStarted, after: fin.cuesStarted })
@@ -1090,8 +1155,11 @@ try {
   chk4(col.has('arrive', 'cq-b'), 'the spawned station gets an arrive cue', [...col.cues.values()].filter((q) => q.kind === 'arrive'))
   chk4(col.has('part', 'cq-b'), 'a tool call on a station pops a part there', [...col.cues.values()].filter((q) => q.kind === 'part'))
   chk4(col.has('crate', 'cq-b', 'dock'), 'a branch merged into main sends a crate to the dock', [...col.cues.values()].filter((q) => q.kind === 'crate'))
-  chk4([...col.kinds].some((k) => k.startsWith('cq-b:')), 'a running station loops (cq-b has an ambient loop while it works)', [...col.kinds])
-  chk4(!col.leaked, 'message text never appears in the factory-state JSON (sampled on every poll)')
+  // Whether cq-b looped is NOT asserted here: its 2.5 s tool hold is a timed state, and a renderer that is behind (CI
+  // windows-latest, 2026-11-25: [root:screen, cq-a:screen] and no cq-b in any read) applies the backlog in one render, so the
+  // tool state is never shown (its part cue still fires: that comes from the toolCalls counter). The loop is asserted on a
+  // standing hold below ("a running station loops").
+  chk4(!col.leaked, 'message text never appears in the factory-state JSON (read on every write of the state, in the page)')
   chk4(fin.cuePeaks.carriers >= 1 && fin.cuePeaks.carriers <= 6 && fin.cuePeaks.perSender <= 2, 'the cue peaks count the carriers within the caps', fin.cuePeaks)
   // The floor log: opens, lists what moved, newest first, matches logEntries.
   const logEl = page.locator('[data-testid=factory-log]').first()
@@ -1146,6 +1214,44 @@ try {
     return untilState((s) => s.mode === 'live', 20_000)
   }, 'full')
 
+  // -- A running station loops (section 5.1), on a STANDING state. --
+  // The mock holds lp-a in state tool (holdUntilAnswered, the same hold the tour uses for ff-w111) until the background
+  // card of lp-b has been answered, so the machine loop is a state the floor rests in for as long as this script wants, not
+  // a 2.5 s window a slow renderer can skip. lp-b waits on its card (needs-you): a waiting station does not loop.
+  {
+    const loopEvents = () => [
+      { type: 'spawn', id: 'lp-a', name: 'lp-a', role: slug, description: 'Loop worker' },
+      { type: 'spawn', id: 'lp-b', name: 'lp-b', role: slug, description: 'Waiting worker' },
+      { type: 'tool', agent: 'lp-b', name: 'Bash', input: { command: 'loop-hold --ask' }, ask: true, background: true, result: 'ok' },
+      { type: 'tool', agent: 'lp-a', name: 'Read', input: { file_path: 'loop.ts' }, result: 'x', holdMs: 300, holdUntilAnswered: true },
+      { type: 'agentState', agent: 'lp-a', state: 'done' },
+      { type: 'agentState', agent: 'lp-b', state: 'done' },
+      { type: 'text', text: 'Loop events done.' }
+    ]
+    const loopBase = await startGated('standing loop', loopEvents(), 300)
+    chk4(!!loopBase && loopBase.motion === 'full', 'loop run: the scene is mounted at the gate in motion full', loopBase?.motion)
+    await allowGate()
+    const held = await untilState((s) => s.mode === 'live' && wOf(s, 'lp-a')?.ambient === 'machine' && wOf(s, 'lp-b')?.lamp === 'needs-you', 120_000)
+    chk4(!!held, 'a running station loops (lp-a is at its machine and has the machine loop while lp-b waits on its card)', held && [wOf(held, 'lp-a'), wOf(held, 'lp-b')])
+    if (held) {
+      chk4(wOf(held, 'lp-a')?.lamp === 'running' && wOf(held, 'lp-a')?.pose === 'machine', 'the looping station is running and posed at its machine', wOf(held, 'lp-a'))
+      chk4(wOf(held, 'lp-b')?.ambient === 'none', 'a station waiting on a card does not loop', wOf(held, 'lp-b'))
+      chk4(held.workers.filter((w) => w.ambient !== 'none').every((w) => w.lamp === 'running'), 'only running stations loop', held.workers.filter((w) => w.ambient !== 'none').map((w) => `${w.id}:${w.ambient}:${w.lamp}`))
+      if (held.renderer === 'webgl2') {
+        // A looping station keeps the render loop going (the opposite of the idle checks): frames keep growing while it holds.
+        const f0 = (await state()).frames
+        const grown = await untilState((s) => s.frames > f0 + 2 && wOf(s, 'lp-a')?.ambient === 'machine', 20_000)
+        chk4(!!grown, 'the render loop runs while a station loops (frames grow during the hold)', grown ? { f0, f1: grown.frames } : { f0, now: (await state().catch(() => ({}))).frames })
+      }
+      // Answering lp-b's card ends the hold: the loop stops and the station is docked.
+      await allowGate()
+    }
+    const loopDone = await untilState((s) => s.mode === 'live' && !!wOf(s, 'lp-a')?.shutter && !!wOf(s, 'lp-b')?.shutter && s.workers[0]?.lamp === 'off', 90_000)
+    chk4(!!loopDone, 'loop run: both stations finished once the card was answered', await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}:${w.ambient}`)).catch(() => null))
+    if (loopDone) chk4(loopDone.workers.every((w) => w.ambient === 'none'), 'no station loops once the work is done', loopDone.workers.map((w) => `${w.id}:${w.ambient}`))
+    await idleFrames('loop run at rest')
+  }
+
   // -- Burst: the caps of section 5.2 hold. --
   /**
    * The burst script for `leads` and `workers` (ids). `hold`: ms to wait after the last burst event; `finish`: mark every agent
@@ -1175,8 +1281,10 @@ try {
   const burstBase = await startGated('burst', burst, 25)
   chk4(!!burstBase, 'burst run: the scene is mounted at the gate', null)
   const bcol = collector()
+  await bcol.record()
   await allowGate()
   const burstDone = await watch((s) => s.mode === 'live' && workers.every((w) => wOf(s, w)?.shutter) && s.workers[0]?.lamp === 'off', 240_000, bcol.each)
+  await bcol.merge()
   chk4(!!burstDone, 'burst run: every station finished', await state().then((s) => ({ n: s.workers.length, shutters: s.workers.filter((w) => w.shutter).length })).catch(() => null))
   const bst = burstDone ?? (await state())
   const pk = bst.cuePeaks
@@ -1286,6 +1394,7 @@ try {
     window.__ffMxObserver.observe(el, { childList: true, characterData: true, subtree: true })
   })
   burstFrom = Date.now()
+  await scol.record()
   await allowGate()
   // Section 9.1's method for the frame interval: rAF timestamps over 5 s from the start of the burst (once the gate is
   // released, so no pre-burst idle frames dilute it), in the page.
@@ -1302,6 +1411,7 @@ try {
   })
   const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 300_000, sampleStress)
   chk6(!!stressRun, '40-agent stress: all 40 agents are on the floor and the six merged crates reached the dock', await state().then((s) => ({ n: s.workers.length, cues: s.cues.length })).catch(() => null))
+  await scol.merge()
   const sst = stressRun ?? (await state())
   // What the page read on its own writes (see above) joins what the polls saw; each figure is a peak, so the larger one stands.
   const pm = await page.evaluate(() => (window.__ffMxObserver?.disconnect(), window.__ffMx ?? null)).catch(() => null)
@@ -1416,11 +1526,16 @@ try {
     if (mode === 'reduced') chk4(base.cuesStarted === 0 && base.recentCues.length === 0, 'reduced: no cue was ever started', { cuesStarted: base.cuesStarted, recent: base.recentCues.length })
     const bad = []
     const qcol = collector()
+    await qcol.record()
     await allowGate()
     const done = await watch(cueDone, 90_000, (s) => {
       qcol.each(s)
       bad.push(...quietViolations(s, base).map((v) => v))
     })
+    // Every write of the state in the page, not only the ones a poll reached (the invariants are absence checks).
+    await qcol.merge()
+    for (const ps of qcol.pageStates) bad.push(...quietViolations(ps, base))
+    log(`${mode}: the page recorder read ${qcol.pageWrites} writes (${qcol.pageStates.length} distinct combinations checked)`)
     chk4(!!done, `${mode}: the events finished and the end states are on the floor`, await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
     chk4(bad.length === 0, `${mode}: every state written has no cue, no ambient and consistent end states (lamp, pose, shutter, barrier, crate)`, [...new Set(bad)].slice(0, 6))
     const fin = done ?? (await state())

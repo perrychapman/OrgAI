@@ -1245,3 +1245,10 @@ One section for what two leads wrote in parts (`docs/design/ui-overhaul/impl-set
   `connections`, `connectors`, `presets`, `skills`, `permissions`, `maintenance`, `engagement2`, `multi-provider`,
   `project-connection`; Reviewer approve with fixes. **Unverified:** a screen reader on any pane; macOS; narrow
   (1024x640) screenshots of Skills and Templates; the packaged login item and power blocker; live providers.
+- **Factory Floor e2e, transient states (2026-11-25):** a state that lasts only a timed mock hold (a 2.5 s tool call) is not
+  a fixture: a renderer behind applies the backlog in one render and a poll waits behind it. Assert loops, poses and lamps on
+  a standing hold (`holdUntilAnswered` with a background card), and read absence checks (leaks, caps, quiet invariants) from the
+  in-page recorder (`collector().record()` / `.merge()` in `e2e/factory-floor.mjs`). Day-bucketed checks (Home activity map)
+  compute expected columns from the seeded timestamps and the page's `data-date`, never `14 - 1 - N`, because the map buckets
+  by local day and a clock that passes midnight between seeding and reading moves every column (`E2E_MD_FAKE_AFTER_MIDNIGHT=1`
+  proves it). Checked: unit tests `activityMap.test.ts` (four zones, midnight) and the dashboard e2e both ways.

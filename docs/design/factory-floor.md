@@ -1809,3 +1809,19 @@ outside it off the floor, dims floor plan tiles and narrows Find), the control t
 motion), a Stack light legend and the Floor log chip (`Floor log n`) at the bottom, lamp-coloured nameplate edges and
 two-row line signs. The Running lamp and the plan board's active step now take `--working` (cyan), done steps
 `--success`; the message capsule is magenta. Details: `docs/design/ui-overhaul/impl-scenes.md`.
+
+### e2e sampling of transient states (2026-11-25)
+
+CI windows-latest run 45512226480 failed `[slice4] a running station loops (cq-b has an ambient loop while it works)`
+(read: `["root:screen","cq-a:screen"]`) under a starved software-GL renderer (page rAF period 250 ms, first mount at
+`minimal`). Nothing drops loops at `minimal`: `ambientSet` has no quality input, and the state's `ambient` comes from the
+model, not from a frame. Cause, class test assumption: cq-b's 2.5 s timed tool hold is a state a renderer that is behind
+can skip (it applies the backlog in one render; its `part` cue still fires because that comes from the `toolCalls`
+counter, not from the tool state), and a poll from the test waits behind that renderer, so it read no state with cq-b at
+its machine. The check is now a standing state: `[slice4] a running station loops` runs lp-a in state tool with the
+mock's existing `holdUntilAnswered` (the hold the tour uses for ff-w111) until lp-b's background card is answered, and
+asserts the machine loop, that the waiting lp-b does not loop, that frames grow, then that loops stop when the card is
+answered. The collector also records every write of the test state inside the page (a MutationObserver, as the stress
+budgets already did) for the absence checks (no message text, quiet-run invariants, caps) and the cue list. Still
+sampled from outside: nothing asserts a transient; the upper bounds on looping stations (burst, stress) and the
+reduced-motion / Pause motion invariants are absence checks that the in-page record now covers on every write.

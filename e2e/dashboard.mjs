@@ -1641,24 +1641,51 @@ try {
         if (typeof s.endedAt === 'number') s.endedAt -= by
       }
       fs.writeFileSync(r.file, JSON.stringify(r.rec))
-      moved.push({ id: r.rec.summary.id, days: shifts[i] })
+      moved.push({ id: r.rec.summary.id, days: shifts[i], from: r.rec.summary.startedAt + by, to: r.rec.summary.startedAt })
     })
     fs.writeFileSync(indexFile, JSON.stringify(index))
     log('MD shifted run records:', JSON.stringify(moved), `of ${recs.length} work records`)
     ;({ app, page, shot } = await launch({ shotPrefix: 'dashboard', clearPrefs: false }))
     watchErrors(page)
+    // The map buckets by LOCAL calendar day, so a wall clock that passes midnight between the seeding above and the read
+    // below moves every seeded run one column left (CI run 45512226480 started this block at 23:5x UTC and read at 00:01).
+    // The expectations below are therefore computed from each seeded timestamp and the day the page reads as today, never
+    // from a fixed 14 - 1 - N. `E2E_MD_FAKE_AFTER_MIDNIGHT=1` proves that: the page clock is set to 00:02 on the day after
+    // the seeding, the way the failed runs saw it (Date.now only, the same way the A3 hour bands fake it).
+    if (process.env.E2E_MD_FAKE_AFTER_MIDNIGHT) {
+      const next = new Date()
+      next.setHours(24, 2, 0, 0)
+      await page.evaluate((ms) => {
+        Date.now = () => ms
+      }, next.getTime())
+      log('MD page clock faked to', next.toString())
+      await page.locator('[data-testid=nav-usage]').click()
+      await T('usage-period').waitFor({ timeout: t(15_000) })
+    }
     await gotoProjects(page)
     await T('dash-heat').waitFor({ timeout: t(20_000) }).catch(() => {})
     await sleep(800)
-    const md = await page.evaluate(() => {
+    const md = await page.evaluate((seeded) => {
       const cols = [...document.querySelectorAll('[data-testid=dash-heat-col]')]
       const withRuns = cols.map((c, i) => ({ i, runs: [...c.querySelectorAll('[data-testid=dash-heat-cell]')].reduce((a, x) => a + Number(x.getAttribute('data-runs') || 0), 0) })).filter((c) => c.runs > 0)
       const today = cols.find((c) => c.hasAttribute('data-today'))
       const todayRuns = today ? [...today.querySelectorAll('[data-testid=dash-heat-cell]')].reduce((a, x) => a + Number(x.getAttribute('data-runs') || 0), 0) : -1
-      return { withRuns, todayRuns, total: withRuns.reduce((a, c) => a + c.runs, 0), todayText: document.querySelector('[data-testid=dash-activity-today]')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', totalText: document.querySelector('[data-testid=dash-activity-total]')?.textContent?.trim() ?? '' }
-    })
+      // The column each seeded run belongs in: the page's own list of dates (data-date, local YYYY-MM-DD) searched for the
+      // local day of the run's seeded start. -1 when no column carries that day.
+      const keyOf = (ms) => {
+        const d = new Date(ms)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const dates = cols.map((c) => c.getAttribute('data-date'))
+      const expected = seeded.map((s) => ({ days: s.days, col: dates.indexOf(keyOf(s.to)), origCol: dates.indexOf(keyOf(s.from)) }))
+      return { withRuns, todayRuns, todayCol: cols.indexOf(today), columns: cols.length, expected, total: withRuns.reduce((a, c) => a + c.runs, 0), todayText: document.querySelector('[data-testid=dash-activity-today]')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', totalText: document.querySelector('[data-testid=dash-activity-total]')?.textContent?.trim() ?? '' }
+    }, moved)
     check(moved.length === 4 && md.withRuns.length >= 3, 'MD the activity map shows runs on several day columns after the history is seeded', JSON.stringify(md))
-    check(md.withRuns.some((c) => c.i === 14 - 1 - 3) && md.withRuns.some((c) => c.i === 14 - 1 - 5) && md.withRuns.some((c) => c.i === 14 - 1 - 9), 'MD runs 3, 5 and 9 days back sit in the columns that many places left of today', JSON.stringify(md.withRuns))
+    // A column index is "that many places left of the run's original day"; the original day is wherever the page put it
+    // (today, or yesterday when midnight passed in between), so the check holds on either side of midnight.
+    if (md.todayCol === 13 && md.expected.some((e) => e.origCol !== 13)) log('MD the date changed between seeding and reading (original columns', JSON.stringify(md.expected.map((e) => e.origCol)), '); expected columns follow each seeded timestamp')
+    const mdPlaced = md.expected.every((e) => e.col >= 0 && e.col === e.origCol - e.days && md.withRuns.some((c) => c.i === e.col && c.runs >= md.expected.filter((x) => x.col === e.col).length))
+    check(mdPlaced && md.expected.some((e) => e.days === 3) && md.expected.some((e) => e.days === 5) && md.expected.some((e) => e.days === 9), 'MD runs 3, 5 and 9 days back sit in the columns that many places left of the column of their original day', JSON.stringify({ expected: md.expected, withRuns: md.withRuns, todayCol: md.todayCol }))
     check(md.todayText.includes(`${md.todayRuns} run`) || (md.todayRuns === 0 && /No runs started today yet/.test(md.todayText)), 'MD the "Today" footer reads today\'s own count, not the 14-day total', JSON.stringify(md))
     check(md.totalText === `${md.total} runs · 14 days`, 'MD the map total counts every column', JSON.stringify(md))
     const mdCards = await T('dash-stat').evaluateAll((els) => Object.fromEntries(els.map((li) => [li.getAttribute('data-stat'), { value: li.querySelector('[data-testid=dash-stat-value]')?.textContent?.trim(), dir: li.querySelector('[data-testid=dash-stat-move]')?.getAttribute('data-dir'), move: li.querySelector('[data-testid=dash-stat-move]')?.textContent?.replace(/\s+/g, ' ').trim() }])))
@@ -1676,7 +1703,10 @@ try {
     }, T0).catch(() => -1)
     const sinceBody = sinceMd.replace(/^Since .+?: (?=\d)/, '')
     const sinceCount = [...sinceBody.matchAll(/(\d+) (?:runs? finished|failed|stopped)/g)].map((m) => Number(m[1])).reduce((a, b) => a + b, 0)
-    check(/^Since .+: \d+ .+\.$/.test(sinceMd) && sinceCount >= 1 && sinceCount <= endedAfter, 'MD the since line counts only runs that ended after the last visit (the seeded older ones are not in it)', `${sinceMd} (${endedAfter} work runs ended after the last visit)`)
+    // With the page clock faked up to a day ahead (E2E_MD_FAKE_AFTER_MIDNIGHT) the last visit is a day old and the line is not
+    // the one this check describes, so the proof run leaves it out; every other MD check runs.
+    if (process.env.E2E_MD_FAKE_AFTER_MIDNIGHT) log('MD skipped the since line check: the page clock is faked a day ahead')
+    else check(/^Since .+: \d+ .+\.$/.test(sinceMd) && sinceCount >= 1 && sinceCount <= endedAfter, 'MD the since line counts only runs that ended after the last visit (the seeded older ones are not in it)', `${sinceMd} (${endedAfter} work runs ended after the last visit)`)
     await shot('multi-day')
   }
 

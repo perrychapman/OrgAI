@@ -30,9 +30,20 @@ export function parseWindowInactive(value: string | undefined): boolean {
   return value === '1'
 }
 
-/** Only the exact value '1' turns it on (ORGAI_WINDOW_HIDDEN: windows load but are never shown; pack:verify's boot check). */
+/** Only the exact value '1' turns it on (ORGAI_WINDOW_HIDDEN: windows load and paint but nothing shows or takes focus, see windowShowMode; pack:verify's boot check, the local e2e default). */
 export function parseWindowHidden(value: string | undefined): boolean {
   return value === '1'
+}
+
+/**
+ * How a window is shown when it is ready. 'ghost' (ORGAI_WINDOW_HIDDEN=1) is shown without activation but fully transparent,
+ * click-through and off the taskbar: nothing appears on screen or takes focus, yet the page keeps painting and its frames,
+ * timers and visibility run as in a real window (a window that is never shown has no frames: screenshots and rAF stall).
+ * Hidden wins over inactive; neither is today's behaviour ('normal').
+ */
+export type WindowShowMode = 'ghost' | 'inactive' | 'normal'
+export function windowShowMode(hidden: boolean, inactive: boolean): WindowShowMode {
+  return hidden ? 'ghost' : inactive ? 'inactive' : 'normal'
 }
 
 /** Only the exact value '1' turns it on (ORGAI_WINDOW_LARGER_THAN_SCREEN, macOS CI only). */
