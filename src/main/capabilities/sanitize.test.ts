@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeArgs, isCredentialArg, capabilityId, clampText, hiddenCharIn, hiddenCharProblem, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubLocalPaths, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
+import { sanitizeArgs, isCredentialArg, capabilityId, clampText, hiddenCharIn, hiddenCharProblem, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, redactCredentialWords, scrubLocalPaths, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
 
 describe('hiddenCharIn / hiddenCharProblem', () => {
   it('finds bidi, zero-width and control characters; multi-line fields allow tab and line breaks', () => {
@@ -43,8 +43,99 @@ describe('scrubLocalPaths', () => {
     expect(scrubLocalPaths('Read(C:\\Users\\a\\x.txt) and Read(~/proj/y) and Bash(node /opt/t.js)')).toBe('Read([path]) and Read([path]) and Bash(node [path])')
     expect(scrubLocalPaths('Read(//c/work/**)')).toBe('Read([path])')
     expect(scrubLocalPaths('fetched https://host.example/p')).toBe('fetched https:[path]')
-    expect(scrubLocalPaths('Bash(npm run build:*) and/or WebFetch(domain:github.com) a.b/c')).toBe('Bash(npm run build:*) and/or WebFetch(domain:github.com) a.b/c')
+    expect(scrubLocalPaths('Bash(npm run build:*) and WebFetch(domain:github.com) v1.2.3 node.js')).toBe('Bash(npm run build:*) and WebFetch(domain:github.com) v1.2.3 node.js')
     expect(scrubLocalPaths(undefined as unknown as string)).toBe('')
+  })
+
+  it('removes a path whose folder names hold spaces whole, with no fragment left', () => {
+    expect(scrubLocalPaths('C:\\Users\\chapp\\OneDrive - Acme Corp\\Clients\\X')).toBe('[path]')
+    expect(scrubLocalPaths('C:\\Users\\John Smith\\Documents\\x.txt')).toBe('[path]')
+    expect(scrubLocalPaths('D:\\Client Work\\Acme')).toBe('[path]')
+    for (const out of [
+      scrubLocalPaths('Read(C:\\Users\\chapp\\OneDrive - Acme Corp\\Clients\\X\\plan.md)'),
+      scrubLocalPaths('Read(D:\\Client Work\\Acme\\notes.txt) and Read(~/My Stuff/Acme Corp/x.txt)'),
+      scrubLocalPaths('looked for a connection (C:\\Users\\John Smith\\Acme Corp)')
+    ]) {
+      expect(out).not.toMatch(/Acme|Smith|Client|Work|OneDrive|Corp/)
+    }
+    expect(scrubLocalPaths('Read(D:\\Client Work\\Acme\\notes.txt) and Read(~/My Stuff/Acme Corp/x.txt)')).toBe('Read([path]) and Read([path])')
+    expect(scrubLocalPaths('Read(\\\\fileserver\\Team Share\\Acme\\x) and Read(\\\\?\\C:\\Big Folder\\y) and Read(file:///C:/Big Folder/y)')).toBe('Read([path]) and Read([path]) and Read(file:[path])')
+  })
+
+  it('removes relative paths, `..` paths and any word that holds a separator', () => {
+    expect(scrubLocalPaths('Read(secrets/prod.env)')).toBe('Read([path])')
+    expect(scrubLocalPaths('Read(..\\..\\x)')).toBe('Read([path])')
+    expect(scrubLocalPaths('Bash(cat secrets/prod.env)')).toBe('Bash(cat [path])')
+    // Adjacent removed words collapse into one token.
+    expect(scrubLocalPaths('Bash(cat a\\b.txt c/d.txt)')).toBe('Bash(cat [path])')
+    // The stated rule: a word holding / or \ is removed ("and/or", "read/write" too); "v1.2.3" and "node.js" are not.
+    expect(scrubLocalPaths('read/write')).toBe('[path]')
+    expect(scrubLocalPaths('and/or read/write v1.2.3 node.js')).toBe('[path] v1.2.3 node.js')
+  })
+
+  it('removes user@host, IPv4 and IPv6 literals and private host names', () => {
+    expect(scrubLocalPaths('Bash(ssh admin@db.internal)')).toBe('Bash(ssh [host])')
+    expect(scrubLocalPaths('mail me@example.com')).toBe('mail [host]')
+    expect(scrubLocalPaths('WebFetch(domain:db.internal) and nas.home and git.corp.example')).toBe('WebFetch(domain:[host]) and [host] and [host]')
+    expect(scrubLocalPaths('open github.com and example.org/x.local')).toBe('open github.com and [path]')
+    expect(scrubLocalPaths('Bash(curl 10.0.0.5:8080)')).toBe('Bash(curl [host]:8080)')
+    expect(scrubLocalPaths('ping 192.168.1.20 and 2001:db8::1 and ::1 and fe80:0:0:0:1:2:3:4')).toBe('ping [host] and [host] and [host] and [host]')
+    expect(scrubLocalPaths('host DB-01.Intranet, printer.lan; x.local')).toBe('host [host], [host]; [host]')
+    // Over-removal, by design: anything shaped name@name goes, a package pin included.
+    expect(scrubLocalPaths('npm i left-pad@1.2.3')).toBe('npm i [host]')
+    expect(scrubLocalPaths('Bash(npm run build:*) WebFetch(domain:github.com)')).toBe('Bash(npm run build:*) WebFetch(domain:github.com)')
+  })
+
+  it('keeps a bare ~ and a bare host name (residue, stated)', () => {
+    expect(scrubLocalPaths('~ and db01')).toBe('~ and db01')
+  })
+})
+
+describe('redactCredentialWords', () => {
+  it('removes URL userinfo of any scheme and keeps the rest of the address', () => {
+    expect(redactCredentialWords('git clone https://user:pass@host.example/repo.git')).toBe('git clone https://host.example/repo.git')
+    expect(redactCredentialWords('Bash(psql postgres://admin:hunter2@db:5432/app)')).toBe('Bash(psql postgres://db:5432/app)')
+    expect(redactCredentialWords('fetch https://example.com/@scope/pkg')).toBe('fetch https://example.com/@scope/pkg')
+  })
+
+  it('drops the value after a credential flag: next word, quoted run, glued or inline', () => {
+    expect(redactCredentialWords('Bash(curl -u user:pass https://x.example)')).toBe('Bash(curl -u [redacted] https://x.example)')
+    expect(redactCredentialWords('Bash(curl -uuser:pass https://x.example)')).toBe('Bash(curl -u[redacted] https://x.example)')
+    expect(redactCredentialWords('Bash(mysql --password secret db)')).toBe('Bash(mysql --password [redacted] db)')
+    expect(redactCredentialWords('Bash(mysql --password "my pass word" db)')).toBe('Bash(mysql --password "[redacted]" db)')
+    expect(redactCredentialWords('Bash(tool --token ab --api-key x1 --auth foo --bearer bar)')).toBe('Bash(tool --token [redacted] --api-key [redacted] --auth [redacted] --bearer [redacted])')
+    expect(redactCredentialWords('tool --token=ab --password=xy -u=me:pw')).toBe('tool --token=[redacted] --password=[redacted] -u=[redacted]')
+    expect(redactCredentialWords('Bash(curl --user me:pw -X POST)')).toBe('Bash(curl --user [redacted] -X POST)')
+    // A flag followed by another flag has no value to drop.
+    expect(redactCredentialWords('tool --token --verbose')).toBe('tool --token --verbose')
+  })
+
+  it('drops header values, quoted or not, and Authorization headers', () => {
+    expect(redactCredentialWords('Bash(curl --header "Authorization: Bearer abc.def" https://x.example)')).toBe('Bash(curl --header "[redacted]" https://x.example)')
+    expect(redactCredentialWords("Bash(curl -H 'X-Api-Key: zzz' x)")).toBe('Bash(curl -H \'[redacted]\' x)')
+    expect(redactCredentialWords('curl --header Authorization: Bearer abc123 https://x')).toBe('curl --header [redacted] https://x')
+    expect(redactCredentialWords('curl --header Authorization: Basic dXNlcjpwdw== https://x')).toBe('curl --header [redacted] https://x')
+    expect(redactCredentialWords('sent Authorization: Basic dXNlcjpwdw== ok')).toBe('sent Authorization: [redacted] ok')
+    expect(redactCredentialWords('curl --header=Foo:bar x')).toBe('curl --header=[redacted] x')
+  })
+
+  it('masks KEY=value pairs whose name says secret, and bare key-like words', () => {
+    expect(redactCredentialWords('Bash(DB_PASSWORD=hunter2 npm test)')).toBe('Bash(DB_PASSWORD=[redacted] npm test)')
+    expect(redactCredentialWords('export GITHUB_TOKEN=abc')).toBe('export GITHUB_TOKEN=[redacted]')
+    expect(redactCredentialWords('use sk-abcdef123456 now')).toBe('use [redacted] now')
+    expect(redactCredentialWords('jwt eyJhbGciOiJI.eyJzdWIiOiIx.abcdefghij1 ok')).toBe('jwt [redacted] ok')
+  })
+
+  it('leaves ordinary text alone and is idempotent', () => {
+    for (const t of ['Bash(npm run build:*) and Read(src/**)', 'denied Bash(git status) -x -h --verbose', 'name=value other=thing']) expect(redactCredentialWords(t)).toBe(t)
+    for (const t of ['curl -u me:pw --password x --header "A: b"', 'Bash(curl --header Authorization: Bearer abc https://u:p@h/x)']) {
+      const once = redactCredentialWords(t)
+      expect(redactCredentialWords(once)).toBe(once)
+    }
+  })
+
+  it('never throws on odd input', () => {
+    for (const t of ['', ' ', '--password', '-u', '--header "unclosed', '"""', undefined as unknown as string, '--token=']) expect(() => redactCredentialWords(t)).not.toThrow()
   })
 })
 

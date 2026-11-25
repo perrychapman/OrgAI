@@ -131,6 +131,49 @@ describe('digestRun', () => {
     expect(c.tokens.every((t) => /^[0-9a-f]{12}$/.test(t))).toBe(true)
   })
 
+  it('keeps no credential in a rule, a search or a correction excerpt (URL userinfo, flag values, headers, KEY=value)', () => {
+    const forms: [string, string][] = [
+      ['URL userinfo', 'Bash(git clone https://deploy:S3cr3tPw@git.example/r.git)'],
+      ['-u', 'Bash(curl -u admin:S3cr3tPw https://x.example)'],
+      ['--password', 'Bash(mysql --password S3cr3tPw db)'],
+      ['--password quoted', 'Bash(mysql --password "S3cr3t Pw" db)'],
+      ['--token', 'Bash(tool --token S3cr3tPw run)'],
+      ['--header Authorization', 'Bash(curl --header "Authorization: Basic S3cr3tPw==" x)'],
+      ['-H', "Bash(curl -H 'X-Api-Key: S3cr3tPw' x)"],
+      ['--auth', 'Bash(tool --auth S3cr3tPw x)'],
+      ['--bearer', 'Bash(tool --bearer S3cr3tPw x)'],
+      ['KEY=value', 'Bash(DB_PASSWORD=S3cr3tPw npm test)']
+    ]
+    for (const [name, text] of forms) {
+      const r = run({
+        agents: [{ slug: 'dev', id: 'd1' }],
+        transcript: [
+          user('the task'),
+          use('d1', 't1', 'request_permission_rules', { rules: [text] }),
+          use('d1', 't2', 'search_mcp_registry', { query: text }),
+          user(`No, stop. I told you already, always run ${text.replace(/^Bash\(|\)$/g, '')} the safe way`)
+        ]
+      })
+      const d = digestRun(r)
+      const json = JSON.stringify(d)
+      expect(json, name).not.toContain('S3cr3t')
+      expect(json, name).not.toContain('admin:')
+      expect(json, name).not.toContain('deploy:')
+      expect(d.evidence.some((e) => e.kind === 'ruleRequest'), name).toBe(true)
+      expect(d.evidence.some((e) => e.kind === 'missingConnection'), name).toBe(true)
+      expect(d.corrections, name).toHaveLength(1)
+    }
+  })
+
+  it('hides a home folder whose name holds spaces when a separator follows it', () => {
+    expect(hideHome('C:\\Users\\John Smith\\Documents\\x.txt')).toBe('~\\Documents\\x.txt')
+    expect(hideHome('/home/mary jane/proj and /Users/Ann Marie Lee/z')).toBe('~/proj and ~/z')
+    expect(hideHome('\\\\nas\\share\\Users\\John Smith\\docs')).toBe('~\\docs')
+    expect(hideHome('Read(C:\\Users\\chapp\\OneDrive - Acme Corp\\Clients\\X)')).toBe('Read(~\\OneDrive - Acme Corp\\Clients\\X)')
+    // Not reliable, so not attempted: a spaced name with nothing after it, or more than three words.
+    expect(hideHome('C:\\Users\\John Smith')).toBe('~ Smith')
+  })
+
   // Characters that hide text from a reader but not from a model or a hash: soft hyphen, Arabic letter mark, Mongolian
   // vowel separator, Hangul filler, a Unicode tag character, a line separator.
   const HIDDEN = '\u00ad\u061c\u180e\u3164\u{e0041}\u2028'

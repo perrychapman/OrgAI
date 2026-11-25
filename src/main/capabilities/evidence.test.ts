@@ -97,6 +97,53 @@ describe('collectEvidence', () => {
     for (const e of ev) expect(e.summary.length).toBeLessThanOrEqual(300)
   })
 
+  it('keeps no credential value in a rule, a search or a repeated correction, in any form', () => {
+    const forms = [
+      'git clone https://deploy:S3cr3tPw@git.example/r.git',
+      'curl -u admin:S3cr3tPw https://x.example',
+      'mysql --password S3cr3tPw db',
+      'mysql --password "S3cr3t Pw" db',
+      'tool --token S3cr3tPw run',
+      'curl --header "Authorization: Basic S3cr3tPw==" x',
+      'curl --header Authorization: Bearer S3cr3tPw x',
+      "curl -H 'X-Api-Key: S3cr3tPw' x",
+      'tool --auth S3cr3tPw x',
+      'tool --bearer S3cr3tPw x',
+      'DB_PASSWORD=S3cr3tPw npm test'
+    ]
+    for (const text of forms) {
+      const mk = (id: string): RunRecord =>
+        record(id, [
+          use('eng', `${id}1`, 'mcp__orgai__request_permission_rules', { rules: [`Bash(${text})`] }),
+          use('root', `${id}2`, 'mcp__orgai__search_mcp_registry', { query: text }),
+          entry('root', { kind: 'user', text: 'First task' }),
+          entry('root', { kind: 'user', text: `No, I told you again: always run ${text} the safe way and never skip it` })
+        ])
+      const recs = [mk('a'), mk('b'), mk('c')]
+      for (const input of [recs, recs.map(digestRun)]) {
+        const ev = collectEvidence(project, input)
+        expect(ev.some((e) => e.kind === 'ruleRequest'), text).toBe(true)
+        expect(ev.some((e) => e.kind === 'missingConnection'), text).toBe(true)
+        expect(ev.some((e) => e.kind === 'repeatedCorrection'), text).toBe(true)
+        expect(JSON.stringify(ev), text).not.toMatch(/S3cr3t|admin:|deploy:/)
+      }
+      expect(JSON.stringify(recs.map(digestRun)), text).not.toMatch(/S3cr3t|admin:|deploy:/)
+    }
+  })
+
+  it('orders equal counts and times by id, whatever the input order', () => {
+    const names = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot']
+    const mk = (order: string[]): RunRecord => record('run-a', order.flatMap((n, i) => [use('eng', `u${i}`, n), result('eng', `u${i}`, 'No such tool available', true, 1000)]), { endedAt: 5000 })
+    const forward = collectEvidence(project, [mk(names)])
+    const backward = collectEvidence(project, [mk([...names].reverse())])
+    const shuffled = collectEvidence(project, [mk(['Delta', 'Foxtrot', 'Alpha', 'Echo', 'Charlie', 'Bravo'])])
+    expect(forward).toHaveLength(6)
+    expect(new Set(forward.map((e) => `${e.count}|${e.lastSeenAt}`)).size).toBe(1)
+    expect(forward.map((e) => e.id)).toEqual([...forward.map((e) => e.id)].sort())
+    expect(backward).toEqual(forward)
+    expect(shuffled).toEqual(forward)
+  })
+
   it('finds repeated tool sequences and corrections across runs', () => {
     const seqRun = (id: string): RunRecord =>
       record(id, [

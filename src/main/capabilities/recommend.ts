@@ -48,8 +48,13 @@ function field(s: unknown, max: number): string {
     .split(' ')
     .map((w) => (isKeyLikeValue(w) || isKeyLikeArg(w) ? '[redacted]' : w))
     .join(' ')
-  return clampText(words.replace(/\|/g, '/').replace(/[<>]/g, ' ').replace(/=/g, ':').trim(), max)
+  return clampText(words.replace(/\|/g, '/').replace(ANGLE_BRACKETS, ' ').replace(/=/g, ':').trim(), max)
 }
+
+// ASCII angle brackets and look-alikes (fullwidth, single and double guillemets, mathematical and CJK angle brackets,
+// small signs): none may stay in a data field, they could pass for the fence tags to a model.
+const ANGLE_BRACKETS_SOURCE = String.fromCodePoint(0xff1c, 0xff1e, 0x2039, 0x203a, 0xab, 0xbb, 0x2329, 0x232a, 0x27e8, 0x27e9, 0x3008, 0x3009, 0x300a, 0x300b, 0xfe64, 0xfe65, 0x276c, 0x276d, 0x276e, 0x276f, 0x2770, 0x2771)
+const ANGLE_BRACKETS = new RegExp(`[<>${ANGLE_BRACKETS_SOURCE}]`, 'g')
 
 /** What a prompt may say about candidates found on this computer (origin 'local'). */
 export type LocalDetail = 'full' | 'minimal'

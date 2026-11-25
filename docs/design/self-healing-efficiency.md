@@ -224,7 +224,11 @@ plus that minimum do not fit. `modelInputHash` is not changed by trimming (it co
 identical passes give an identical prompt and hash and `noChange` still holds at `everyRuns` 1 and 3; a change to a
 candidate that was trimmed out asks once at the cadence. `noChange` and `modelSeen` compare the evidence the prompt
 carried, so a signal past the cap never re-asks. Proactive data classes: path-like tokens in evidence text become
-`[path]`, a repeated correction is sent as kind, role and count only. The prompt is built once per pass. Audit: C4 and C5
+`[path]`, a repeated correction is sent as kind, role and count only. Reviewer fixes (2026-11-25): the automatic scrub now
+also removes folder names with spaces, relative paths, `user@host`, IP addresses and private host names, and the stored
+evidence loses credential words (URL userinfo, `--password x`, `-u user:pass`, headers), so the manual pass no longer
+sends them; "then settles" holds only while evidence counts stop rising (in an active project a carried signal's count
+grows, so a call recurs at the `everyRuns` cadence, as in Step 2). The prompt is built once per pass. Audit: C4 and C5
 were right as written; one extra finding, the old estimate counted dismissed candidates the call left out. **Spend:** a
 project that always skipped as `budget` now makes one call per change at the `everyRuns` cadence, inside its budget; this
 is the intended fix and an increase for those projects (default budget, tier, timeout, the 150 cap, `everyRuns` and calls
@@ -297,7 +301,7 @@ for history and rollback, which does not exist in the renderer.
   `preload/index.ts`, `defaults.ts`, `ARCHITECTURE.md`, `CLAUDE.md`, `package.json`. No issue was open with
   `status: in progress` when this was written. Steps 1, 7 and 8 are likely to touch a hot file.
 - A change that can raise spend (defaults, ceilings, the staffing profile) needs the Reviewer. Steps 1, 2, 5 and 6
-  lower or hold spend; Step 3 changes what is sent but stays inside the existing budget; Steps 7 and 8 need review.
+  lower or hold spend; Step 3 changes what is sent and stays inside the existing token budget, but it raises spend for projects that used to skip as `budget` (they now make one call per change at the `everyRuns` cadence); Steps 7 and 8 need review.
 - Work lands on `dev` through the usual gate; never push `main`. Dev CI was red when this was written (a fix run was
   in progress on `f8c409f1`): check it is green before pushing code. No Claude attribution lines in commits, PRs or
   issues.
