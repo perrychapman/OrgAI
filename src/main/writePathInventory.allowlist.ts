@@ -393,6 +393,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/store/runs.ts:RunStore.writeDigestBody:mkdirSync': RUN_DIGEST_CACHE,
   'src/main/store/runs.ts:RunStore.writeDigestBody:renameSyncRetry': RUN_DIGEST_CACHE,
   'src/main/store/runs.ts:RunStore.writeDigestBody:rmSync': RUN_DIGEST_CACHE,
+  'src/main/store/runs.ts:RunStore.writeDigestBody:rmdirSync': RUN_DIGEST_CACHE,
   'src/main/store/runs.ts:RunStore.writeDigestBody:writeFileSync': RUN_DIGEST_CACHE,
   'src/main/store/secrets.ts:SecretStore.moveAside:renameDurable': VAULT_ALONE,
   'src/main/store/secrets.ts:SecretStore.writeStep:unlinkDurable': VAULT_LOCKED,

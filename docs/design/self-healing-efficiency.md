@@ -170,8 +170,12 @@ run's record (unit tested with a real `RunStore`), and findings and evidence fro
 fixture sets. Accepted change: evidence ids built from redacted text differ for a signal whose rule or search text held
 a secret or home folder; the review's `modelSeen` then sees a new signal and asks the model once, at the `everyRuns`
 cadence (tested at 1 and 3); neverLoaded and tool-name text for names that are not plain identifiers show a `#` hash.
-Not verified: a live provider run or a real run history; the heal bench was not affected (no evolve file changed in
-this half).
+Not verified: a live provider run or a real run history. `npm run bench:heal -- --seed 1` gives the same
+`results.json` (apart from `generatedAt` and `sha`) on the dev head, after the two consumer commits and after the digest
+fixes below. Digest fixes (Reviewer Lows, `DIGEST_VERSION` 2): hidden characters (soft hyphen, Arabic letter mark,
+Mongolian vowel separator, Hangul filler, tag characters, line separators) are removed from every kept text and refused on
+read; correction words are hashed from the redacted text; `hideHome` covers UNC paths and `dirPrefix` hides home
+folders; a sidecar write racing a removal leaves no orphan folder.
 
 ### Step 2. Team review: two bugs and the skip order
 

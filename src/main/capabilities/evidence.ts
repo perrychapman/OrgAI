@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { Project, RunRecord, TeamEvidence, TeamEvidenceKind } from '@shared/types'
 import { gapFindings } from '../skills/evaluate'
 import { redactEvidence } from '../skills/suggest'
-import { digestKey, digestRun, isRunDigest, type RunDigest } from '../store/runDigest'
+import { digestKey, digestRun, hideHome, isRunDigest, type RunDigest } from '../store/runDigest'
 import { clampText } from './sanitize'
 
 /**
@@ -20,11 +20,6 @@ import { clampText } from './sanitize'
 export const EVIDENCE_MAX_RUNS = 20
 export const EVIDENCE_MAX_ITEMS = 20
 const SUMMARY_MAX = 300
-
-/** Home directories name the user: C:\Users\x, /Users/x and /home/x become ~. */
-function hideHome(text: string): string {
-  return text.replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"')]+/gi, '~').replace(/\/(?:Users|home)\/[^/\s"')]+/g, '~')
-}
 
 function summary(text: string): string {
   return clampText(hideHome(redactEvidence(text)), SUMMARY_MAX)

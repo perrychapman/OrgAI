@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -768,6 +768,65 @@ describe('RunStore digest sidecar (self-healing efficiency step 1)', () => {
     expect(read).toHaveBeenCalledTimes(2)
     read.mockClear()
     expect(s.getDigest('a')?.toolSequences).toEqual([[0, 0, 0]])
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('digests a record rewritten with the same endedAt again (the stat part of the key)', () => {
+    const s = store()
+    const recordFile = join(dataDir, 'runs', 'a.json')
+    const summary = run('a', { endedAt: 5000 })
+    s.upsert(summary)
+    const withTool = (name: string): RunRecord =>
+      record(summary, { agents: { d1: agentOf('d1', 'dev') }, transcript: [{ id: 'e0', agentId: 'd1', at: 0, block: { kind: 'tool_use', id: 't0', name, input: {} } }] })
+    s.saveRecord(withTool('Bash'))
+    utimesSync(recordFile, 1_700_000_000, 1_700_000_000)
+    expect(s.getDigest('a')?.toolNames).toEqual(['Bash'])
+    // Same size (a four-letter name for a four-letter name), same endedAt and the same index: only the file's time differs.
+    s.saveRecord(withTool('Edit'))
+    utimesSync(recordFile, 1_700_000_100, 1_700_000_100)
+    expect(s.getDigest('a')?.toolNames).toEqual(['Edit'])
+    const read = vi.spyOn(s, 'getRecord')
+    expect(s.getDigest('a')?.toolNames).toEqual(['Edit'])
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('a sidecar write that races the run being removed does not bring its folder back', () => {
+    const s = store()
+    stored(s, 'a')
+    const runDir = join(dataDir, 'runs', 'a')
+    const writeSidecar = (): void => (s as unknown as { writeDigestBody(id: string, key: string, body: unknown, version: number): void }).writeDigestBody('a', 'k', {}, 1)
+    s.removeRecord('a')
+    s.upsert({ ...run('a'), id: 'a' })
+    // The index entry is still there but the record is gone.
+    writeSidecar()
+    expect(existsSync(runDir)).toBe(false)
+    // The index entry is gone too.
+    s.removeProject('p1')
+    stored(s, 'b')
+    s.removeProject('p1')
+    ;(s as unknown as { writeDigestBody(id: string, key: string, body: unknown, version: number): void }).writeDigestBody('b', 'k', {}, 1)
+    expect(existsSync(join(dataDir, 'runs', 'b'))).toBe(false)
+    // A run that is stored still gets its sidecar.
+    stored(s, 'c')
+    expect(s.getDigest('c')).not.toBeNull()
+    expect(existsSync(digestFile('c'))).toBe(true)
+  })
+
+  it('evidence text with angle brackets is kept as plain text and the sidecar still reads back', () => {
+    const s = store()
+    const text = '<img src=x onerror=alert(1)>'
+    const summary = run('a', { endedAt: 5000 })
+    s.upsert(summary)
+    s.saveRecord(
+      record(summary, {
+        agents: { d1: agentOf('d1', 'dev') },
+        transcript: [{ id: 'e0', agentId: 'd1', at: 0, block: { kind: 'tool_use', id: 't0', name: 'mcp__orgai__request_permission_rules', input: { rules: [`Bash(${text}:*)`] } } }]
+      })
+    )
+    const first = s.getDigest('a')
+    expect(first?.evidence).toMatchObject([{ kind: 'ruleRequest', rules: [`Bash(${text}:*)`] }])
+    const read = vi.spyOn(s, 'getRecord')
+    expect(s.getDigest('a')).toEqual(first)
     expect(read).not.toHaveBeenCalled()
   })
 
