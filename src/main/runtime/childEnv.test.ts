@@ -24,9 +24,14 @@ describe('scrubControlEnv (cli-spec 3.4(3))', () => {
     ORGAI_CLI_VAULT_KEY_FILE: '/ck',
     orgai_cli_vault_no_os_keystore: '1',
     ELECTRON_RUN_AS_NODE: '1',
-    electron_run_as_node: '1'
+    electron_run_as_node: '1',
+    ORGAI_WINDOW_HIDDEN: '1',
+    orgai_window_inactive: '1',
+    ORGAI_WINDOW_DISPLAY: 'secondary',
+    ORGAI_QUIET: '1',
+    orgai_quiet: '1'
   }
-  const kept = { PATH: '/bin', ORGAI_MOCK: '1', ORGAI_CODEX_PATH: '/c', ORGAI_CLAUDE_PATH: '/cl', ORGAI_VAULTX: 'v', MY_ORGAI_VAULT_KEY: 'w', ORGAI_CODEX_API_KEY: 'k', ORGAI_DATA_DIRX: 'q', ORGAI_CLI_DATA_DIRX: 'q2', ORGAI_CLI_VAULTX: 'q3', MY_ORGAI_DATA_DIR: 'r', HOME: '/h' }
+  const kept = { PATH: '/bin', ORGAI_MOCK: '1', ORGAI_CODEX_PATH: '/c', ORGAI_CLAUDE_PATH: '/cl', ORGAI_VAULTX: 'v', MY_ORGAI_VAULT_KEY: 'w', ORGAI_CODEX_API_KEY: 'k', ORGAI_DATA_DIRX: 'q', ORGAI_CLI_DATA_DIRX: 'q2', ORGAI_CLI_VAULTX: 'q3', MY_ORGAI_DATA_DIR: 'r', ORGAI_QUIETLY: 's', MY_ORGAI_QUIET: 't', HOME: '/h' }
 
   it('drops each name and pattern case-insensitively and keeps the rest (ORGAI_MOCK included)', () => {
     const input = { ...control, ...kept, UNDEF: undefined }

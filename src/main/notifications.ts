@@ -46,6 +46,11 @@ export interface NotifierDeps {
    * Dock bounce. Every decision before that last step is made as usual.
    */
   quiet?: boolean
+  /**
+   * Bring a window forward after a notification click (index.ts passes `showWindow`, which decides the show mode: a hidden
+   * test window is never activated). Missing = restore, show and focus directly.
+   */
+  reveal?(win: BrowserWindow): void
 }
 
 /**
@@ -152,11 +157,7 @@ export class Notifier {
       if (input.target) this.focus(input.target)
       else {
         const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-        if (win) {
-          if (win.isMinimized()) win.restore()
-          win.show()
-          win.focus()
-        }
+        if (win) this.reveal(win)
       }
     })
     notification.on('close', release)
@@ -250,10 +251,18 @@ export class Notifier {
       target
     )
     if (!win) return
+    this.reveal(win)
+    if (process.platform === 'win32') win.flashFrame(false)
+    win.webContents.send(IPC.appFocusRun, target)
+  }
+
+  private reveal(win: BrowserWindow): void {
+    if (this.deps.reveal) {
+      this.deps.reveal(win)
+      return
+    }
     if (win.isMinimized()) win.restore()
     win.show()
     win.focus()
-    if (process.platform === 'win32') win.flashFrame(false)
-    win.webContents.send(IPC.appFocusRun, target)
   }
 }

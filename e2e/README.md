@@ -55,7 +55,10 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
 - Windows and notifications of a local run (`appEnv()` in `lib.mjs`, used by `launch()`, `relaunch()` and factory-floor's own
   launch; logged once at launch). Locally (`CI` not set, `E2E_FOREGROUND` not `1`) the app starts with `ORGAI_WINDOW_HIDDEN=1`:
   the window is shown to Chromium (so it paints and keeps its frames, timers and visibility) but fully transparent,
-  click-through, off the taskbar and never active, so nothing appears on screen and no focus is taken. `E2E_FOREGROUND=1`
+  click-through, off the taskbar and shown inactive, so nothing appears on screen and no focus is taken on Windows (observed);
+  on macOS Electron may still make the app the active app at launch regardless of `showInactive` (unverified, no Mac
+  run), and on Linux the window is simply never shown. The app honours `ORGAI_WINDOW_HIDDEN` and `ORGAI_QUIET` only when
+  `ORGAI_DATA_DIR` is also set (`appEnv()` always sets it). `E2E_FOREGROUND=1`
   gives the normal visible window. A script that genuinely needs a shown window passes `window: 'inactive'` to `launch()` /
   `relaunch()` (`ORGAI_WINDOW_INACTIVE=1`: shown, never focused); `window: 'foreground'` leaves the app's default (the
   seed-review `--live` session). A value the caller sets for `ORGAI_WINDOW_HIDDEN` or `ORGAI_WINDOW_INACTIVE` is never
