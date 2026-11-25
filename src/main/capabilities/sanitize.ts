@@ -52,6 +52,15 @@ export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string 
   return cleaned.length > max ? `${cleaned.slice(0, Math.max(0, max - 1)).trimEnd()}…` : cleaned
 }
 
+// A path-like token: a drive path, a home-relative path or one starting with a separator (also `//host/share` and the
+// `//` of a URL), not preceded by a word character, so "and/or" and "a.b/c" are left alone.
+const PATH_TOKEN = /(?<![\w.-])(?:[A-Za-z]:[\\/]|~[\\/]|[\\/]{1,2})[^\s()"'`,;]*/g
+
+/** Every path-like token replaced by "[path]" (conservative: a URL loses its host and path). For text that may name a local file. */
+export function scrubLocalPaths(s: string): string {
+  return String(s ?? '').replace(PATH_TOKEN, '[path]')
+}
+
 /**
  * Origin and path only: no userinfo, query or fragment. Only http(s); anything else (or a parse failure) is null.
  * Path segments that look like keys, or are 20+ chars mixing letters and digits, are replaced with "[redacted]".

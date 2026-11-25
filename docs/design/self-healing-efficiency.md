@@ -215,6 +215,23 @@ chain.
 Done when: prompt-builder tests cover ranking, trimming to budget and the evidence block; the injection-shaped
 fixtures in the existing recommend tests still pass.
 
+Status (2026-11-25): done. Details and per-fact checks in `docs/agent-notes/assistants-skills.md` "Ranked, budgeted
+recommend prompt with run evidence" and ARCHITECTURE.md "recommend" / "Proactive model data classes". Choices: the list
+is ranked by the fallback's scorer (one `scoreCandidates`; the prompt order is score, kind, origin, id, the fallback's
+own order is unchanged) and cut from the tail to `tokenBudget`; the smallest list is 10 candidates (or all when fewer),
+the evidence block is at most 12 lines of 200 characters and is cut before candidates; `budget` stays only when the roles
+plus that minimum do not fit. `modelInputHash` is not changed by trimming (it covers every recommendable candidate), so
+identical passes give an identical prompt and hash and `noChange` still holds at `everyRuns` 1 and 3; a change to a
+candidate that was trimmed out asks once at the cadence. `noChange` and `modelSeen` compare the evidence the prompt
+carried, so a signal past the cap never re-asks. Proactive data classes: path-like tokens in evidence text become
+`[path]`, a repeated correction is sent as kind, role and count only. The prompt is built once per pass. Audit: C4 and C5
+were right as written; one extra finding, the old estimate counted dismissed candidates the call left out. **Spend:** a
+project that always skipped as `budget` now makes one call per change at the `everyRuns` cadence, inside its budget; this
+is the intended fix and an increase for those projects (default budget, tier, timeout, the 150 cap, `everyRuns` and calls
+per pass unchanged). Checked by `recommend.test.ts` and `service.test.ts` with a fake `complete` (a real prompt builder);
+not checked: a live provider, or whether evidence improves the picks. Open: evidence words do not yet raise a
+candidate's rank.
+
 ### Step 4. Outcome feedback for applied skills and servers
 
 Use the digest's "skills loaded" and MCP tool-use counts: after N measured runs (suggest 5) in which a role that holds
