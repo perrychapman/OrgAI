@@ -40,6 +40,11 @@ node e2e/setup.mjs --yes   # prints a cost estimate; exits 2 without --yes
   there, so a fast machine loses nothing. Do not wrap a sleep that orders two things in `t()`: wait on a standing state
   (a MutationObserver installed before the action, `settleUI`, `showFinishedAgents`, a mock hold such as
   `[mock:revise-hold]` or `[mock:model-switch-hold]`).
+- `page.waitForFunction(async () => ...)` does not poll in Playwright: it awaits the promise once and returns whatever it
+  resolved to (`async () => false` returned in 4 ms), so every such wait was a single read. `lib.mjs` (`scalePage`) now
+  polls an async predicate by timer until it resolves truthy, with the page's scaled default timeout and a readable
+  timeout error. A sync predicate is unchanged. Found 2026-11-24 from a macOS model-switch failure: the script "waited for
+  idle" after a send, read the status once while the turn was still running, and pressed Apply mid-turn.
 - "Hide finished agents" (View menu in the run toolbar) is the renderer's own `localStorage['orgai.collapseFinished']`, read
   when a run view mounts. `showFinishedAgents(page, show)` clicks the switch and throws with the page state if it never
   reaches the wanted value, so do not `.catch(() => {})` it away; `resetFinishedAgentsChoice(page)` restores the default (on)

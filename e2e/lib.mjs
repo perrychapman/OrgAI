@@ -57,10 +57,40 @@ export function scalePage(page) {
   if (page.__orgaiScaled) return page
   page.__orgaiScaled = true
   const setTimeoutOrig = page.setDefaultTimeout.bind(page)
-  page.setDefaultTimeout = (ms) => setTimeoutOrig(t(ms))
-  setTimeoutOrig(t(30_000))
+  let defaultTimeout = t(30_000)
+  page.setDefaultTimeout = (ms) => setTimeoutOrig((defaultTimeout = t(ms)))
+  setTimeoutOrig(defaultTimeout)
   page.setDefaultNavigationTimeout(t(30_000))
+  // page.waitForFunction(async () => ...) does NOT poll: Playwright awaits the returned promise once and then treats the
+  // (truthy) promise as success, whatever it resolved to (measured: `async () => false` returns in 4 ms). Every such wait was
+  // a single read. A script that waited for "idle" this way went on with the run still running (the model-switch macOS CI
+  // failure 2026-11-24). An async predicate is therefore polled here, by timer, until its resolved value is truthy.
+  page.waitForFunction = function waitForFunction(fn, arg, options = {}) {
+    const proto = Object.getPrototypeOf(page)
+    if (typeof fn !== 'function' || !/^\s*async\b/.test(Function.prototype.toString.call(fn))) return proto.waitForFunction.call(page, fn, arg, options)
+    return pollAsyncPredicate(page, fn, arg, options.timeout ?? defaultTimeout, options.polling)
+  }
   return page
+}
+
+async function pollAsyncPredicate(page, fn, arg, timeout, polling) {
+  const every = typeof polling === 'number' && polling > 0 ? polling : 100
+  const end = timeout === 0 ? Infinity : Date.now() + timeout
+  for (;;) {
+    try {
+      if (await page.evaluate(fn, arg)) return
+    } catch (error) {
+      // A page that is navigating or reloading answers on the next poll; any other throw is the predicate's own.
+      const message = String(error?.message)
+      if (/Target closed|has been closed/i.test(message) || !/context was destroyed|navigation/i.test(message)) throw error
+    }
+    if (Date.now() >= end) {
+      const error = new Error(`page.waitForFunction: Timeout ${timeout}ms exceeded.\nCall log:\n  - waiting for async function to resolve truthy (polled by timer: ${fn.toString().slice(0, 160)})`)
+      error.name = 'TimeoutError'
+      throw error
+    }
+    await sleep(every)
+  }
 }
 
 /**
