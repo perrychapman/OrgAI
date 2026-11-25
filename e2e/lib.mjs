@@ -359,7 +359,8 @@ export async function ensureDefaultViewport(app, page) {
 let windowModeLogged = false
 /**
  * The environment of an app launch. Locally (CI not set, E2E_FOREGROUND not 1) the windows are hidden
- * (ORGAI_WINDOW_HIDDEN=1: they load and run but are never shown, so nothing appears on screen or takes focus).
+ * (ORGAI_WINDOW_HIDDEN=1, honoured only with the ORGAI_DATA_DIR set just below: on Windows and macOS a "ghost" window, shown
+ * inactive but opacity 0, click-through and off the taskbar so it still paints and keeps its frames; on Linux never shown).
  * `window: 'inactive'` is the per-script opt-out for a script that needs a real, shown window (ORGAI_WINDOW_INACTIVE=1:
  * shown without taking focus); `window: 'foreground'` (a review session a person looks at) leaves the app's default.
  * A value the caller already set (ORGAI_WINDOW_HIDDEN or ORGAI_WINDOW_INACTIVE, any value) is never overridden, and CI
