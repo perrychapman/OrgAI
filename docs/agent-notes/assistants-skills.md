@@ -77,6 +77,14 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     is. Checked by unit tests with a fake `complete` and fake `getRun` (service.test.ts, reviewStore.test.ts); live
     provider behaviour and a real run history are unverified. The stored review is also read again right before it
     is saved (dismissals made meanwhile are kept).
+    Deliberate cadence choices (Reviewer fixes, 2026-11-25): a role edit, a project name or brief change and a
+    candidate change or removal each trigger one model step, at the `everyRuns` cadence (not at once), then settle on
+    `noChange`. An automatic pass whose model step errors or times out (an unreadable answer included) resets
+    `runsSinceModel` to 0 and leaves `modelSeen` alone, so a failing provider is retried at most once per `everyRuns`
+    finished runs (at `everyRuns: 1` that is every pass); a cancelled step and a manual Re-check leave the counter as
+    it was. `modelInputHash` leaves out outside candidates (registry, GitHub): only a manual Re-check discovers them,
+    so the hash it records is one an automatic pass reproduces. `cleanSeen` keeps only evidence ids of the exact shape
+    `evidence.ts` makes (`ev-` and 16 lowercase hex digits).
   ORGAI_MOCK=1 uses `<data>/mock-home` and outside fixtures; the first finished mock work run fills the review from the
   keyword fallback without tokens. Verified by unit tests and the mock adapter (claude.ts / codex.ts `complete()`
   accept 'recommend' with no tools and an honoured signal, read and fake-tested). Unverified: real config files on a

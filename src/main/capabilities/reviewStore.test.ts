@@ -128,9 +128,10 @@ describe('normalizeReview field by field (review L1)', () => {
 
 describe('modelSeen (main-only, what the last successful model step saw)', () => {
   const hash = 'a'.repeat(64)
+  const evId = (n: number): string => `ev-${n.toString(16).padStart(16, '0')}`
   it('is read back when well formed and dropped when the hash is not 64 hex characters', () => {
-    const ok = normalizeReview({ ...review(), modelSeen: { hash, evidence: [{ id: 'ev-1', count: 2 }], extra: 1 } }, 'p1')!
-    expect(ok.modelSeen).toEqual({ hash, evidence: [{ id: 'ev-1', count: 2 }] })
+    const ok = normalizeReview({ ...review(), modelSeen: { hash, evidence: [{ id: evId(1), count: 2 }], extra: 1 } }, 'p1')!
+    expect(ok.modelSeen).toEqual({ hash, evidence: [{ id: evId(1), count: 2 }] })
     for (const bad of ['', 'a'.repeat(63), 'A'.repeat(64), `${'a'.repeat(63)}g`, 5, null, { hash }, [hash]]) {
       expect(normalizeReview({ ...review(), modelSeen: { hash: bad, evidence: [] } }, 'p1')!.modelSeen).toBeUndefined()
     }
@@ -138,9 +139,11 @@ describe('modelSeen (main-only, what the last successful model step saw)', () =>
     expect(normalizeReview({ ...review(), modelSeen: [] }, 'p1')!.modelSeen).toBeUndefined()
   })
   it('drops malformed evidence entries, floors counts and caps the list', () => {
-    const many = Array.from({ length: REVIEW_MAX_SEEN_EVIDENCE + 30 }, (_, i) => ({ id: `ev-${i}`, count: 1 }))
-    const n = normalizeReview({ ...review(), modelSeen: { hash, evidence: [{ id: 'a', count: 2.9 }, { id: 5, count: 1 }, { id: 'b', count: -1 }, { id: 'c', count: 'x' }, null, 'junk', { id: 'x'.repeat(65), count: 1 }, ...many] } }, 'p1')!
-    expect(n.modelSeen!.evidence[0]).toEqual({ id: 'a', count: 2 })
+    const many = Array.from({ length: REVIEW_MAX_SEEN_EVIDENCE + 30 }, (_, i) => ({ id: evId(i), count: 1 }))
+    const bad = ['a', 'ev-1', 'EV-0000000000000001', 'ev-000000000000000g', 'ev-00000000000000001', ' ev-0000000000000001']
+    const n = normalizeReview({ ...review(), modelSeen: { hash, evidence: [{ id: evId(255), count: 2.9 }, ...bad.map((id) => ({ id, count: 1 })), { id: 5, count: 1 }, { id: evId(2), count: -1 }, { id: evId(3), count: 'x' }, null, 'junk', { id: 'x'.repeat(65), count: 1 }, ...many] } }, 'p1')!
+    expect(n.modelSeen!.evidence[0]).toEqual({ id: evId(255), count: 2 })
+    expect(n.modelSeen!.evidence.some((e) => bad.includes(e.id))).toBe(false)
     expect(n.modelSeen!.evidence.length).toBeLessThanOrEqual(REVIEW_MAX_SEEN_EVIDENCE)
     expect(normalizeReview({ ...review(), modelSeen: { hash, evidence: 'no' } }, 'p1')!.modelSeen).toBeUndefined()
   })

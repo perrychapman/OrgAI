@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { EvolutionFinding, EvolutionGeneration, EvolutionRejectedHypothesis } from '@shared/types'
 import { ProjectStore } from '../store/projects'
 import { RETRO_EVOLVE_BLOCK_MAX, RETRO_EVOLVE_MAX_FINDINGS, RETRO_EVOLVE_MAX_GENERATIONS, RETRO_EVOLVE_MAX_REJECTIONS, retroEvolveBlock, type RetroEvolveData } from './retroEvolve'
+import { SOLO, enableStoreSync, oneChangePerCall, type StoreSync } from '../store/shared/storeSync'
 import { SetupService } from './service'
 
 const finding = (o: Partial<EvolutionFinding> = {}): EvolutionFinding => ({ kind: 'tier_overprovisioned', roleSlug: 'dev', severity: 40, summary: 'Dev passed 90% first time.', evidence: [], ...o })
@@ -88,6 +89,25 @@ describe('SetupService.retroEvolveContext', () => {
 
   it('returns the block from the port', async () => {
     expect(await make(async () => data()).retroEvolveContext('p')).toContain('Waste score: 42')
+  })
+  it('starts the port outside the shared write lock that oneChangePerCall holds for a call', async () => {
+    const dataDir = join(dir, 'data')
+    let depth = 0
+    let depthAtHook = -1
+    const sync: StoreSync = { ...SOLO, shared: true, locked: (fn) => { depth++; try { return fn() } finally { depth-- } } }
+    const off = enableStoreSync(dataDir, sync)
+    try {
+      const svc = oneChangePerCall(dataDir, make(async () => { depthAtHook = depth; return data() }))
+      expect(await svc.retroEvolveContext('p')).toContain('Waste score: 42')
+      expect(depthAtHook).toBe(0)
+      // The proxy really does take the lock for an ordinary call.
+      let seen = -1
+      const probe = oneChangePerCall(dataDir, { sync: () => { seen = depth } })
+      probe.sync()
+      expect(seen).toBe(1)
+    } finally {
+      off()
+    }
   })
   it('is empty with few runs, when the port is missing, rejects or throws synchronously', async () => {
     expect(await make(async () => data({ runs: 1 })).retroEvolveContext('p')).toBe('')

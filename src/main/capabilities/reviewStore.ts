@@ -54,7 +54,7 @@ function cleanSeen(v: unknown): ModelSeen | null {
   for (const e of x.evidence.slice(0, REVIEW_MAX_SEEN_EVIDENCE)) {
     if (!e || typeof e !== 'object') continue
     const y = e as Record<string, unknown>
-    if (!isStr(y.id) || y.id.length > 64 || !Number.isFinite(y.count) || (y.count as number) < 0) continue
+    if (!isStr(y.id) || !/^ev-[0-9a-f]{16}$/.test(y.id) ||!Number.isFinite(y.count) || (y.count as number) < 0) continue
     evidence.push({ id: y.id, count: Math.floor(y.count as number) })
   }
   return { hash: x.hash, evidence }

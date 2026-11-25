@@ -177,7 +177,10 @@ export function fingerprintOf(item: Pick<CapabilityItem, 'id' | 'digest' | 'vers
  */
 export function modelInputHash(project: Pick<Project, 'name' | 'brief' | 'roles'>, items: CapabilityItem[]): string {
   const roles = project.roles.map((r) => [r.id, r.name, r.reportsTo === null, r.tools.join(','), (r.skills ?? []).length, r.description, (r.responsibilities ?? []).join(';')])
+  // Outside items (registry, GitHub) are left out: only a manual Re-check discovers them, and an automatic pass could
+  // never reproduce a hash that included them.
   const candidates = recommendable(items)
+    .filter((i) => i.origin !== 'registry' && i.origin !== 'github')
     .map((i) => [fingerprintOf(i, i.id), i.kind, i.origin, i.name, i.description ?? '', i.inProject?.grantedTo.join(',') ?? '', i.flags.join(','), i.readOnlyAvailable ?? null])
     .map((c) => JSON.stringify(c))
     .sort()
@@ -1217,6 +1220,9 @@ export class CapabilityService implements CapabilityServiceApi {
         modelSeen = { hash: modelHash ?? modelInputHash(project, items), evidence: evidence.slice(0, REVIEW_MAX_SEEN_EVIDENCE).map((e) => ({ id: e.id, count: e.count })) }
       } else {
         skip = outcome.fallbackReason === 'timeout' ? 'timeout' : outcome.fallbackReason === 'cancelled' ? 'cancelled' : outcome.fallbackReason === 'noCandidates' ? 'noChange' : 'error'
+        // A failing provider is retried at most once per everyRuns: an automatic pass that errors or times out restarts the
+        // count (modelSeen stays as it was). A cancelled step and a manual Re-check leave the counter alone.
+        if (automatic && (skip === 'error' || skip === 'timeout')) runsSinceModel = 0
       }
       if (outcome.tokens !== undefined) tokensUsed = outcome.tokens
     }

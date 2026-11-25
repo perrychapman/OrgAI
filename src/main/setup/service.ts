@@ -295,6 +295,9 @@ export class SetupService {
    */
   async retroEvolveContext(projectId: string): Promise<string> {
     try {
+      // oneChangePerCall holds the shared write lock only for a call's synchronous start. The hook reads and diagnoses
+      // up to 10 run records synchronously and writes nothing, so it starts after this await, outside that hold.
+      await Promise.resolve()
       const data = await this.hooks.retroEvolve?.(projectId)
       return data ? retroEvolveBlock(data) : ''
     } catch {
