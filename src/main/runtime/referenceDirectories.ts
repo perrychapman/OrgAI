@@ -199,6 +199,11 @@ interface ShellGlobParseBudget {
   work: number
 }
 
+/** An unclosed class at `at` that is `[]` with no other `]` after it: the shell reads both characters literally. */
+function literalEmptyBrackets(pattern: string, at: number): boolean {
+  return pattern[at + 1] === ']' && pattern.indexOf(']', at + 2) < 0
+}
+
 /** Find one balanced zsh alternation or extglob group in a shell word. */
 function shellGlobGroup(pattern: string, allowSimple: boolean, budget: ShellGlobParseBudget): ShellGlobGroup | 'unreadable' | null {
   let quote: string | null = null
@@ -222,7 +227,9 @@ function shellGlobGroup(pattern: string, allowSimple: boolean, budget: ShellGlob
       const cls = parseGlobBracketClass(pattern, i)
       if (cls) {
         if (cls.unclosed) {
-          if (pattern[i + 1] === ']') {
+          // `[]` with no `]` after it is literal. With a later `]` the class may still close for the shell (bash reads
+          // an unterminated `[:` inside it as a plain `[`: `[][:o]` matches `o`), so it stays unreadable (PR 70 review).
+          if (literalEmptyBrackets(pattern, i)) {
             i++
             continue
           }
@@ -256,7 +263,7 @@ function shellGlobGroup(pattern: string, allowSimple: boolean, budget: ShellGlob
         const cls = parseGlobBracketClass(pattern, j)
         if (cls) {
           if (cls.unclosed) {
-            if (pattern[j + 1] === ']') {
+            if (literalEmptyBrackets(pattern, j)) {
               j++
               continue
             }
