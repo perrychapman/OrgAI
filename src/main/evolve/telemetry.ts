@@ -1,48 +1,62 @@
-import { agentProducedNothing } from '../../shared/defaults'
-import { pathOverlaps, type GraphStepLike } from '../../shared/planGraph'
 import { QUICK_PROJECT_ID } from '../../shared/types'
 import type {
-  AgentInstance,
   EvolutionFinding,
   EvolutionMetrics,
   ModelTier,
   Project,
   RunRecord,
+  RunSummary,
   SkillFinding,
   StaffingGoal,
   StaffingMode,
   TeamEvolutionDiagnosis
 } from '../../shared/types'
-import { redactEvidence } from '../skills/suggest'
+import type { GraphStepLike } from '../../shared/planGraph'
+import {
+  DIGEST_TRANSCRIPT_LIMIT,
+  asDigest,
+  digestHash,
+  digestKey,
+  pendingOverlaps,
+  planLevels,
+  safeLine,
+  safeName,
+  type ErrorCategory,
+  type RunDigest,
+  type Shape
+} from '../store/runDigest'
 import { PROMPT_BUDGET_PER_ROLE, compressPrompt, effectiveConcurrency, isGuardRole, stepTier } from './plan'
 
+export { classifyError, safeLine, spawnShape } from '../store/runDigest'
+
 /**
- * The zero-token analyzer: reads finished work runs as stored and produces a waste score, fitness metrics and typed
- * findings. Pure (no I/O, no clock, no randomness), one pass over the runs, bounded transcript scanning. Run text is
- * data: nothing a run wrote reaches a finding except as a count, a sanitized tool name or a sanitized path prefix.
+ * The zero-token analyzer: reads finished work runs and produces a waste score, fitness metrics and typed findings.
+ * Pure (no I/O, no clock, no randomness), one pass over the runs. Run text is data: nothing a run wrote reaches a
+ * finding except as a count, a sanitized tool name or a sanitized path prefix.
  *
- * What it reads from RunRecord (real fields): summary.{kind, quick, projectId, team, status, error, startedAt, endedAt,
- * usage.{costUsd, wallMs, idleMs, waitingMs, limitHoldMs, tokens}}, agents[].{id, parentId, roleId, roleSlug, state,
- * result, startedAt, endedAt, usage.{turns, costUsd, tokens}, delegation.verdict, worktree.{status, changedFiles}},
- * staffing.assignments[].{agentId, roleId, tier, source}, delegation.receipts[].{roleId, verdict}, plan.steps[]
- * ({after, paths}, via planGraph.pathOverlaps), transcript[].{agentId, block tool_use / tool_result}.
+ * It works from run DIGESTS (src/main/store/runDigest.ts: per-agent aggregates, staffing assignments, failed receipts,
+ * plan shape, merge conflicts, tool friction and status polling, made once per run and cached by RunStore.getDigest).
+ * A RunRecord passed in is digested first (tests, the bench), so both give the same diagnosis.
  */
 
-export const TRANSCRIPT_SCAN_LIMIT = 5000
+export const TRANSCRIPT_SCAN_LIMIT = DIGEST_TRANSCRIPT_LIMIT
 /** Evidence needed before a finding fires. */
 export const MIN_ROLE_AGENTS = 3
 export const OVER_FIRST_PASS = 0.9
 export const UNDER_ESCALATION_RATE = 0.35
 export const MAX_FINDINGS = 12
-const POLL_TOOLS = new Set(['ListAgents', 'list_team', 'list_agents'])
-const MIN_POLLS_PER_RUN = 3
 const FINDING_SUMMARY_MAX = 240
-const EVIDENCE_LINE_MAX = 120
+
+/** A run as the analyzer takes it: a stored record or its digest. */
+export type RunLike = RunRecord | RunDigest
+
+/** The summary fields the run predicates read (a RunRecord, a RunSummary wrapper and a RunDigest all have them). */
+export type SummaryOf = { summary: Pick<RunSummary, 'id' | 'kind' | 'quick' | 'projectId' | 'team' | 'status' | 'endedBy' | 'execOutcome' | 'pausedUntil' | 'startedAt' | 'endedAt'> }
 
 export interface DiagnoseInput {
   project: Project
-  /** Run records, any order; the newest `runs` work runs are used. */
-  runs: RunRecord[]
+  /** Run records or digests, any order; the newest `runs` work runs are used. */
+  runs: readonly RunLike[]
   staffingProfile?: { mode: StaffingMode; goal: StaffingGoal }
   skillFindings?: SkillFinding[]
   goal?: StaffingGoal
@@ -53,7 +67,6 @@ export interface DiagnoseInput {
 
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n))
 const r4 = (n: number): number => Math.round(n * 10000) / 10000
-const finite = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) ? n : 0)
 
 export function median(xs: number[]): number {
   if (!xs.length) return 0
@@ -62,20 +75,8 @@ export function median(xs: number[]): number {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
-/** One safe line of evidence: control characters, angle brackets and secrets removed, bounded. */
-export function safeLine(s: string, max = EVIDENCE_LINE_MAX): string {
-  const t = redactEvidence(String(s))
-    .replace(/[\u0000-\u001F\u007F-\u009F​-‏‪-‮⁠-⁯﻿]/g, ' ')
-    .replace(/[<>]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
-}
-
-const safeName = (s: unknown, max = 40): string => String(s ?? '').replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, max)
-
 /** True when a work run belongs to this project's team (not setup, quick/Chat, or single-assistant). */
-export function isTeamWorkRun(r: Pick<RunRecord, 'summary'>): boolean {
+export function isTeamWorkRun(r: SummaryOf): boolean {
   const s = r.summary
   return s.kind === 'work' && !s.quick && s.projectId !== QUICK_PROJECT_ID && s.team !== 'single'
 }
@@ -93,7 +94,7 @@ export function isFailedExecOutcome(outcome: RunRecord['summary']['execOutcome']
  * run 'stalled' with endedBy 'policy': that is a measured run and a failed exec outcome (isFailedExecOutcome), so it
  * already counts against a trial. An 'interrupted' outcome with any other endedBy (host-attributed) counts as one too.
  */
-export function isInterruptedTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
+export function isInterruptedTrialRun(r: SummaryOf): boolean {
   const s = r.summary
   if (!isTeamWorkRun(r)) return false
   if (s.status !== 'finished' && s.status !== 'error') return false
@@ -102,7 +103,7 @@ export function isInterruptedTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
 }
 
 /** Runs eligible to count in an active trial window (measured runs plus interrupted/timed-out trial runs). */
-export function isTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
+export function isTrialRun(r: SummaryOf): boolean {
   return isMeasuredRun(r) || isInterruptedTrialRun(r)
 }
 
@@ -110,152 +111,58 @@ export function isTrialRun(r: Pick<RunRecord, 'summary'>): boolean {
  * Finished work runs the engine measures: kind 'work', not a Chat (quick) or single-assistant run, ended finished or
  * error (or paused on a usage limit), and not cut short by the user or by quitting (that says nothing about the team).
  */
-export function isMeasuredRun(r: Pick<RunRecord, 'summary'>): boolean {
+export function isMeasuredRun(r: SummaryOf): boolean {
   const s = r.summary
   if (s.endedBy === 'user' || s.endedBy === 'app') return false
   return isTeamWorkRun(r) && (s.status === 'finished' || s.status === 'error' || (s.status === 'paused' && s.pausedUntil !== undefined))
 }
 
 /** The newest `max` measured runs, newest first. */
-export function measuredRuns(runs: RunRecord[], max = 10): RunRecord[] {
+export function measuredRuns<T extends SummaryOf>(runs: readonly T[], max = 10): T[] {
   return runs
     .filter(isMeasuredRun)
     .sort((a, b) => b.summary.startedAt - a.summary.startedAt)
     .slice(0, clamp(Math.floor(max), 1, 50))
 }
 
-const isRoot = (a: AgentInstance): boolean => a.id === 'root' || a.parentId === null
-const reportsOf = (r: RunRecord): AgentInstance[] => Object.values(r.agents ?? {}).filter((a) => !isRoot(a))
-
-const runCost = (r: RunRecord): number => finite(r.summary.usage?.costUsd ?? r.summary.totalCostUsd)
-const runWallMs = (r: RunRecord): number => {
-  const u = r.summary.usage
-  const raw = u ? finite(u.wallMs) - finite(u.idleMs) - finite(u.waitingMs) - finite(u.limitHoldMs) : finite((r.summary.endedAt ?? r.summary.startedAt) - r.summary.startedAt)
-  return Math.max(0, raw)
-}
-const runInputTokens = (r: RunRecord): number => {
-  const t = r.summary.usage?.tokens
-  return t ? finite(t.input) + finite(t.cacheRead) + finite(t.cacheWrite) : 0
-}
-
 // ---- plan graph shape -----------------------------------------------------------------------------------------------
 
 /** Widest set of steps that can run together (longest-path levels, path overlaps as extra waits). 1 without a graph. */
 export function planWidth(steps: readonly GraphStepLike[], opts?: { countIds?: ReadonlySet<string> }): { width: number; depth: number } {
-  if (steps.length < 2) {
-    if (!steps.length) return { width: 0, depth: 0 }
-    if (opts?.countIds && !opts.countIds.has(steps[0].id)) return { width: 0, depth: 1 }
-    return { width: 1, depth: 1 }
-  }
-  const pending = steps.map((s) => ({ ...s, status: 'pending' as const }))
-  const deps = new Map<string, Set<string>>(pending.map((s) => [s.id, new Set((s.after ?? []).filter((x) => x !== s.id))]))
-  for (const o of pathOverlaps({ steps: pending })) deps.get(o.second)?.add(o.first)
-  const depth = new Map<string, number>()
-  const visiting = new Set<string>()
-  const depthOf = (id: string): number => {
-    const known = depth.get(id)
-    if (known !== undefined) return known
-    if (visiting.has(id)) return 1 // a cycle: the steps in it never separate, count it as one level
-    visiting.add(id)
-    let d = 1
-    for (const dep of deps.get(id) ?? []) if (deps.has(dep)) d = Math.max(d, 1 + depthOf(dep))
-    visiting.delete(id)
-    depth.set(id, d)
-    return d
-  }
-  const levels = new Map<number, number>()
-  let deepest = 1
-  for (const s of pending) {
-    const d = depthOf(s.id)
-    deepest = Math.max(deepest, d)
-    if (!opts?.countIds || opts.countIds.has(s.id)) levels.set(d, (levels.get(d) ?? 0) + 1)
-  }
-  return { width: levels.size ? Math.max(...levels.values()) : 0, depth: deepest }
+  return planLevels(steps, steps.length < 2 ? [] : pendingOverlaps(steps), opts?.countIds)
 }
 
-interface Shape {
-  reports: number
-  maxParallel: number
-  busyMs: number
-  sumMs: number
-}
-
-/** Timing of the root's direct reports from the agents' own timestamps. */
-export function spawnShape(r: RunRecord): Shape {
-  const agents = Object.values(r.agents ?? {})
-  const rootIds = new Set(agents.filter(isRoot).map((a) => a.id))
-  const end = r.summary.endedAt ?? 0
-  const iv = agents
-    .filter((a) => a.parentId !== null && rootIds.has(a.parentId))
-    .map((a) => [a.startedAt, Math.max(a.startedAt, a.endedAt ?? end)] as const)
-    .sort((a, b) => a[0] - b[0])
-  let busy = 0
-  let sum = 0
-  let curEnd = -Infinity
-  let curStart = 0
-  const edges: [number, number][] = []
-  for (const [s, e] of iv) {
-    sum += e - s
-    edges.push([s, 1], [e, -1])
-    if (s > curEnd) {
-      if (curEnd > -Infinity) busy += curEnd - curStart
-      curStart = s
-      curEnd = e
-    } else curEnd = Math.max(curEnd, e)
-  }
-  if (curEnd > -Infinity) busy += curEnd - curStart
-  edges.sort((a, b) => a[0] - b[0] || a[1] - b[1])
-  let live = 0
-  let max = 0
-  for (const [, d] of edges) {
-    live += d
-    max = Math.max(max, live)
-  }
-  return { reports: iv.length, maxParallel: max, busyMs: busy, sumMs: sum }
-}
-
-function dagRatio(r: RunRecord, rootRoleNames?: ReadonlySet<string>): { ratio: number; width: number; shape: Shape } | null {
-  const steps = r.plan?.steps
-  if (!steps || steps.length < 2) return null
-  const hasStaff = steps.some((s) => !!s.staff?.role?.trim())
+/**
+ * How much of the plan's width the run used: the root's reports' peak parallelism over the widest set of delegated
+ * steps. `rootKeys`: digestHash of the lowercased names of the root role (a step staffed by the root is not
+ * delegated); empty = the run's own root agents' slugs and names. Null without a plan of two steps or two reports.
+ */
+function dagRatio(d: RunDigest, rootKeys?: ReadonlySet<string>): { ratio: number; width: number; shape: Shape } | null {
+  const plan = d.plan
+  if (!plan || plan.steps.length < 2) return null
+  const hasStaff = plan.steps.some((s) => s.role !== undefined)
   let width: number
   if (hasStaff) {
-    const roots = new Set(rootRoleNames)
-    if (!roots.size) {
-      for (const a of Object.values(r.agents ?? {})) {
-        if (!isRoot(a)) continue
-        if (a.roleSlug) roots.add(a.roleSlug.toLowerCase())
-        if (a.name) roots.add(a.name.toLowerCase())
-      }
-    }
-    const delegated = new Set(
-      steps
-        .filter((s) => {
-          const role = s.staff?.role?.trim().toLowerCase()
-          return !!role && !roots.has(role)
-        })
-        .map((s) => s.id)
-    )
-    width = planWidth(steps, { countIds: delegated }).width
+    const roots = rootKeys?.size ? rootKeys : new Set(d.rootNameKeys)
+    const delegated = new Set(plan.steps.filter((s) => s.role !== undefined && !roots.has(s.role)).map((s) => s.id))
+    width = planLevels(plan.steps, plan.overlaps, delegated).width
   } else {
-    width = planWidth(steps).width
+    width = planLevels(plan.steps, plan.overlaps).width
   }
-  const shape = spawnShape(r)
+  const shape = d.shape
   if (width < 2 || shape.reports < 2) return null
   return { ratio: clamp(shape.maxParallel / width, 0, 1), width, shape }
 }
 
 // ---- metrics ----------------------------------------------------------------------------------------------------------
 
-function firstPassOf(a: AgentInstance, run: RunRecord, escalatedAgents: Set<string>): boolean {
-  return a.state === 'done' && !agentProducedNothing(a) && a.delegation?.verdict !== 'failed' && !escalatedAgents.has(a.id) && a.worktree?.status !== 'conflict'
+/** Fitness of a set of measured runs. Pure. */
+export function measure(runs: readonly RunLike[], _limit = 8, opts?: { includeInterrupted?: boolean }): EvolutionMetrics {
+  return measureDigests(runs.filter(opts?.includeInterrupted ? isTrialRun : isMeasuredRun).map(asDigest))
 }
 
-const escalatedAgentIds = (r: RunRecord): Set<string> => new Set((r.staffing?.assignments ?? []).filter((x) => x.source === 'escalated' && x.agentId).map((x) => x.agentId as string))
-
-/** Fitness of a set of measured runs. Pure. */
-export function measure(runs: RunRecord[], _limit = 8, opts?: { includeInterrupted?: boolean }): EvolutionMetrics {
-  const work = runs.filter(opts?.includeInterrupted ? isTrialRun : isMeasuredRun)
+/** measure() over runs already filtered and digested. */
+function measureDigests(work: readonly RunDigest[]): EvolutionMetrics {
   let reports = 0
   let passed = 0
   let conflicted = 0
@@ -266,11 +173,10 @@ export function measure(runs: RunRecord[], _limit = 8, opts?: { includeInterrupt
     const paused = r.summary.status === 'paused'
     const incomplete = paused || isFailedExecOutcome(r.summary.execOutcome) || isInterruptedTrialRun(r)
     if (r.summary.status === 'error' || incomplete) errored++
-    const esc = escalatedAgentIds(r)
-    const rep = reportsOf(r)
+    const rep = r.agents
     reports += incomplete ? Math.max(1, rep.length) : rep.length
-    if (!incomplete) for (const a of rep) if (firstPassOf(a, r, esc)) passed++
-    if (rep.some((a) => a.worktree?.status === 'conflict')) conflicted++
+    if (!incomplete) for (const a of rep) if (a.firstPass) passed++
+    if (rep.some((a) => a.conflict)) conflicted++
     const d = dagRatio(r)
     if (d) ratios.push(d.ratio)
   }
@@ -281,9 +187,9 @@ export function measure(runs: RunRecord[], _limit = 8, opts?: { includeInterrupt
     firstPassRate: n === 0 ? 0 : r4(reports > 0 ? passed / reports : (n - errored) / n),
     conflictRate: n === 0 ? 0 : r4(conflicted / n),
     errorRunRate: n === 0 ? 0 : r4(errored / n),
-    medianCostUsd: median(work.map(runCost).filter((x) => x > 0)),
-    medianWallMs: median(work.map(runWallMs).filter((x) => x > 0)),
-    medianInputTokens: median(work.map(runInputTokens).filter((x) => x > 0)),
+    medianCostUsd: median(work.map((r) => r.costUsd).filter((x) => x > 0)),
+    medianWallMs: median(work.map((r) => r.wallMs).filter((x) => x > 0)),
+    medianInputTokens: median(work.map((r) => r.inputTokens).filter((x) => x > 0)),
     dagConcurrencyRatio: ratios.length ? r4(ratios.reduce((a, b) => a + b, 0) / ratios.length) : 1
   }
 }
@@ -291,6 +197,7 @@ export function measure(runs: RunRecord[], _limit = 8, opts?: { includeInterrupt
 // ---- per-role aggregation ---------------------------------------------------------------------------------------------
 
 interface RoleAgg {
+  /** digestKey of the role slug. */
   slug: string
   agents: number
   firstPass: number
@@ -314,25 +221,6 @@ interface RoleAgg {
 
 const newAgg = (slug: string): RoleAgg => ({ slug, agents: 0, firstPass: 0, errors: 0, assignments: 0, escalated: 0, failedReceipts: 0, tiers: new Map(), turns: 0, outTokens: 0, inTokens: 0, costUsd: 0, wallMs: 0, runs: new Set(), spawnerAgents: 0, fanOut: 0, lowFan: 0, lowFanRuns: new Set() })
 
-type Category = 'missing_tool' | 'bad_flag' | 'missing_path' | 'other'
-const MISSING_TOOL = /no such tool|unknown tool|tool\b.{0,60}\b(?:is )?not (?:available|allowed|found|permitted)|isn'?t available|not in (?:the )?(?:allowed )?tools/i
-const BAD_FLAG = /unknown (?:option|flag|argument)|unrecognized (?:option|argument|arguments)|invalid (?:option|flag)|illegal option|unexpected argument|usage:/i
-const MISSING_PATH = /ENOENT|no such file or directory|does not exist|cannot find (?:the )?(?:path|file)|file not found|not a directory/i
-
-export function classifyError(text: string): Category {
-  const t = text.slice(0, 600)
-  if (MISSING_TOOL.test(t)) return 'missing_tool'
-  if (BAD_FLAG.test(t)) return 'bad_flag'
-  if (MISSING_PATH.test(t)) return 'missing_path'
-  return 'other'
-}
-
-const dirPrefix = (file: string): string => {
-  const parts = file.replace(/\\/g, '/').split('/').filter((x) => x && x !== '.')
-  const dirs = parts.length > 1 ? parts.slice(0, -1) : parts
-  return safeLine(dirs.slice(0, 2).join('/').replace(/[^A-Za-z0-9._/-]/g, ''), 40)
-}
-
 const tierDown = (t: ModelTier | undefined): boolean => t === 'deep' || t === 'everyday'
 
 // ---- diagnose ---------------------------------------------------------------------------------------------------------
@@ -349,23 +237,26 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   const goal: StaffingGoal = input.goal ?? input.staffingProfile?.goal ?? 'balanced'
   const staffingFixed = input.staffingProfile?.mode === 'fixed' || project.staffing === 'fixed'
   const limit = effectiveConcurrency(project)
-  const runs = measuredRuns(input.runs, input.maxRuns ?? 10)
+  // Only the runs measured are digested (a record passed in is digested here once).
+  const runs = measuredRuns<RunLike>(input.runs, input.maxRuns ?? 10).map(asDigest)
+  const metrics = measureDigests(runs)
   const base: TeamEvolutionDiagnosis = {
     projectId: project.id,
     runIds: runs.map((r) => r.summary.id),
     wasteScore: 0,
-    metrics: measure(runs, limit),
+    metrics,
     findings: [],
     goal,
     analyzedAt: input.now ?? 0
   }
   if (!runs.length) return base
 
-  const roleBySlug = new Map(project.roles.map((r) => [r.slug, r]))
-  const roleById = new Map(project.roles.map((r) => [r.id, r]))
+  // Digests hold slugs and role ids as digestKey; the project's are compared the same way.
+  const roleBySlug = new Map(project.roles.map((r) => [digestKey(r.slug), r]))
+  const roleById = new Map(project.roles.map((r) => [digestKey(r.id), r]))
   const rootRole = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
-  const rootNames = new Set(
-    [rootRole?.slug, rootRole?.name].filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim().toLowerCase())
+  const rootKeys = new Set(
+    [rootRole?.slug, rootRole?.name].filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => digestHash(s.trim().toLowerCase()))
   )
   const aggs = new Map<string, RoleAgg>()
   const agg = (slug: string): RoleAgg => {
@@ -374,8 +265,8 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     return a
   }
   let totalCost = 0
-  const conflictRuns: { agents: AgentInstance[]; overlap: string[]; run: RunRecord }[] = []
-  const frictionCount = new Map<string, Map<Category, number>>()
+  const conflictRuns: { leads: string[]; overlap: string[] }[] = []
+  const frictionCount = new Map<string, Map<ErrorCategory, number>>()
   const frictionTools = new Map<string, Set<string>>()
   const frictionRepeat = new Map<string, Map<string, number>>()
   const pollAgg = new Map<string, { totalPolls: number; pollRuns: Set<string>; costUsd: number; inTokens: number }>()
@@ -383,109 +274,72 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   let serialRuns = 0
 
   for (const r of runs) {
-    totalCost += runCost(r)
-    const esc = escalatedAgentIds(r)
-    const agents = Object.values(r.agents ?? {})
-    const byId = new Map(agents.map((a) => [a.id, a]))
-    const childCount = new Map<string, number>()
-    for (const a of agents) if (a.parentId) childCount.set(a.parentId, (childCount.get(a.parentId) ?? 0) + 1)
-    for (const a of agents) {
-      if (isRoot(a)) continue
-      const g = agg(a.roleSlug)
+    totalCost += r.costUsd
+    for (const a of r.agents) {
+      const g = agg(a.slug)
       g.runs.add(r.summary.id)
       g.agents++
-      if (firstPassOf(a, r, esc)) g.firstPass++
-      if (a.state === 'error') g.errors++
-      g.turns += finite(a.usage?.turns)
-      g.outTokens += finite(a.usage?.tokens.output ?? a.outputTokens)
-      g.inTokens += finite(a.usage?.tokens.input) + finite(a.usage?.tokens.cacheRead) + finite(a.usage?.tokens.cacheWrite) || finite(a.inputTokens)
-      g.costUsd += finite(a.usage?.costUsd ?? a.costUsd)
-      g.wallMs += Math.max(0, finite((a.endedAt ?? r.summary.endedAt ?? a.startedAt) - a.startedAt))
-      const role = a.roleId ? roleById.get(a.roleId) : roleBySlug.get(a.roleSlug)
+      if (a.firstPass) g.firstPass++
+      if (a.error) g.errors++
+      g.turns += a.turns
+      g.outTokens += a.outTokens
+      g.inTokens += a.inTokens
+      g.costUsd += a.costUsd
+      g.wallMs += a.wallMs
+      const role = a.roleId ? roleById.get(a.roleId) : roleBySlug.get(a.slug)
       if (role?.canSpawn) {
-        const kids = childCount.get(a.id) ?? 0
         g.spawnerAgents++
-        g.fanOut += kids
-        if (kids <= 1) {
+        g.fanOut += a.kids
+        if (a.kids <= 1) {
           g.lowFan++
           g.lowFanRuns.add(r.summary.id)
         }
       }
     }
-    for (const x of r.staffing?.assignments ?? []) {
-      const slug = roleById.get(x.roleId)?.slug ?? (x.agentId ? byId.get(x.agentId)?.roleSlug : undefined)
+    for (const x of r.assignments) {
+      const role = roleById.get(x.roleId)
+      const slug = role ? digestKey(role.slug) : x.agentSlug
       if (!slug) continue
       const g = agg(slug)
       g.assignments++
-      if (x.source === 'escalated') g.escalated++
-      if (x.tier) g.tiers.set(x.tier, (g.tiers.get(x.tier) ?? 0) + 1)
+      if (x.escalated) g.escalated++
+      if (x.tier) g.tiers.set(x.tier as ModelTier, (g.tiers.get(x.tier as ModelTier) ?? 0) + 1)
     }
-    for (const rc of r.delegation?.receipts ?? []) {
-      if (rc.verdict !== 'failed') continue
-      const slug = roleById.get(rc.roleId)?.slug
-      if (slug) agg(slug).failedReceipts++
+    for (const roleId of r.failedReceiptRoleIds) {
+      const role = roleById.get(roleId)
+      if (role) agg(digestKey(role.slug)).failedReceipts++
     }
 
     // serial bottleneck
-    const d = dagRatio(r, rootNames)
+    const d = dagRatio(r, rootKeys)
     if (d && d.ratio < 0.6) {
       serialRuns++
       serial.push(d)
     }
 
     // merge conflicts and overlapping file prefixes
-    const conflicted = agents.filter((a) => a.worktree?.status === 'conflict')
-    if (conflicted.length) {
-      const owners = new Map<string, Set<string>>()
-      for (const a of agents) for (const f of a.worktree?.changedFiles?.slice(0, 200) ?? []) {
-        const p = dirPrefix(f)
-        if (!p) continue
-        const s = owners.get(p) ?? new Set()
-        s.add(a.id)
-        owners.set(p, s)
-      }
-      const overlap = [...owners].filter(([, s]) => s.size >= 2).map(([p]) => p).sort()
-      conflictRuns.push({ agents: conflicted.map((a) => byId.get(a.parentId ?? '') ?? a), overlap, run: r })
-    }
+    if (r.conflict) conflictRuns.push(r.conflict)
 
-    // tool friction and status polling
-    const uses = new Map<string, string>()
-    const pollsByAgent = new Map<string, number>()
-    const t = r.transcript ?? []
-    for (let i = 0; i < t.length && i < TRANSCRIPT_SCAN_LIMIT; i++) {
-      const b = t[i].block
-      if (b.kind === 'tool_use') {
-        const name = String(b.name)
-        uses.set(b.id, name)
-        if (POLL_TOOLS.has(name)) pollsByAgent.set(t[i].agentId, (pollsByAgent.get(t[i].agentId) ?? 0) + 1)
-      } else if (b.kind === 'tool_result' && b.isError) {
-        const slug = byId.get(t[i].agentId)?.roleSlug ?? 'unknown'
-        const cat = classifyError(b.content)
-        const m = frictionCount.get(slug) ?? new Map<Category, number>()
-        m.set(cat, (m.get(cat) ?? 0) + 1)
-        frictionCount.set(slug, m)
-        if (cat === 'missing_tool') {
-          const name = safeName(uses.get(b.toolUseId))
-          if (name) frictionTools.set(slug, (frictionTools.get(slug) ?? new Set()).add(name))
-        }
-        if (cat !== 'other') {
-          const key = `${cat}:${(uses.get(b.toolUseId) ?? '').slice(0, 20)}:${b.content.slice(0, 80).toLowerCase().replace(/[0-9]+/g, '#').replace(/\s+/g, ' ')}`
-          const rm = frictionRepeat.get(slug) ?? new Map<string, number>()
-          rm.set(key, (rm.get(key) ?? 0) + 1)
-          frictionRepeat.set(slug, rm)
-        }
+    // tool friction
+    for (const f of r.friction) {
+      const m = frictionCount.get(f.slug) ?? new Map<ErrorCategory, number>()
+      for (const [cat, k] of f.cats) m.set(cat, (m.get(cat) ?? 0) + k)
+      frictionCount.set(f.slug, m)
+      for (const name of f.missingTools) frictionTools.set(f.slug, (frictionTools.get(f.slug) ?? new Set()).add(name))
+      if (f.repeats.length) {
+        const rm = frictionRepeat.get(f.slug) ?? new Map<string, number>()
+        for (const [key, k] of f.repeats) rm.set(key, (rm.get(key) ?? 0) + k)
+        frictionRepeat.set(f.slug, rm)
       }
     }
-    for (const [agentId, count] of pollsByAgent) {
-      if (count < MIN_POLLS_PER_RUN || (childCount.get(agentId) ?? 0) < 1) continue
-      const a = byId.get(agentId)
-      if (!a?.roleSlug) continue
-      let p = pollAgg.get(a.roleSlug)
-      if (!p) pollAgg.set(a.roleSlug, (p = { totalPolls: 0, pollRuns: new Set(), costUsd: 0, inTokens: 0 }))
-      p.totalPolls += count
-      p.pollRuns.add(r.summary.id)
-      p.costUsd += finite(a.usage?.costUsd ?? a.costUsd)
-      p.inTokens += finite(a.usage?.tokens.input) + finite(a.usage?.tokens.cacheRead) + finite(a.usage?.tokens.cacheWrite) || finite(a.inputTokens)
+    // status polling
+    for (const p of r.polls) {
+      let a = pollAgg.get(p.slug)
+      if (!a) pollAgg.set(p.slug, (a = { totalPolls: 0, pollRuns: new Set(), costUsd: 0, inTokens: 0 }))
+      a.totalPolls += p.polls
+      a.pollRuns.add(r.summary.id)
+      a.costUsd += p.costUsd
+      a.inTokens += p.inTokens
     }
   }
 
@@ -505,7 +359,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     if (g.agents >= MIN_ROLE_AGENTS && (escRate >= UNDER_ESCALATION_RATE || failRate >= UNDER_ESCALATION_RATE)) {
       findings.push({
         kind: 'tier_underprovisioned',
-        roleSlug: g.slug,
+        roleSlug: role.slug,
         severity: clamp(15 + Math.round(60 * Math.max(escRate, failRate)), 0, 50),
         summary: safeLine(`${role.name} escalated or failed ${Math.round(100 * Math.max(escRate, failRate))}% of its assignments; it needs a stronger floor.`, FINDING_SUMMARY_MAX),
         evidence: [`${g.agents} agents over ${g.runs.size} runs`, `escalated ${g.escalated}/${g.assignments} assignments`, `failed receipts ${g.failedReceipts}, errors ${g.errors}`],
@@ -520,7 +374,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
       const thin = g.agents < 6 || g.runs.size < 3
       findings.push({
         kind: 'tier_overprovisioned',
-        roleSlug: g.slug,
+        roleSlug: role.slug,
         severity: thin ? clamp(4 + Math.round(10 * share), 0, 14) : clamp(10 + Math.round(30 * share), 0, 40),
         summary: safeLine(`${role.name} passed ${Math.round(rate * 100)}% first time with short, simple work; a cheaper ${role.effort && role.effort !== 'low' && role.effort !== 'medium' ? 'effort' : 'tier'} should do.`, FINDING_SUMMARY_MAX),
         evidence: [`${g.agents} agents over ${g.runs.size} runs`, `first pass ${g.firstPass}/${g.agents}, escalations 0`, `avg ${(g.turns / g.agents).toFixed(1)} turns, ${Math.round(g.outTokens / g.agents)} output tokens`, ...(staffingFixed ? ['staffing is fixed: the role runs as configured'] : [])],
@@ -538,7 +392,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     const throttled = serial.filter((s) => s.shape.maxParallel >= limit && s.width > limit)
     const peak = Math.max(...serial.map((s) => s.width))
     const saveMs = serial.reduce((a, s) => a + Math.max(0, s.shape.busyMs - s.shape.sumMs / s.width), 0) / n
-    const ratio = measure(runs, limit).dagConcurrencyRatio
+    const ratio = metrics.dagConcurrencyRatio
     const lim = throttled.length >= serial.length / 2
     findings.push({
       kind: 'serial_bottleneck',
@@ -553,18 +407,19 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   // 3. merge conflict hotspot
   if (conflictRuns.length && (conflictRuns.some((c) => c.overlap.length) || conflictRuns.length >= 2)) {
     const leads = new Map<string, number>()
-    for (const c of conflictRuns) for (const a of c.agents) leads.set(a.roleSlug, (leads.get(a.roleSlug) ?? 0) + 1)
+    for (const c of conflictRuns) for (const slug of c.leads) leads.set(slug, (leads.get(slug) ?? 0) + 1)
     const lead = [...leads].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0]
+    const leadRole = lead ? roleBySlug.get(lead) : undefined
     const prefixes = [...new Set(conflictRuns.flatMap((c) => c.overlap))].slice(0, 6)
     const rate = conflictRuns.length / n
     findings.push({
       kind: 'merge_conflict_hotspot',
-      ...(lead && roleBySlug.has(lead) ? { roleSlug: lead } : {}),
+      ...(leadRole ? { roleSlug: leadRole.slug } : {}),
       severity: clamp(12 + Math.round(60 * rate), 0, 50),
       summary: safeLine(`Parallel reports conflicted on merge in ${conflictRuns.length} of ${n} runs; their file scopes overlap.`, FINDING_SUMMARY_MAX),
       evidence: [`${conflictRuns.length} runs with a conflicting merge`, ...prefixes.map((p) => `overlap ${p}/`)].slice(0, 6),
-      estSavingsMs: Math.round((rate * measure(runs, limit).medianWallMs) * 0.2),
-      data: { runs: conflictRuns.length, prefixes: prefixes.join(','), ...(lead ? { leadSlug: safeName(lead, 60) } : {}) }
+      estSavingsMs: Math.round((rate * metrics.medianWallMs) * 0.2),
+      data: { runs: conflictRuns.length, prefixes: prefixes.join(','), ...(lead ? { leadSlug: safeName(leadRole?.slug ?? lead, 60) } : {}) }
     })
   }
 
@@ -581,7 +436,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     const role = roleBySlug.get(f.slug)
     findings.push({
       kind: 'tool_friction',
-      ...(role ? { roleSlug: f.slug } : {}),
+      ...(role ? { roleSlug: role.slug } : {}),
       severity: clamp(5 + f.total * 2, 0, 30),
       summary: safeLine(`${role?.name ?? safeName(f.slug)} hit ${f.total} repeated tool errors (${cat.replace('_', ' ')}).`, FINDING_SUMMARY_MAX),
       evidence: [`${cat.replace('_', ' ')}: ${f.worst![1]} errors`, `most repeated identical error: ${f.repeats}x`, ...(tools.length ? [`unavailable tools: ${tools.join(', ')}`] : [])],
@@ -622,7 +477,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   for (const role of project.roles) {
     const chars = role.prompt?.length ?? 0
     if (chars <= PROMPT_BUDGET_PER_ROLE) continue
-    const spawns = Math.max(1, (aggs.get(role.slug)?.agents ?? n) / n)
+    const spawns = Math.max(1, (aggs.get(digestKey(role.slug))?.agents ?? n) / n)
     const protectedRole = role.reportsTo === null || isGuardRole(role, project.roles)
     const removableChars = protectedRole ? 0 : chars - compressPrompt(role.prompt ?? '').prompt.length
     const summary =
@@ -648,7 +503,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     if (!role || avgIn < 20_000) continue
     findings.push({
       kind: 'ceremonial_layer',
-      roleSlug: g.slug,
+      roleSlug: role.slug,
       severity: clamp(6 + Math.round(avgIn / 5000), 0, 26),
       summary: safeLine(`${role.name} spawns at most one report in ${g.lowFanRuns.size} runs while reading ${Math.round(avgIn / 1000)}k input tokens per agent; route to its report directly.`, FINDING_SUMMARY_MAX),
       evidence: [`fan-out <= 1 in ${g.lowFan}/${g.spawnerAgents} agents`, `${g.lowFanRuns.size} runs`, `avg ${Math.round(avgIn)} input tokens`],
@@ -669,7 +524,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     const severity = clamp(10 + Math.round(avgPolls * 2), 10, 45)
     findings.push({
       kind: 'orchestrator_polling',
-      roleSlug: slug,
+      roleSlug: role.slug,
       severity,
       summary: safeLine(`${role.name} polled ListAgents ${avgPolls.toFixed(1)}x/run across ${runCount} of ${n} run${n === 1 ? '' : 's'} while waiting on reports; let it end its turn and wait for report delivery.`, FINDING_SUMMARY_MAX),
       evidence: [

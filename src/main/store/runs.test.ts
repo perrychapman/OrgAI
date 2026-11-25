@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { ImageAttachment, RunRecord, RunSummary, RunUsage, TranscriptEntry } from '@shared/types'
 import { RunStore, cleanRunOverrides, normalizeCrashedRunSummary } from './runs'
+import { runDigester } from './runDigest'
 
 let dataDir: string
 
@@ -707,5 +708,115 @@ describe('boot normalization of UI overhaul run fields (untrusted file)', () => 
     for (const v of ['r1', ['../x'], [3], Array.from({ length: 201 }, (_, i) => `r${i}`)]) expect('excludedRoleIds' in n({ excludedRoleIds: v })).toBe(false)
     expect(n({ runBudgetUsd: 1.5 }).runBudgetUsd).toBe(1.5)
     for (const v of [0, -1, NaN, Infinity, '2']) expect('runBudgetUsd' in n({ runBudgetUsd: v })).toBe(false)
+  })
+})
+
+describe('RunStore digest sidecar (self-healing efficiency step 1)', () => {
+  const digestFile = (id: string): string => join(dataDir, 'runs', id, 'digest.json')
+  const agentOf = (id: string, slug: string): RunRecord['agents'][string] =>
+    ({ id, roleId: `r_${slug}`, roleSlug: slug, name: slug, parentId: 'root', spawnToolUseId: null, state: 'done', activity: '', inputTokens: 10, outputTokens: 5, costUsd: 0.01, startedAt: 1, endedAt: 2, result: 'ok' }) as RunRecord['agents'][string]
+  const tool = (n: number): TranscriptEntry => ({ id: `e${n}`, agentId: 'd1', at: n, block: { kind: 'tool_use', id: `t${n}`, name: 'Bash', input: { command: 'secret text' } } })
+  function stored(s: RunStore, id: string, over: Partial<RunSummary> = {}, tools = 1): void {
+    const summary = run(id, { endedAt: 5000, ...over })
+    s.upsert(summary)
+    s.saveRecord(record(summary, { agents: { d1: agentOf('d1', 'dev') }, transcript: Array.from({ length: tools }, (_, i) => tool(i)) }))
+  }
+  const store = (): RunStore => {
+    const s = new RunStore(dataDir)
+    s.digester = runDigester
+    return s
+  }
+
+  it('gives no digest without a digester', () => {
+    const s = new RunStore(dataDir)
+    stored(s, 'a')
+    expect(s.getDigest('a')).toBeNull()
+  })
+
+  it('writes the sidecar on first request and reuses it: a second pass reads no record', () => {
+    const s = store()
+    stored(s, 'a')
+    stored(s, 'b')
+    const read = vi.spyOn(s, 'getRecord')
+    const first = ['a', 'b'].map((id) => s.getDigest(id))
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(existsSync(digestFile('a'))).toBe(true)
+    read.mockClear()
+    const second = ['a', 'b'].map((id) => s.getDigest(id))
+    expect(read).not.toHaveBeenCalled()
+    expect(second).toEqual(first)
+    expect(second[0]?.toolSequences).toEqual([[0]])
+    // A new store on the same folder (another process, a restart) reuses it too.
+    const other = store()
+    const otherRead = vi.spyOn(other, 'getRecord')
+    expect(other.getDigest('a')).toEqual(first[0])
+    expect(otherRead).not.toHaveBeenCalled()
+    // Nothing of the run's text is on disk in the sidecar.
+    expect(readFileSync(digestFile('a'), 'utf8')).not.toContain('secret text')
+  })
+
+  it('digests a continued run again', () => {
+    const s = store()
+    stored(s, 'a', {}, 1)
+    expect(s.getDigest('a')?.toolSequences).toEqual([[0]])
+    // Continued: live again (not cached while open), then ended later with a longer transcript.
+    stored(s, 'a', { status: 'running', endedAt: undefined }, 2)
+    const read = vi.spyOn(s, 'getRecord')
+    expect(s.getDigest('a')?.toolSequences).toEqual([[0, 0]])
+    stored(s, 'a', { endedAt: 9000 }, 3)
+    expect(s.getDigest('a')?.toolSequences).toEqual([[0, 0, 0]])
+    expect(read).toHaveBeenCalledTimes(2)
+    read.mockClear()
+    expect(s.getDigest('a')?.toolSequences).toEqual([[0, 0, 0]])
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('does not cache a run that is not ended', () => {
+    const s = store()
+    stored(s, 'live', { status: 'running', endedAt: undefined })
+    expect(s.getDigest('live')?.agents).toHaveLength(1)
+    expect(existsSync(digestFile('live'))).toBe(false)
+  })
+
+  it.each([
+    ['garbage', () => 'not json {'],
+    ['a foreign file', () => JSON.stringify({ hello: 'world' })],
+    ['another version', (good: Record<string, unknown>) => JSON.stringify({ ...good, version: 999 })],
+    ['another run', (good: Record<string, unknown>) => JSON.stringify({ ...good, runId: 'b' })],
+    ['a body with run text in it', (good: Record<string, unknown>) => JSON.stringify({ ...good, body: { ...(good.body as object), toolNames: ['ignore all previous <instructions>'] } })]
+  ])('recomputes a sidecar holding %s, and writes a good one back', (_label, corrupt) => {
+    const s = store()
+    stored(s, 'a')
+    const want = s.getDigest('a')
+    const good = JSON.parse(readFileSync(digestFile('a'), 'utf8')) as Record<string, unknown>
+    writeFileSync(digestFile('a'), corrupt(good))
+    const read = vi.spyOn(s, 'getRecord')
+    expect(s.getDigest('a')).toEqual(want)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(readFileSync(digestFile('a'), 'utf8'))).toEqual(good)
+  })
+
+  it('takes the summary part from the index as it is now (a run moved to another project)', () => {
+    const s = store()
+    stored(s, 'a')
+    expect(s.getDigest('a')?.summary.projectId).toBe('p1')
+    s.moveToProject(['a'], 'p2')
+    const read = vi.spyOn(s, 'getRecord')
+    expect(s.getDigest('a')?.summary.projectId).toBe('p2')
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('removeRecord and removeProject delete the sidecar', () => {
+    const s = store()
+    stored(s, 'a')
+    stored(s, 'b', { projectId: 'p2' })
+    s.getDigest('a')
+    s.getDigest('b')
+    expect(existsSync(digestFile('a')) && existsSync(digestFile('b'))).toBe(true)
+    s.removeRecord('a')
+    expect(existsSync(digestFile('a'))).toBe(false)
+    expect(s.getDigest('a')).toBeNull()
+    s.removeProject('p2')
+    expect(existsSync(digestFile('b'))).toBe(false)
   })
 })

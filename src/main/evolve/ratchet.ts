@@ -17,7 +17,6 @@ import type {
   Project,
   Role,
   RoleStaffing,
-  RunRecord,
   TeamEvolutionDiagnosis,
   ToolName
 } from '../../shared/types'
@@ -53,7 +52,7 @@ import {
   upsertScopeBlock,
   type PatchedField
 } from './plan'
-import { isInterruptedTrialRun, isTrialRun, measure } from './telemetry'
+import { isInterruptedTrialRun, isTrialRun, measure, type RunLike } from './telemetry'
 
 /**
  * The safety gate and the ledger of the Pareto-Ratchet. The gate is a spend and security boundary: it fails closed, it
@@ -871,9 +870,10 @@ export type TrialDecision = { state: 'pending'; have: number; need: number } | {
 /**
  * Decide an active trial. The window is the first `evalWindowRuns` finished work runs that STARTED at or after the
  * generation was applied (a run in flight at apply time ran on the old chart, so it never counts; this is equivalent to
- * counting runs since `appliedAtRunCount` and does not depend on how many records the store lists). Pure.
+ * counting runs since `appliedAtRunCount` and does not depend on how many records the store lists). Pure. `runs` are
+ * run digests (RunStore.getDigest) or records (digested here), so settling a trial needs no full record.
  */
-export function evaluateActiveTrial(gen: Pick<EvolutionGeneration, 'appliedAt' | 'evalWindowRuns' | 'baselineMetrics'>, runs: RunRecord[], limit = 8): TrialDecision {
+export function evaluateActiveTrial(gen: Pick<EvolutionGeneration, 'appliedAt' | 'evalWindowRuns' | 'baselineMetrics'>, runs: readonly RunLike[], limit = 8): TrialDecision {
   const need = clampWindow(gen.evalWindowRuns)
   const since = runs
     .filter((r) => isTrialRun(r) && r.summary.startedAt >= gen.appliedAt)

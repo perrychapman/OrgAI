@@ -60,6 +60,7 @@ import { McpLibraryStore } from '../store/mcpLibrary'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from '../store/projectData'
 import { ProjectStore } from '../store/projects'
 import { RunStore } from '../store/runs'
+import { runDigester, type RunDigest } from '../store/runDigest'
 import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../store/secrets'
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
@@ -291,6 +292,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   settings.onChange(broadcastSettings)
 
   const runStore = new RunStore(dataDir)
+  // Per-run digests for the self-healing loops (store/runDigest.ts), cached beside each finished record.
+  runStore.digester = runDigester
   const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
   // Socket access is fixed by the host kind (no setting): only the orgai process's in-process host answers a socket, and
   // only its own process through the owner proof (every scope); the desktop opens no socket at all.
@@ -778,6 +781,19 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       return out
     },
     getRunRecord: (runId) => runStore.getRecord(runId) ?? undefined,
+    // The same runs as listRunRecords, as digests: RunStore caches a finished run's digest beside its record, so a pass
+    // parses only records it has not digested before (in practice the run that just ended).
+    listRunDigests: (projectId, limit) => {
+      const out: RunDigest[] = []
+      for (const s of runStore.list(projectId)) {
+        if (out.length >= limit) break
+        if (!isMeasuredRun({ summary: s })) continue
+        const d = runStore.getDigest(s.id)
+        if (d) out.push(d)
+      }
+      return out
+    },
+    getRunDigest: (runId) => runStore.getDigest(runId) ?? undefined,
     staffingProfile: (projectId) => {
       const p = projects.get(projectId)
       return { mode: staffingModeOf(p), goal: staffingGoalOf(p) }

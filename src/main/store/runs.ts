@@ -1,9 +1,12 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
 import { renameSyncRetry } from '../host/fsRetry'
 import { RunBusyError, type SessionRecord } from '../host/sessions'
 import { storeSyncFor, type StoreSync } from './shared/storeSync'
+// Types only: the digest code (which pulls in the redaction helpers) is handed in as RunStore.digester, so the
+// read-only CLI reader, which imports this file, does not load it.
+import type { RunDigest, RunDigester } from './runDigest'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT, isSafeId } from '@shared/defaults'
@@ -30,6 +33,9 @@ const OWNER_RECHECK_MS = 1000
 
 const MAX_TRANSCRIPT_ENTRIES = 5000
 const MAX_LOG_LINES = 400
+/** The digest sidecar's name inside the run's directory, and the largest one read or written. */
+const DIGEST_FILE = 'digest.json'
+const DIGEST_FILE_MAX_BYTES = 2 * 1024 * 1024
 
 const IMAGE_EXT: Record<ImageMediaType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 /** The only image refs ever written or read: a content hash plus a known extension, so a ref cannot leave the run's directory. */
@@ -374,6 +380,8 @@ export class RunStore {
    * scratch dir can be removed once no record points to it. Errors are swallowed: deletion never fails on a hook.
    */
   onRunsRemoved?: (removed: RunSummary[]) => void
+  /** What getDigest digests with (store/runDigest.ts `runDigester`). Absent = getDigest returns null. */
+  digester?: RunDigester
 
   /** `opts.sync` overrides the data folder's own sync (tests that put two sessions in one process). */
   constructor(dataDir: string, opts: { sync?: StoreSync } = {}) {
@@ -717,7 +725,89 @@ export class RunStore {
     }
   }
 
-  /** Delete a run's record file and its directory (image store). */
+  /** The digest sidecar beside the record: `runs/<runId>/digest.json` (the run's directory, removed with it). */
+  private digestPath(runId: string): string {
+    return join(this.runDir(runId), DIGEST_FILE)
+  }
+
+  /**
+   * The run's digest (store/runDigest.ts): counts and sanitized names the self-healing loops read, never run text.
+   * A finished run's body is cached in a sidecar beside the record, written on first request and reused while its key
+   * holds: DIGEST_VERSION, the record file's size, mtime (ns) and inode, and the run's endedAt in the index, so a
+   * continued (rewritten) run is digested again. A sidecar is shape-checked on read (parseDigestBody) and recomputed
+   * when it is corrupt, foreign or stale; it is never trusted as found. A run that is not ended (or that another session
+   * hosts) is digested from its record and not cached. The summary part always comes from the index as it is now.
+   * Null when the run has no readable record or no digester is set.
+   */
+  getDigest(runId: string): RunDigest | null {
+    const dg = this.digester
+    if (!dg) return null
+    this.fresh()
+    const summary = this.runs.find((r) => r.id === runId)
+    const key = summary && !isOpenRunStatus(summary.status) && !this.elsewhere(runId) ? this.digestKeyOf(runId, summary, dg.version) : null
+    if (key && summary) {
+      const body = this.readDigestBody(runId, key, dg)
+      if (body) return dg.assemble(body, this.asSeenHere(summary, true))
+    }
+    const record = this.getRecord(runId)
+    if (!record) return null
+    let body: ReturnType<RunDigester['body']>
+    try {
+      body = dg.body(record)
+    } catch (e) {
+      console.warn(`Run ${runId} could not be digested (${e instanceof Error ? e.name : 'Error'}).`)
+      return null
+    }
+    // Written only when the record did not change while it was read (another session may be saving it).
+    if (key && summary && this.digestKeyOf(runId, summary, dg.version) === key) this.writeDigestBody(runId, key, body, dg.version)
+    return dg.assemble(body, record.summary)
+  }
+
+  /** The cache key of a run's digest, or null when its record cannot be stat'ed. */
+  private digestKeyOf(runId: string, summary: RunSummary, version: number): string | null {
+    try {
+      const st = statSync(this.recordPath(runId), { bigint: true })
+      if (!st.isFile()) return null
+      return `${version}:${st.size}:${st.mtimeNs}:${st.ino}:${summary.endedAt ?? ''}`
+    } catch {
+      return null
+    }
+  }
+
+  private readDigestBody(runId: string, key: string, dg: RunDigester): ReturnType<RunDigester['parse']> {
+    const file = this.digestPath(runId)
+    try {
+      const st = lstatSync(file)
+      if (!st.isFile() || st.size > DIGEST_FILE_MAX_BYTES) return undefined
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
+      if (!isPlainObject(parsed) || parsed.version !== dg.version || parsed.key !== key || parsed.runId !== runId) return undefined
+      return dg.parse(parsed.body)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Best effort: a sidecar that cannot be written is recomputed next time. A unique temp name, then an atomic rename. */
+  private writeDigestBody(runId: string, key: string, body: ReturnType<RunDigester['body']>, version: number): void {
+    const file = this.digestPath(runId)
+    const text = JSON.stringify({ version, runId, key, body })
+    if (text.length > DIGEST_FILE_MAX_BYTES) return
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+    try {
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(tmp, text, 'utf8')
+      renameSyncRetry(tmp, file)
+    } catch (e) {
+      console.warn(`The digest of run ${runId} could not be saved (${e instanceof Error ? e.name : 'Error'}); it is recomputed next time.`)
+      try {
+        rmSync(tmp, { force: true })
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
+  /** Delete a run's record file and its directory (image store, digest sidecar). */
   removeRecord(runId: string): void {
     const file = this.recordPath(runId)
     if (existsSync(file)) unlinkSync(file)
