@@ -144,9 +144,16 @@ export function Popover({
     const el = panelRef.current
     if (!open || !placed || !el) return
     let frame = 0
-    let tries = 0
+    let timer = 0
+    // A panel that is not open yet, or a control that would not take focus (still hidden, not laid out), is tried again on a
+    // short timer for half a second, not only on the next few frames: CI macOS 2026-11-25 (run 45573883463) left focus on
+    // the trigger of the permission picker for the whole 9 s the e2e check waited. The timer does not need a frame to fire.
+    const until = Date.now() + 500
+    const retry = (): void => {
+      if (Date.now() < until) timer = window.setTimeout(focusIn, 40)
+    }
     const focusIn = (): void => {
-      if (!el.matches(':popover-open')) return
+      if (!el.matches(':popover-open')) return retry()
       if (el.contains(document.activeElement) && document.activeElement !== el) return
       const target =
         el.querySelector<HTMLElement>('input[type=search]') ??
@@ -154,10 +161,13 @@ export function Popover({
         el.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ??
         el
       target.focus()
-      if (!el.contains(document.activeElement) && tries++ < 6) frame = requestAnimationFrame(focusIn)
+      if (!el.contains(document.activeElement)) retry()
     }
     frame = requestAnimationFrame(focusIn)
-    return () => cancelAnimationFrame(frame)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
+    }
   }, [open, placed, opening])
 
   useEffect(() => {
