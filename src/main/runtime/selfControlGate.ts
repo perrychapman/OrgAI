@@ -399,25 +399,18 @@ function wordMayBe(word: string, names: readonly string[]): boolean {
     if (literalOpenBracket(n)) continue
     const variants = expandShellGlobAlternatives(n)
     if (!variants) {
-      // Unreadable bracket/glob word: still fail closed for obfuscated names (`secur[]i]ty`, `orga[[:alpha:]]`,
-      // `secur[z-"]"i${C}ty`, `securit(y|(x))`), without misreading JS/prose tokens (`[]`, `],[L`, `[{id:"a"}]`) as npx/orgai.
-      if (/[\s;,=]/.test(n) || /(?<!\$)\{/.test(n)) continue
+      // PR 70: a code or prose token whose only unreadable part is an unclosed `[` (`],[L`) is read by its letters;
+      // any other unreadable word (a range, a wildcard, a group past the limits) may be any name (PR 70 review H2).
+      if (!unclosedBracketOnly(n)) return true
       const letters = n.replace(/[^a-z]/gi, '').toLowerCase()
-      if (
-        names.some((name) => {
-          let got = 0
-          for (const ch of letters) if (name[got] === ch) got++
-          return got >= Math.min(3, Math.max(1, name.length - 1))
-        })
-      ) {
-        return true
-      }
+      if (names.some((name) => inOrderLetters(letters, name) >= Math.min(3, Math.max(1, name.length - 1)))) return true
       continue
     }
     for (const candidate of variants) {
       const zshName = candidate.startsWith('=') ? candidate.slice(1) : candidate
       if (names.includes(candidate) || names.includes(zshName)) return true
-      if (/[\s;,=]/.test(candidate) || !GLOB_CHARS.test(candidate)) continue
+      // A bracket class may hold any character the shell reads literally, `,`, `=`, quoted blanks included (PR 70 review C1).
+      if (!GLOB_CHARS.test(candidate)) continue
       const re = cachedGlobRegex(candidate)
       const kept = globKeptLetters(candidate).length
       for (const name of names) if (re.test(name) && kept >= Math.min(3, Math.max(1, name.length - 1))) return true
@@ -1992,6 +1985,19 @@ function inlineCodeArgIndices(words: readonly string[], at: number): Set<number>
   return out
 }
 
+/**
+ * An inline code operand (`node -e "import('<root>/index.js')"`, `--eval=...`) that names the CLI: the scoped package
+ * anywhere in it, or a token (split on blanks, quotes, backticks, parentheses, commas and semicolons) that
+ * interpreterArgIsCli reads as the CLI.
+ */
+function inlineCodeNamesCli(code: string, check: CliCheck): boolean {
+  if (SCOPED_CLI.test(code)) return true
+  for (const token of code.split(/[\s'"`(),;]+/)) {
+    if (token && (SCOPED_CLI.test(token) || interpreterArgIsCli(token, check))) return true
+  }
+  return false
+}
+
 /** True when one segment (or a shell -c text inside it) runs the OrgAI CLI. */
 function segmentRunsCli(segment: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
   // Past the budget the rest of the command goes unread: count it as running the CLI (fail closed).
@@ -2007,6 +2013,8 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
   if (!words.length) return false
   const at = programIndex(words)
   const inlineCode = inlineCodeArgIndices(words, at)
+  // Inline code is not a script path, but a path to the CLI package or a CLI folder inside it still is (PR 70 review H3).
+  for (const idx of inlineCode) if (inlineCodeNamesCli(words[idx], check)) return true
   const scanWords = inlineCode.size ? words.filter((_, idx) => !inlineCode.has(idx)) : words
   // npx / npm exec with `-p orgai` / `--package=orgai`.
   const runner = scanWords.some((w) => wordMayBe(w, PACKAGE_RUNNERS))
@@ -2157,14 +2165,21 @@ function producerRunsCli(segment: string, depth: number, budget: CliBudget, chec
 /** Most words one segment's brace expansions may produce before the scan gives up (fail closed). */
 const MAX_BRACE_WORDS = 256
 
-/** Split `segment` like `segmentWords` while tracking whether each word contains an unquoted `{` for brace expansion. */
+/**
+ * Split `segment` like `segmentWords` and brace-expand each word holding a `{` that may be unquoted: unquoted in
+ * segmentWords' quote-only view or in bash's (backslash escapes, `$'...'` with its escapes). A `{` only inside quotes in
+ * both views (inline code: `node -e '{a,b}'`) stays as written.
+ */
 function expandSegmentWords(segment: string, budget: CliBudget): string[] {
   const words: { text: string; unquotedBrace: boolean }[] = []
+  const bashBraces = segment.includes('{') ? bashUnquotedBraces(segment) : null
   let cur = ''
   let inWord = false
   let unquotedBrace = false
   let quote: string | null = null
-  for (const ch of segment) {
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]
+    if (ch === '{' && bashBraces?.has(i)) unquotedBrace = true
     if (quote) {
       if (ch === quote) quote = null
       else cur += ch
@@ -2203,27 +2218,28 @@ function expandSegmentWords(segment: string, budget: CliBudget): string[] {
   return out
 }
 
-/** True when `text` has an unquoted `{...,...}` or `{..}` sequence outside single and double quotes. */
-function hasUnquotedBraceList(text: string): boolean {
-  let quote: string | null = null
+/** A brace list (`{a,b}`, `{a..b}`) anywhere in a text, quoted or not: the trigger for the keep-braces reading. */
+const BRACE_LIST = /\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/
+
+/** Positions of the `{` characters bash reads unquoted: outside '...', "..." and $'...', not backslash-escaped. */
+function bashUnquotedBraces(text: string): Set<number> {
+  const out = new Set<number>()
+  let quote: '' | "'" | '"' | 'ansi' = ''
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
-    if (quote) {
-      if (quote === '"' && ch === '\\') i++
-      else if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '\\') {
+    if (quote === "'") {
+      if (ch === "'") quote = ''
+    } else if (quote === '"' || quote === 'ansi') {
+      if (ch === '\\') i++
+      else if (ch === (quote === '"' ? '"' : "'")) quote = ''
+    } else if (ch === '\\') i++
+    else if (ch === '$' && text[i + 1] === "'") {
+      quote = 'ansi'
       i++
-      continue
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch
-      continue
-    }
-    if (ch === '{' && /^\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}/.test(text.slice(i))) return true
+    } else if (ch === "'" || ch === '"') quote = ch
+    else if (ch === '{') out.add(i)
   }
-  return false
+  return out
 }
 
 function expandBraces(word: string, limit: number): string[] {
@@ -2386,21 +2402,18 @@ function programIsCli(word: string, check: CliCheck): boolean {
     if (CLI_NAME.test(binName(w)) || CLI_NAME.test(binName(zshName)) || SCOPED_CLI.test(w)) return true
     if (/[\\/]/.test(w) && (insideCliRoot(w, check) || (hasShellGlobWord(w) && globMayReachCliRoot(w, check)))) return true
     const bare = binName(w)
-    if (hasShellGlobWord(bare) && !/[\s;,=]/.test(bare)) {
+    if (hasShellGlobWord(bare)) {
       const alternatives = expandShellGlobAlternatives(bare)
       if (!alternatives) {
-        if (bare.includes('$')) return true
-        if (/(?<!\$)\{/.test(bare)) continue
-        const letters = bare.replace(/[^a-z]/gi, '').toLowerCase()
-        let got = 0
-        for (const ch of letters) if ('orgai'[got] === ch) got++
-        if (got >= 3) return true
+        // As in wordMayBe: only a word whose sole unreadable part is an unclosed `[` is read by its letters (review H2).
+        if (!unclosedBracketOnly(bare)) return true
+        if (inOrderLetters(bare.replace(/[^a-z]/gi, '').toLowerCase(), 'orgai') >= 3) return true
         continue
       }
       const hasPathSep = /[\\/]/.test(w)
       if (alternatives.some((candidate) => {
         if (CLI_NAME.test(candidate)) return true
-        if (/[\s;,=]/.test(candidate) || !GLOB_CHARS.test(candidate)) return false
+        if (!GLOB_CHARS.test(candidate)) return false
         const re = cachedGlobRegex(candidate)
         if (!hasPathSep && keptSubsequence(candidate, 'orgai') < 3) return false
         return CLI_FILE_NAMES.some((name) => re.test(name))
@@ -2524,11 +2537,40 @@ function globNamesCli(base: string): boolean {
   return keptSubsequence(base, 'orgai') >= 3
 }
 
-/** How many letters of `name`, in order, a glob keeps (globKeptLetters). */
+/**
+ * How many letters of `name`, in order, a glob keeps (globKeptLetters), wherever in the name they start: `o?gai`,
+ * `?rgai`, `*rgai` and `[!x]rgai` keep four (PR 70 review H1; counting from the name's first letter read them as 1 or 0).
+ */
 function keptSubsequence(glob: string, name: string): number {
-  let got = 0
-  for (const ch of globKeptLetters(glob)) if (name[got] === ch) got++
-  return got
+  return inOrderLetters(globKeptLetters(glob), name)
+}
+
+/** The longest run of `name`'s letters that `letters` holds in order (a longest common subsequence; `name` is short). */
+function inOrderLetters(letters: string, name: string): number {
+  const best = new Array<number>(name.length + 1).fill(0)
+  for (const ch of letters) {
+    // Right to left, so each letter of `letters` is used at most once.
+    for (let j = name.length; j >= 1; j--) if (name[j - 1] === ch && best[j - 1] + 1 > best[j]) best[j] = best[j - 1] + 1
+    for (let j = 1; j <= name.length; j++) if (best[j - 1] > best[j]) best[j] = best[j - 1]
+  }
+  return best[name.length]
+}
+
+/**
+ * True when a word expandShellGlobAlternatives could not read is unreadable only because of an unclosed `[` (no `]`
+ * after it, so bash reads it literally): every other bracket class is closed and stands for one letter, and the word
+ * has no group, alternative, wildcard, expansion, quote or escape (PR 70 review H2). Anything else may be any name.
+ */
+function unclosedBracketOnly(word: string): boolean {
+  if (/[()|?*$`\\{}'"]/.test(word)) return false
+  for (let i = 0; i < word.length; i++) {
+    if (word[i] !== '[') continue
+    if (word.indexOf(']', i + 1) < 0) return true
+    const cls = parseGlobBracketClass(word, i)
+    if (!cls || cls.unclosed || cls.ambiguous) return false
+    i = cls.end
+  }
+  return false
 }
 
 /** A path (relative against the cwd) at or inside one of this install's CLI folders. */
@@ -2563,12 +2605,18 @@ const MAX_QUALIFIER_TEXTS = 256
  */
 function zshQualifierTexts(text: string): string[] | null {
   const out = new Set<string>()
-  const lex = lexClasses(text, { esc: '\\', full: true, groups: 'safe' }).classes
+  // A `(` counts when any bash reading takes it as shell syntax: the full grammar, and the readings that take
+  // here-document body lines as commands (`zsh <<'EOF'` runs its body; PR 70 review H5).
+  const lexes = [
+    lexClasses(text, { esc: '\\', full: true, groups: 'safe' }).classes,
+    lexClasses(text, { esc: '\\', full: false, groups: 'safe' }).classes,
+    lexClasses(text, { esc: '', full: false, groups: 'safe' }).classes
+  ]
   const add = (code: string): void => {
     out.add(code.replace(/\\(.)/gs, '$1').replace(/['"]/g, ''))
   }
   for (let i = text.indexOf('('); i >= 0 && i < text.length; i = text.indexOf('(', i + 1)) {
-    if (lex[i] !== LEX_ACTIVE) continue
+    if (!lexes.some((lex) => lex[i] === LEX_ACTIVE)) continue
     const prev = text[i - 1]
     if (prev === undefined || isSpace(prev) || ';&|<>(`$='.includes(prev)) continue
     let j = i + 1
@@ -2667,7 +2715,9 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
     if (r === undefined) produced.set(t, (r = producerRunsCli(t, depth, budget, check)))
     return r
   }
-  for (const keepBraces of hasUnquotedBraceList(text) ? [false, true] : [false]) {
+  // Any brace list, quoted or not, adds the keep-braces reading (it only adds readings; review H4: a quote in a comment
+  // or an escaped quote inside `$'...'` misled a quote-aware trigger). expandSegmentWords decides per word.
+  for (const keepBraces of BRACE_LIST.test(text) ? [false, true] : [false]) {
     for (const segments of cliSegmentReadings(text, keepBraces)) {
       // The look-back stays within one reading: its earlier pieces are the ones that feed this pipe.
       const producerBefore = earlierPieces(segments, producerRuns)
@@ -2962,7 +3012,8 @@ export function stripDataHeredocs(text: string): string {
       const close = text.indexOf('}', i + 2)
       if (close < 0) return text
       const inner = text.slice(i + 2, close)
-      if (/<<|\$\(|`|\{/.test(inner)) return text
+      // A quote inside hides the `}` bash ends it at (`${x:-'}'}`): not modelled, leave the text whole.
+      if (/<<|\$\(|`|\{|['"]/.test(inner)) return text
       i = close
       continue
     }
@@ -3252,7 +3303,7 @@ function pathScanVariants(text: string): string[] | 'limit' {
   let grown = 0
   let limited = false
   let out = text.replace(SHELL_TOKEN, (tok) => {
-    if (!hasUnquotedBraceList(tok)) return tok
+    if (!BRACE_LIST.test(tok)) return tok
     const words = expandBraces(tok, MAX_BRACE_WORDS)
     if (words.length >= MAX_BRACE_WORDS) limited = true
     grown += words.length

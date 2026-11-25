@@ -2593,3 +2593,78 @@ describe('ordinary commands the gate refused (owner report 2026-11-19)', () => {
     })
   })
 })
+
+describe('PR 70 review: scanner loosening closed again', () => {
+  const ctx: SelfControlContext = {
+    protectedPaths: ['/tmp/orgai-cli-data/run', '/tmp/orgai-cli-data/secrets.json'],
+    cwd: '/tmp/agent-evals/orgai-evo__bench-small-semver',
+    platform: 'darwin',
+    cliRoots: ['/opt/homebrew/lib/node_modules/orgai-cli/out/cli']
+  }
+  const alternation = (letter: string): string => `(${Array(65).fill(letter).join('|')})`
+  const cases: readonly (readonly [string, string])[] = [
+    // C1: a bracket class holding `,` or `=` is still a glob (both are legal unquoted inside it).
+    ['C1', '/opt/homebrew/bin/[,o]rgai status'],
+    ['C1', "/usr/bin/[,s]ecurity find-generic-password -w -s 'OrgAI CLI Vault'"],
+    ['C1', '/usr/bin/[=s]ecurity dump-keychain'],
+    ['C1', '/usr/local/bin/[,n]px orgai status'],
+    // H1: a glob without a path separator counts the letters it keeps in order, wherever they start.
+    ['H1', 'cd /opt/homebrew/bin && o?gai status'],
+    ['H1', 'cd /opt/homebrew/bin && or?ai status'],
+    ['H1', 'touch orgai; ?rgai status'],
+    ['H1', 'touch orgai; *rgai status'],
+    ['H1', 'touch orgai; [!x]rgai status'],
+    ['H1', 'node o?gai.mjs'],
+    ['H1', 'sh o?gai.mjs'],
+    // H2: an unreadable word with ranges, wildcards or over-limit groups fails closed.
+    ['H2', `touch security; [r-t]${alternation('d')}curity dump-keychain`],
+    ['H2', `touch security; [r-t]${alternation('e')}curity dump-keychain`],
+    ['H2', `cd /opt/homebrew/bin && [n-p]${alternation('r')}gai status`],
+    ['H2', `cd /usr/bin && [r-t]${'('.repeat(66)}e${')'.repeat(66)}curity dump-keychain`],
+    ['H2', 'cd /opt/homebrew/bin && [n-p]rgai status'],
+    // `[]` before an unterminated `[:` is one class for bash (`[][:o]` matches `o`), not a literal `[]`.
+    ['H2', 'cd /opt/homebrew/bin && [][:o]rgai status'],
+    ['H2', '/usr/bin/[][:s]ecurity dump-keychain'],
+    // H3: an inline code operand naming the installed CLI package.
+    ['H3', `node -e "import('/opt/homebrew/lib/node_modules/orgai-cli/out/cli/index.js')"`],
+    ['H3', `node --eval="require('/usr/local/lib/node_modules/@orgai/cli/out/cli/index.js')"`],
+    ['H3', `node -p "import('/opt/homebrew/lib/node_modules/orgai-cli/out/cli/index.js')"`],
+    ['H3', `node -p "require('/usr/local/lib/node_modules/@orgai/cli/out/cli/index.js')"`],
+    ['H3', `tsx -e "import('/opt/homebrew/lib/node_modules/orgai-cli/out/cli/index.js')"`],
+    ['H3', `tsx -e "require('/usr/local/lib/node_modules/@orgai/cli/out/cli/index.js')"`],
+    // H4: a brace list after a quote in a comment or an escaped quote inside `$'...'`.
+    ['H4', "echo $'\\''; or{g,}ai status; echo $'\\''"],
+    ['H4', "echo x #'\nor{g,}ai status\n#'"],
+    ['H4', "echo $'\\''; cat /tmp/orgai-cli-data/{secrets,x}.json; echo $'\\''"],
+    // H5: a zsh qualifier inside a here-document body fed to zsh.
+    ['H5', "zsh <<'EOF'\nls *(e:'orgai status':)\nEOF"],
+    ['H5', "cat <<'EOF' | zsh\nls *(e:'orgai status':)\nEOF"],
+    // stripDataHeredocs: a quote inside `${...}` hides the `}` bash ends it at.
+    ['heredoc', "echo ${x:-'} ; cat <<EOF ${y:-'}\norgai status\nEOF"]
+  ]
+
+  it.each(cases)('%s refuses %j', (_finding, command) => {
+    expect([SELF_CONTROL_DENIAL_MESSAGE, SELF_CONTROL_UNCHECKED_MESSAGE], command).toContain(
+      checkSelfControlDenial('Bash', { command }, ctx)
+    )
+  })
+
+  // checkSelfControlDenial also refuses these through the protected-path scan's own expansion limit; the CLI scan
+  // must refuse them by itself (the reviewer's H2 commands are allowed by the CLI scan at the PR head).
+  it.each([
+    `[r-t]${alternation('e')}curity dump-keychain`,
+    `[n-p]${alternation('r')}gai status`,
+    `[n-p](${Array(65).fill('rr').join('|')})gai status`,
+    '[][:o]rgai status',
+    '[][:s]ecurity dump-keychain'
+  ])('the CLI scan alone refuses %j', (command) => {
+    expect(commandRunsOrgaiCli(command, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform: 'darwin' })).toBe(true)
+  })
+
+  it('stripDataHeredocs leaves the text whole when a ${...} holds a quote', () => {
+    const command = "echo ${x:-'} ; cat <<EOF ${y:-'}\norgai status\nEOF"
+    expect(stripDataHeredocs(command)).toBe(command)
+    // A plain `${...}` before a data here-document still lets its body be left out.
+    expect(stripDataHeredocs('echo ${x:-a} ; cat <<EOF\nbody\nEOF')).toBe('echo ${x:-a} ; cat <<EOF\n')
+  })
+})
