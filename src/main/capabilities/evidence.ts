@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Project, RunRecord, TeamEvidence, TeamEvidenceKind } from '@shared/types'
 import { gapFindings } from '../skills/evaluate'
-import { redactEvidence } from '../skills/suggest'
-import { digestKey, digestRun, hideHome, isRunDigest, type RunDigest } from '../store/runDigest'
+import { digestKey, digestRun, hideHome, isRunDigest, redactRunText, type RunDigest } from '../store/runDigest'
 import { clampText } from './sanitize'
 
 /**
@@ -22,7 +21,7 @@ export const EVIDENCE_MAX_ITEMS = 20
 const SUMMARY_MAX = 300
 
 function summary(text: string): string {
-  return clampText(hideHome(redactEvidence(text)), SUMMARY_MAX)
+  return clampText(hideHome(redactRunText(text)), SUMMARY_MAX)
 }
 
 function evidenceId(kind: TeamEvidenceKind, roleId: string | undefined, key: string): string {
@@ -116,7 +115,7 @@ export function collectEvidence(project: Project, inputs: readonly (RunRecord | 
         count: a.count,
         lastSeenAt: new Date(a.lastSeenAt || 0).toISOString()
       }))
-      .sort((a, b) => b.count - a.count || (a.lastSeenAt < b.lastSeenAt ? 1 : -1) || (a.id < b.id ? -1 : 1))
+      .sort((a, b) => b.count - a.count || (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .slice(0, EVIDENCE_MAX_ITEMS)
   } catch {
     return []

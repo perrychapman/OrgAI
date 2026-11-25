@@ -121,9 +121,19 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     between `</roles>` and `<candidates>`, one `evidence <kind> | role=<id|none> | count=<n> | text=<redacted>` line per
     signal (at most 12 lines, text at most 200 characters, every text through the same `field()` as roles and
     candidates, so no newline, `|`, `=` or angle bracket; absent when there is none). Data classes: an automatic
-    (`localDetail: 'minimal'`) pass sends evidence text with path-like tokens replaced by `[path]` (`sanitize.ts`
-    `scrubLocalPaths`; a URL loses host and path) and sends a repeated correction (the user's own words) as kind, role
-    and count only; the manual passes send the stored redacted summary. Local-machine candidates are scored on their
+    (`localDetail: 'minimal'`) pass sends evidence text through `scrubLocalPaths` (`sanitize.ts`; a URL loses host and
+    path; rule: a drive, UNC, `~/` or `/` path becomes `[path]` and swallows text up to the next `( ) " ' ` , ;` or end
+    of line, so "OneDrive - Acme Corp" and "John Smith" go whole; any other whitespace word holding `\` or `/` becomes
+    `[path]`, "and/or" and "read/write" too, "v1.2.3" and "node.js" stay; `user@host`, IPv4/IPv6 and dotted names ending
+    .internal/.local/.corp/.lan/.home/.intranet become `[host]`; residue: a bare private host name such as `db01`, a
+    relative path whose first word has a space, a bare `~`) and sends a repeated correction (the user's own words) as
+    kind, role and count only; the manual passes send the stored redacted summary, repeated corrections' text included
+    (reviewer fix: this is the user's own words, 160 characters, home folders as `~`). "Then settles" (no more model
+    calls after a pass) holds only while evidence counts stop rising: in an active project a carried signal's count
+    grows, so a call recurs at the `everyRuns` cadence (Step 2 behaviour). `field()` also replaces look-alike angle
+    brackets (fullwidth, guillemets, math and CJK angle brackets, small signs, dingbat ornaments) with spaces. The
+    evidence sort now returns 0 on equal timestamps, so the id tie-break decides which 12 lines are sent and identical
+    passes give an identical order. Unit tested (`sanitize.test.ts`, `recommend.test.ts`, `evidence.test.ts`). Local-machine candidates are scored on their
     name only on an automatic pass, so even their order never reflects a hidden description. `modelInputHash` is
     unchanged (all recommendable candidates, sorted, dismissed ones included): trimming is a pure function of the same
     input, so an identical pass gives an identical prompt and hash, and a change to a candidate that was trimmed out

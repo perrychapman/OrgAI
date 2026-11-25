@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { agentProducedNothing } from '../../shared/defaults'
 import { pathOverlaps, type GraphStepLike } from '../../shared/planGraph'
 import type { AgentInstance, ExecOutcome, RunEndedBy, RunRecord, RunSummary } from '../../shared/types'
-import { clampText, HIDDEN_CHARS, HIDDEN_RUN } from '../capabilities/sanitize'
+import { clampText, HIDDEN_CHARS, HIDDEN_RUN, redactCredentialWords } from '../capabilities/sanitize'
 import { redactEvidence } from '../skills/suggest'
 import { tokenSet } from '../skills/tokens'
 
@@ -17,16 +17,19 @@ import { tokenSet } from '../skills/tokens'
  * hidden); hashes for anything compared only for equality (error repeat keys, plan step roles, correction words, hashed
  * from the redacted text); and, for the Team review and skill evaluation, short EXCERPTS OF RUN TEXT: the permission
  * rules a role asked for, the connection it searched for and the user's correction messages, each through the
- * redaction those consumers apply (redactEvidence, home folders hidden, hidden and control characters removed, bounded;
- * corrections also lose angle brackets). A secret redactEvidence does not recognise would be kept.
+ * redaction those consumers apply (redactRunText: credential words, then redactEvidence; home folders hidden, hidden and
+ * control characters removed, bounded; corrections also lose angle brackets). A secret neither recognises would be kept.
  *
  * Two parts: the BODY (from agents, transcript, plan, staffing, delegation: cached) and the SUMMARY part (status,
  * project, timings, usage: always taken from the run index as it is now, because a summary changes without the record:
  * a move to another project, legacy usage normalization, a crash normalized at load).
  */
 
-/** Bump when the body's shape or meaning changes: every cached sidecar is then recomputed. */
-export const DIGEST_VERSION = 2
+/**
+ * Bump when the body's shape or meaning changes: every cached sidecar is then recomputed. 3: run text also loses
+ * credential words (URL userinfo, the value after --password / -u / --header ...) and home folders with spaces.
+ */
+export const DIGEST_VERSION = 3
 
 /** Transcript entries read per run (the record keeps at most this many: RunStore MAX_TRANSCRIPT_ENTRIES). */
 export const DIGEST_TRANSCRIPT_LIMIT = 5000
@@ -49,7 +52,7 @@ export const POLL_TOOLS: ReadonlySet<string> = new Set(['ListAgents', 'list_team
 
 /** One safe line of evidence: control characters, angle brackets and secrets removed, bounded. */
 export function safeLine(s: string, max = EVIDENCE_LINE_MAX): string {
-  const t = redactEvidence(String(s))
+  const t = redactRunText(String(s))
     .replace(HIDDEN_RUN, ' ')
     .replace(/[<>]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -76,20 +79,33 @@ export function digestKey(s: unknown): string {
   return KEY_PLAIN.test(v) ? v : `#${digestHash(v)}`
 }
 
+// The folder name after Users\ or home/: the first word, plus up to two more words (no colon) when a path separator
+// follows them, so "John Smith" goes whole ("C:\Users\John Smith\x" -> "~\x"). A name with spaces and no separator after
+// it ("C:\Users\John Smith" at the end of a text) cannot be told from a word that follows, so only its first word goes.
+const HOME_NAME = String.raw`(?:[^\\/\s"')]+(?: +[^\\/\s"'):]+){0,2}(?=[\\/])|[^\\/\s"')]+)`
+const HOME_UNC = new RegExp(String.raw`(?<![:\w])(?:\\\\|\/\/)[^\\/\s"')]+[\\/]+[^\\/\s"')]+[\\/]+(?:Users|home)[\\/]+${HOME_NAME}`, 'gi')
+const HOME_DRIVE = new RegExp(String.raw`[A-Za-z]:[\\/]+Users[\\/]+${HOME_NAME}`, 'gi')
+const HOME_ROOTED = new RegExp(String.raw`[\\/]+(?:Users|home)[\\/]+${HOME_NAME}`, 'gi')
+
 /**
  * Home directories name the user: C:\Users\x, \\server\share\Users\x (UNC, either slash), /Users/x and /home/x become ~
  * (the Team review's rule, which capabilities/evidence.ts uses through this function).
  */
 export function hideHome(text: string): string {
   return text
-    .replace(/(?<![:\w])(?:\\\\|\/\/)[^\\/\s"')]+[\\/]+[^\\/\s"')]+[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/gi, '~')
-    .replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"')]+/gi, '~')
-    .replace(/[\\/]+(?:Users|home)[\\/]+[^\\/\s"')]+/gi, '~')
+    .replace(HOME_UNC, '~')
+    .replace(HOME_DRIVE, '~')
+    .replace(HOME_ROOTED, '~')
+}
+
+/** Secrets in run text: credential words (flags, URL userinfo, headers), then key-like tokens. One function for the digest and the Team review. */
+export function redactRunText(text: string): string {
+  return redactEvidence(redactCredentialWords(String(text ?? '')))
 }
 
 /** The Team review's redaction (capabilities/evidence.ts summary()), bounded. */
 export function evidenceText(text: string, max = EVIDENCE_TEXT_MAX): string {
-  return clampText(hideHome(redactEvidence(String(text))), max)
+  return clampText(hideHome(redactRunText(String(text))), max)
 }
 
 export type ErrorCategory = 'missing_tool' | 'bad_flag' | 'missing_path' | 'other'

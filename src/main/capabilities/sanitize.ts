@@ -52,13 +52,157 @@ export function clampText(s: unknown, max = CAPABILITY_DESCRIPTION_MAX): string 
   return cleaned.length > max ? `${cleaned.slice(0, Math.max(0, max - 1)).trimEnd()}…` : cleaned
 }
 
-// A path-like token: a drive path, a home-relative path or one starting with a separator (also `//host/share` and the
-// `//` of a URL), not preceded by a word character, so "and/or" and "a.b/c" are left alone.
-const PATH_TOKEN = /(?<![\w.-])(?:[A-Za-z]:[\\/]|~[\\/]|[\\/]{1,2})[^\s()"'`,;]*/g
+// A path start: a drive path, a home-relative path or one starting with a separator (also `//host/share` and the `//`
+// of a URL), not preceded by a word character. It runs through spaces up to the next delimiter (a parenthesis, quote,
+// backtick, comma, semicolon) or the end of the line, because folder names hold spaces ("OneDrive - Acme Corp",
+// "John Smith") and a path cut at the first space would send the rest to a model.
+const PATH_TOKEN = /(?<![\w.-])(?:[A-Za-z]:[\\/]|~[\\/]|[\\/]{1,2})[^()"'`,;\r\n]*/g
+const PATH_MARK = '[path]'
+const HOST_MARK = '[host]'
+// Rule words: `Read(` before a relative path stays readable; trailing closers stay so a rule keeps its shape.
+const RULE_PREFIX = /^[A-Za-z][A-Za-z0-9_]*\(/
+const TRAILING_CLOSERS = /[)"'`,;]+$/
+const IPV4 = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w])/g
+const IPV6_FULL = /(?<![\w:.])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![\w:])/gi
+const IPV6_SHORT = /(?<![\w:.])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?(?![\w:])/gi
+const USER_AT_HOST = /(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)*/g
+const PRIVATE_HOST = /(?<![\w.-])(?:[\w-]+\.)+(?:internal|local|corp|lan|home|intranet)(?:\.[\w-]+)*(?![\w-])/gi
 
-/** Every path-like token replaced by "[path]" (conservative: a URL loses its host and path). For text that may name a local file. */
+/**
+ * Text for a model on an automatic pass: nothing that locates a file or a machine. Rules, applied in order, chosen to
+ * remove too much rather than too little (the result is a hint for a model, never displayed):
+ *  1. a drive, UNC, `~/`, `/` or `//` path becomes "[path]" and swallows everything up to the next `( ) " ' ` , ;` or end
+ *     of line (so a folder name with spaces is removed whole, and a following word in the same clause goes with it);
+ *  2. then any whitespace-separated word that still holds a `\` or a `/` becomes "[path]" (relative paths, `..\..\x`,
+ *     `a/b`; "and/or" and "read/write" go too), keeping a leading `Name(` and trailing closers; "v1.2.3" and "node.js"
+ *     are left alone; adjacent "[path]" words collapse into one;
+ *  3. `user@host` and e-mail addresses, IPv4 and IPv6 literals and dotted names ending .internal, .local, .corp, .lan,
+ *     .home or .intranet become "[host]".
+ * Not caught: a bare private host name without dots or a suffix (`db01`), a relative path whose first word has a space
+ * ("My Docs/x"), a bare `~`.
+ */
 export function scrubLocalPaths(s: string): string {
-  return String(s ?? '').replace(PATH_TOKEN, '[path]')
+  const stage1 = String(s ?? '').replace(PATH_TOKEN, PATH_MARK)
+  const words = stage1.split(/(\s+)/).map((w, i) => {
+    if (i % 2 === 1 || w === PATH_MARK || !/[\\/]/.test(w)) return w
+    const prefix = RULE_PREFIX.exec(w)?.[0] ?? ''
+    const trail = TRAILING_CLOSERS.exec(w.slice(prefix.length))?.[0] ?? ''
+    return `${prefix}${PATH_MARK}${trail}`
+  })
+  return words
+    .join('')
+    .replace(/\[path\](?:\s+\[path\])+/g, PATH_MARK)
+    .replace(USER_AT_HOST, HOST_MARK)
+    .replace(IPV4, HOST_MARK)
+    .replace(IPV6_FULL, HOST_MARK)
+    .replace(IPV6_SHORT, HOST_MARK)
+    .replace(PRIVATE_HOST, HOST_MARK)
+}
+
+const USERINFO_IN_WORD = /([a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s]*@/gi
+const CREDENTIAL_HEADER = /\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token|negotiate|ntlm)\s+)?[^\s"',;)]+/gi
+// Flags whose value is a login, a password or a header: the value is the next word (or inline after `=`).
+const VALUE_FLAGS: ReadonlySet<string> = new Set(['-u', '--user', '--username', '--proxy-user', '--auth', '--bearer', '--basic', '--pass', '--pwd', '--passphrase', '--cookie', '--login'])
+const HEADER_FLAGS: ReadonlySet<string> = new Set(['-H', '--header', '--headers'])
+const REDACTED = '[redacted]'
+const QUOTES = '"\''
+// What may stand before a word's own text: quotes, parentheses and a rule's `Name(`.
+const WORD_LEAD = /^(?:[A-Za-z][A-Za-z0-9_]*\(|[("'`])*/
+
+function isValueFlag(name: string): boolean {
+  return VALUE_FLAGS.has(name.toLowerCase()) || HEADER_FLAGS.has(name) || isSecretFlag(name)
+}
+
+/** `("x` -> `("` + [redacted] + trailing closers: the value goes, the shape around it stays. */
+function maskValueWord(word: string, trailOverride?: string): string {
+  const lead = /^[("'`]*/.exec(word)?.[0] ?? ''
+  const trail = trailOverride ?? (TRAILING_CLOSERS.exec(word.slice(lead.length))?.[0] ?? '')
+  return `${lead}${REDACTED}${trail}`
+}
+
+/**
+ * Credentials in free text, word by word (the same logic sanitizeArgs applies to stdio args): URL userinfo is removed
+ * (`https://user:pass@host` becomes `https://host`); the value after a credential flag is replaced by "[redacted]" (the
+ * next word, or the quoted run when it starts with a quote): `--password`, `--token`, `--api-key` and every flag
+ * isSecretFlag names, `-u`, `--user`, `--auth`, `--bearer`, `--cookie`, `-H` / `--header` (with an unquoted
+ * `Name: Bearer x` too); the value of `--flag=value` and `NAME=value` when the name says key, token, secret or password
+ * or the value looks like a key (isKeyLikeArg); a bare key-like word; `Authorization: ...` headers. Idempotent. Not
+ * caught: a password after a flag this list does not know, `user:pass@host` without a scheme, a secret that looks like
+ * ordinary words.
+ */
+export function redactCredentialWords(text: string): string {
+  const s = String(text ?? '')
+    .replace(USERINFO_IN_WORD, '$1')
+    .replace(CREDENTIAL_HEADER, 'Authorization: [redacted]')
+  const parts = s.split(/(\s+)/)
+  // The value starting at word index `at` (`first` is its text, which may start after an `=`): the index of its last word
+  // and the closers to keep. A value that opens a quote it does not close runs to the word that closes it (bounded).
+  const take = (at: number, first: string, header: boolean): { end: number; trail: string } => {
+    const body = first.replace(/^[(]+/, '')
+    const q = body[0] !== undefined && QUOTES.includes(body[0]) ? body[0] : ''
+    const closes = (w: string): boolean => w.slice(q ? 1 : 0).includes(q)
+    if (q && !closes(body)) {
+      for (let j = at + 2, n = 0; j < parts.length && n < 40; j += 2, n++) {
+        if (parts[j]!.includes(q)) return { end: j, trail: TRAILING_CLOSERS.exec(parts[j]!)?.[0] ?? '' }
+      }
+      return { end: at, trail: '' }
+    }
+    let end = at
+    if (header && !q && /:$/.test(body)) {
+      end = at + 2
+      if (parts[end] !== undefined && /^(?:bearer|basic|digest|token|negotiate|ntlm)$/i.test(parts[end]!) && parts[end + 2] !== undefined) end += 2
+      if (parts[end] === undefined) end = at
+    }
+    return { end, trail: TRAILING_CLOSERS.exec(parts[end]!)?.[0] ?? '' }
+  }
+  const out: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const w = parts[i]!
+    if (i % 2 === 1 || w === '') {
+      out.push(w)
+      continue
+    }
+    const lead = WORD_LEAD.exec(w)?.[0] ?? ''
+    const core = w.slice(lead.length)
+    // `--flag=value` and `NAME=value`.
+    const eq = /^(-{0,2}[\w.-]{1,60})=([\s\S]*)$/.exec(core)
+    if (eq) {
+      const [, name, value] = eq as unknown as [string, string, string]
+      const valueCore = value.replace(TRAILING_CLOSERS, '')
+      if (value !== '' && (isValueFlag(name) || isSecretName(name) || isKeyLikeValue(valueCore) || isKeyLikeArg(`${name}=${valueCore}`))) {
+        const t = take(i, value, HEADER_FLAGS.has(name))
+        out.push(`${lead}${name}=${REDACTED}${t.trail}`)
+        i = t.end
+        continue
+      }
+      out.push(w)
+      continue
+    }
+    // `-u` glued to its value (`-uuser:pass`).
+    if (/^-u[^\s=-][^\s]*:/.test(core)) {
+      out.push(`${lead}-u${REDACTED}${TRAILING_CLOSERS.exec(core)?.[0] ?? ''}`)
+      continue
+    }
+    // A flag whose value is the next word.
+    if (/^-{1,2}[\w.-]{1,60}$/.test(core) && isValueFlag(core)) {
+      out.push(w)
+      const next = parts[i + 2]
+      if (next !== undefined && next !== '' && !next.startsWith('-')) {
+        const t = take(i + 2, next, HEADER_FLAGS.has(core))
+        out.push(parts[i + 1]!, maskValueWord(next, t.trail))
+        i = t.end
+      }
+      continue
+    }
+    // A bare key-like word.
+    const bare = core.replace(TRAILING_CLOSERS, '')
+    if (bare && isKeyLikeValue(bare)) {
+      out.push(`${lead}${REDACTED}${core.slice(bare.length)}`)
+      continue
+    }
+    out.push(w)
+  }
+  return out.join('')
 }
 
 /**

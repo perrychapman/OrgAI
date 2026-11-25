@@ -136,15 +136,19 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     `digestKey` (plain identifiers kept, anything else `#` + 16 hex of sha256); plan step ids are opaque and staff roles
     hashed; error repeat keys are hashed; changed-file prefixes and unavailable tool names go through telemetry's
     existing sanitizers (`dirPrefix`, which now hides home folders first, `safeName`). Run text IS kept in two places,
-    redacted: evidence text (permission rules asked for, connection searches: `redactEvidence`, home folders to `~`
-    (`hideHome`: drive, UNC with either slash, `/Users`, `/home`), hidden characters removed, 200 chars) and correction
+    redacted: evidence text (permission rules asked for, connection searches: `redactRunText` = `redactCredentialWords`
+    (URL userinfo, the value after `--password` / `--token` / `-u` / `-H` / `--header` / `--auth` / `--bearer`, `KEY=value`
+    with a secret name, Authorization headers) then `redactEvidence`; home folders to `~` (`hideHome`: drive, UNC with
+    either slash, `/Users`, `/home`; a folder name of up to three words is taken whole when a separator follows it, a
+    spaced name at the very end of a text keeps its later words), hidden characters removed, 200 chars) and correction
     excerpts (`safeLine` with home folders hidden, 160 chars, angle brackets removed). Correction words are hashed from
     that same redacted text (before, from the raw text: a secret or PIN would have become a hash someone could test
     guesses against). Hidden characters are the set in `capabilities/sanitize.ts` (`HIDDEN_RUN` / `HIDDEN_CHARS`:
     controls, soft hyphen, Arabic letter mark, Mongolian vowel separator, Hangul fillers, bidi, zero-width, tag
     characters, line separators), used for writing and for the shape check on read (`runDigest.ts` already imported
-    `sanitize.ts` for `clampText`, so no new dependency). `DIGEST_VERSION` is 2: sidecars of version 1 are recomputed on
-    first use. A secret `redactEvidence` does not recognise stays in an excerpt. Unit tested with an injection-shaped
+    `sanitize.ts` for `clampText`, so no new dependency). `DIGEST_VERSION` is 3 (credential words and spaced home folders): sidecars of version 1 and 2 are recomputed on
+    first use. A secret `redactRunText` does not recognise stays in an excerpt (not caught: a password after a flag the
+    list does not know, `user:pass@host` without a scheme, `-p`). Unit tested with an injection-shaped
     fixture, a secrets / home-folder fixture, hidden characters in a rule, a search and a correction (written and
     refused on read), a UNC and a `/home/alice` changed path, and `<` in a rule (kept as text, sidecar still valid).
     Hashes of short names (a role called "builder") can be guessed by trying names; they are equality keys, not secrets.
