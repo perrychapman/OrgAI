@@ -241,7 +241,16 @@ support for what the overhaul boards draw that the app did not have. The orchest
   - *Unknown prices.* Spend that has no known price (all of it `costSource: 'unknown'`, or `costPartial`) under a cap (per-run or
     project) stops the run too, with a log line saying the limit cannot be enforced and the known part of the spend on the hold,
     instead of counting as $0. This is what start already does for a chosen unpriced model and what an exec run does
-    (`allowUnpricedBudget` is honoured).
+    (`allowUnpricedBudget` is honoured). **Hold wording:** that stop sets `RunHold.budget.unpriced: true` (optional, kept by the
+    run store's `cleanRunHold`) and the reason says the run "used a model with no known price, so its cost cannot be counted
+    against this run's spending limit", not "used all of" it; the card title is "Stopped: part of this run has no known price"
+    with "Known cost" (the known part only). The stop is unchanged. The adapter id decides the Claude exemption below, so the
+    scripted mock (adapter `mock`) is never exempt: its default script's unpriced report stops any run under a project or
+    per-run cap (seen as a stop at about $0.01 of $2.50). Add budget is still offered on that hold but cannot help on its own;
+    the fix is a model price or no limit. `send()` to a run that has ended is refused with the hold's reason and what to do
+    ("Add budget or continue it from the run page"), not "Run is not active" (that text stays for an unknown run id). The
+    composer already continues an ended run (`runs:continue`), so the raw refusal only reached scripts, the CLI and a send in
+    the moment between the hold and the session's end. Checked in `runManager.projectCap.test.ts`.
   - *Claude, two stops.* The SDK compares its own running total, so for the project-cap fallback main compared only the run total
     the adapter reported and never its own estimate from tokens. Whichever stop comes first sets `spendStopped`; the other finds
     it set (`checkSpend` returns, `budgetReached` returns): one hold, one `endedBy`, one log line. A per-run cap keeps comparing

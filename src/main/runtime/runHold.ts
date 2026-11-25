@@ -66,14 +66,21 @@ function dataText(s: unknown, max: number): string | undefined {
   return t || undefined
 }
 
-/** The run stopped on its own spending limit ('run': its per-run cap, 'conversation': the model-handoff chain's total). */
-export function budgetHold(input: { scope: 'run' | 'conversation'; limitUsd: number; spentUsd: number; since: number; facts: HoldFacts }): RunHold {
+/**
+ * The run stopped on its own spending limit ('run': its per-run cap, 'conversation': the model-handoff chain's total).
+ * `unpriced`: it did not use the limit up; part of its cost has no known price, so the limit could not be enforced and the
+ * run stopped (the money shown is the known part only). The reason then says so instead of "used all of".
+ */
+export function budgetHold(input: { scope: 'run' | 'conversation'; limitUsd: number; spentUsd: number; since: number; facts: HoldFacts; unpriced?: boolean }): RunHold {
   const what = input.scope === 'run' ? "this run's spending limit" : "this conversation's spending limit"
+  const unpriced = input.unpriced === true
   return {
     kind: 'budget',
     since: input.since,
-    reason: `The run stopped because it used all of ${what} (${money(input.limitUsd)}).`,
-    budget: { scope: input.scope, limitUsd: input.limitUsd, spentUsd: input.spentUsd },
+    reason: unpriced
+      ? `The run stopped because part of it used a model with no known price, so its cost cannot be counted against ${what} (${money(input.limitUsd)}). Set a price for that model in Settings, or remove the limit.`
+      : `The run stopped because it used all of ${what} (${money(input.limitUsd)}).`,
+    budget: { scope: input.scope, limitUsd: input.limitUsd, spentUsd: input.spentUsd, ...(unpriced ? { unpriced: true as const } : {}) },
     actions: holdActionsFor('budget', input.facts)
   }
 }

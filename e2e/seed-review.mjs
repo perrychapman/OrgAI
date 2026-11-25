@@ -104,6 +104,9 @@ async function run(label, projectId, prompt, { allow = false, until = 'idle', en
     const r = chat ? await startChat(prompt, extra) : await startRun(projectId, prompt, extra)
     await drive(r.id, { allow, until })
     for (const text of follow) {
+      // A run that already ended (a spending-limit hold ends the session) cannot take a reply: say why, not "Run is not active".
+      const before = await getRun(r.id)
+      if (['finished', 'error'].includes(before?.status ?? '')) throw new Error(`run ${r.id} ended (${before.status}) before the follow-up${before.summary?.hold ? `: ${before.summary.hold.reason}` : ''}`)
       await sendTo(r.id, text)
       await sleep(600)
       await drive(r.id, { allow, until: 'idle' })
@@ -362,8 +365,12 @@ async function liveRuns() {
   const a = P.acme?.id
   const b = P.birch?.id
   if (h) {
-    await run('LIVE idle: Harbor', h, 'Review the open pull request and summarise the risks', { allow: true, end: 'live', follow: ['Please flag anything that touches the store.'] })
-    await run('WAITING permission: Harbor', h, 'Rename the notes route to memos and update the tests', { until: 'card', end: 'live' })
+    // Reopened with --live, Harbor already has its spending limit, and the mock's default script ends on a report with no
+    // known price: under a limit that run stops at once ("part of it used a model with no known price") and cannot take the
+    // follow-up. [mock:computed-cost] gives that report a price. (Phase 2 runs before the limit is set and needs no marker.)
+    const priced = LIVE ? ' [mock:computed-cost]' : ''
+    await run('LIVE idle: Harbor', h, `Review the open pull request and summarise the risks${priced}`, { allow: true, end: 'live', follow: ['Please flag anything that touches the store.'] })
+    await run('WAITING permission: Harbor', h, `Rename the notes route to memos and update the tests${priced}`, { until: 'card', end: 'live' })
     await run('WAITING question: Harbor', h, 'Choose the page size default for the list endpoint [mock:exec-question]', { until: 'card', end: 'live' })
     await run('WAITING proposal: Harbor (schedule)', h, 'Set up a nightly check for new pull requests [mock:schedule]', { until: 'card', end: 'live' })
   }

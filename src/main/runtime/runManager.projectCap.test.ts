@@ -442,3 +442,69 @@ describe('rules that must keep holding', () => {
     await m.stopAll()
   })
 })
+
+// An unpriced model under a cap stops the run (the documented rule); the hold must say that, not "used all of" the limit, and a
+// message to the ended run must be refused in words instead of a bare "Run is not active".
+describe('a run stopped on an unknown price says so, and a message to it is refused clearly', () => {
+  const UNPRICED_REASON = "The run stopped because part of it used a model with no known price, so its cost cannot be counted against this run's spending limit ($2.50). Set a price for that model in Settings, or remove the limit."
+  const startedWithSession = async (m: RunManager, ctx: () => RuntimeContext, cap: number | undefined) => {
+    const run = await m.start({ project: team('gpt-5', cap), prompt: 'go' })
+    ctx().emit({ type: 'run.status', runId: run.id, status: 'running', sessionId: 'sess-1' })
+    return run
+  }
+
+  it('cap $2.50, $0.007 of known spend plus an unpriced report: held at once, with the unknown-price reason and the known cost', async () => {
+    const { m, ctx } = rig('codex')
+    const run = await startedWithSession(m, ctx, 2.5)
+    spend(ctx(), rootUsing('gpt-5', 0.007, [{ model: 'unexpected-unpriced-model' }]))
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+    const hold = m.summary(run.id)?.hold
+    expect(hold).toMatchObject({ kind: 'budget', reason: UNPRICED_REASON, budget: { scope: 'run', limitUsd: 2.5, unpriced: true } })
+    expect(hold?.budget?.spentUsd).toBeCloseTo(0.007, 6)
+    expect(hold?.actions).toEqual(['addBudget', 'switchModel'])
+    expect(holdsOf(run.id)).toHaveLength(1)
+    // The stored copy carries the flag too (a reload keeps the wording and the card's title).
+    expect(new RunStore(join(dir, 'data')).get(run.id)?.hold?.budget?.unpriced).toBe(true)
+    await m.stopAll()
+  })
+
+  it('priced spend under the same cap never holds (no early trip on priced usage)', async () => {
+    const { m, ctx } = rig('codex')
+    const run = await startedWithSession(m, ctx, 2.5)
+    spend(ctx(), rootUsing('gpt-5', 0.007))
+    spend(ctx(), rootUsing('gpt-5', 2.49))
+    expect(m.summary(run.id)).toMatchObject({ status: 'running' })
+    expect(m.summary(run.id)?.hold).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('priced spend that does reach the cap keeps the "used all of" reason and carries no unpriced flag', async () => {
+    const { m, ctx } = rig('codex')
+    const run = await startedWithSession(m, ctx, 2.5)
+    spend(ctx(), rootUsing('gpt-5', 2.6))
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+    expect(m.summary(run.id)?.hold?.reason).toBe("The run stopped because it used all of this run's spending limit ($2.50).")
+    expect(m.summary(run.id)?.hold?.budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: expect.any(Number) })
+    await m.stopAll()
+  })
+
+  it('send to the stopped run is refused with the hold reason and what to do, not "Run is not active"', async () => {
+    const { m, ctx } = rig('codex')
+    const run = await startedWithSession(m, ctx, 2.5)
+    spend(ctx(), rootUsing('gpt-5', 0.007, [{ model: 'unexpected-unpriced-model' }]))
+    await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+    await expect(m.send(run.id, 'Thanks, and one more thing')).rejects.toThrow(`${UNPRICED_REASON} The run has ended, so it cannot take a message. Add budget or continue it from the run page.`)
+    await m.stopAll()
+  })
+
+  it('send to an ended run with no hold says it ended; an unknown run keeps the old text', async () => {
+    const { m, ctx } = rig('codex')
+    const run = await startedWithSession(m, ctx, undefined)
+    await m.stop(run.id)
+    ctx().emit({ type: 'run.status', runId: run.id, status: 'finished' })
+    await vi.waitFor(() => expect(m.summary(run.id)?.status).toBe('finished'))
+    await expect(m.send(run.id, 'hello')).rejects.toThrow('This run has ended, so it cannot take a message. Continue it from the run page.')
+    await expect(m.send('no-such-run', 'hello')).rejects.toThrow('Run is not active')
+    await m.stopAll()
+  })
+})

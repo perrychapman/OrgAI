@@ -76,6 +76,20 @@ describe('hold builders', () => {
     expect(budgetHold({ scope: 'conversation', limitUsd: 5, spentUsd: 5, since: 1, facts: ended }).reason).toContain('conversation')
   })
 
+  it('budget stopped on an unknown price: exact reason, flagged, and the used-up wording is not used', () => {
+    const h = budgetHold({ scope: 'run', limitUsd: 2.5, spentUsd: 0.007, since: 9, facts: ended, unpriced: true })
+    expect(h.reason).toBe("The run stopped because part of it used a model with no known price, so its cost cannot be counted against this run's spending limit ($2.50). Set a price for that model in Settings, or remove the limit.")
+    expect(h.reason).not.toContain('used all of')
+    expect(h.budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: 0.007, unpriced: true })
+    expect(h.actions).toEqual(holdActionsFor('budget', ended))
+    // The ordinary hold keeps its exact wording and carries no flag.
+    const plain = budgetHold({ scope: 'run', limitUsd: 2.5, spentUsd: 2.5, since: 9, facts: ended })
+    expect(plain.reason).toBe("The run stopped because it used all of this run's spending limit ($2.50).")
+    expect(plain.budget).toEqual({ scope: 'run', limitUsd: 2.5, spentUsd: 2.5 })
+    expect(h.reason.length).toBeLessThanOrEqual(500)
+    expect(structuredClone(h)).toEqual(h)
+  })
+
   it('spend limit carries the period and when it resets', () => {
     const h = spendLimitHold({ cap: { scope: 'day', limitUsd: 5, spentUsd: 5, resetsAt: 77 }, reason: 'why', since: 1, facts: ended })
     expect(h).toMatchObject({ kind: 'spend-limit', reason: 'why', budget: { scope: 'day', limitUsd: 5, spentUsd: 5, resetsAt: 77 } })

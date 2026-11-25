@@ -6337,8 +6337,8 @@ export class RunManager {
     if (actions.join() !== cur.actions.join()) this.setHold(a, { ...cur, actions })
   }
 
-  private setBudgetHold(a: ActiveRun, scope: 'run' | 'conversation', limitUsd: number, spentUsd: number): void {
-    this.setHold(a, budgetHold({ scope, limitUsd, spentUsd, since: Date.now(), facts: this.holdFacts(a.summary) }))
+  private setBudgetHold(a: ActiveRun, scope: 'run' | 'conversation', limitUsd: number, spentUsd: number, unpriced = false): void {
+    this.setHold(a, budgetHold({ scope, limitUsd, spentUsd, since: Date.now(), facts: this.holdFacts(a.summary), ...(unpriced ? { unpriced: true } : {}) }))
   }
 
   /** The blocked plan (and the failed agent behind it) as a hold; cleared when the plan is no longer blocked. */
@@ -6474,7 +6474,7 @@ export class RunManager {
     // the SDK, so an unpriced one still stops the run.
     const unknownOwn = (s.usage?.costSource === 'unknown' || s.usage?.costPartial) && !firstPartyClaude
     if (ownCap !== undefined && (unknownOwn || spent.unknown) && !s.overrides?.allowUnpricedBudget) {
-      this.setBudgetHold(a, 'run', ownCap, cost)
+      this.setBudgetHold(a, 'run', ownCap, cost, true)
       a.spendStopped = true
       a.emit({ type: 'log', runId: s.id, level: 'warn', message: `Part of this run has no known price, so its spending limit (${money(ownCap)}) cannot be enforced and the run stopped. Set a model price in Settings, or remove the limit.` })
       void this.finalizeExecRun(s.id, 'budget-exceeded', { endedBy: 'budget' })
@@ -6526,10 +6526,24 @@ export class RunManager {
     return { tests, ...(detail ? { testDetail: detail } : {}), review }
   }
 
+  /**
+   * Why `send` cannot reach a run, in OrgAI's words: still opening, ended (with the reason of the hold it ended on, e.g. a
+   * spending limit) or unknown. A run held on its spending limit has ended its session, so a message is refused; the user
+   * continues it from the run page (which can add budget).
+   */
+  private notActiveText(runId: string, opening: boolean): string {
+    if (opening) return 'This run is still starting. Send your message again in a moment.'
+    const s = this.summary(runId)
+    if (!s) return 'Run is not active'
+    const hold = s.hold
+    const tail = hold?.actions.includes('addBudget') ? 'Add budget or continue it from the run page.' : 'Continue it from the run page.'
+    return hold ? `${hold.reason} The run has ended, so it cannot take a message. ${tail}` : `This run has ended, so it cannot take a message. ${tail}`
+  }
+
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     this.refuseWhileQuitting()
     const active = this.runs.get(runId)
-    if (!active?.session) throw new Error('Run is not active')
+    if (!active?.session) throw new Error(this.notActiveText(runId, !!active))
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(text, images)) throw new Error('Nothing to send')
     active.emit({ type: 'run.status', runId, status: 'running' })
