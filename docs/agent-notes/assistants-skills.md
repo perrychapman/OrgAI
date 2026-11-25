@@ -110,6 +110,35 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     id is recorded and `noChange` holds again (tested at `everyRuns` 1 and 3: one extra call, none after). Unlike before, a
     run's digest holds at most 200 distinct signals and its tool names at most 1,000 (a run past either is not seen to
     the end; no real run found reaches them). Live Claude/Codex runs and a real run history were not exercised.
+  - Ranked, budgeted recommend prompt with run evidence (self-healing efficiency step 3, 2026-11-25): `recommend.ts`
+    `rankCandidates` orders the recommendable candidates best first by the keyword scorer `fallbackRecommend` uses (one
+    `scoreCandidates`; ranking is score, then kind, origin, id, a total order, so the prompt does not depend on discovery
+    order), and `buildRecommendPrompt` takes `{ evidence, budget }` and returns `{ included, eligible, evidenceIncluded,
+    tokens, overBudget }`. With a budget (an automatic pass: `Project.teamReview.tokenBudget`) the list is cut from the
+    tail until `estimateRecommendTokens` fits; the step is skipped as `budget` only when the roles plus the smallest list
+    (`RECOMMEND_MIN_CANDIDATES` = 10, or all when fewer exist) do not fit. Evidence is trimmed before candidates. The
+    manual Re-check and `capabilities:recommend` have no budget, only the 150 cap. The evidence block is `<evidence>`
+    between `</roles>` and `<candidates>`, one `evidence <kind> | role=<id|none> | count=<n> | text=<redacted>` line per
+    signal (at most 12 lines, text at most 200 characters, every text through the same `field()` as roles and
+    candidates, so no newline, `|`, `=` or angle bracket; absent when there is none). Data classes: an automatic
+    (`localDetail: 'minimal'`) pass sends evidence text with path-like tokens replaced by `[path]` (`sanitize.ts`
+    `scrubLocalPaths`; a URL loses host and path) and sends a repeated correction (the user's own words) as kind, role
+    and count only; the manual passes send the stored redacted summary. Local-machine candidates are scored on their
+    name only on an automatic pass, so even their order never reflects a hidden description. `modelInputHash` is
+    unchanged (all recommendable candidates, sorted, dismissed ones included): trimming is a pure function of the same
+    input, so an identical pass gives an identical prompt and hash, and a change to a candidate that was trimmed out
+    asks once at the `everyRuns` cadence with a prompt that is usually identical (accepted, bounded). `noChange` and
+    `modelSeen.evidence` use the evidence the prompt carried (`evidenceIncluded`), so a signal past the cap is stored
+    and shown but never asks the model again. The prompt is built once per pass and handed to `runModel`; before, an
+    automatic pass built it for the estimate and again for the call (the estimate also counted dismissed candidates,
+    the call left them out; both now use the call's list). Where the audit was off: C4 and C5 were right as written
+    (no evidence argument, unranked first 150, `budget` skip with no trimming, two builds); the `modelSeen` hash
+    already ignored order, so ranking needed no hash change. Spend: a project that always skipped as `budget` now makes
+    one model call per change at the `everyRuns` cadence, inside its `tokenBudget` (the estimate of what is sent never
+    exceeds it); the default budget, tier, timeout, the 150 cap, `everyRuns` and the number of calls per pass are
+    unchanged; manual prompts gain at most 12 short lines. Checked by unit tests (`recommend.test.ts`, `service.test.ts`
+    "ranked and trimmed to the budget") with a fake `complete`; live providers, real run evidence and whether the
+    evidence actually improves the picks are unverified. Not done: evidence words do not yet raise a candidate's rank.
   ORGAI_MOCK=1 uses `<data>/mock-home` and outside fixtures; the first finished mock work run fills the review from the
   keyword fallback without tokens. Verified by unit tests and the mock adapter (claude.ts / codex.ts `complete()`
   accept 'recommend' with no tools and an honoured signal, read and fake-tested). Unverified: real config files on a

@@ -29,8 +29,16 @@ import { SkillService } from '../skills/service'
 import { MockAdapter } from '../runtime/mock'
 import { orgChart, project as makeProject, runSummary } from '../runtime/testHelpers'
 import { seedMockHome } from './mockHome'
+import { buildRecommendPrompt, estimateRecommendTokens, RECOMMEND_MIN_CANDIDATES } from './recommend'
 import { readReview } from './reviewStore'
 import { CapabilityService, SNAPSHOTS_PER_PROJECT, SNAPSHOTS_TOTAL, fingerprintOf, modelInputHash, type CapabilityServiceDeps } from './service'
+
+// The real prompt builder, counted: a pass must build the prompt once, not once for the estimate and again for the call.
+vi.mock('./recommend', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./recommend')>()
+  return { ...actual, buildRecommendPrompt: vi.fn(actual.buildRecommendPrompt) }
+})
+const builds = vi.mocked(buildRecommendPrompt)
 
 const cipher = {
   isEncryptionAvailable: () => true,
@@ -955,6 +963,150 @@ describe('review', () => {
       expect(onDisk().modelSeen).toBeDefined()
       await ended(svc)
       expect(rig.complete).toHaveBeenCalledTimes(2)
+    })
+
+    describe('ranked and trimmed to the budget, with the run evidence in the prompt (Step 3)', () => {
+      const DESC = 'Handles repository chores such as tests, builds, linting, release notes and review of changes for the engineer. '.repeat(2)
+      const addSkills = (n: number): void => {
+        for (let i = 0; i < n; i++) put(join(rig.repo, '.claude', 'skills', `extra-${String(i).padStart(3, '0')}`, 'SKILL.md'), SKILL_MD(`extra-${String(i).padStart(3, '0')}`, DESC.slice(0, 200)))
+      }
+      const candidateLines = (prompt: string): string[] => prompt.split('\n').filter((l) => l.startsWith('candidate '))
+      const lastPrompt = (): { system: string; prompt: string } => rig.complete.mock.calls.at(-1)![1] as { system: string; prompt: string }
+      /** A budget about half of what the whole candidate list would need, so some candidates must be left out. */
+      const halfBudget = async (svc: CapabilityService): Promise<number> => {
+        const d = await svc.discover({ projectId: 'p1' })
+        const full = buildRecommendPrompt(stored(), d.items, {}, { localDetail: 'minimal' })
+        builds.mockClear()
+        return Math.max(1_000, Math.floor(full.tokens * 0.5))
+      }
+
+      for (const everyRuns of [1, 3]) {
+        it(`with more candidates than fit, the model runs once on a trimmed prompt instead of skipping as budget, then settles to noChange (everyRuns ${everyRuns})`, async () => {
+          addSkills(120)
+          const svc = live(everyRuns)
+          const budget = await halfBudget(svc)
+          rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: budget, everyRuns } })
+          const all = buildRecommendPrompt(stored(), (await svc.discover({ projectId: 'p1' })).items, {}, { localDetail: 'minimal' })
+          expect(all.tokens).toBeGreaterThan(budget)
+          // Passes before the cadence is reached decide on the stored settings alone: no prompt is built.
+          for (let i = 0; i < everyRuns - 1; i++) {
+            builds.mockClear()
+            await ended(svc)
+            expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'everyRuns' })
+            expect(builds).not.toHaveBeenCalled()
+          }
+          builds.mockClear()
+          // Before this change the estimate of the whole list was over the budget and the step was skipped as `budget`, every time.
+          await ended(svc)
+          expect(rig.complete).toHaveBeenCalledTimes(1)
+          expect(builds).toHaveBeenCalledTimes(1)
+          expect(svc.lastReview('p1')).toMatchObject({ mode: 'model', modelInput: 'proactive', runsSinceModel: 0 })
+          expect(svc.lastReview('p1')!.modelSkipped).toBeUndefined()
+          const sent = lastPrompt()
+          expect(estimateRecommendTokens(sent.system, sent.prompt)).toBeLessThanOrEqual(budget)
+          const n = candidateLines(sent.prompt).length
+          expect(n).toBeGreaterThanOrEqual(RECOMMEND_MIN_CANDIDATES)
+          expect(n).toBeLessThan(all.included)
+          // The same input again: nothing is asked, at either cadence. Bounded by everyRuns and the noChange skip.
+          for (let round = 0; round < 3; round++) {
+            for (let i = 0; i < everyRuns; i++) {
+              builds.mockClear()
+              await ended(svc)
+              // At most one build per pass (none for a pass skipped as everyRuns); the eligible pass only compares.
+              expect(builds.mock.calls.length).toBeLessThanOrEqual(1)
+            }
+            expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+            expect(builds).toHaveBeenCalledTimes(1)
+          }
+          expect(rig.complete).toHaveBeenCalledTimes(1)
+        })
+      }
+
+      it('the trimmed list is the same on every identical pass, so the hash and the prompt do not flip', async () => {
+        addSkills(120)
+        const svc = live(1)
+        const budget = await halfBudget(svc)
+        rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: budget, everyRuns: 1 } })
+        await ended(svc)
+        const first = lastPrompt().prompt
+        expect(candidateLines(first).length).toBeLessThan((await svc.discover({ projectId: 'p1' })).items.length)
+        const d = await svc.discover({ projectId: 'p1' })
+        expect(modelInputHash(stored(), [...d.items].reverse())).toBe(modelInputHash(stored(), d.items))
+        // Force a second model step on identical input (a record of what the model saw that is gone): same prompt, byte for byte.
+        const old = onDisk()
+        delete old.modelSeen
+        writeFileSync(join(rig.data, 'team-reviews', 'p1.json'), JSON.stringify(old))
+        await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(2)
+        expect(lastPrompt().prompt).toBe(first)
+        // And that answer settles it again.
+        await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(2)
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+      })
+
+      it('still skips as budget when even the roles and the smallest candidate list do not fit', async () => {
+        addSkills(20)
+        const svc = live(1)
+        rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: 1_000, everyRuns: 1 } })
+        await ended(svc)
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'budget' })
+        expect(rig.complete).not.toHaveBeenCalled()
+        // Not stored as seen: a later budget that fits asks the model.
+        expect(onDisk().modelSeen).toBeUndefined()
+        rig.store.save({ ...stored(), teamReview: { auto: 'ai', tokenBudget: 200_000, everyRuns: 1 } })
+        await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(1)
+      })
+
+      it('the evidence block carries the recorded signal on an automatic pass, a manual Re-check and a recommend', async () => {
+        addDenial('run-e1')
+        const svc = live(1)
+        await ended(svc)
+        const auto = lastPrompt().prompt
+        expect(auto).toContain('<evidence>')
+        expect(auto).toContain('evidence permissionDenied | role=r-eng | count=1 | text=Engineer was denied Bash.')
+        expect(auto).not.toContain(rig.home)
+        // A manual Re-check with the model and a recommend send the same block (full detail).
+        await svc.review({ projectId: 'p1', trigger: 'manual', useModel: true })
+        expect(lastPrompt().prompt).toContain('evidence permissionDenied | role=r-eng | count=1')
+        await svc.recommend({ projectId: 'p1' })
+        expect(lastPrompt().prompt).toContain('evidence permissionDenied | role=r-eng | count=1')
+        // A project with no evidence sends no block.
+        rig.runs.length = 0
+        records.clear()
+        const bare = rig.make({ mock: false, getRun })
+        rig.store.save({ ...stored(), roles: stored().roles.map((r) => (r.id === REV ? { ...r, description: 'Reviews code changes for bugs and missing tests' } : r)) })
+        await ended(bare)
+        expect(lastPrompt().prompt).not.toContain('<evidence>')
+      })
+
+      it('a signal the prompt leaves out (past the evidence cap) does not ask the model again', async () => {
+        // One run denies 14 different tools (count 1 each); the prompt carries 12 of them.
+        const agent = (aid: string, roleId: string): AgentInstance => ({ id: aid, roleId, roleSlug: aid, name: aid, parentId: null, spawnToolUseId: null, state: 'done', activity: '', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 0 })
+        const denied = (id: string, endedAt: number, tools: string[], at: number): void => {
+          const summary = work(id, endedAt)
+          const transcript = tools.flatMap((t, i) => [
+            { id: `${id}-${i}a`, agentId: 'eng', at: at + i, block: { kind: 'tool_use', id: `${id}-${i}`, name: t, input: {} } },
+            { id: `${id}-${i}b`, agentId: 'eng', at: at + i, block: { kind: 'tool_result', toolUseId: `${id}-${i}`, content: 'The user denied permission', isError: true } }
+          ])
+          rig.runs.push(summary)
+          records.set(id, { summary, agents: { root: agent('root', LEAD), eng: agent('eng', ENG) }, transcript, logs: [] } as unknown as RunRecord)
+        }
+        denied('run-a', rig.clock.t + 1, Array.from({ length: 14 }, (_, i) => `Tool${String.fromCharCode(65 + i)}`), 50_000)
+        const svc = live(1)
+        await ended(svc)
+        expect(rig.complete).toHaveBeenCalledTimes(1)
+        const lines = lastPrompt().prompt.split('\n').filter((l) => l.startsWith('evidence '))
+        expect(lines).toHaveLength(12)
+        expect(svc.lastReview('p1')!.evidence).toHaveLength(14)
+        // An older, rarer signal sorts after those twelve: stored, shown to the user, but not in the prompt.
+        denied('run-b', rig.clock.t + 2, ['ToolZ'], 10)
+        await ended(svc)
+        expect(svc.lastReview('p1')!.evidence).toHaveLength(15)
+        expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+        expect(rig.complete).toHaveBeenCalledTimes(1)
+      })
     })
 
     describe('run evidence from cached digests (a real RunStore wired as host/bootstrap.ts wires it)', () => {

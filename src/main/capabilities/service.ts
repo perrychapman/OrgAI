@@ -57,8 +57,8 @@ import { discoverGithubSkills, discoverRegistry } from './outside'
 import { discoverCatalog, discoverLibrary, discoverProject, dropProjectDuplicates } from './sources'
 import {
   buildRecommendPrompt,
+  type BuiltRecommendPrompt,
   canWrite,
-  estimateRecommendTokens,
   fallbackRecommend,
   heldBy,
   parseRecommendAnswer,
@@ -482,7 +482,20 @@ export class CapabilityService implements CapabilityServiceApi {
 
   // ---------- recommend ----------
 
-  private async runModel(project: Project, snap: Snapshot, scope: CapabilityScope, signal: AbortSignal, emit: Emit, localDetail: LocalDetail = 'full', exclude: ReadonlySet<string> = new Set()): Promise<ModelOutcome> {
+  /**
+   * `prompt` is a prompt the caller already built for the same `items` (a review builds it once, to estimate and to
+   * decide `noChange`, and passes it here); without it the prompt is built here from `evidence`.
+   */
+  private async runModel(
+    project: Project,
+    snap: Snapshot,
+    scope: CapabilityScope,
+    signal: AbortSignal,
+    emit: Emit,
+    localDetail: LocalDetail = 'full',
+    exclude: ReadonlySet<string> = new Set(),
+    built: { prompt?: BuiltRecommendPrompt; evidence?: readonly TeamEvidence[] } = {}
+  ): Promise<ModelOutcome> {
     // Dismissed candidates are never offered to the model nor to the keyword fallback.
     const items = exclude.size ? snap.discovery.items.filter((i) => !exclude.has(i.id)) : snap.discovery.items
     const salt = `${snap.digest}\0${scope.roleId ?? ''}`
@@ -496,7 +509,7 @@ export class CapabilityService implements CapabilityServiceApi {
     if (!recommendable(items, scopeRoleIds(project.roles, scope)).length) return { mode: 'fallback', recommendations: [], gaps: [], fallbackReason: 'noCandidates' }
     if (signal.aborted) return fallback('cancelled')
     emit('model', 'running')
-    const { system, prompt } = buildRecommendPrompt(project, items, scope, { localDetail })
+    const { system, prompt } = built.prompt ?? buildRecommendPrompt(project, items, scope, { localDetail, evidence: built.evidence })
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), CAPABILITY_RECOMMEND_TIMEOUT_MS)
     let tokens: number | undefined
@@ -549,7 +562,9 @@ export class CapabilityService implements CapabilityServiceApi {
     const release = this.supersede(project.id, ac)
     try {
       const snap = reuse ?? (await this.discoverSnap(project, { includeOutside, query: input.query, requestId, signal: ac.signal, emit }))
-      const outcome = await this.runModel(project, snap, scope, ac.signal, emit, 'full', dismissedIds(readReview(this.deps.dataDir, project.id), snap.discovery.items))
+      // The stored review's evidence is already redacted and costs no read; a user-started recommend may send it.
+      const stored = readReview(this.deps.dataDir, project.id)
+      const outcome = await this.runModel(project, snap, scope, ac.signal, emit, 'full', dismissedIds(stored, snap.discovery.items), { evidence: stored?.evidence })
       for (const r of outcome.recommendations) snap.recs.set(r.id, r)
       const partial = snap.discovery.partial || outcome.fallbackReason === 'cancelled'
       // A complete result also becomes the review's pending list, so it survives a reload or a restart.
@@ -1194,14 +1209,22 @@ export class CapabilityService implements CapabilityServiceApi {
     if (skip !== undefined && prev && !prev.stub) evidence = prev.evidence
     else evidence = collectEvidence(project, this.recentDigests(projectId))
     let modelHash: string | undefined
+    // The prompt of this pass, built once: the estimate, the evidence it carries (what `noChange` compares) and the model
+    // call all use it. Dismissed candidates are left out of it, as they always were of the call.
+    let built: BuiltRecommendPrompt | undefined
+    const promptItems = excluded.size ? items.filter((i) => !excluded.has(i.id)) : items
     if (!opts.useModel && opts.trigger === 'runEnded' && skip === undefined) {
       modelHash = modelInputHash(project, items)
+      // Ranked and trimmed to the budget: the step runs on the best candidates that fit instead of never running.
+      built = buildRecommendPrompt(project, promptItems, {}, { localDetail: 'minimal', evidence, budget: settings.tokenBudget })
       // The last successful model step saw exactly this (a failed or free-only one never recorded it): nothing to ask.
-      if (prev?.modelSeen && prev.modelSeen.hash === modelHash && !evidenceIsNew(prev.modelSeen.evidence, evidence)) skip = 'noChange'
-      else {
-        const { system, prompt } = buildRecommendPrompt(project, items, {}, { localDetail: 'minimal' })
-        if (estimateRecommendTokens(system, prompt) > settings.tokenBudget) skip = 'budget'
-      }
+      // Only the evidence the prompt carries counts, so a signal the prompt leaves out never asks again for nothing.
+      if (prev?.modelSeen && prev.modelSeen.hash === modelHash && !evidenceIsNew(prev.modelSeen.evidence, built.evidenceIncluded)) skip = 'noChange'
+      // Only when the roles plus the smallest useful candidate list (RECOMMEND_MIN_CANDIDATES) do not fit the budget.
+      else if (built.overBudget) skip = 'budget'
+    } else if (opts.useModel) {
+      // A manual Re-check with the model: no budget (the user asked), the same evidence block.
+      built = buildRecommendPrompt(project, promptItems, {}, { localDetail: 'full', evidence })
     }
     const runModel = opts.useModel || (opts.trigger === 'runEnded' && skip === undefined)
     let gaps = (prev?.gaps ?? []).filter((g) => project.roles.some((r) => r.id === g.roleId))
@@ -1228,7 +1251,7 @@ export class CapabilityService implements CapabilityServiceApi {
     }
     if (runModel) {
       modelInput = opts.useModel ? 'full' : 'proactive'
-      const outcome = await this.runModel(project, snap, {}, opts.signal, emit, opts.useModel ? 'full' : 'minimal', excluded)
+      const outcome = await this.runModel(project, snap, {}, opts.signal, emit, opts.useModel ? 'full' : 'minimal', excluded, { prompt: built })
       if (outcome.mode === 'model') {
         mode = 'model'
         const fresh = outcome.recommendations.filter(stillUseful)
@@ -1243,7 +1266,9 @@ export class CapabilityService implements CapabilityServiceApi {
         gaps = outcome.gaps
         runsSinceModel = 0
         // A usable answer was applied: remember what it was given. A fallback (error, timeout, cancelled, unreadable) never does.
-        modelSeen = { hash: modelHash ?? modelInputHash(project, items), evidence: evidence.slice(0, REVIEW_MAX_SEEN_EVIDENCE).map((e) => ({ id: e.id, count: e.count })) }
+        // Evidence is recorded as the prompt carried it (a signal left out of the prompt is not "seen").
+        const sent = built?.evidenceIncluded ?? evidence
+        modelSeen = { hash: modelHash ?? modelInputHash(project, items), evidence: sent.slice(0, REVIEW_MAX_SEEN_EVIDENCE).map((e) => ({ id: e.id, count: e.count })) }
       } else {
         skip = outcome.fallbackReason === 'timeout' ? 'timeout' : outcome.fallbackReason === 'cancelled' ? 'cancelled' : outcome.fallbackReason === 'noCandidates' ? 'noChange' : 'error'
         // A failing provider is retried at most once per everyRuns: an automatic pass that errors or times out restarts the

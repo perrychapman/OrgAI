@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeArgs, isCredentialArg, capabilityId, clampText, hiddenCharIn, hiddenCharProblem, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
+import { sanitizeArgs, isCredentialArg, capabilityId, clampText, hiddenCharIn, hiddenCharProblem, displayPath, isKeyLikeArg, isKeyLikeValue, isSecretFlag, isSecretName, scrubLocalPaths, scrubUrl, validKeyName, MCP_TARGET_MAX, mcpSpecDigest, reviewTarget } from './sanitize'
 
 describe('hiddenCharIn / hiddenCharProblem', () => {
   it('finds bidi, zero-width and control characters; multi-line fields allow tab and line breaks', () => {
@@ -35,6 +35,16 @@ describe('clampText', () => {
     expect(clampText('x'.repeat(50), 10)).toBe('xxxxxxxxx…')
     expect(clampText(42)).toBe('')
     expect(clampText(undefined)).toBe('')
+  })
+})
+
+describe('scrubLocalPaths', () => {
+  it('replaces drive, home-relative and rooted paths and a URL host, and leaves ordinary text and rules alone', () => {
+    expect(scrubLocalPaths('Read(C:\\Users\\a\\x.txt) and Read(~/proj/y) and Bash(node /opt/t.js)')).toBe('Read([path]) and Read([path]) and Bash(node [path])')
+    expect(scrubLocalPaths('Read(//c/work/**)')).toBe('Read([path])')
+    expect(scrubLocalPaths('fetched https://host.example/p')).toBe('fetched https:[path]')
+    expect(scrubLocalPaths('Bash(npm run build:*) and/or WebFetch(domain:github.com) a.b/c')).toBe('Bash(npm run build:*) and/or WebFetch(domain:github.com) a.b/c')
+    expect(scrubLocalPaths(undefined as unknown as string)).toBe('')
   })
 })
 
