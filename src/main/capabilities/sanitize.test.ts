@@ -86,8 +86,59 @@ describe('scrubLocalPaths', () => {
     expect(scrubLocalPaths('Bash(npm run build:*) WebFetch(domain:github.com)')).toBe('Bash(npm run build:*) WebFetch(domain:github.com)')
   })
 
+  it('removes folder names holding parentheses, commas and quotes whole', () => {
+    // Balanced (...) groups are part of the name.
+    expect(scrubLocalPaths('D:\\Clients\\Acme (UK) Ltd\\x')).toBe('[path]')
+    expect(scrubLocalPaths('Read(D:\\Clients\\Acme (UK) Ltd\\x\\plan.md) done')).toBe('Read([path]) done')
+    // A comma, semicolon or quote does not end it while a separator still follows on the line.
+    expect(scrubLocalPaths('D:\\Clients\\Smith, Jones & Co\\x')).toBe('[path]')
+    // Through the last separator and the name after it (which runs to the next delimiter or the line end).
+    expect(scrubLocalPaths("D:\\Clients\\O'Brien; Sons\\x.txt and more")).toBe('[path]')
+    expect(scrubLocalPaths("D:\\Clients\\O'Brien; Sons\\x.txt, and more")).toBe('[path], and more')
+    for (const out of [scrubLocalPaths('D:\\Clients\\Acme (UK) Ltd\\x'), scrubLocalPaths('D:\\Clients\\Smith, Jones & Co\\x'), scrubLocalPaths('Read(C:\\Smith, Jones & Co\\x.md)')]) {
+      expect(out).not.toMatch(/UK|Ltd|Jones|Smith|Co\b/)
+    }
+    // The enclosing rule stays intact: an unbalanced ) ends the path.
+    expect(scrubLocalPaths('Bash(cat C:\\a b\\c.txt)')).toBe('Bash(cat [path])')
+    // With no separator after the delimiter the old end holds.
+    expect(scrubLocalPaths('see C:\\work, then stop')).toBe('see [path], then stop')
+    // Two paths in two rules on one line are not merged across the closing parenthesis.
+    expect(scrubLocalPaths('Read(C:\\a\\x, y) and Read(D:\\b\\z)')).toBe('Read([path], y) and Read([path])')
+  })
+
+  it('stays linear on hostile input', () => {
+    const t0 = Date.now()
+    scrubLocalPaths(`${'/'.repeat(200_000)}x`)
+    scrubLocalPaths(`C:\\${'(,'.repeat(100_000)}`)
+    scrubLocalPaths(`${'C:\\a,'.repeat(40_000)}`)
+    expect(Date.now() - t0).toBeLessThan(1500)
+  })
+
   it('keeps a bare ~ and a bare host name (residue, stated)', () => {
     expect(scrubLocalPaths('~ and db01')).toBe('~ and db01')
+  })
+})
+
+describe('redactCredentialWords: PowerShell env and key headers without -H', () => {
+  it('redacts $env:NAME="value" and X-Api-Key: value, idempotently, and leaves plain text alone', () => {
+    const a = redactCredentialWords('$env:DB_PASSWORD="hunter2" node app.js')
+    expect(a).not.toContain('hunter2')
+    expect(a).toContain('$env:DB_PASSWORD=')
+    const b = redactCredentialWords('curl -s X-Api-Key: abc123xyz https://h/x')
+    expect(b).not.toContain('abc123xyz')
+    expect(redactCredentialWords('Api-Key: s3cretvalue and more')).not.toContain('s3cretvalue')
+    expect(redactCredentialWords(a)).toBe(a)
+    expect(redactCredentialWords(b)).toBe(b)
+    expect(redactCredentialWords('$env:PATH and $HOME and api key is needed')).toBe('$env:PATH and $HOME and api key is needed')
+  })
+
+  it('is linear on a long run of closers or separators (no regex backtracking)', () => {
+    const t0 = Date.now()
+    const out = redactCredentialWords(`${')'.repeat(200_000)}x`)
+    redactCredentialWords(`--password=${')'.repeat(200_000)}x`)
+    redactCredentialWords(`${'/'.repeat(100_000)}${'\\'.repeat(100_000)}`)
+    expect(out.length).toBeGreaterThan(0)
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 })
 

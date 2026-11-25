@@ -45,6 +45,8 @@ const CORRECTION_TEXT_CHARS = 500
 export const CORRECTION_EXCERPT_CHARS = 160
 const EVIDENCE_TEXT_MAX = 200
 const EVIDENCE_LINE_MAX = 120
+/** The longest text redactRunText looks at (the rest is dropped before any scan). */
+export const REDACT_INPUT_MAX = 2000
 
 export const POLL_TOOLS: ReadonlySet<string> = new Set(['ListAgents', 'list_team', 'list_agents'])
 
@@ -100,7 +102,9 @@ export function hideHome(text: string): string {
 
 /** Secrets in run text: credential words (flags, URL userinfo, headers), then key-like tokens. One function for the digest and the Team review. */
 export function redactRunText(text: string): string {
-  return redactEvidence(redactCredentialWords(String(text ?? '')))
+  // Input beyond REDACT_INPUT_MAX is dropped first: every consumer keeps far less (summaries 300, lines 120, excerpts
+  // 160), and a hostile string of rule or query text must not cost more than a bounded pass.
+  return redactEvidence(redactCredentialWords(String(text ?? '').slice(0, REDACT_INPUT_MAX)))
 }
 
 /** The Team review's redaction (capabilities/evidence.ts summary()), bounded. */

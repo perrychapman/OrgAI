@@ -4,7 +4,7 @@ import { diagnose, measure } from '../evolve/telemetry'
 import { entry, project, role, run } from '../evolve/fixtures'
 import { correctionFindings, toolSequenceFindings } from '../skills/evaluate'
 import { jaccard, tokenSet } from '../skills/tokens'
-import { DIGEST_VERSION, digestBody, digestHash, digestKey, digestRun, dirPrefix, hideHome, isRunDigest, parseDigestBody, runDigester, safeLine, type RunDigest } from './runDigest'
+import { DIGEST_VERSION, digestBody, digestHash, digestKey, digestRun, dirPrefix, evidenceText, hideHome, isRunDigest, parseDigestBody, REDACT_INPUT_MAX, redactRunText, runDigester, safeLine, type RunDigest } from './runDigest'
 
 const step = (id: string, over: Partial<PlanStep> = {}): PlanStep => ({ id, title: id, status: 'done', ...over }) as PlanStep
 const use = (agentId: string, id: string, name: string, input: unknown = {}): TranscriptEntry => entry(agentId, { kind: 'tool_use', id, name, input })
@@ -319,5 +319,18 @@ describe('parseDigestBody', () => {
     ['too many agents', () => ({ ...good(), agents: new Array(2001).fill((good().agents as object[])[0]) })]
   ])('refuses %s', (_label, make) => {
     expect(parseDigestBody(make())).toBeUndefined()
+  })
+})
+
+describe('redactRunText bounds', () => {
+  it('handles a 200,000 character hostile string within a generous time bound, and caps what it reads', () => {
+    const t0 = Date.now()
+    const a = redactRunText(`${')'.repeat(200_000)}x`)
+    const b = redactRunText(`${'/'.repeat(100_000)}${'\\'.repeat(100_000)}`)
+    const c = evidenceText(`--password=${')'.repeat(200_000)}x`)
+    expect(Date.now() - t0).toBeLessThan(500)
+    expect(a.length).toBeLessThanOrEqual(REDACT_INPUT_MAX)
+    expect(b.length).toBeLessThanOrEqual(REDACT_INPUT_MAX)
+    expect(c.length).toBeLessThanOrEqual(200)
   })
 })

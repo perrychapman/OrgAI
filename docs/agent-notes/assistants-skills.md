@@ -122,13 +122,24 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     signal (at most 12 lines, text at most 200 characters, every text through the same `field()` as roles and
     candidates, so no newline, `|`, `=` or angle bracket; absent when there is none). Data classes: an automatic
     (`localDetail: 'minimal'`) pass sends evidence text through `scrubLocalPaths` (`sanitize.ts`; a URL loses host and
-    path; rule: a drive, UNC, `~/` or `/` path becomes `[path]` and swallows text up to the next `( ) " ' ` , ;` or end
-    of line, so "OneDrive - Acme Corp" and "John Smith" go whole; any other whitespace word holding `\` or `/` becomes
+    path; rule: a drive, UNC, `~/` or `/` path becomes `[path]` and swallows text up to the end of the line or a `)`
+    that closes no `(` of its own (balanced `(UK)` groups pass); a quote, backtick, comma or semicolon ends it only
+    when no path separator follows later on the line before that `)` or line end, else it runs through the last
+    separator and the name after it (`D:\Clients\Acme (UK) Ltd\x`, `C:\Smith, Jones & Co\x` go whole), so "OneDrive -
+    Acme Corp" and "John Smith" go whole; any other whitespace word holding `\` or `/` becomes
     `[path]`, "and/or" and "read/write" too, "v1.2.3" and "node.js" stay; `user@host`, IPv4/IPv6 and dotted names ending
     .internal/.local/.corp/.lan/.home/.intranet become `[host]`; residue: a bare private host name such as `db01`, a
     relative path whose first word has a space, a bare `~`) and sends a repeated correction (the user's own words) as
     kind, role and count only; the manual passes send the stored redacted summary, repeated corrections' text included
-    (reviewer fix: this is the user's own words, 160 characters, home folders as `~`). "Then settles" (no more model
+    (reviewer fix: this is the user's own words, 160 characters, home folders as `~`). Recheck fixes: `normalizeReview`
+    puts every stored evidence summary through `evidenceText` again on load (the write-time recipe; ids come from kind,
+    role and key, never the summary, so a clean review loads unchanged and `modelSeen` still matches; idempotent);
+    `redactRunText` reads at most 2,000 characters and the closer trimming is a loop (no quadratic regex);
+    `$env:NAME="value"` and `X-Api-Key:` / `Api-Key:` / `Auth-Token:` headers without `-H` are now redacted. Residue
+    on a full pass, not recognised: `password: x` in YAML style, a password that starts with `-`
+    (`--password -x`), a secret that looks like ordinary words; `safeLine` shows a long tool name containing a digit
+    as `[redacted]` in telemetry evidence (cosmetic). Not bumped: `DIGEST_VERSION` stays 3 (stored text only differs for
+    input over 2,000 characters). "Then settles" (no more model
     calls after a pass) holds only while evidence counts stop rising: in an active project a carried signal's count
     grows, so a call recurs at the `everyRuns` cadence (Step 2 behaviour). `field()` also replaces look-alike angle
     brackets (fullwidth, guillemets, math and CJK angle brackets, small signs, dingbat ornaments) with spaces. The
