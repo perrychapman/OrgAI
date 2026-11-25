@@ -83,9 +83,13 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
   - Cooldown hint: roles in cooldown are listed on one `do not change` line (slugs through `safeLine`, deduplicated, at most
     12, absent when none cool); the digest stays under 2,800 characters and one fence (unit tested, `synthesizer.test.ts`,
     with a fence-breaking, key-bearing slug).
-  - Memo: the ledger keeps `hybridMemo { digestHash, outcome, at }` (sha256 hex, `empty` | `refused` | `unusable`, newest only).
-    `empty` = the answer proposed nothing; `unusable` = not parseable JSON, or every proposed patch trimmed away; `refused` =
-    the gate refused the plan. A failed or timed-out call stores nothing. An identical digest hash makes no call and returns
+  - Memo: the ledger keeps `hybridMemo { digestHash, outcome, at }` (sha256 hex, `empty` | `refused` | `unusable` | `trimmed`,
+    newest only). `empty` = the answer proposed nothing; `unusable` = not parseable JSON; `refused` = the gate refused the
+    plan; `trimmed` = every proposed patch was trimmed away (before the memo that first pass applied nothing, so the memo
+    hit returns the same empty gated plan, never the deterministic one: the memo may only remove calls, never change which
+    plan is applied). A memo older than 14 days (`HYBRID_MEMO_MAX_AGE_MS`, `ratchet.ts`) is ignored and the model is asked
+    again (unit tested, `service.test.ts` "hybrid memo"; `synthesizer.test.ts` checks first pass and memo pass give the same
+    fingerprint for all four outcomes). A failed or timed-out call stores nothing. An identical digest hash makes no call and returns
     the deterministic plan with a rationale saying so; any change to the digest (runs, team, rejected list, cooldown) calls
     again (unit tested, `synthesizer.test.ts`).
   - Where written: `applyCore`, so the post-run pass and an explicit apply, under the project's serial chain through
@@ -114,7 +118,11 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     `gapFindings` is the one implementation of repeated sequences and corrections for both (see
     `docs/agent-notes/assistants-skills.md` "Evidence from digests"). The skill evaluation reads digests as well
     (`SkillEvaluationDeps.getDigest`; over 20 already-digested runs it parses no record, unit tested in
-    `skills/evaluation.test.ts`; findings from digests equal findings from records, `evaluate.test.ts`).
+    `skills/evaluation.test.ts`; findings from digests equal findings from records, `evaluate.test.ts`). A run still in
+    progress is digested from `getRun` (the in-memory record, never cached), not `getDigest`, whose stored record may lag
+    or not exist (unit tested); the Team review lists only runs with an `endedAt`, so it has no such gap. A tool name that
+    is not a plain identifier (key `#<hash>`) is shown to the person as "an unnamed tool" / "a tool"; keys and evidence
+    ids are unchanged (unit tested). `hideHome` also matches `\users\x` in any letter case.
   - Cache key: `DIGEST_VERSION`, the record file's size, mtime in ns and inode, and the run's `endedAt` in the index, so a
     continued run (its record rewritten) is digested again; the transcript length the handoff suggested is capped at
     5,000 entries and could not tell a continued run at the cap (unit tested: continued run, open run not cached).

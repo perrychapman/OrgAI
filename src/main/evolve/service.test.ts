@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, RunRecord, SkillSpec } from '../../shared/types'
 import { project, role, run } from './fixtures'
 import { cooldownOf, createEvolveService, type EvolveServiceDeps } from './service'
-import { readLedger } from './ratchet'
+import { HYBRID_MEMO_MAX_AGE_MS, readLedger } from './ratchet'
 
 const NOW = 5_000_000
 let dir: string
@@ -295,6 +295,38 @@ describe('afterRun ratchet', () => {
       const h = stuck(complete)
       await pass(h)
       expect(h.svcLedger().hybridMemo).toBeUndefined()
+      await pass(h)
+      expect(complete).toHaveBeenCalledTimes(2)
+    })
+    it('an all-trimmed answer applies nothing on the first pass and on the memo pass (same plan, same result)', async () => {
+      // Same findings as the other memo tests, but the dev role holds fixed staffing: the gate trims every tier/effort
+      // change for it, so nothing the model proposed survives.
+      const complete = vi.fn(async () => ({ text: '{"rolePatches":[{"slug":"dev","effort":"low","reason":"cheaper"}]}' }))
+      const base = project()
+      const h = harness({ complete, proj: { ...base, roles: base.roles.map((r) => (r.slug === 'dev' ? { ...r, staffing: { mode: 'fixed' as const } } : r)) } })
+      const first = await h.svc.afterRun({ projectId: 'p1', evolve: true, strategy: 'hybrid' })
+      expect(h.svcLedger().hybridMemo?.outcome).toBe('trimmed')
+      expect(first.applied).toBeUndefined()
+      const updatesAfterFirst = h.state.updates
+      const second = await h.svc.afterRun({ projectId: 'p1', evolve: true, strategy: 'hybrid' })
+      expect(complete).toHaveBeenCalledTimes(1)
+      expect(second.applied).toBeUndefined()
+      expect(h.state.updates).toBe(updatesAfterFirst)
+      const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+      expect(complete).toHaveBeenCalledTimes(1)
+      expect(a.plan.empty).toBe(true)
+    })
+    it('a memo older than 14 days is ignored and the model is asked again', async () => {
+      const complete = vi.fn(async () => ({ text: '{}' }))
+      const h = stuck(complete)
+      await pass(h)
+      expect(complete).toHaveBeenCalledTimes(1)
+      const { writeLedger } = await import('./ratchet')
+      const l = h.svcLedger()
+      l.hybridMemo = { ...l.hybridMemo!, at: NOW - HYBRID_MEMO_MAX_AGE_MS - 1 }
+      writeLedger(dir, l)
+      await pass(h)
+      expect(complete).toHaveBeenCalledTimes(2)
       await pass(h)
       expect(complete).toHaveBeenCalledTimes(2)
     })

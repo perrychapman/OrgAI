@@ -25,6 +25,7 @@ import { MIN_WASTE_DEFAULT, applyPlan, effectiveConcurrency, patchFingerprint, p
 import {
   addRejected,
   chartProblems,
+  HYBRID_MEMO_MAX_AGE_MS,
   clampWindow,
   evaluateActiveTrial,
   isValidProjectId,
@@ -392,7 +393,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const minWaste = typeof input.minWaste === 'number' && Number.isFinite(input.minWaste) ? Math.min(100, Math.max(0, input.minWaste)) : MIN_WASTE_DEFAULT
     // The hybrid memo is read here and only reported back (`unusable`); the caller that holds the write lock stores it.
     let unusable: { digestHash: string; outcome: HybridMemo['outcome'] } | undefined
-    let plan = await synthesize({ project, diagnosis, strategy, rejected: ledger.rejectedHypotheses, minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs, ...(ledger.hybridMemo ? { memo: ledger.hybridMemo } : {}), onUnusable: (m) => { unusable = m } })
+    let plan = await synthesize({ project, diagnosis, strategy, rejected: ledger.rejectedHypotheses, minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs, ...(ledger.hybridMemo && now() - ledger.hybridMemo.at <= HYBRID_MEMO_MAX_AGE_MS ? { memo: ledger.hybridMemo } : {}), onUnusable: (m) => { unusable = m } })
     // Deleting a project skill is reported, never applied: a skill's folder can hold more than SKILL.md (scripts,
     // references) and an enabled flag, which a generation's snapshot does not keep, so a rollback could not put it back
     // as it was. Removing it stays the user's call.

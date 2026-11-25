@@ -84,10 +84,12 @@ export function collectEvidence(project: Project, inputs: readonly (RunRecord | 
           add('missingConnection', roleId, `${e.tool}:${e.what.toLowerCase().slice(0, 60)}`, `${roleName(roleId)} looked for a connection${e.what ? ` (${e.what})` : ''}.`, runId, e.lastAt, e.count)
         } else if (e.kind === 'missingTool') {
           const tool = e.tool ?? 'a tool'
-          add('missingTool', roleId, tool, `${roleName(roleId)} tried ${tool}, which it does not have.`, runId, e.lastAt, e.count)
+          const shown = tool.startsWith('#') ? 'a tool' : tool // a key that is not a plain name is a hash: never shown
+          add('missingTool', roleId, tool, `${roleName(roleId)} tried ${shown}, which it does not have.`, runId, e.lastAt, e.count)
         } else {
           const tool = e.tool ?? 'a tool'
-          add('permissionDenied', roleId, tool, `${roleName(roleId)} was denied ${tool}.`, runId, e.lastAt, e.count)
+          const shown = tool.startsWith('#') ? 'a tool' : tool
+          add('permissionDenied', roleId, tool, `${roleName(roleId)} was denied ${shown}.`, runId, e.lastAt, e.count)
         }
       }
     }

@@ -517,7 +517,9 @@ export interface Ledger {
   hybridMemo?: HybridMemo
 }
 
-export const HYBRID_MEMO_OUTCOMES = ['empty', 'refused', 'unusable'] as const
+export const HYBRID_MEMO_OUTCOMES = ['empty', 'refused', 'unusable', 'trimmed'] as const
+/** A memo older than this is ignored (the model is asked again); it can only restore a call that existed before the memo. */
+export const HYBRID_MEMO_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
 export interface HybridMemo {
   /** sha256 hex of the digest text the model was given. */
   digestHash: string

@@ -73,7 +73,7 @@ const RUN_HOST =
 // key (version, record size, mtime, inode, endedAt) that a reader checks before trusting it, so a lost race or a stale
 // write is recomputed, never used. Unique temp name, then an atomic rename; best effort.
 const RUN_DIGEST_CACHE =
-  'run digest cache: runs/<runId>/digest.json of an ended run, same content from any writer, keyed by the record stat and shape-checked on read; unique temp name + rename, best effort'
+  'run digest cache: runs/<runId>/digest.json of an ended run, same content from any writer, keyed by the record stat and shape-checked on read; unique temp name + rename, best effort; removes only its own just-written file and an empty run folder when the run was removed meanwhile'
 const RUN_REMOVAL =
   'run removal: files of runs the index no longer lists (dropped under the write lock), and the orphan sweep only by a session that is alone on the folder, inside the startup mutex'
 const SESSION_OWN = "sessions: a session's own record, written while it holds its <id>.lock (own temp name + rename)"

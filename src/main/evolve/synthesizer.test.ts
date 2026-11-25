@@ -230,6 +230,28 @@ describe('hybrid memo', () => {
     const boom = await synthesize({ ...args, complete: async () => { throw new Error('offline') }, onUnusable: () => { throw new Error('never') } })
     expect(boom.rationale).toContain('model call failed')
   })
+  it('an answer whose patches are all trimmed gives the same plan on the first pass and on the memo pass', async () => {
+    // 'dev' is cooling, so the gate trims the model's patch for it and nothing is left.
+    const cooling = { cooldownSlugs: ['dev'] }
+    const first = await capture(usable, cooling)
+    expect(first.plan.empty).toBe(true)
+    expect(first.seen).toHaveLength(1)
+    expect(first.seen[0].outcome).toBe('trimmed')
+    const second = await capture(usable, { ...cooling, memo: first.seen[0] as { digestHash: string; outcome: 'trimmed' } })
+    expect(second.complete).not.toHaveBeenCalled()
+    expect(second.plan.fingerprint).toBe(first.plan.fingerprint)
+    expect(second.plan.empty).toBe(true)
+    expect(second.plan.rolePatches).toEqual(first.plan.rolePatches)
+  })
+  it('the empty and refused answers give the same fingerprint on the first pass and on the memo pass', async () => {
+    const empty = await capture('{}')
+    const emptyAgain = await capture(usable, { memo: empty.seen[0] as { digestHash: string; outcome: 'empty' } })
+    expect(emptyAgain.complete).not.toHaveBeenCalled()
+    expect(emptyAgain.plan.fingerprint).toBe(empty.plan.fingerprint)
+    const refused = await capture(JSON.stringify({ rolePatches: [{ slug: 'dev', addTools: ['Bash'], reason: 'x' }] }))
+    const refusedAgain = await capture(usable, { memo: refused.seen[0] as { digestHash: string; outcome: 'refused' } })
+    expect(refusedAgain.plan.fingerprint).toBe(refused.plan.fingerprint)
+  })
   it('makes no call for the same digest after an unusable answer, and calls again for a different one', async () => {
     const hash = digestHashOf(buildDigest(args.project, args.diagnosis, []))
     const same = await capture(usable, { memo: { digestHash: hash, outcome: 'empty' } })

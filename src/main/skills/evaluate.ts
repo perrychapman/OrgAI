@@ -224,7 +224,7 @@ export function toolSequenceFindings(runs: readonly EvalRunInput[]): SkillFindin
       skillIds: [],
       title: `The same ${SEQUENCE_WINDOW} tool calls repeat in ${e.runIds.length} runs`,
       // The run count is stated once, in the title. No evidence.count: it would only repeat it.
-      detail: `Agents ran ${e.names.join(', then ')}, in that order, each time. A skill could capture this routine.`,
+      detail: `Agents ran ${e.names.map((n) => (n.startsWith('#') ? 'an unnamed tool' : n)).join(', then ')}, in that order, each time. A skill could capture this routine.`,
       evidence: { sequence: e.names, runIds: e.runIds }
     }))
 }

@@ -744,7 +744,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     project: (projectId) => projects.get(projectId),
     listRuns: (projectId) => rm.list(projectId),
     getRun: (runId) => rm.get(runId),
-    // The evaluation reads cached digests: only a run never digested is parsed.
+    // The evaluation reads cached digests of ended runs: only a run never digested is parsed. A run still in progress
+    // never reaches this port: the service digests it from getRun (rm.get, the in-memory record) instead.
     getDigest: (runId) => runStore.getDigest(runId),
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
