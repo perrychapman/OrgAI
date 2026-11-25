@@ -2616,23 +2616,10 @@ const MAX_QUALIFIER_TEXTS = 256
  */
 function zshQualifierTexts(text: string): string[] | null {
   const out = new Set<string>()
-  // A `(` counts when any bash reading takes it as shell syntax: the full grammar, and the readings that take
-  // here-document body lines as commands (`zsh <<'EOF'` runs its body; PR 70 review H5). A text holding `<<` counts
-  // every `(`: a here-document body left in (data-only bodies were cut by stripDataHeredocs) may be fed to zsh, the
-  // full grammar does not read a body as code, and the other readings model neither `#` comments nor `$'...'`, so a
-  // quote zsh does not open on an earlier body line hides the qualifier from all of them (PR 70 recheck H5).
-  const lexes = text.includes('<<')
-    ? null
-    : [
-        lexClasses(text, { esc: '\\', full: true, groups: 'safe' }).classes,
-        lexClasses(text, { esc: '\\', full: false, groups: 'safe' }).classes,
-        lexClasses(text, { esc: '', full: false, groups: 'safe' }).classes
-      ]
   const add = (code: string): void => {
     out.add(code.replace(/\\(.)/gs, '$1').replace(/['"]/g, ''))
   }
   for (let i = text.indexOf('('); i >= 0 && i < text.length; i = text.indexOf('(', i + 1)) {
-    if (lexes && !lexes.some((lex) => lex[i] === LEX_ACTIVE)) continue
     const prev = text[i - 1]
     if (prev === undefined || isSpace(prev) || ';&|<>(`$='.includes(prev)) continue
     let j = i + 1

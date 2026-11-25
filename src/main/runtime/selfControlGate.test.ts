@@ -2710,6 +2710,17 @@ describe('PR 70 recheck: program globs and zsh qualifiers in here-document bodie
     expect(commandRunsOrgaiCli(command, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform: 'darwin' })).toBe(false)
   })
 
+  // Every `(` that continues a word is read as a possible zsh qualifier, with or without `<<` in the text (the bash
+  // lexer is not trusted to say which parentheses zsh treats as syntax).
+  it('refuses a zsh qualifier at top level with no here-document', () => {
+    const command = "ls *(e:'orgai status':)"
+    expect(refused).toContain(checkSelfControlDenial('Bash', { command }, ctx))
+  })
+  it('refuses a zsh qualifier wrapped as zsh -c', () => {
+    const command = `zsh -c "ls *(e:'orgai status':)"`
+    expect(refused).toContain(checkSelfControlDenial('Bash', { command }, ctx))
+  })
+
   // H5: a quote zsh does not treat as an opener (an apostrophe in a comment line, `\'` inside `$'...'`) on a body line
   // before the qualifier line must not hide the qualifier from the scan.
   it.each([
