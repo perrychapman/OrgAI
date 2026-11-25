@@ -27,7 +27,7 @@ import { MockAdapter } from '../runtime/mock'
 import { orgChart, project as makeProject, runSummary } from '../runtime/testHelpers'
 import { seedMockHome } from './mockHome'
 import { readReview } from './reviewStore'
-import { CapabilityService, SNAPSHOTS_PER_PROJECT, SNAPSHOTS_TOTAL, fingerprintOf, type CapabilityServiceDeps } from './service'
+import { CapabilityService, SNAPSHOTS_PER_PROJECT, SNAPSHOTS_TOTAL, fingerprintOf, modelInputHash, type CapabilityServiceDeps } from './service'
 
 const cipher = {
   isEncryptionAvailable: () => true,
@@ -817,6 +817,32 @@ describe('review', () => {
       await ended(svc)
       expect(rig.complete).toHaveBeenCalledTimes(3)
       expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+    })
+
+    it('a persistently failing provider costs one call per everyRuns, then settles after a success', async () => {
+      const svc = live(3)
+      rig.complete.mockRejectedValue(new Error('boom'))
+      for (let i = 0; i < 9; i++) await ended(svc)
+      expect(rig.complete).toHaveBeenCalledTimes(3)
+      expect(onDisk().modelSeen).toBeUndefined()
+      rig.complete.mockReset()
+      rig.complete.mockResolvedValue({ text: answer([]) })
+      await ended(svc, 3)
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+      expect(onDisk().modelSeen).toBeDefined()
+      await ended(svc, 3)
+      expect(rig.complete).toHaveBeenCalledTimes(1)
+      expect(svc.lastReview('p1')).toMatchObject({ modelSkipped: 'noChange' })
+    })
+
+    it('modelInputHash ignores outside items, so a manual Re-check with outside sources records a hash an automatic pass reproduces', async () => {
+      const svc = live(1)
+      const d = await svc.discover({ projectId: 'p1' })
+      const item = pick(d, 'skill', 'repo-helper')
+      const outside: CapabilityItem = { ...item, id: 'outside-1', origin: 'registry', name: 'from-registry' }
+      const p = stored()
+      expect(modelInputHash(p, [...d.items, outside])).toBe(modelInputHash(p, d.items))
+      expect(modelInputHash(p, [...d.items, { ...item, id: 'outside-2', origin: 'github', name: 'from-github' }])).toBe(modelInputHash(p, d.items))
     })
 
     it('a failure after a success keeps the earlier record, so nothing is asked twice for the same input', async () => {

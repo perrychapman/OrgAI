@@ -62,7 +62,9 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     lock; `except` names in-memory counters the activity tracker polls; a call that returns a promise holds the lock
     for its synchronous start only, so code that awaits and then saves must save onto the stored project, not its
     old copy: `SetupService.prepare`, `maintenance.uninstallRepo`; the outputs service's `ensureV1`, `commitVersion`
-    and `markAnswered` take the lock themselves). Not covered, last writer wins: a team review file. Work across awaits takes `store/shared/namedLock.ts` `withNamedLock` (`work-<hash>.lock`, 60 s wait,
+    and `markAnswered` take the lock themselves; `SetupService.retroEvolveContext` awaits once before calling its
+    read-only evolve hook so the hook's synchronous run-record reads run outside the lock; naming it in `except` would
+    do the same but lives in `bootstrap.ts`). Not covered, last writer wins: a team review file. Work across awaits takes `store/shared/namedLock.ts` `withNamedLock` (`work-<hash>.lock`, 60 s wait,
     then `SessionBusyError`): the evolve service's `serial`, the outputs service's `queued`. With `SOLO` (desktop,
     most tests) every one of these is a plain call. A NEW project-scoped writer must use one of the three shapes and
     be labelled `PROJECT_LOCKED` in `writePathInventory.allowlist.ts`. Checked by `store/sameProject.test.ts` (two real
