@@ -518,6 +518,7 @@ class CodexSession implements RuntimeSession {
   private heldReports = new Map<string, { result: string | undefined; waiting: boolean }>()
   private restarting = false
   private pendingMcpPrefixes: string[] = []
+  private reportChangeWaiters = new Map<string, Set<(reason: 'changed' | 'interrupted') => void>>()
   private closeSignal!: () => void
   private readonly closed: Promise<void>
 
@@ -650,6 +651,7 @@ class CodexSession implements RuntimeSession {
     // An interrupted turn waits for the user; no automatic continue until they reply.
     this.continuation.hold()
     this.nativeTag.clear()
+    this.wakeReportWaiters('all', 'interrupted')
     await this.interruptAll()
   }
 
@@ -695,6 +697,7 @@ class CodexSession implements RuntimeSession {
       this.ctx.delegation?.ended(id)
       this.heldReports.delete(id)
       this.finishAgent(id)
+      this.wakeReportWaiters(a.parentId ?? ROOT_AGENT_ID, 'changed')
       a.state = 'done'
       a.activity = STOPPED_ACTIVITY
       a.endedAt = Date.now()
@@ -903,7 +906,7 @@ class CodexSession implements RuntimeSession {
     const rootIdle =
       (!this.rootThreadId || !this.activeTurn.has(this.rootThreadId)) && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
     const quiescent =
-      !this.mcpRestartPending && !this.rosterRestartPending && !this.restarting && this.queues.size === 0 && this.threadStarts === 0 && this.earlySends.length === 0 && !this.integrator.hasPendingWork()
+      !this.mcpRestartPending && !this.rosterRestartPending && !this.restarting && this.queues.size === 0 && this.threadStarts === 0 && this.earlySends.length === 0 && this.bridgedLive.size === 0 && !this.integrator.hasPendingWork()
     return {
       rootTurnGen: this.rootTurnGen,
       rootIdle,
@@ -918,6 +921,7 @@ class CodexSession implements RuntimeSession {
     this.ending = true
     this.continuation.dispose()
     this.nativeTag.clear()
+    this.wakeReportWaiters('all', 'interrupted')
     await this.interruptAll()
     this.server?.close()
     if (this.toolGateway) await this.toolGateway.then(gateway => gateway.close(), () => {})
@@ -1489,6 +1493,7 @@ class CodexSession implements RuntimeSession {
     this.ended = true
     this.ending = true
     this.continuation.dispose()
+    this.wakeReportWaiters('all', 'interrupted')
     this.partial.clearAll()
     for (const a of this.agents.values()) {
       if (a.state !== 'done' && a.state !== 'error') {
@@ -1798,6 +1803,7 @@ class CodexSession implements RuntimeSession {
     this.ctx.delegation?.ended(agent.id)
     this.heldReports.delete(agent.id)
     this.finishAgent(agent.id, true)
+    this.wakeReportWaiters(agent.parentId ?? ROOT_AGENT_ID, 'changed')
     if (result) agent.result = result
     agent.state = 'error'
     agent.activity = NATIVE_FAIL_ACTIVITY
@@ -1831,7 +1837,7 @@ class CodexSession implements RuntimeSession {
     } else {
       if (u.result) root.result = u.result
       root.state = 'idle'
-      const reportsRunning = [...this.agents.values()].some((x) => x.id !== ROOT_AGENT_ID && x.state !== 'done' && x.state !== 'error')
+      const reportsRunning = [...this.agents.values()].some((x) => x.id !== ROOT_AGENT_ID && x.state !== 'done' && x.state !== 'error') || this.bridgedLive.size > 0
       root.activity = u.status === 'interrupted' ? 'Interrupted' : reportsRunning ? 'Waiting on reports…' : 'Waiting for you'
     }
     this.upsert(root)
@@ -1873,6 +1879,7 @@ class CodexSession implements RuntimeSession {
     if (u.status !== 'completed') this.ctx.delegation?.ended(agentId)
     this.heldReports.delete(agentId)
     this.finishAgent(agentId, u.status === 'failed')
+    this.wakeReportWaiters(child.parentId ?? ROOT_AGENT_ID, 'changed')
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
       child.state = 'done'
@@ -1922,6 +1929,7 @@ class CodexSession implements RuntimeSession {
     this.heldReports.delete(child.id)
     const failed = d.action === 'fail'
     this.finishAgent(child.id, failed)
+    this.wakeReportWaiters(child.parentId ?? ROOT_AGENT_ID, 'changed')
     if (result) child.result = result
     child.state = 'done'
     child.endedAt = Date.now()
@@ -2437,7 +2445,36 @@ class CodexSession implements RuntimeSession {
     },
     spawnBridged: (req) => this.spawnBridged(req),
     bridgedAgents: () => this.bridgedLive.values(),
+    waitForReportChange: (callerId) => this.waitForReportChange(callerId),
     afterSpawn: (callerId, roleId) => this.waitingNoteFor(callerId, roleId)
+  }
+
+  private wakeReportWaiters(parentId: string | 'all', reason: 'changed' | 'interrupted'): void {
+    if (parentId === 'all') {
+      for (const set of this.reportChangeWaiters.values()) for (const fn of set) fn(reason)
+      this.reportChangeWaiters.clear()
+      return
+    }
+    const set = this.reportChangeWaiters.get(parentId)
+    if (!set) return
+    this.reportChangeWaiters.delete(parentId)
+    for (const fn of set) fn(reason)
+  }
+
+  private async waitForReportChange(callerId: string): Promise<'changed' | 'interrupted'> {
+    if (this.ending || this.continuation.isHeld()) return 'interrupted'
+    if (this.net.liveChildren(callerId).length === 0) return 'changed'
+    this.setState(callerId, 'waiting', 'Waiting on reports…')
+    try {
+      return await new Promise<'changed' | 'interrupted'>((resolve) => {
+        let set = this.reportChangeWaiters.get(callerId)
+        if (!set) this.reportChangeWaiters.set(callerId, (set = new Set()))
+        set.add(resolve)
+      })
+    } finally {
+      const a = this.agents.get(callerId)
+      if (a && a.state === 'waiting') this.setState(callerId, 'thinking', 'Thinking…')
+    }
   }
 
   /** Set once the one-report-and-waiting note was given (at most once per run). */
@@ -2563,11 +2600,13 @@ class CodexSession implements RuntimeSession {
     this.lastBridgedEndedAt = Date.now()
     this.net.finish(r.agentId)
     this.noteActivity('report')
-    if (this.ending) return
     const parentId = live?.parentId ?? ROOT_AGENT_ID
+    const blocked = r.stopped || this.continuation.isHeld()
+    this.wakeReportWaiters(parentId, blocked ? 'interrupted' : 'changed')
+    if (this.ending) return
     // The bridge's text (a failed report's error, or a result) came from another run: redact it before any event or log.
     const text = this.redact(`Harness: ${bridgedResultText(r, roleName)}`)
-    if (r.stopped || this.continuation.isHeld()) {
+    if (blocked) {
       const summary = r.stopped ? `${r.handle} was stopped.` : r.ok ? `${r.handle} reported back.` : `${r.handle} failed.`
       this.heldBridged.push({ parentId, text })
       this.transcript(this.agents.has(parentId) ? parentId : ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })

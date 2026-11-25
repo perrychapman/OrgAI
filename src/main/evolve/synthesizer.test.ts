@@ -175,6 +175,15 @@ describe('buildDigest', () => {
     expect(d).toContain('abc123')
     expect(d).toContain('dev tier everyday')
   })
+  it('annotates root, fixed, and bridged roles for the hybrid synthesizer', () => {
+    const p = project({}, [
+      role('lead', { id: 'r_lead', reportsTo: null, model: 'gpt-6.2-sol', tier: 'everyday' }),
+      role('local', { id: 'r_local', model: 'qwen3', tier: 'top', effort: 'low', connection: 'proxy-1', staffing: { mode: 'fixed' } })
+    ])
+    const d = buildDigest(p, diag([]))
+    expect(d).toContain('- lead tier everyday effort - root')
+    expect(d).toContain('- local tier top effort low fixed bridged')
+  })
 })
 
 describe('hybrid synthesis', () => {
@@ -264,11 +273,12 @@ describe('hybrid synthesis', () => {
     for (const effort of ['low', 'medium', 'high']) expect(HYBRID_SYSTEM).toContain(`"${effort}"`)
     expect(HYBRID_SYSTEM).toContain('fewer than 3 measured runs')
     expect(HYBRID_SYSTEM).toContain('tier "fast" or effort "low"')
+    expect(HYBRID_SYSTEM).toContain('"fixed" role')
     expect(HYBRID_SYSTEM).not.toContain('"maxConcurrentSubagents":0')
     expect(HYBRID_SYSTEM).not.toContain('"prompt":""')
   })
 
-  it('skips the hybrid model call when all findings are advisory-only (non-dedup prompt_deflation or ceremonial_layer)', async () => {
+  it('skips the hybrid model call when all findings are advisory-only (non-dedup prompt_deflation, ceremonial_layer, or orchestrator_polling)', async () => {
     const complete = vi.fn(async () => ({ text: '{}' }))
     const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { prompt: 'x '.repeat(600) })])
     const manualPromptOnly: EvolutionFinding[] = [{ kind: 'prompt_deflation', roleSlug: 'dev', severity: 20, summary: 's', evidence: [], data: { chars: 1200, removableChars: 0 } }]
@@ -276,6 +286,12 @@ describe('hybrid synthesis', () => {
     expect(complete).not.toHaveBeenCalled()
     expect(plan.empty).toBe(true)
     expect(plan.strategy).toBe('deterministic')
+
+    const pollingOnly: EvolutionFinding[] = [{ kind: 'orchestrator_polling', roleSlug: 'lead', severity: 45, summary: 'polled', evidence: [] }]
+    const pollPlan = await synthesize({ project: p, diagnosis: diag(pollingOnly, 45), strategy: 'hybrid', rejected: [], complete })
+    expect(complete).not.toHaveBeenCalled()
+    expect(pollPlan.empty).toBe(true)
+    expect(pollPlan.rationale).toContain('wait-loop behavior')
   })
 
   it('ignores echoed prompt "" and maxConcurrentSubagents 0 without clobbering deterministic patches', async () => {

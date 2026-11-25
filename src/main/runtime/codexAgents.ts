@@ -48,9 +48,9 @@ export const messageArgs = z.object({
 export const listArgs = z.object({})
 
 export const SPAWN_TOOL_DESCRIPTION =
-  "Delegate work to a report. Returns at once with its handle; the report's final answer arrives later as a harness message. Follow up with message_agent."
+  "Delegate to a report. Returns at once; its result arrives later as a harness message. Work or end your turn; do not poll list_team."
 export const MESSAGE_TOOL_DESCRIPTION = 'Send a brief message to a running agent by handle, or to the orchestrator as "main"; it reads it at its next step.'
-export const LIST_TOOL_DESCRIPTION = 'List the agents in this run with their handles, roles and states.'
+export const LIST_TOOL_DESCRIPTION = 'List running agents and states. Do not poll to wait.'
 
 /** The network tools an agent of this role gets (root = the root role). */
 export function networkToolNames(role: Role, opts: { setupLike: boolean }): string[] {
@@ -100,7 +100,7 @@ export const NATIVE_RULE_NOTE = `This project's instructions explicitly ask you 
 export function codexToolNotes(toolNames: string[], opts: { renamedPlanTool: boolean; nativeRule?: boolean }): string {
   const lines: string[] = []
   if (toolNames.includes(NETWORK_TOOLS.spawn)) {
-    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.${opts.nativeRule ? ` ${NATIVE_RULE_NOTE}` : ''}`)
+    lines.push(`To delegate (the "Agent tool" in the instructions above), call ${NETWORK_TOOLS.spawn} with role set to the report's slug (the instructions call it subagent_type), a complete brief, and optionally name. It returns at once; the report's final answer reaches you later as a message beginning "Harness:". Once your reports are running and you have no independent work left, end your turn with no tool calls — never poll ${NETWORK_TOOLS.list} or git to wait; the harness wakes you automatically when a report finishes. Codex's own built-in multi-agent tools (spawn_agent, send_message, wait_agent and similar) are unavailable here and their agents do not count; never use them.${opts.nativeRule ? ` ${NATIVE_RULE_NOTE}` : ''}`)
   }
   if (toolNames.includes(NETWORK_TOOLS.message)) lines.push(`${MESSAGE_TOOL} in the instructions above is ${NETWORK_TOOLS.message} here.`)
   if (toolNames.includes(NETWORK_TOOLS.list)) lines.push(`${LIST_AGENTS_TOOL} in the instructions above is ${NETWORK_TOOLS.list} here.`)
@@ -147,6 +147,7 @@ const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$/
 
 export class CodexAgentNetwork {
   private members = new Map<string, Member>()
+  private lastListKey = new Map<string, string>()
   readonly handles: HandleNamer
 
   constructor(private opts: NetworkOptions) {
@@ -245,6 +246,7 @@ export class CodexAgentNetwork {
     const { handle } = spawnHandle(this.handles, target.slug, name)
     const id = newId('cx')
     this.members.set(id, { id, role: target, parentId, depth, handle, live: true })
+    this.lastListKey.delete(parentId)
     return { ok: true, id, role: target, parentId, depth, handle }
   }
 
@@ -257,10 +259,13 @@ export class CodexAgentNetwork {
     if (!m) return
     this.members.delete(reservedId)
     this.members.set(agentId, { ...m, id: agentId, handle })
+    this.lastListKey.delete(m.parentId)
   }
 
   /** Spawn failed after begin(): forget the reservation. */
   abort(agentId: string): void {
+    const m = this.members.get(agentId)
+    if (m) this.lastListKey.delete(m.parentId)
     this.members.delete(agentId)
   }
 
@@ -270,6 +275,7 @@ export class CodexAgentNetwork {
     if (m) {
       m.live = false
       m.parked = false
+      this.lastListKey.delete(m.parentId)
     }
   }
 
@@ -279,7 +285,24 @@ export class CodexAgentNetwork {
     if (m) {
       m.live = true
       m.parked = false
+      this.lastListKey.delete(m.parentId)
     }
+  }
+
+  /**
+   * Record a `list_team` call by `callerId`. Returns `repeated: true` when `callerId` already polled `list_team`
+   * with the exact same non-empty set of live children still running. Callers with no live children never repeat.
+   */
+  recordListPoll(callerId: string): { repeated: boolean; liveChildren: string[] } {
+    const liveChildren = this.liveChildren(callerId).sort()
+    if (!liveChildren.length) {
+      this.lastListKey.delete(callerId)
+      return { repeated: false, liveChildren }
+    }
+    const key = liveChildren.join(',')
+    const repeated = this.lastListKey.get(callerId) === key
+    this.lastListKey.set(callerId, key)
+    return { repeated, liveChildren }
   }
 
   /** Spawned agents of `parentId` still working (parked ones included), oldest first. */
@@ -338,6 +361,11 @@ export interface NetworkHost {
   spawnBridged?(req: SpawnRequest & { name?: string }): Promise<{ agentId: string; handle: string }>
   /** Bridged reports still working, for list_team (they are not threads of this session). */
   bridgedAgents?(): Iterable<{ handle: string; roleSlug: string; connectionName: string }>
+  /**
+   * Block a repeated `list_team` poll by `callerId` until one of its live reports finishes (or the session interrupts/ends),
+   * preventing busy-poll loops from burning tokens while slow/bridged reports run.
+   */
+  waitForReportChange?(callerId: string): Promise<'changed' | 'interrupted'>
 }
 
 export interface ToolOutcome {
@@ -365,10 +393,39 @@ export async function callNetworkTool(
 ): Promise<ToolOutcome> {
   try {
     tool = canonicalNetworkTool(tool) ?? tool
-    if (tool === NETWORK_TOOLS.list) {
+    const runningLines = (): string[] => {
       const lines = [...host.agents()].filter((a) => a.id !== callerId && a.state !== 'done' && a.state !== 'error').map(agentLine)
       for (const b of host.bridgedAgents?.() ?? []) lines.push(`${b.handle} · ${b.roleSlug} · running on ${b.connectionName} (its final report arrives as a harness message; it cannot receive messages)`)
-      return { text: lines.length ? `Running now:\n${lines.join('\n')}` : 'No other agents are running.', success: true }
+      return lines
+    }
+    if (tool === NETWORK_TOOLS.list) {
+      const poll = net.recordListPoll(callerId)
+      if (!poll.repeated) {
+        const lines = runningLines()
+        if (!lines.length) return { text: 'No other agents are running.', success: true }
+        const waitNote = poll.liveChildren.length > 0
+          ? '\n\nDo not poll list_team or git to wait; end your turn now with no further tool calls and the harness will wake you when a report finishes.'
+          : ''
+        return { text: `Running now:\n${lines.join('\n')}${waitNote}`, success: true }
+      }
+      if (host.waitForReportChange) {
+        const outcome = await host.waitForReportChange(callerId)
+        const lines = runningLines()
+        if (outcome === 'interrupted') {
+          return { text: lines.length ? `Running now:\n${lines.join('\n')}\n\nWaiting interrupted.` : 'No other agents are running.', success: true }
+        }
+        return {
+          text: lines.length
+            ? `Updated running agents (a report finished; check the harness message):\n${lines.join('\n')}\n\nDo not poll list_team; end your turn if waiting on the rest.`
+            : 'No other agents are running. Your report finished and was delivered as a harness message.',
+          success: true
+        }
+      }
+      const lines = runningLines()
+      return {
+        text: `STOP POLLING: your report(s) are still working:\n${lines.join('\n')}\n\nEnd your turn now with no further tool calls; the harness delivers each report automatically when it finishes.`,
+        success: false
+      }
     }
     if (tool === NETWORK_TOOLS.message) {
       const parsed = messageArgs.safeParse(args)
@@ -416,7 +473,7 @@ export async function callNetworkTool(
         // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
         const unpacked = parsed.data.files?.length ? ` The files you named were not inlined: it runs in its own session on ${bridged.connectionName}; put what it needs in the brief.` : ''
         return {
-          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${unpacked}${afterSpawnLine(host, callerId, check.role.id)}`,
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs. If you have no independent work left, end your turn now with no further tool calls; do not poll list_team or git.${unpacked}${afterSpawnLine(host, callerId, check.role.id)}`,
           success: true
         }
       }
@@ -437,7 +494,7 @@ export async function callNetworkTool(
         return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
       }
       return {
-        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs.${note ? ` ${note}` : ''}${pack ? ` ${pack}` : ''}${afterSpawnLine(host, callerId, check.role.id)}`,
+        text: `Spawned ${check.handle} (${check.role.slug})${staffing ? ` on ${staffing}` : ''}. It works in the background; its final report arrives as a message from the harness. Message it with message_agent({to: "${check.handle}"}) while it runs. If you have no independent work left, end your turn now with no further tool calls; do not poll list_team or git.${note ? ` ${note}` : ''}${pack ? ` ${pack}` : ''}${afterSpawnLine(host, callerId, check.role.id)}`,
         success: true
       }
     }

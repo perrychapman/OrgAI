@@ -34,6 +34,8 @@ export const MIN_ROLE_AGENTS = 3
 export const OVER_FIRST_PASS = 0.9
 export const UNDER_ESCALATION_RATE = 0.35
 export const MAX_FINDINGS = 12
+const POLL_TOOLS = new Set(['ListAgents', 'list_team', 'list_agents'])
+const MIN_POLLS_PER_RUN = 3
 const FINDING_SUMMARY_MAX = 240
 const EVIDENCE_LINE_MAX = 120
 
@@ -135,8 +137,12 @@ const runInputTokens = (r: RunRecord): number => {
 // ---- plan graph shape -----------------------------------------------------------------------------------------------
 
 /** Widest set of steps that can run together (longest-path levels, path overlaps as extra waits). 1 without a graph. */
-export function planWidth(steps: readonly GraphStepLike[]): { width: number; depth: number } {
-  if (steps.length < 2) return { width: steps.length ? 1 : 0, depth: steps.length }
+export function planWidth(steps: readonly GraphStepLike[], opts?: { countIds?: ReadonlySet<string> }): { width: number; depth: number } {
+  if (steps.length < 2) {
+    if (!steps.length) return { width: 0, depth: 0 }
+    if (opts?.countIds && !opts.countIds.has(steps[0].id)) return { width: 0, depth: 1 }
+    return { width: 1, depth: 1 }
+  }
   const pending = steps.map((s) => ({ ...s, status: 'pending' as const }))
   const deps = new Map<string, Set<string>>(pending.map((s) => [s.id, new Set((s.after ?? []).filter((x) => x !== s.id))]))
   for (const o of pathOverlaps({ steps: pending })) deps.get(o.second)?.add(o.first)
@@ -158,9 +164,9 @@ export function planWidth(steps: readonly GraphStepLike[]): { width: number; dep
   for (const s of pending) {
     const d = depthOf(s.id)
     deepest = Math.max(deepest, d)
-    levels.set(d, (levels.get(d) ?? 0) + 1)
+    if (!opts?.countIds || opts.countIds.has(s.id)) levels.set(d, (levels.get(d) ?? 0) + 1)
   }
-  return { width: Math.max(...levels.values()), depth: deepest }
+  return { width: levels.size ? Math.max(...levels.values()) : 0, depth: deepest }
 }
 
 interface Shape {
@@ -204,10 +210,32 @@ export function spawnShape(r: RunRecord): Shape {
   return { reports: iv.length, maxParallel: max, busyMs: busy, sumMs: sum }
 }
 
-function dagRatio(r: RunRecord): { ratio: number; width: number; shape: Shape } | null {
+function dagRatio(r: RunRecord, rootRoleNames?: ReadonlySet<string>): { ratio: number; width: number; shape: Shape } | null {
   const steps = r.plan?.steps
   if (!steps || steps.length < 2) return null
-  const { width } = planWidth(steps)
+  const hasStaff = steps.some((s) => !!s.staff?.role?.trim())
+  let width: number
+  if (hasStaff) {
+    const roots = new Set(rootRoleNames)
+    if (!roots.size) {
+      for (const a of Object.values(r.agents ?? {})) {
+        if (!isRoot(a)) continue
+        if (a.roleSlug) roots.add(a.roleSlug.toLowerCase())
+        if (a.name) roots.add(a.name.toLowerCase())
+      }
+    }
+    const delegated = new Set(
+      steps
+        .filter((s) => {
+          const role = s.staff?.role?.trim().toLowerCase()
+          return !!role && !roots.has(role)
+        })
+        .map((s) => s.id)
+    )
+    width = planWidth(steps, { countIds: delegated }).width
+  } else {
+    width = planWidth(steps).width
+  }
   const shape = spawnShape(r)
   if (width < 2 || shape.reports < 2) return null
   return { ratio: clamp(shape.maxParallel / width, 0, 1), width, shape }
@@ -331,6 +359,10 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
 
   const roleBySlug = new Map(project.roles.map((r) => [r.slug, r]))
   const roleById = new Map(project.roles.map((r) => [r.id, r]))
+  const rootRole = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
+  const rootNames = new Set(
+    [rootRole?.slug, rootRole?.name].filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim().toLowerCase())
+  )
   const aggs = new Map<string, RoleAgg>()
   const agg = (slug: string): RoleAgg => {
     let a = aggs.get(slug)
@@ -342,6 +374,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   const frictionCount = new Map<string, Map<Category, number>>()
   const frictionTools = new Map<string, Set<string>>()
   const frictionRepeat = new Map<string, Map<string, number>>()
+  const pollAgg = new Map<string, { totalPolls: number; pollRuns: Set<string>; costUsd: number; inTokens: number }>()
   const serial: { ratio: number; width: number; shape: Shape }[] = []
   let serialRuns = 0
 
@@ -390,7 +423,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     }
 
     // serial bottleneck
-    const d = dagRatio(r)
+    const d = dagRatio(r, rootNames)
     if (d && d.ratio < 0.6) {
       serialRuns++
       serial.push(d)
@@ -411,13 +444,17 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
       conflictRuns.push({ agents: conflicted.map((a) => byId.get(a.parentId ?? '') ?? a), overlap, run: r })
     }
 
-    // tool friction
+    // tool friction and status polling
     const uses = new Map<string, string>()
+    const pollsByAgent = new Map<string, number>()
     const t = r.transcript ?? []
     for (let i = 0; i < t.length && i < TRANSCRIPT_SCAN_LIMIT; i++) {
       const b = t[i].block
-      if (b.kind === 'tool_use') uses.set(b.id, String(b.name))
-      else if (b.kind === 'tool_result' && b.isError) {
+      if (b.kind === 'tool_use') {
+        const name = String(b.name)
+        uses.set(b.id, name)
+        if (POLL_TOOLS.has(name)) pollsByAgent.set(t[i].agentId, (pollsByAgent.get(t[i].agentId) ?? 0) + 1)
+      } else if (b.kind === 'tool_result' && b.isError) {
         const slug = byId.get(t[i].agentId)?.roleSlug ?? 'unknown'
         const cat = classifyError(b.content)
         const m = frictionCount.get(slug) ?? new Map<Category, number>()
@@ -434,6 +471,17 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
           frictionRepeat.set(slug, rm)
         }
       }
+    }
+    for (const [agentId, count] of pollsByAgent) {
+      if (count < MIN_POLLS_PER_RUN || (childCount.get(agentId) ?? 0) < 1) continue
+      const a = byId.get(agentId)
+      if (!a?.roleSlug) continue
+      let p = pollAgg.get(a.roleSlug)
+      if (!p) pollAgg.set(a.roleSlug, (p = { totalPolls: 0, pollRuns: new Set(), costUsd: 0, inTokens: 0 }))
+      p.totalPolls += count
+      p.pollRuns.add(r.summary.id)
+      p.costUsd += finite(a.usage?.costUsd ?? a.costUsd)
+      p.inTokens += finite(a.usage?.tokens.input) + finite(a.usage?.tokens.cacheRead) + finite(a.usage?.tokens.cacheWrite) || finite(a.inputTokens)
     }
   }
 
@@ -463,7 +511,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     }
     const simple = g.turns / g.agents <= 6 && g.outTokens / g.agents <= 4000
     const runtimeTier = roleTier ?? ([...g.tiers].sort((a, b) => b[1] - a[1])[0]?.[0] as ModelTier | undefined)
-    if (rate >= OVER_FIRST_PASS && g.escalated === 0 && g.failedReceipts === 0 && g.errors === 0 && simple && tierDown(runtimeTier) && !(runtimeTier === 'everyday' && role.effort === 'low')) {
+    if (rate >= OVER_FIRST_PASS && g.escalated === 0 && g.failedReceipts === 0 && g.errors === 0 && simple && tierDown(runtimeTier) && !(runtimeTier === 'everyday' && role.effort === 'low') && !(totalCost > 0 && g.costUsd === 0)) {
       const saveUsd = perRunCost(g) * (role.effort && role.effort !== 'low' && role.effort !== 'medium' ? 0.2 : 0.5)
       const thin = g.agents < 6 || g.runs.size < 3
       findings.push({
@@ -602,6 +650,32 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
       evidence: [`fan-out <= 1 in ${g.lowFan}/${g.spawnerAgents} agents`, `${g.lowFanRuns.size} runs`, `avg ${Math.round(avgIn)} input tokens`],
       estSavingsTokens: Math.round((avgIn * g.lowFan) / n),
       data: { runs: g.lowFanRuns.size, avgInputTokens: Math.round(avgIn) }
+    })
+  }
+
+  // 7. orchestrator polling
+  for (const [slug, p] of pollAgg) {
+    const role = roleBySlug.get(slug)
+    if (!role) continue
+    const runCount = p.pollRuns.size
+    const avgPolls = p.totalPolls / runCount
+    const wasteFrac = clamp(avgPolls / (avgPolls + 4), 0.25, 0.75)
+    const estUsd = r4((p.costUsd / n) * wasteFrac)
+    const estTok = Math.round((p.inTokens / n) * wasteFrac)
+    const severity = clamp(10 + Math.round(avgPolls * 2), 10, 45)
+    findings.push({
+      kind: 'orchestrator_polling',
+      roleSlug: slug,
+      severity,
+      summary: safeLine(`${role.name} polled ListAgents ${avgPolls.toFixed(1)}x/run across ${runCount} of ${n} run${n === 1 ? '' : 's'} while waiting on reports; let it end its turn and wait for report delivery.`, FINDING_SUMMARY_MAX),
+      evidence: [
+        `ListAgents called ${p.totalPolls}x across ${runCount} run${runCount === 1 ? '' : 's'} (avg ${avgPolls.toFixed(1)}/run)`,
+        ...(p.costUsd > 0 ? [`spawner cost $${(p.costUsd / runCount).toFixed(4)}/run`] : []),
+        ...(p.inTokens > 0 ? [`avg ${Math.round(p.inTokens / runCount / 1000)}k input tokens/run`] : [])
+      ],
+      ...(estUsd > 0 ? { estSavingsUsd: estUsd } : {}),
+      ...(estTok > 0 ? { estSavingsTokens: estTok } : {}),
+      data: { runs: runCount, totalPolls: p.totalPolls, avgPolls: Math.round(avgPolls * 10) / 10 }
     })
   }
 

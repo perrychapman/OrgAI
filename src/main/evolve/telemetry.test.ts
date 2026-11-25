@@ -251,6 +251,62 @@ describe('diagnose findings', () => {
     const runs = Array.from({ length: 3 }, () => run({ agents: [{ slug: 'mid', id: 'm', inTok: 40_000 }, { slug: 'dev', parent: 'm' }, { slug: 'dev', parent: 'm' }, { slug: 'dev', parent: 'm' }] }))
     expect(diagnose({ project: p, runs, now: NOW }).findings.some((x) => x.kind === 'ceremonial_layer')).toBe(false)
   })
+
+  it('orchestrator_polling: fires when a spawner polls ListAgents >= 3 times with live reports, never for <= 2 or non-spawners', () => {
+    const tPoll = (agentId: string, count: number) => Array.from({ length: count }, (_, i) => entry(agentId, { kind: 'tool_use', id: `poll_${agentId}_${i}`, name: 'ListAgents', input: {} }))
+    const pollingRun = run({ cost: 0.5, agents: [{ slug: 'dev', id: 'd1', cost: 0 }], transcript: tPoll('root', 5) })
+    const d = diag([pollingRun])
+    const f = d.findings.find((x) => x.kind === 'orchestrator_polling')
+    expect(f?.roleSlug).toBe('lead')
+    expect(f?.data).toMatchObject({ runs: 1, totalPolls: 5, avgPolls: 5 })
+    expect(f?.estSavingsUsd).toBeGreaterThan(0)
+
+    const lightPollRun = run({ agents: [{ slug: 'dev', id: 'd1' }], transcript: tPoll('root', 2) })
+    expect(diag([lightPollRun]).findings.some((x) => x.kind === 'orchestrator_polling')).toBe(false)
+
+    const leafPollRun = run({ agents: [{ slug: 'dev', id: 'd1' }], transcript: tPoll('d1', 5) })
+    expect(diag([leafPollRun]).findings.some((x) => x.kind === 'orchestrator_polling')).toBe(false)
+  })
+
+  it('serial_bottleneck: root-owned steps without or with root staff do not inflate delegated DAG width', () => {
+    const hybridSteps: PlanStep[] = [
+      { id: 'p1', title: 'Read and plan', status: 'done' },
+      { id: 'p2', title: 'Implement', status: 'done', after: ['p1'], staff: { role: 'dev', tier: 'everyday', effort: 'medium' } },
+      { id: 'p3', title: 'Verify', status: 'done', after: ['p2'] },
+      { id: 'p4', title: 'Fix', status: 'done', after: ['p2'], staff: { role: 'dev', tier: 'deep', effort: 'medium' } },
+      { id: 'p5', title: 'Final verify', status: 'done', after: ['p4'], staff: { role: 'lead', tier: 'deep', effort: 'medium' } }
+    ]
+    const rSingleWorker = run({ steps: hybridSteps, agents: [{ slug: 'dev', start: 2000, end: 5000 }, { slug: 'dev', start: 6000, end: 9000 }] })
+    expect(diag([rSingleWorker]).findings.some((x) => x.kind === 'serial_bottleneck')).toBe(false)
+
+    const parallelWorkers: PlanStep[] = [
+      { id: 'p1', title: 'Plan', status: 'done' },
+      { id: 'p2', title: 'Module A', status: 'done', after: ['p1'], staff: { role: 'dev', tier: 'everyday', effort: 'medium' } },
+      { id: 'p3', title: 'Module B', status: 'done', after: ['p1'], staff: { role: 'dev', tier: 'everyday', effort: 'medium' } }
+    ]
+    const rSerial = run({ steps: parallelWorkers, agents: [{ slug: 'dev', start: 2000, end: 4000 }, { slug: 'dev', start: 5000, end: 7000 }] })
+    expect(diag([rSerial]).findings.some((x) => x.kind === 'serial_bottleneck')).toBe(true)
+  })
+
+  it('tier_overprovisioned: skips $0 free workers in hybrid paid runs while keeping subscription ($0 totalCost) behavior intact', () => {
+    const freeWorkerRuns = Array.from({ length: 4 }, () =>
+      run({
+        cost: 0.4,
+        agents: [{ slug: 'dev', turns: 2, out: 400, cost: 0 }, { slug: 'dev', turns: 2, out: 400, cost: 0 }],
+        assignments: [{ roleId: 'r_dev', tier: 'deep' }, { roleId: 'r_dev', tier: 'deep' }]
+      })
+    )
+    expect(diag(freeWorkerRuns).findings.some((x) => x.kind === 'tier_overprovisioned')).toBe(false)
+
+    const subscriptionRuns = Array.from({ length: 4 }, () =>
+      run({
+        cost: 0,
+        agents: [{ slug: 'dev', turns: 2, out: 400, cost: 0 }, { slug: 'dev', turns: 2, out: 400, cost: 0 }],
+        assignments: [{ roleId: 'r_dev', tier: 'deep' }, { roleId: 'r_dev', tier: 'deep' }]
+      })
+    )
+    expect(diag(subscriptionRuns).findings.some((x) => x.kind === 'tier_overprovisioned')).toBe(true)
+  })
 })
 
 describe('score', () => {
