@@ -63,6 +63,20 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     (no renderer caller). Team reviews at rest (`<data>/team-reviews/<pid>.json`, plain JSON) hold the discovery items
     (secret-free: names, display paths, scrubbed URLs, full MCP targets with credential args dropped) and redacted
     evidence strings (text only, no keys or tokens), never secret values. Verified by unit tests only.
+  - Team review skip order (self-healing efficiency step 2, 2026-11-25): `runReview` reads the stored review once
+    (the 'opened' throttle's read is handed over when no review is queued ahead) and decides `autoOff` / `autoFree` /
+    `mockFree` / `everyRuns` first; discovery still runs on every pass; `pendingFull` follows the refined pending
+    list; run evidence is collected (up to 20 `getRun` reads) only on a manual or opened review, a first review or an
+    eligible automatic pass, and a skipped pass carries the stored evidence list forward (so the tray's signal count
+    can lag until the next eligible, manual or opened review). `noChange` now compares a main-only `modelSeen`
+    (`reviewStore.ts` `StoredReview`: hash of project name and brief, roles and recommendable candidates, plus evidence
+    id and count) written only when the model step applied a usable answer and carried forward across skipped,
+    failed and free reviews (before, a skipped review erased `modelInput`, the only thing `noChange` read, so the
+    model re-ran on identical input every eligible pass). A failed call keeps `modelInput` (it records what was sent)
+    but not `modelSeen`, so it is retried. A smaller evidence count is not news; a changed role, candidate or the brief
+    is. Checked by unit tests with a fake `complete` and fake `getRun` (service.test.ts, reviewStore.test.ts); live
+    provider behaviour and a real run history are unverified. The stored review is also read again right before it
+    is saved (dismissals made meanwhile are kept).
   ORGAI_MOCK=1 uses `<data>/mock-home` and outside fixtures; the first finished mock work run fills the review from the
   keyword fallback without tokens. Verified by unit tests and the mock adapter (claude.ts / codex.ts `complete()`
   accept 'recommend' with no tools and an honoured signal, read and fake-tested). Unverified: real config files on a

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { TeamReview } from '@shared/types'
-import { normalizeReview, readReview, removeReview, REVIEW_MAX_ROLE_IDS, reviewFile, reviewSummary, writeReview } from './reviewStore'
+import { normalizeReview, publicReview, readReview, removeReview, REVIEW_MAX_ROLE_IDS, REVIEW_MAX_SEEN_EVIDENCE, reviewFile, reviewSummary, writeReview, type StoredReview } from './reviewStore'
 
 let dir: string
 beforeEach(() => {
@@ -123,6 +123,37 @@ describe('normalizeReview field by field (review L1)', () => {
     expect(n.newCandidateIds).toEqual(['a'])
     const ok = normalizeReview(review({ stub: true, modelInput: 'proactive', modelSkipped: 'pendingFull', tokensUsed: 12, trigger: 'runEnded' }), 'p1')!
     expect(ok).toMatchObject({ stub: true, modelInput: 'proactive', modelSkipped: 'pendingFull', tokensUsed: 12, trigger: 'runEnded' })
+  })
+})
+
+describe('modelSeen (main-only, what the last successful model step saw)', () => {
+  const hash = 'a'.repeat(64)
+  it('is read back when well formed and dropped when the hash is not 64 hex characters', () => {
+    const ok = normalizeReview({ ...review(), modelSeen: { hash, evidence: [{ id: 'ev-1', count: 2 }], extra: 1 } }, 'p1')!
+    expect(ok.modelSeen).toEqual({ hash, evidence: [{ id: 'ev-1', count: 2 }] })
+    for (const bad of ['', 'a'.repeat(63), 'A'.repeat(64), `${'a'.repeat(63)}g`, 5, null, { hash }, [hash]]) {
+      expect(normalizeReview({ ...review(), modelSeen: { hash: bad, evidence: [] } }, 'p1')!.modelSeen).toBeUndefined()
+    }
+    expect(normalizeReview({ ...review(), modelSeen: 'x' }, 'p1')!.modelSeen).toBeUndefined()
+    expect(normalizeReview({ ...review(), modelSeen: [] }, 'p1')!.modelSeen).toBeUndefined()
+  })
+  it('drops malformed evidence entries, floors counts and caps the list', () => {
+    const many = Array.from({ length: REVIEW_MAX_SEEN_EVIDENCE + 30 }, (_, i) => ({ id: `ev-${i}`, count: 1 }))
+    const n = normalizeReview({ ...review(), modelSeen: { hash, evidence: [{ id: 'a', count: 2.9 }, { id: 5, count: 1 }, { id: 'b', count: -1 }, { id: 'c', count: 'x' }, null, 'junk', { id: 'x'.repeat(65), count: 1 }, ...many] } }, 'p1')!
+    expect(n.modelSeen!.evidence[0]).toEqual({ id: 'a', count: 2 })
+    expect(n.modelSeen!.evidence.length).toBeLessThanOrEqual(REVIEW_MAX_SEEN_EVIDENCE)
+    expect(normalizeReview({ ...review(), modelSeen: { hash, evidence: 'no' } }, 'p1')!.modelSeen).toBeUndefined()
+  })
+  it('a review stored before the field existed loads without it', () => {
+    expect(normalizeReview(review({ modelInput: 'proactive' }), 'p1')).toMatchObject({ modelInput: 'proactive' })
+    expect(normalizeReview(review(), 'p1')).not.toHaveProperty('modelSeen')
+  })
+  it('round-trips through the file and publicReview removes it', () => {
+    const stored: StoredReview = { ...review(), modelSeen: { hash, evidence: [] } }
+    expect(writeReview(dir, stored)).toBe(true)
+    expect(readReview(dir, 'p1')!.modelSeen).toEqual({ hash, evidence: [] })
+    expect(publicReview(readReview(dir, 'p1')!)).not.toHaveProperty('modelSeen')
+    expect(publicReview(stored).projectId).toBe('p1')
   })
 })
 

@@ -164,6 +164,18 @@ working (derive digests from records when the host gives no digest port). If the
 Done when: unit tests show (a) no model call on identical input at `everyRuns: 1` and `3`, (b) a failed call is
 retried on the next eligible pass, (c) a pass skipped as `everyRuns` reads no run record.
 
+Implemented (2026-11-25): see ARCHITECTURE.md "review (phase 2)" and `docs/agent-notes/assistants-skills.md` "Team
+review skip order". Where the audit differed from the code: C1 is only half right (discovery is not wasted, every pass
+saves it; the saving is the evidence reads, and a skipped pass now carries the stored evidence list), C3 is not a bug
+as such (`modelInput` records which data class was sent, true after a failed call too; the bug was that `noChange`
+read it, so it was replaced by a separate `modelSeen` written only on success; the test at `service.test.ts:691`
+stays as it was), and C7's "two or three reads" is one read at the start plus the deliberate re-read before saving
+(the third, the 'opened' throttle read, is now handed to the pass). `pendingFull` is decided after the pending list is
+refined, not from the raw stored count, so its meaning is unchanged; it now precedes `noChange` / `budget` in the order
+(only the reported reason can differ when two apply). Left open: discovery has no cache (C1, Audit), applies still
+rediscover and bump `updatedAt` (C7), pending cards never expire, and `dismiss` / `restore` stay outside the serial
+chain.
+
 ### Step 3. Evidence-driven, budgeted recommendations
 
 1. (C5) Rank candidates with the existing keyword scorer (`fallbackRecommend`'s scoring) and trim the list to the
