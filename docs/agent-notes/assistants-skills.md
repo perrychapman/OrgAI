@@ -43,14 +43,27 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     provider behaviour is unverified.
   - Fresh findings for evolution (2026-11-25, self-healing efficiency D7): `SkillEvaluationService.fresh(projectId)`
     returns the deterministic quality and gap findings over the newest 20 finished or failed work runs, computed now from
-    the cached digests, redacted like a report. It is synchronous and read-only: no model step, no drafts, never writes
+    the cached digests, redacted like a report. It is synchronous and has no model step and no drafts; it never writes
     `skill-evaluations/<pid>.json`, so the user's last evaluation and its suggestions are not touched (`last()` and
-    `suggestion()` are unchanged). Cost is one digest per finished run never digested before, none for the rest. A run in
-    progress is not read at all. Null when the project is unknown or the listing throws. The host's evolve port is
+    `suggestion()` are unchanged). It is not write-free (corrected after the Reviewer's L6): reading a finished run
+    through `RunStore.getDigest` writes that run's digest sidecar (`runs/<runId>/digest.json`, unique temp file and
+    atomic rename, best effort) the first time it is digested. Cost is one digest per finished run never digested
+    before, none for the rest. A run in progress is not read at all. Null when the project is unknown or the listing
+    throws. The host's evolve port is
     `fresh(id) ?? last(id)?.findings ?? []`: it is not merged with the stored report because the stored findings are the
     same deterministic function run earlier (the model step adds only `suggestions`), so a merge could only add stale
     items; the stored report is the fallback when `fresh` is null. `fresh` is on the class, not on `SkillEvaluationApi`,
-    and is excluded from the host's `oneChangePerCall` lock (it writes nothing). Checked by `evaluation.test.ts` "fresh":
+    and is excluded from the host's `oneChangePerCall` lock (it writes no project or evaluation file; the digest sidecars
+    it may write are RunStore's own, written the same way on any digest read). Never loaded (review fix M3, 2026-11-25):
+    `qualityFindings` counts only runs that started after `activeSince(spec)`, the later of the skill's `addedAt` and
+    `updatedAt`, and still needs `MIN_RUNS_FOR_NEVER_LOADED` (3) of them; an unreadable timestamp counts none.
+    `SkillService.update` moves `updatedAt` when it switches a skill on or grants it to a role that did not hold it
+    (not when it switches it off or takes a grant away), and a library link's `updatedAt` is the later of the entry's
+    and the project's own. No per-grant time is stored, so a grant made by editing the role itself (projects:save, the
+    Team editor) does not restart the count. Without this, evolution (which reads fresh findings every pass) built a
+    `removeSkills` patch for a skill a person had just switched on (unit tested: `evaluate.test.ts`, a skill switched on
+    today with 20 older runs; `service.test.ts` in evolve, no `removeSkills` patch; `skills/service.test.ts`, which
+    updates move the timestamp). Checked by `evaluation.test.ts` "fresh":
     a run finished after the stored evaluation shows up in the fresh findings while the stored file is byte-identical and
     keeps its suggestion, no model call, no write when no evaluation ever ran, over 20 already-digested runs no
     `getRecord` and one new run parses only that run (then none), an in-progress run is never read, unknown project
@@ -74,7 +87,20 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     on the body itself. Checked by `skills/evolvePort.test.ts` over the real `SkillService`, `ProjectStore` and the
     evolve engine (created disabled, grants only dev, `forRun` empty, enable refused, rollback removes, an enabled skill
     survives a rollback, injection-shaped names and bodies refused, prose-only injection stored disabled). Live model
-    drafts unverified.
+    drafts unverified. Open (Reviewer's question, answered from the code 2026-11-25, not changed): when the project's
+    `.orgai/` team files are in use, a DISABLED drafted skill is written into the repository like any other project
+    skill. `teamFiles/project.ts` `docFromProject` exports every `project.skills` entry with `enabled: spec.enabled`
+    and no filter on the enabled state or source; `teamFiles/serialize.ts` writes its body as plain
+    `.orgai/skills/<name>/SKILL.md` (name, description, body) and lists the name in `team.json` `disabledSkills`. The
+    project save that `create` makes triggers that write through the team files hook (bootstrap's `syncTeamFiles`
+    comment). So an agent with Read in that project can open the drafted body as a file before a person reviews it; it
+    is never loaded as a skill (not in `forRun`). Not changed because it is not small and local: no field marks a
+    skill as evolution's draft (source 'suggestion' is shared with drafts a person applied from an evaluation and later
+    switched off), and leaving disabled skills out of the export would change what team files share for every disabled
+    skill, how they are ingested back (a skill missing from the files is kept as local) and the files of `teamFiles/`,
+    which this change does not own. Options for the owner: a draft marker on `SkillSpec` (types.ts) that
+    `docFromProject` skips until enabled, or keeping evolution's drafts outside team files until a person enables them.
+    The data-dir copy is readable by any agent with Read or Bash anyway (next item).
   - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
     readable by any agent with Read or Bash. Verified by unit tests and the mock adapter only.
 - Team assistant (`src/main/capabilities/`, `CapabilityService`, capabilities:* IPC; see ARCHITECTURE.md "Capabilities

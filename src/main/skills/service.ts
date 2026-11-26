@@ -63,8 +63,13 @@ interface UndoRecord {
   updated: string[]
 }
 
-/** A linked project skill: the snapshot fields come from the library entry, the rest stays the project's. */
-function linkedSnapshot(entry: SkillLibraryEntry, spec: Pick<SkillSpec, 'id' | 'enabled' | 'addedAt'>): SkillSpec {
+/**
+ * A linked project skill: the snapshot fields come from the library entry, the rest stays the project's. updatedAt is
+ * the later of the entry's and the project's own (switching the link on or granting it in this project sets the
+ * latter, so its "never loaded" check counts only runs after that).
+ */
+function linkedSnapshot(entry: SkillLibraryEntry, spec: Pick<SkillSpec, 'id' | 'enabled' | 'addedAt'> & { updatedAt?: string }): SkillSpec {
+  const own = typeof spec.updatedAt === 'string' ? Date.parse(spec.updatedAt) : NaN
   return {
     id: spec.id,
     name: entry.name,
@@ -74,7 +79,7 @@ function linkedSnapshot(entry: SkillLibraryEntry, spec: Pick<SkillSpec, 'id' | '
     digest: entry.digest,
     files: entry.files,
     addedAt: spec.addedAt,
-    updatedAt: entry.updatedAt,
+    updatedAt: Number.isFinite(own) && own > Date.parse(entry.updatedAt) ? (spec.updatedAt as string) : entry.updatedAt,
     libraryId: entry.id
   }
 }
@@ -321,11 +326,16 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     if (input.enabled !== undefined) spec = { ...spec, enabled: input.enabled }
     let roles = project.roles
     let lost: { roleId: string; roleName: string }[] = []
+    let granted = false
     if (input.roleIds !== undefined) {
       const g = this.setGrants(roles, stored.id, this.checkRoleIds(project, input.roleIds))
+      granted = g.roles.some((r) => r.skills?.includes(stored.id) && !project.roles.find((p) => p.id === r.id)?.skills?.includes(stored.id))
       roles = g.roles
       lost = g.lost
     }
+    // Switching a skill on or granting it to a new role restarts the runs its "never loaded" check counts
+    // (evaluate.ts qualityFindings reads the later of addedAt and updatedAt; no per-grant time is stored).
+    if ((input.enabled === true && !stored.enabled) || granted) spec = { ...spec, updatedAt: this.now() }
     const saved = this.deps.projects.save({ ...project, roles, skills: (project.skills ?? []).map((s) => (s.id === stored.id ? spec : s)) })
     this.expireUndo(project.id)
     return this.result(saved, lost)

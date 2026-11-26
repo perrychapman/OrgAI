@@ -95,6 +95,30 @@ describe('project skills', () => {
     expect(r.skills[0].spec.digest).not.toBe(svc.create({ projectId: 'p1', draft: draft('zz') }).skills[1].spec.digest)
   })
 
+  it('switching a skill on or granting it to a new role moves updatedAt; switching it off or taking a grant away does not', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-11-01T00:00:00.000Z'))
+      const id = svc.create({ projectId: 'p1', draft: draft('one'), roleIds: ['r-eng'] }).skills[0].spec.id
+      const at = () => svc.list('p1').find((s) => s.spec.id === id)!.spec.updatedAt
+      vi.setSystemTime(new Date('2026-11-02T00:00:00.000Z'))
+      svc.update({ projectId: 'p1', skillId: id, enabled: false })
+      svc.update({ projectId: 'p1', skillId: id, roleIds: [] })
+      expect(at()).toBe('2026-11-01T00:00:00.000Z')
+      vi.setSystemTime(new Date('2026-11-03T00:00:00.000Z'))
+      svc.update({ projectId: 'p1', skillId: id, enabled: true })
+      expect(at()).toBe('2026-11-03T00:00:00.000Z')
+      vi.setSystemTime(new Date('2026-11-04T00:00:00.000Z'))
+      svc.update({ projectId: 'p1', skillId: id, roleIds: ['r-rev'] })
+      expect(at()).toBe('2026-11-04T00:00:00.000Z')
+      vi.setSystemTime(new Date('2026-11-05T00:00:00.000Z'))
+      svc.update({ projectId: 'p1', skillId: id, enabled: true, roleIds: ['r-rev'] })
+      expect(at()).toBe('2026-11-04T00:00:00.000Z')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('refuses a rename onto another skill and unknown ids', () => {
     svc.create({ projectId: 'p1', draft: draft('one') })
     const id = svc.create({ projectId: 'p1', draft: draft('two') }).skills[1].spec.id

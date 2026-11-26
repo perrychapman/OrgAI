@@ -317,6 +317,16 @@ to 4. Open: the whole-team cost x time guard rolled back three correct cuts on s
 own cost needs the Reviewer and the owner, since it removes a way a cut is rolled back. Checked by unit tests, the e2e and
 the bench; needs the Reviewer before it is pushed. Not run live. D7 and D8 are separate work.
 
+Review fixes (2026-11-25, after the Reviewer blocked the trial rework on H1): an old ledger's rejection never expires
+unless provably a trial's rollback; trials open only on a baseline of minimum size (`MIN_BASELINE_RUNS`,
+`MIN_BASELINE_ROLE_AGENTS`, or the window when larger) for every scope; an old trial keeps its stored baseline and must
+also pass the old rule; error runs in a trial's span count unless provably unrelated (every error from a flagged role off
+the patched chain); failed spawns of the patched role count as exercising it; a limit change counts observed
+parallelism only; the rejection cap never evicts an entry that cannot expire; advisory findings never justify a patch;
+never-loaded skill findings count only runs after the skill was added or last switched on or granted. The earlier claim
+that every rule only adds a way to roll back was wrong (window and baseline both changed); the exact guarantee is in
+`ratchet.ts` "trial rule 2". Merged bench numbers: `org-chart-self-healing-bench.md` "Merged Step 7".
+
 ### Step 8. Evolution on the desktop (needs the Reviewer and the owner)
 
 Offer the post-run pass for desktop work runs, deterministic only, with the same unattended rule as today (spend
