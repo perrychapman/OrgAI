@@ -144,18 +144,39 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
 - Team evolution trial rule 2 (2026-11-25, self-healing efficiency step 7 / D6, the bench's first change; ARCHITECTURE.md
   "Team evolution", the decision rule in full at `ratchet.ts` "trial rule 2"). Facts, each with how it was checked:
   - Exercised runs only: a run counts toward a trial when a patched role ran in it (digest agent matched by role id, else
-    slug); the root counts in every run (digests keep no root agent); a concurrency change counts a run whose peak
-    parallelism reached the lower of the two limits or whose plan was wider; a plan with neither counts every run. An
-    interrupted trial run always counts and fails the trial. Decided on the first `evalWindowRuns` (default 3) exercised
-    runs; after 5 x that trial runs (at most 50) without them it is rolled back as inconclusive, never promoted (unit
-    tested, `ratchet.test.ts` "trial rule 2"; `service.test.ts` "trial rule 2", 15 reviewer-only runs).
+    slug) or, in the trial window only, had a staffing assignment or a failed delegation receipt (review fix L1: a failed
+    spawn of the patched role is evidence against the change); the root counts in every run (digests keep no root
+    agent); a concurrency change counts a run whose OBSERVED peak parallelism (`Shape.maxParallel`) reached the lower of
+    the two limits, never the plan's width (review fix L2: model-written plan text decides nothing); a plan with
+    neither counts every run. An interrupted trial run always counts and fails the trial. Decided on the first
+    `evalWindowRuns` (default 3) exercised runs; after 5 x that trial runs (at most 50) without them it is rolled back as
+    inconclusive, never promoted (unit tested, `ratchet.test.ts` "trial rule 2" and "Step 7 review fixes";
+    `service.test.ts` "trial rule 2", 15 reviewer-only runs).
   - Comparison: the patched role's own first pass, errors per agent, escalations per assignment and cost per agent; the
-    downstream roles' first pass, errors and escalations; today's whole-team `compareMetrics` as a guard. Every rule only
-    adds a way to roll back. A bad patch with identical whole-team figures is rolled back and a good one promoted; a
-    lead cut whose reports start failing is rolled back (unit tested).
-  - Clean baseline, fixed at apply time in `StoredGeneration.scope`: newest 10 exercised measured runs among the newest
-    50, without runs inside a rolled-back generation's window or error runs of a role flagged tier_underprovisioned
-    (unit tested, `baselineRuns`); no such run = nothing applied (unit tested, service).
+    downstream roles' first pass, errors and escalations; today's whole-team `compareMetrics` over the window runs plus
+    every error run between the apply and the last window run that did not exercise the change (review fix M1d). From
+    that set a run is left out only when provably unrelated (`provablyUnrelated`, review fix M2): it is an error run,
+    has at least one erring agent or failed receipt, and every one of them belongs to a role flagged
+    tier_underprovisioned that is neither patched, nor below, nor above (the `upstream` chain stored in the scope) a
+    patched role; nothing is left out for a change with no role patch or a scope stored without `upstream`. A bad patch
+    with identical whole-team figures is rolled back and a good one promoted; a lead cut whose reports start failing is
+    rolled back (unit tested).
+  - What is guaranteed (reworded after the Reviewer's M1; the old note "every rule only adds a way to roll back" was
+    false, because the window and the baseline both changed): every threshold is the old whole-team rule's; rules 1 and
+    2 only add ways to roll back; no trial is opened or judged on a baseline under the minimums below; an error run
+    inside the trial's span counts unless provably unrelated; a trial opened before rule 2 keeps its stored baseline and
+    must also pass the old rule. Not guaranteed: that a new trial is never easier to promote than under the old rule
+    (exercised runs only, against the clean exercised baseline, can differ from the first runs after the apply in either
+    direction).
+  - Clean baseline, fixed at apply time in `StoredGeneration.scope`: newest 10 measured runs among the newest 50 in which
+    a patched role had an agent (a limit: observed parallelism reached it), without runs inside a rolled-back
+    generation's window or error runs of a role flagged tier_underprovisioned (unit tested, `baselineRuns`). Minimums
+    (review fix M1a/c, `baselineShortfall`): at least max(`MIN_BASELINE_RUNS` 3, `evalWindowRuns`) runs for every scope,
+    skills-only and limit-only plans included, and with a patched non-root role at least
+    max(`MIN_BASELINE_ROLE_AGENTS` 3, `evalWindowRuns`) agents of it (root only: of the roles below it). Short of them
+    nothing is applied and nothing is rejected: the refusal says "waiting for a baseline" and a later pass tries again
+    (unit tested, both suites: one clean baseline run and a skills-only plan on an empty baseline are refused). A
+    stored scope under the minimums (written before this fix) is rolled back as inconclusive, never promoted.
   - One role patch per generation and no cut on a role with reports, both gate options the service always sets
     (`one_patch_per_generation`, `cut_on_lead`); direct callers of `validateEvolutionPlan` (the synthesizer, `spend.ts`)
     are unchanged, and the service gates the synthesizer's plan again with them (unit tested; `e2e/cli-org-evolve.mjs`:
@@ -163,12 +184,28 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     harmful lead cuts passed windows with no failed step at all; their harm is retries of the reports, which the run
     record does not attribute to the lead (bench rows, seed 2).
   - Rejections: one entry per fingerprint with roles, strikes and a run count; a trial's rejection stops blocking after
-    20 runs that used its roles, 40 on the second consecutive strike, never from the third; a person's rollback never
-    expires; a promotion clears the entry. Counted and stored on the apply / post-run path only; analyze counts in
-    memory; history lists blocking ones only (unit tested, both suites).
-  - Old ledgers: a trial without `scope` is judged under rule 2 with a scope from its own plan and snapshot and a clean
-    baseline from the runs before its apply; an unreadable plan is closed as inconclusive; old rejections name no role
-    and count every measured run, so they expire after 20 measured runs (unit tested, both suites).
+    20 runs that used its roles (an agent of them; a failed spawn never ages a rejection), 40 on the second consecutive
+    strike, never from the third; a person's rollback never expires; a promotion clears the entry. Counted and stored on
+    the apply / post-run path only; analyze counts in memory; history lists blocking ones only (unit tested, both
+    suites). Cap (review fix L3, `boundRejections`): above 200 entries expired ones go first, then the oldest that can
+    still expire; a pinned entry (one that never expires) is never evicted. With 200 pinned entries a rejection that
+    could expire is refused (`addRejected` returns false, the rollback logs a warning) and `apply` refuses every new
+    change while the ledger is that full (`rejectionsFull`), so a rolled-back change can never come back unrecorded
+    (unit tested).
+  - Old ledgers (review fix H1 and M1b). A trial without `scope` keeps the `baselineMetrics` it was opened with and
+    nothing derived is stored on it: when a per-role baseline from the runs before its apply meets the minimums it is
+    judged under rule 2 on that rebuilt scope (no flagged roles, so no run is left out) and must also pass the old
+    whole-team rule (compareMetrics of the stored baseline against the first `evalWindowRuns` runs after the apply);
+    otherwise it is judged on the old whole-team rule alone; an unreadable plan is closed as inconclusive (unit tested,
+    both suites). A rejection written before the expiry fields (no `strikes`, `seen` or `countedUntil`) is pinned
+    (never expires) unless it is provably a trial settlement's: reason starting `trial regressed: ` (the only reason
+    `settleTrial` wrote from 2026-11-11 to 2026-11-25, checked with `git log -p` on `service.ts`), a `generationId`
+    whose generation is still in the ledger, rolled back, with `trialMetrics` and an `outcomeReason` starting with the
+    same text; such a trial rollback names no role, counts every measured run and expires after 20. Any expiry field
+    present but malformed, or a `permanent` other than absent / false, pins the entry. Residual case: a person who
+    rolled back a PROMOTED generation and typed a reason starting `trial regressed: ` themselves reads as a trial
+    rollback (unit tested: a person's old rollback never expires over 500 runs; a proven trial rollback expires at 20;
+    an unproven one and malformed ones never expire).
   - Bench (`npm run bench:heal`, seeds 1 to 3, before and after in `docs/design/org-chart-self-healing-bench.md` "After
     the trial rework"): no harmful cut promoted, made worse 2 / 13 / 0 to 0 / 0 / 0, blind trials 0, median runs per
     decision 3 to 4. Not verified: live runs; whether the real runtime's runs give the per-role signals the simulator does.

@@ -7,7 +7,8 @@ import { correctionFindings, evaluateSkills, qualityFindings, referencedPaths, r
 const GOOD = 'Use when filling in or reading PDF forms, extracting text and merging documents.'
 function skill(id: string, over: Partial<SkillInfo['spec']> = {}, info: Partial<SkillInfo> = {}): SkillInfo {
   return {
-    spec: { id, name: id, description: GOOD, enabled: true, source: 'user', digest: 'x', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: '', updatedAt: '', ...over },
+    // Added before every fixture run (runSummary starts them at 0), so neverLoaded counts them all unless a test says otherwise.
+    spec: { id, name: id, description: GOOD, enabled: true, source: 'user', digest: 'x', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: '1969-12-31T00:00:00.000Z', updatedAt: '1969-12-31T00:00:00.000Z', ...over },
     grantedTo: [],
     ...info
   }
@@ -83,6 +84,23 @@ describe('quality findings', () => {
     const t = performance.now()
     vagueReason(long)
     expect(performance.now() - t).toBeLessThan(500)
+  })
+
+  it('neverLoaded counts only runs started after the skill was added and last switched on or granted (review fix M3)', () => {
+    const roles = [role({ id: 'r', slug: 'r', skills: ['a'] })]
+    const today = Date.parse('2026-11-25T09:00:00.000Z')
+    const older = Array.from({ length: 20 }, (_, i) => ({ ...run(`old${i}`, []), summary: runSummary({ id: `old${i}`, startedAt: today - (i + 1) * 3_600_000 }) }))
+    // Switched on (or granted) today: 20 older runs say nothing about it.
+    const enabledToday = [{ info: skill('a', { addedAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-11-25T09:00:00.000Z' }, { grantedTo: ['r'] }), skillMd: '' }]
+    expect(kinds(qualityFindings(input({ roles, skills: enabledToday, runs: older })))).not.toContain('neverLoaded')
+    // Three runs after that are enough again, and the evidence names only them.
+    const after = [1, 2, 3].map((i) => ({ ...run(`new${i}`, []), summary: runSummary({ id: `new${i}`, startedAt: today + i * 60_000 }) }))
+    const f = qualityFindings(input({ roles, skills: enabledToday, runs: [...after, ...older] })).find((x) => x.kind === 'neverLoaded')
+    expect(f?.evidence?.runIds).toEqual(['new1', 'new2', 'new3'])
+    expect(f?.detail).toContain('last 3 runs')
+    // An unreadable timestamp counts no run.
+    const bad = [{ info: skill('a', { updatedAt: 'not a date' }, { grantedTo: ['r'] }), skillMd: '' }]
+    expect(kinds(qualityFindings(input({ roles, skills: bad, runs: older })))).not.toContain('neverLoaded')
   })
 
   it('neverLoaded evidence has no zero count', () => {

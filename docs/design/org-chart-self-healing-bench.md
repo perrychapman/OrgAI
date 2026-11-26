@@ -425,3 +425,80 @@ What moved, from the per-case rows:
   regressed, at most twice per fingerprint, each retry an ordinary trial.
 
 Not changed and still open: the whole-team cost x time guard (above); detection (item 2) and a path to a person (item 3).
+
+Note added with the review fixes (below): the sentence "the new rules only remove patches or add ways to roll back" in
+the list above is not exact. The window (exercised runs only) and the baseline (clean exercised runs, not the diagnosis
+window) both changed, so a trial can differ from the old rule in either direction; what is guaranteed is stated in
+`ratchet.ts` "trial rule 2" and in the next section.
+
+## Merged Step 7 (detection + trial + review fixes) (2026-11-25)
+
+The two sections above were each measured before the other change merged: "After detection calibration" on a tree
+without the trial rework, "After the trial rework" on a tree without the detection calibration. This section measures
+the merged tree, first as merged (976132ad: detection calibration, trial rule 2 and skills for evolution), then with the
+Reviewer's fixes, against the original numbers of 2026-11-19.
+
+The review fixes, as they affect the bench: a trial opens only on a baseline of at least max(3, window) clean runs and,
+with a patched non-root role, 3 of its agents (else nothing is applied and nothing rejected, it waits); every error run
+between the apply and the last window run counts against the trial unless provably unrelated (all its errors from a
+flagged role off the patched role's chain); a staffing assignment or failed receipt of the patched role counts as
+exercising it; a limit change counts only observed parallelism; advisory findings never justify a patch; old rejections
+never expire unless provably a trial's; the rejection cap never evicts one that cannot expire; skill never-loaded findings
+count only runs after the skill was added or last switched on (the bench has no skills port, so this one is not
+exercised here). No threshold, spend hold or gate rule was loosened.
+
+How it was measured: `npm run bench:heal -- --seed <n> --out <temp dir outside the repository>`, seeds 1 to 3, on
+976132ad and on the review fixes, plus a script outside the repository reading each `results.json` for the figures the
+report does not print (promoted cuts on a right-sized role: a promoted tier or effort cut on a role the defect did not
+target). The 2026-11-19 section above printed seed 1 only (de960168); the original figures for seeds 2 and 3 are the
+"before" columns of the two sections above (3c21900f, which gives seed 1 the same figures as de960168).
+
+Status counts over the 43 defect cases (healed / symptom healed / negligible here / detected only / missed / made worse);
+generations over all 46 cases.
+
+| Measure | seed 1 original | seed 1 merged | seed 1 final | seed 2 original | seed 2 merged | seed 2 final | seed 3 original | seed 3 merged | seed 3 final |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| status counts | 7 / 4 / 9 / 15 / 6 / 2 | 5 / 3 / 11 / 20 / 4 / 0 | 3 / 3 / 13 / 20 / 4 / 0 | 5 / 1 / 8 / 12 / 4 / 13 | 6 / 3 / 11 / 19 / 3 / 1 | 6 / 3 / 11 / 19 / 3 / 1 | 5 / 2 / 10 / 19 / 7 / 0 | 6 / 4 / 9 / 20 / 4 / 0 | 6 / 4 / 9 / 20 / 4 / 0 |
+| generations applied / promoted / rolled back (on trial at the end) | 78 / 15 / 63 (0) | 53 / 9 / 44 (0) | 55 / 7 / 48 (0) | 87 / 53 / 34 (0) | 57 / 11 / 46 (0) | 57 / 11 / 46 (0) | 90 / 22 / 68 (0) | 52 / 11 / 41 (0) | 51 / 11 / 40 (0) |
+| blind trials (promoted) | 2 (1) | 0 | 0 | 1 (1) | 0 | 0 | 0 | 0 | 0 |
+| rejected re-proposed (passes) | 1463 | 576 | 611 | 1299 | 492 | 492 | 1493 | 443 | 425 |
+| controls changed (medium, large a / p / r) | 2 of 3 (1/0/1, 3/0/3) | 1 of 3 (0/0/0, 2/0/2) | 1 of 3 (0/0/0, 2/0/2) | 2 of 3 (1/0/1, 4/3/1 worse) | 1 of 3 (0/0/0, 2/0/2) | 1 of 3 (0/0/0, 2/0/2) | 2 of 3 (1/0/1, 4/1/3 worse) | 1 of 3 (0/0/0, 2/0/2) | 1 of 3 (0/0/0, 2/0/2) |
+| promoted cuts on a right-sized role | 4 | 0 | 0 | 43 | 0 | 0 | 12 | 0 | 0 |
+| cases with final waste under 15 | 0 of 46 | 33 of 46 | 31 of 46 | 0 of 46 | 23 of 46 | 23 of 46 | 0 of 46 | 24 of 46 | 24 of 46 |
+
+The small control is clean everywhere. On every seed the large control's one change is the checker cut to fast, applied
+twice and rolled back twice ("the changed role: first pass fell 40 / 25 points"), before and after the fixes. Every
+promoted tier or effort cut after the fixes is on the defect's own role: the researcher's tier on medium and large
+tier-over and the checker's effort on large effort-high (seeds 2 and 3), the same as merged.
+
+What the fixes moved, from the per-case rows (`results.json` compared case by case):
+
+- Seed 1 heals two fewer cases (5 to 3): medium:tool-friction (the researcher's Grep, promoted before) and
+  large:prompt-bloat (the writer's deduplicated prompt, promoted at its fourth generation before) are now negligible
+  here. Each correct patch was rolled back twice by the whole-team guard ("team: cost x time worsened 42%" and "110%"
+  for the researcher's tools, "293%" and "34%" for the writer's prompt): with the baseline minimums the generations open
+  at other runs, their windows and baselines are different runs, and on three runs of a mixed task stream the guard's
+  medians are noisy. This is the open cost x time item, not tuned away; one more generation applied and two fewer
+  promoted (53 / 9 / 44 to 55 / 7 / 48), and 35 more re-proposal passes.
+- Seed 2 is identical before and after the fixes, including the one case made worse: medium:conflict, where the lead's
+  file-scope block is promoted at gen_1 and the checker cut to fast is tried at gen_2 and retried at run 56 (gen_3), each
+  time rolled back on its own figures ("first pass fell 40 points"); the case's last 10 runs hold the retry's trial runs.
+  Made worse is not higher on any seed.
+- Seed 3: large:conflict needs one generation fewer (4 / 1 / 3 to 3 / 1 / 2): the build lead's file-scope block is
+  promoted at gen_1 where it was first rolled back on noise; the status (symptom healed) is unchanged; re-proposals 443
+  to 425.
+- Blind trials stay 0 and no trial is open at the end. The baseline minimums held an apply back ("waiting for a
+  baseline") on 17 / 3 / 4 passes over 5 / 2 / 3 cases, all early (runs 3 to 13), for at most 5 passes in a row (seed 1
+  large:tool-friction and large:prompt-bloat, runs 3 to 7); no case was still waiting at the horizon. Counted from the
+  per-run `pass` text in `results.json`.
+
+Still open after Step 7:
+
+- The whole-team cost x time rule still rolls back some correct changes (seed 1 above; three on seed 1 in the trial
+  rework run). Replacing it by the patched role's own cost removes a way a cut is rolled back, so it needs the Reviewer
+  and the owner.
+- Exploration before a tier cut (1 in K steps one tier down with its own first-pass record) is not implemented; the
+  checker is still cut on length alone, which is the large control's change and seed 2's made worse case.
+- The bench has no skills port: skill drafts, enabling and the never-loaded fix are covered by unit tests only.
+- Live behaviour is unverified: no real Claude or Codex run has exercised the trial rules, and whether real runs give
+  the per-role signals the simulator does is unknown.

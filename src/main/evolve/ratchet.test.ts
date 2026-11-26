@@ -27,8 +27,14 @@ import {
   judgeTrial,
   ledgerPath,
   liveRejections,
+  MIN_BASELINE_ROLE_AGENTS,
+  MIN_BASELINE_RUNS,
+  baselineShortfall,
+  boundRejections,
+  provablyUnrelated,
   readLedger,
   rejectionExpiry,
+  rejectionsFull,
   restoreSnapshot,
   rolledBackWindows,
   scopeOf,
@@ -42,6 +48,7 @@ import {
   type TrialScope
 } from './ratchet'
 import { measure } from './telemetry'
+import { digestRun } from '../store/runDigest'
 
 const mkPlan = (over: Partial<EvolutionPlan> = {}): EvolutionPlan => ({
   strategy: 'deterministic',
@@ -654,8 +661,10 @@ describe('promote vs rollback thresholds (boundary values)', () => {
     const bad = after(3, { status: 'error', agents: [{ slug: 'dev', state: 'error' }] })
     const d = evaluateActiveTrial(g(), bad)
     expect(d).toMatchObject({ state: 'decided', regressed: true })
-    // no baseline run: decided on the error rate only, never promoted on cost
-    expect(evaluateActiveTrial(g({ baselineMetrics: metrics({ runs: 0, errorRunRate: 0, firstPassRate: 0 }) }), after(3))).toMatchObject({ regressed: false })
+    // Review fix M1: a baseline under MIN_BASELINE_RUNS (here none, or two runs) is never promoted on: inconclusive, rolled
+    // back (it used to be decided on the error rate alone).
+    expect(evaluateActiveTrial(g({ baselineMetrics: metrics({ runs: 0, errorRunRate: 0, firstPassRate: 0 }) }), after(3))).toMatchObject({ regressed: true, inconclusive: true })
+    expect(evaluateActiveTrial(g({ baselineMetrics: metrics({ runs: 2 }) }), after(3))).toMatchObject({ regressed: true, inconclusive: true })
     expect(evaluateActiveTrial(g({ baselineMetrics: metrics({ runs: 0, errorRunRate: 0, firstPassRate: 0 }) }), bad)).toMatchObject({ regressed: true })
   })
 })
@@ -927,6 +936,7 @@ describe('ledger size cap', () => {
 describe('trial rule 2: the trial judges the change', () => {
   const DEV: TrialRole = { id: 'r_dev', slug: 'dev' }
   const REVIEW: TrialRole = { id: 'r_review', slug: 'review' }
+  const LEAD: TrialRole = { id: 'r_lead', slug: 'lead' }
   const scopeFor = (roles: TrialRole[], over: Partial<TrialScope> = {}): TrialScope => ({ rule: 2, roles, downstream: [], flagged: [], baseline: { patched: emptyFigures(), downstream: emptyFigures() }, ...over })
   const at = (t0: number, n: number, over: Parameters<typeof run>[0] = {}) => Array.from({ length: n }, (_, i) => run({ startedAt: t0 + i * 1000, ...over }))
   const devRuns = (t0: number, n: number, over: Parameters<typeof run>[0] = {}) => at(t0, n, { agents: [{ slug: 'dev' }], ...over })
@@ -1008,14 +1018,46 @@ describe('trial rule 2: the trial judges the change', () => {
     expect(baselineRuns(scope, [inWindow, clean, flaggedErr, old, noDev], rolledBackWindows(l)).map((r) => r.summary.id)).toEqual(['clean', 'old'])
     // Without the flag the error run is a baseline run like any other.
     expect(baselineRuns(scopeFor([DEV]), [inWindow, clean, flaggedErr, old], rolledBackWindows(l)).map((r) => r.summary.id)).toEqual(['flaggedErr', 'clean', 'old'])
-    // The team guard leaves out a window run whose errors belong to a flagged role that is neither patched nor downstream.
+    // The team guard leaves out a window run whose errors all belong to a flagged role that is neither patched, nor
+    // downstream, nor upstream (the chain above dev is known: the lead).
     const base = devRuns(4_000_000, 5)
+    const known = scopeFor([DEV], { flagged: [REVIEW], upstream: [LEAD] })
     const window = [...devRuns(5_000_000, 2), run({ startedAt: 5_010_000, status: 'error', agents: [{ slug: 'dev' }, { slug: 'review', state: 'error' }] })]
-    expect(judgeTrial(withBaseline(scope, base), measure(base), window).regressed).toBe(false)
+    expect(judgeTrial(withBaseline(known, base), measure(base), window).regressed).toBe(false)
     expect(judgeTrial(withBaseline(scopeFor([DEV]), base), measure(base), window)).toMatchObject({ regressed: true })
+    // A scope stored without the chain above (before the review fixes) leaves nothing out.
+    expect(judgeTrial(withBaseline(scope, base), measure(base), window)).toMatchObject({ regressed: true })
   })
 
-  it('a root patch is exercised by every run and judged on its reports and the team; a limit change counts runs where the old limit could bind', () => {
+  it('review fix M2: a run is left out only when every erring agent and failed receipt is a flagged role off the patched chain', () => {
+    const base = devRuns(4_000_000, 5)
+    const known = withBaseline(scopeFor([DEV], { flagged: [REVIEW], upstream: [LEAD] }), base)
+    const two = devRuns(5_000_000, 2)
+    // Another role erred too (here the patched role itself): the run counts.
+    const both = run({ startedAt: 5_010_000, status: 'error', agents: [{ slug: 'dev', state: 'error' }, { slug: 'review', state: 'error' }] })
+    expect(provablyUnrelated(both, known)).toBe(false)
+    expect(judgeTrial(known, measure(base), [...two, both])).toMatchObject({ regressed: true })
+    // A non-flagged role erred beside the flagged one: the run counts.
+    const other = run({ startedAt: 5_010_000, status: 'error', agents: [{ slug: 'dev' }, { slug: 'review', state: 'error' }, { slug: 'ops', state: 'error' }] })
+    expect(provablyUnrelated(other, known)).toBe(false)
+    // The flagged role is ABOVE the patched one (its lead): never unrelated.
+    const leadFlagged = withBaseline(scopeFor([DEV], { flagged: [REVIEW], upstream: [LEAD, REVIEW] }), base)
+    const only = run({ startedAt: 5_010_000, status: 'error', agents: [{ slug: 'dev' }, { slug: 'review', state: 'error' }] })
+    expect(provablyUnrelated(only, known)).toBe(true)
+    expect(provablyUnrelated(only, leadFlagged)).toBe(false)
+    expect(judgeTrial(leadFlagged, measure(base), [...two, only])).toMatchObject({ regressed: true })
+    // A failed receipt of a non-flagged role counts; an error run with nothing attributable (the root erred) counts.
+    const receipt = { ...digestRun(only), failedReceiptRoleIds: ['r_dev'] }
+    expect(provablyUnrelated(receipt, known)).toBe(false)
+    expect(provablyUnrelated(run({ startedAt: 5_010_000, status: 'error', agents: [{ slug: 'dev' }] }), known)).toBe(false)
+    // A change with no role patch (a limit) is project-level: nothing is unrelated.
+    expect(provablyUnrelated(only, scopeFor([], { flagged: [REVIEW], upstream: [], limit: { before: 1, after: 2 } }))).toBe(false)
+    // scopeOf records the chain above the patched role.
+    const chart = [role('boss', { id: 'r_boss', reportsTo: null, canSpawn: true }), role('mid', { id: 'r_mid', reportsTo: 'r_boss', canSpawn: true }), role('dev', { id: 'r_dev', reportsTo: 'r_mid' })]
+    expect(scopeOf(chart, {}, { rolePatches: [patch('dev', { effort: 'low' })] })!.upstream).toEqual([{ id: 'r_mid', slug: 'mid' }, { id: 'r_boss', slug: 'boss' }])
+  })
+
+  it('a root patch is exercised by every run and judged on its reports and the team; a limit change counts runs whose observed parallelism reached the old limit', () => {
     const p = project()
     const rootScope = scopeOf(p.roles, p, { rolePatches: [patch('lead', { prompt: 'x' })] })!
     expect(rootScope.roles).toEqual([{ id: 'r_lead', slug: 'lead', root: true }])
@@ -1030,8 +1072,10 @@ describe('trial rule 2: the trial judges the change', () => {
     // The fixture's reports all run at once: two agents reach the old limit of 2, one does not.
     expect(exercises(run({ agents: [{ slug: 'dev' }, { slug: 'review' }] }), limit)).toBe(true)
     expect(exercises(run({ agents: [{ slug: 'dev' }] }), limit)).toBe(false)
+    // Review fix L2: the plan's width (model-written) no longer decides; only observed parallelism does.
     const wide = run({ agents: [{ slug: 'dev' }], steps: [{ id: 'a', title: 'a', status: 'done' }, { id: 'b', title: 'b', status: 'done' }, { id: 'c', title: 'c', status: 'done' }] as never })
-    expect(exercises(wide, limit)).toBe(true)
+    expect(exercises(wide, limit)).toBe(false)
+    expect(exercises(wide, limit, { attempts: true })).toBe(false)
     // Skills only: every run counts.
     expect(exercises(otherRuns(5_000_000, 1)[0], scopeOf(p.roles, p, { rolePatches: [] })!)).toBe(true)
   })
@@ -1097,7 +1141,7 @@ describe('trial rule 2: the trial judges the change', () => {
     expect(fps()).toEqual(['g'])
   })
 
-  it('an old ledger loads: a trial without a scope, rejections without expiry fields (they count every measured run), and bad new fields are dropped', () => {
+  it('an old ledger loads: a trial without a scope, old rejections pinned unless provably a trial\'s, and bad new fields are dropped', () => {
     const d = mkdtempSync(join(tmpdir(), 'evolve-old-'))
     try {
       mkdirSync(join(d, 'evolution'))
@@ -1107,12 +1151,12 @@ describe('trial rule 2: the trial judges the change', () => {
       writeFileSync(ledgerPath(d, 'p1'), JSON.stringify(old))
       const l = readLedger(d, 'p1')
       expect(l.generations.map((g) => [g.id, g.scope])).toEqual([['gen_0', undefined], ['gen_1', undefined]])
-      expect(l.rejectedHypotheses[0]).toEqual({ fingerprint: 'a', summary: 's', reason: 'r', at: 1000 })
-      expect(l.rejectedHypotheses[1]).toEqual({ fingerprint: 'b', summary: 's', reason: 'r', at: 1000, roles: [] })
+      // Review fix H1: 'a' is old-shaped and not provably a trial's rollback, so it is pinned; 'b' has a malformed field.
+      expect(l.rejectedHypotheses[0]).toEqual({ fingerprint: 'a', summary: 's', reason: 'r', at: 1000, permanent: true })
+      expect(l.rejectedHypotheses[1]).toEqual({ fingerprint: 'b', summary: 's', reason: 'r', at: 1000, roles: [], permanent: true })
       expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['a', 'b'])
-      // 'a' names no role: every measured run counts. 'b' had a malformed role list: it counts nothing and never expires.
       ageRejections(l, otherRuns(2000, 20))
-      expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['b'])
+      expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['a', 'b'])
       // A scope written now round-trips; history never shows it.
       const s = withBaseline(scopeFor([DEV], { downstream: [REVIEW], limit: { before: 1, after: 2 } }), devRuns(4_000_000, 2))
       l.generations[1].scope = s
@@ -1122,5 +1166,198 @@ describe('trial rule 2: the trial judges the change', () => {
     } finally {
       rmSync(d, { recursive: true, force: true })
     }
+  })
+})
+
+describe('Step 7 review fixes', () => {
+  const DEV: TrialRole = { id: 'r_dev', slug: 'dev' }
+  const at = (t0: number, n: number, over: Parameters<typeof run>[0] = {}) => Array.from({ length: n }, (_, i) => run({ startedAt: t0 + i * 1000, ...over }))
+  const devRuns = (t0: number, n: number, over: Parameters<typeof run>[0] = {}) => at(t0, n, { agents: [{ slug: 'dev' }], ...over })
+  const scopeFor = (roles: TrialRole[], over: Partial<TrialScope> = {}): TrialScope => ({ rule: 2, roles, downstream: [], upstream: [], flagged: [], baseline: { patched: emptyFigures(), downstream: emptyFigures() }, ...over })
+  const withBaseline = (scope: TrialScope, base: ReturnType<typeof run>[]): TrialScope => ({ ...scope, baseline: { patched: figuresOf(base, scope.roles), downstream: figuresOf(base, scope.downstream) } })
+  const gen = (id: string, status: StoredGeneration['status'], over: Partial<StoredGeneration> = {}) => ({ id, status, strategy: 'deterministic', fingerprint: `fp_${id}`, summary: 'dev: effort medium', appliedAt: 1000, appliedAtRunCount: 3, evalWindowRuns: 3, baselineMetrics: metrics(), plan: mkPlan({ rolePatches: [patch('dev', { effort: 'medium' })] }), snapshot: { roles: project().roles, maxConcurrentSubagents: null, postMaxConcurrentSubagents: null, edits: [], addedSkillIds: [], prunedSkills: [] }, ...over })
+  const withLedger = (raw: unknown, fn: (dir: string) => void): void => {
+    const d = mkdtempSync(join(tmpdir(), 'evolve-fix-'))
+    try {
+      mkdirSync(join(d, 'evolution'))
+      writeFileSync(ledgerPath(d, 'p1'), JSON.stringify(raw))
+      fn(d)
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  }
+
+  it('H1: a person\'s rollback in an old ledger never expires, however many runs pass', () => {
+    // Before 2026-11-25 a person's rollback stored their reason (or 'rolled back by the user') and no expiry fields.
+    const person = gen('gen_1', 'rolled_back', { decidedAt: 2000, trialMetrics: metrics(), outcomeReason: 'rolled back by the user' })
+    const typed = gen('gen_2', 'rolled_back', { decidedAt: 3000, outcomeReason: 'too slow for me' })
+    const raw = {
+      version: 1,
+      generations: [person, typed],
+      rejectedHypotheses: [
+        { fingerprint: 'fp_gen_1', summary: 's', reason: 'rolled back by the user', generationId: 'gen_1', at: 2000 },
+        { fingerprint: 'fp_gen_2', summary: 's', reason: 'too slow for me', generationId: 'gen_2', at: 3000 }
+      ]
+    }
+    withLedger(raw, (d) => {
+      const l = readLedger(d, 'p1')
+      expect(l.rejectedHypotheses.every((r) => r.permanent === true)).toBe(true)
+      for (let i = 0; i < 10; i++) ageRejections(l, devRuns(10_000 + i * 100_000, 50))
+      expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['fp_gen_1', 'fp_gen_2'])
+      // Written back, it stays pinned.
+      writeLedger(d, l)
+      expect(readLedger(d, 'p1').rejectedHypotheses.map((r) => r.permanent)).toEqual([true, true])
+    })
+  })
+
+  it('H1: an old trial rollback (proven by its generation) expires as designed; one that cannot be proven does not', () => {
+    const reason = 'trial regressed: first-pass rate fell 40 points (0.9 to 0.5)'
+    const g = gen('gen_3', 'rolled_back', { decidedAt: 2000, trialMetrics: metrics(), outcomeReason: `${reason} (kept your later edit to dev.effort)` })
+    const raw = {
+      version: 1,
+      generations: [g],
+      rejectedHypotheses: [
+        { fingerprint: 'fp_gen_3', summary: 's', reason, generationId: 'gen_3', at: 2000 },
+        // Same prefix, but its generation is no longer in the ledger: not provable, pinned.
+        { fingerprint: 'gone', summary: 's', reason, generationId: 'gen_0', at: 2000 },
+        // Same prefix, no generation id: pinned.
+        { fingerprint: 'noid', summary: 's', reason, at: 2000 }
+      ]
+    }
+    withLedger(raw, (d) => {
+      const l = readLedger(d, 'p1')
+      expect(l.rejectedHypotheses.map((r) => r.permanent === true)).toEqual([false, true, true])
+      ageRejections(l, at(10_000, REJECTION_EXPIRY_RUNS - 1))
+      expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['fp_gen_3', 'gone', 'noid'])
+      ageRejections(l, at(900_000, 1))
+      expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['gone', 'noid'])
+    })
+    // A trial generation the person rolled back (no trial metrics: settleTrial never decided it) is not a trial rollback.
+    const open = gen('gen_4', 'rolled_back', { decidedAt: 2000, outcomeReason: reason })
+    withLedger({ version: 1, generations: [open], rejectedHypotheses: [{ fingerprint: 'x', summary: 's', reason, generationId: 'gen_4', at: 2000 }] }, (d) => {
+      expect(readLedger(d, 'p1').rejectedHypotheses[0].permanent).toBe(true)
+    })
+  })
+
+  it('H1: a malformed rejection fails closed (pinned)', () => {
+    const raw = {
+      version: 1,
+      generations: [],
+      rejectedHypotheses: [
+        { fingerprint: 'a', summary: 's', reason: 'r', at: 1000, strikes: 1, seen: -1, countedUntil: 1000 },
+        { fingerprint: 'b', summary: 's', reason: 'r', at: 1000, strikes: 1, seen: 0, countedUntil: 'soon' },
+        { fingerprint: 'c', summary: 's', reason: 'r', at: 1000, strikes: 9, seen: 0, countedUntil: 1000 },
+        { fingerprint: 'd', summary: 's', reason: 'r', at: 1000, strikes: 1, seen: 0, countedUntil: 1000, permanent: 'yes' },
+        { fingerprint: 'e', summary: 's', reason: 'r', at: 1000, strikes: 1, seen: 0, countedUntil: 1000 }
+      ]
+    }
+    withLedger(raw, (d) => {
+      const l = readLedger(d, 'p1')
+      expect(l.rejectedHypotheses.map((r) => [r.fingerprint, r.permanent === true])).toEqual([['a', true], ['b', true], ['c', true], ['d', true], ['e', false]])
+      ageRejections(l, at(10_000, 60))
+      expect(liveRejections(l).map((r) => r.fingerprint)).toEqual(['a', 'b', 'c', 'd'])
+    })
+  })
+
+  it('L3: the cap evicts expired entries first, then the oldest that can expire, never a pinned one', () => {
+    const l = emptyLedger('p1')
+    addRejected(l, { fingerprint: 'pinned-old', summary: 's', reason: 'r', at: 1, permanent: true })
+    addRejected(l, { fingerprint: 'expired', summary: 's', reason: 'r', at: 2 })
+    l.rejectedHypotheses[1].seen = REJECTION_EXPIRY_RUNS
+    for (let i = 0; i < MAX_REJECTED - 1; i++) addRejected(l, { fingerprint: `f${i}`, summary: 's', reason: 'r', at: 10 + i })
+    expect(l.rejectedHypotheses).toHaveLength(MAX_REJECTED)
+    expect(l.rejectedHypotheses.map((r) => r.fingerprint)).not.toContain('expired')
+    expect(l.rejectedHypotheses[0].fingerprint).toBe('pinned-old')
+    addRejected(l, { fingerprint: 'next', summary: 's', reason: 'r', at: 5000 })
+    expect(l.rejectedHypotheses[0].fingerprint).toBe('pinned-old')
+    expect(l.rejectedHypotheses.map((r) => r.fingerprint)).not.toContain('f0')
+    // A ledger full of pinned entries keeps them all and refuses one that could expire; nothing new is applied then.
+    const full = emptyLedger('p1')
+    for (let i = 0; i < MAX_REJECTED; i++) addRejected(full, { fingerprint: `p${i}`, summary: 's', reason: 'r', at: i, permanent: true })
+    expect(rejectionsFull(full)).toBe(true)
+    expect(addRejected(full, { fingerprint: 'trial', summary: 's', reason: 'r', at: 9999 })).toBe(false)
+    expect(full.rejectedHypotheses.map((r) => r.fingerprint)).not.toContain('trial')
+    expect(addRejected(full, { fingerprint: 'person', summary: 's', reason: 'r', at: 9999, permanent: true })).toBe(true)
+    expect(full.rejectedHypotheses).toHaveLength(MAX_REJECTED + 1)
+    expect(boundRejections(full.rejectedHypotheses)).toHaveLength(MAX_REJECTED + 1)
+  })
+
+  it('L4: an advisory finding (unused_role) never justifies removing tools, also in a hybrid plan', () => {
+    const unused = { findings: [{ kind: 'unused_role' as const, roleSlug: 'dev', severity: 0, summary: '', evidence: [] }] }
+    const hybrid = mkPlan({ strategy: 'hybrid', rolePatches: [patch('dev', { removeTools: ['Bash'] })] })
+    const out = validateEvolutionPlan(project(), hybrid, { diagnosis: unused })
+    expect(out.rolePatches).toEqual([])
+    expect(rules(out)).toContain('tool_removal_unjustified')
+    // An actionable finding about the role still does.
+    const friction = { findings: [{ kind: 'tool_friction' as const, roleSlug: 'dev', severity: 10, summary: '', evidence: [] }] }
+    expect(validateEvolutionPlan(project(), hybrid, { diagnosis: friction }).rolePatches[0]).toMatchObject({ removeTools: ['Bash'] })
+  })
+
+  it('L1: in the window a staffing assignment or a failed receipt of the patched role counts as exercised; the baseline needs an agent', () => {
+    const s = scopeFor([DEV])
+    const receiptOnly = { ...digestRun(run({ agents: [{ slug: 'review' }] })), failedReceiptRoleIds: ['r_dev'] }
+    const assignedOnly = run({ agents: [{ slug: 'review' }], assignments: [{ roleId: 'r_dev' }] as never })
+    expect(exercises(receiptOnly, s)).toBe(false)
+    expect(exercises(assignedOnly, s)).toBe(false)
+    expect(exercises(receiptOnly, s, { attempts: true })).toBe(true)
+    expect(exercises(assignedOnly, s, { attempts: true })).toBe(true)
+    // A window of failed spawns of dev is judged (not skipped): dev ran in none of them, inconclusive, rolled back.
+    const g = { appliedAt: 5_000_000, evalWindowRuns: 3, baselineMetrics: measure(devRuns(4_000_000, 5)), scope: withBaseline(s, devRuns(4_000_000, 5)) }
+    const window = [0, 1, 2].map((i) => ({ ...digestRun(run({ startedAt: 5_000_000 + i * 1000, agents: [{ slug: 'review' }] })), failedReceiptRoleIds: ['r_dev'] }))
+    expect(evaluateActiveTrial(g, window)).toMatchObject({ state: 'decided', regressed: true })
+  })
+
+  it('M1a/c: a baseline needs MIN_BASELINE_RUNS runs (or the window) and MIN_BASELINE_ROLE_AGENTS agents of the patched role, for every scope', () => {
+    expect(MIN_BASELINE_RUNS).toBe(3)
+    expect(MIN_BASELINE_ROLE_AGENTS).toBe(3)
+    // One baseline run (the thin case the old apply accepted).
+    expect(baselineShortfall(scopeFor([DEV]), devRuns(4_000_000, 1), 3)).toContain('1 of the 3 clean runs')
+    // Enough runs, too few dev agents.
+    const thinDev = [...devRuns(4_000_000, 2), ...at(4_100_000, 3, { agents: [{ slug: 'review' }] })]
+    expect(baselineShortfall(scopeFor([DEV]), thinDev, 3)).toContain('2 of the 3 agents of dev')
+    expect(baselineShortfall(scopeFor([DEV]), devRuns(4_000_000, 3), 3)).toBeUndefined()
+    // The window raises the minimum; a window of 1 never lowers it.
+    expect(baselineShortfall(scopeFor([DEV]), devRuns(4_000_000, 4), 5)).toContain('4 of the 5 clean runs')
+    expect(baselineShortfall(scopeFor([DEV]), devRuns(4_000_000, 2), 1)).toContain('2 of the 3 clean runs')
+    // No role patch (skills only or a limit): the runs minimum still holds.
+    expect(baselineShortfall(scopeFor([]), [], 3)).toContain('0 of the 3 clean runs')
+    expect(baselineShortfall(scopeFor([], { limit: { before: 1, after: 2 } }), devRuns(4_000_000, 2), 3)).toContain('2 of the 3')
+    // A root-only patch needs agents below it.
+    const root = scopeFor([{ id: 'r_lead', slug: 'lead', root: true }], { downstream: [DEV] })
+    expect(baselineShortfall(root, at(4_000_000, 3, { agents: [{ slug: 'review' }] }), 3)).toContain('agents below lead')
+  })
+
+  it('M1d: an error run in the trial\'s span that did not use the changed role counts against the trial unless provably unrelated', () => {
+    const base = devRuns(4_000_000, 5)
+    const s = withBaseline(scopeFor([DEV], { upstream: [{ id: 'r_lead', slug: 'lead' }], flagged: [{ id: 'r_review', slug: 'review' }] }), base)
+    const g = { appliedAt: 5_000_000, evalWindowRuns: 3, baselineMetrics: measure(base), scope: s }
+    // Two error runs in which dev never ran (the root failed: nothing attributable), between clean dev runs.
+    const rootFailed = at(5_000_500, 2, { status: 'error', agents: [] })
+    const window = devRuns(5_010_000, 3)
+    const d = evaluateActiveTrial(g, [...rootFailed, ...window])
+    expect(d).toMatchObject({ state: 'decided', regressed: true })
+    if (d.state === 'decided') expect(d.reason).toContain('2 error runs in the trial that did not use the change')
+    // The same runs failing only through a flagged role off dev's chain are provably unrelated: promoted.
+    const unrelated = at(5_000_500, 2, { status: 'error', agents: [{ slug: 'review', state: 'error' }] })
+    expect(evaluateActiveTrial(g, [...unrelated, ...window])).toMatchObject({ state: 'decided', regressed: false })
+    // An error run after the last window run is outside the span.
+    expect(evaluateActiveTrial(g, [...window, ...at(5_100_000, 2, { status: 'error', agents: [] })])).toMatchObject({ state: 'decided', regressed: false })
+    // A project-level change (a limit) never leaves an error run out.
+    const lim = withBaseline(scopeFor([], { limit: { before: 1, after: 2 }, flagged: [{ id: 'r_review', slug: 'review' }] }), base)
+    const wideWindow = at(5_010_000, 3, { agents: [{ slug: 'dev' }, { slug: 'review' }] })
+    expect(evaluateActiveTrial({ ...g, scope: lim }, [...unrelated, ...wideWindow])).toMatchObject({ state: 'decided', regressed: true })
+  })
+
+  it('M1b: a trial opened under the old rule that is judged on a rebuilt scope must also pass the old whole-team rule', () => {
+    const base = devRuns(4_000_000, 5)
+    const s = withBaseline(scopeFor([DEV]), base)
+    // The first three runs after the apply did not use dev and two of them erred in a flagged role; dev's runs are clean.
+    const first = [run({ startedAt: 5_000_100, agents: [{ slug: 'review' }] }), ...at(5_000_200, 2, { status: 'error', agents: [{ slug: 'review', state: 'error' }] })]
+    const later = devRuns(5_010_000, 3)
+    const flagged = { appliedAt: 5_000_000, evalWindowRuns: 3, baselineMetrics: measure(base), scope: { ...s, upstream: [{ id: 'r_lead', slug: 'lead' }], flagged: [{ id: 'r_review', slug: 'review' }] } }
+    expect(evaluateActiveTrial(flagged, [...first, ...later])).toMatchObject({ regressed: false })
+    const d = evaluateActiveTrial(flagged, [...first, ...later], 8, { oldRuleToo: true })
+    expect(d).toMatchObject({ state: 'decided', regressed: true })
+    if (d.state === 'decided') expect(d.reason).toContain('the rule this trial was opened under')
   })
 })

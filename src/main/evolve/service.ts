@@ -24,9 +24,12 @@ import type {
 import { MIN_WASTE_DEFAULT, applyPlan, effectiveConcurrency, patchFingerprint, planFingerprint, planSummary } from './plan'
 import {
   BASELINE_SEARCH_RUNS,
+  MAX_REJECTED,
   addRejected,
   ageRejections,
   baselineRuns,
+  baselineShortfall,
+  rejectionsFull,
   chartProblems,
   clearRejected,
   HYBRID_MEMO_MAX_AGE_MS,
@@ -537,6 +540,8 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const busy = teamFilesBusy(project.id)
     if (busy) return refuse(`Nothing was applied; run evolve again once ${busy}.`)
     if (open && settled?.state === 'rolled_back') return { ...refuse(`Generation ${open.id} finished its trial and was rolled back (${settled.reason}); no new change was applied.`), teamFilesSynced: settled.teamFilesSynced === true }
+    // A rollback of this change could not be recorded (ratchet.ts rejectionsFull), so nothing new is applied.
+    if (rejectionsFull(ledger)) return refuse(`Nothing was applied: the ledger holds ${MAX_REJECTED} rolled-back changes that never expire, so a rollback of a new change could not be recorded. Review the evolution history.`)
     const emptyFp = planFingerprint({ rolePatches: [], newSkills: [], pruneSkillIds: [] })
     if (open && settled?.state === 'promoted' && expected === emptyFp && plan.fingerprint !== expected) return refuse('No new change was applied.')
     // Approving a raise means approving a reviewed plan: without its fingerprint nothing was reviewed.
@@ -564,7 +569,10 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const scope = scopeOf(project.roles, project, plan, diagnosis)
     if (!scope) return refuse('Nothing was applied: the plan names a role the team does not have.')
     const base = baselineRuns(scope, src.digests(BASELINE_SEARCH_RUNS), rolledBackWindows(ledger))
-    if (scope.roles.length && !base.length) return refuse(`Nothing was applied: no finished run outside a rolled-back trial used ${scope.roles.map((r) => r.slug).join(', ')}, so a trial would have nothing to compare with.`)
+    // Every scope needs a baseline of minimum size (ratchet.ts baselineShortfall): not a rejection, the change waits for
+    // more runs and may be applied on a later pass.
+    const short = baselineShortfall(scope, base, input.evalWindowRuns)
+    if (short) return refuse(`Nothing was applied yet: waiting for a baseline (${short}). The change is not rejected; it is tried again after more runs.`)
     scope.baseline = { patched: figuresOf(base, scope.roles), downstream: figuresOf(base, scope.downstream) }
     const snapshot = snapshotOf(project, next, plan)
     for (const id of plan.pruneSkillIds) {
@@ -705,12 +713,14 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     // per strike); a person's rollback never expires. Without readable roles, every measured run counts.
     const roles: TrialRole[] | undefined = gen.scope?.roles ?? scopeOf(Array.isArray(snap?.roles) ? snap.roles : [], {}, gen.plan)?.roles
     const permanent = opts.byUser === true
-    addRejected(ledger, { fingerprint: gen.fingerprint, summary: gen.summary, reason, generationId: gen.id, at: now(), ...(roles ? { roles } : {}), permanent })
+    let stored = addRejected(ledger, { fingerprint: gen.fingerprint, summary: gen.summary, reason, generationId: gen.id, at: now(), ...(roles ? { roles } : {}), permanent })
     // Each patch too, so the same role change is not re-proposed inside a different plan (the cause cannot be attributed).
     for (const p of Array.isArray(gen.plan?.rolePatches) ? gen.plan.rolePatches : []) {
       const own = roles?.filter((r) => r.slug === p?.slug)
-      addRejected(ledger, { fingerprint: patchFingerprint(p), summary: `${p.slug}: ${p.reason}`, reason, generationId: gen.id, at: now(), ...(own?.length ? { roles: own } : {}), permanent })
+      stored = addRejected(ledger, { fingerprint: patchFingerprint(p), summary: `${p.slug}: ${p.reason}`, reason, generationId: gen.id, at: now(), ...(own?.length ? { roles: own } : {}), permanent }) && stored
     }
+    // Only when the ledger is full of rejections that never expire; applyCore then applies nothing new (rejectionsFull).
+    if (!stored) log('warn', `Evolution could not record the rollback of ${gen.id}: the ledger is full of rolled-back changes that never expire; no new change is applied until it is reviewed.`)
     writeLedger(deps.dataDir, ledger)
     const after = deps.getProject(projectId) ?? updated
     return { project: after, teamFilesSynced: unusable ? false : await sync(after), ...(unusable ? { unusable } : {}), notes }
@@ -737,21 +747,27 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
    * still missing. Callers hold the project's serial chain.
    */
   /**
-   * The scope of a trial applied before trial rule 2 (or whose stored scope failed the shape check): patched and
-   * downstream roles from the generation's own plan and snapshot chart, no flagged roles, and a clean baseline from the
-   * measured runs that started before the apply (newest 50 listed). Its baselineMetrics move to that baseline when it has
-   * runs. Undefined when the plan's patches are unreadable.
+   * How a trial applied before trial rule 2 (or whose stored scope failed the shape check) is judged. Never stored, so it
+   * is worked out afresh on each pass and never weakens the baseline the trial was opened with:
+   *  - 'unreadable': the plan's patches cannot be read (the trial is closed as inconclusive);
+   *  - 'rebuilt': patched, downstream and upstream roles from the generation's own plan and snapshot chart (no flagged
+   *    roles, so no run is ever left out as unrelated) with a per-role baseline from the clean runs before the apply that
+   *    meets the minimums (baselineShortfall); the stored whole-team baselineMetrics stay, and the trial must also pass
+   *    the old whole-team rule (evaluateActiveTrial oldRuleToo);
+   *  - 'old-rule': the per-role baseline cannot be rebuilt to the minimums: the trial is judged on the old whole-team
+   *    rule alone (every run after the apply, its stored baseline).
    */
-  function legacyScope(project: Project, ledger: Ledger, trial: StoredGeneration, src: RunSource): TrialScope | undefined {
+  function legacyScope(project: Project, ledger: Ledger, trial: StoredGeneration, src: RunSource): { kind: 'unreadable' } | { kind: 'old-rule' } | { kind: 'rebuilt'; scope: TrialScope } {
     const snap = trial.snapshot
     const chart = Array.isArray(snap?.roles) ? snap.roles : project.roles
     const pre = typeof snap?.maxConcurrentSubagents === 'number' ? { maxConcurrentSubagents: snap.maxConcurrentSubagents } : {}
     const s = scopeOf(chart, pre, trial.plan)
-    if (!s) return undefined
+    if (!s) return { kind: 'unreadable' }
+    s.flagged = []
     const base = baselineRuns(s, src.digests(BASELINE_SEARCH_RUNS), rolledBackWindows(ledger), trial.appliedAt)
+    if (baselineShortfall(s, base, trial.evalWindowRuns)) return { kind: 'old-rule' }
     s.baseline = { patched: figuresOf(base, s.roles), downstream: figuresOf(base, s.downstream) }
-    if (base.length) trial.baselineMetrics = measure(base, 8)
-    return s
+    return { kind: 'rebuilt', scope: s }
   }
 
   /**
@@ -762,10 +778,9 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
   async function settleTrial(project: Project, ledger: Ledger, trial: StoredGeneration, src: RunSource): Promise<{ state: 'pending'; have: number; need: number; runs: number; cap: number } | { state: 'held' | 'promoted' | 'rolled_back'; reason: string; teamFilesSynced?: boolean }> {
     const need = clampWindow(trial.evalWindowRuns)
     const cap = trialRunCap(need)
-    if (!trial.scope) {
-      const derived = legacyScope(project, ledger, trial, src)
-      if (derived) trial.scope = derived
-    }
+    // A trial opened before rule 2 is judged without storing anything on it (legacyScope).
+    const legacy = trial.scope ? undefined : legacyScope(project, ledger, trial, src)
+    const scope: TrialScope | undefined = trial.scope ?? (legacy?.kind === 'rebuilt' ? legacy.scope : undefined)
     // Trial runs are found from summaries; their digests are loaded oldest first, only until enough exercised the change.
     const since = src
       .trialSummaries()
@@ -773,11 +788,11 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
       .slice(0, cap)
     let d: ReturnType<typeof evaluateActiveTrial>
-    if (!trial.scope) {
+    if (legacy?.kind === 'unreadable') {
       // An unreadable plan can never be judged: it is closed now (the rollback says what it could not restore).
       d = { state: 'decided', regressed: true, inconclusive: true, trialMetrics: measure([], 8), reason: 'inconclusive: the generation\'s plan is unreadable, so its trial cannot be judged' }
     } else {
-      const scope = trial.scope
+      // 'old-rule' (no scope): every run after the apply counts and only the whole-team rule applies.
       const loaded: ReturnType<RunSource['byIds']> = []
       let exercised = 0
       for (const s of since) {
@@ -785,9 +800,9 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
         const hit = src.byIds([s.summary.id])[0]
         if (!hit) continue
         loaded.push(hit)
-        if (exercises(hit, scope)) exercised++
+        if (!scope || exercises(hit, scope, { attempts: true })) exercised++
       }
-      d = evaluateActiveTrial(trial, loaded, effectiveConcurrency(project), { trialRuns: since.length })
+      d = evaluateActiveTrial({ appliedAt: trial.appliedAt, evalWindowRuns: trial.evalWindowRuns, baselineMetrics: trial.baselineMetrics, ...(scope ? { scope } : {}) }, loaded, effectiveConcurrency(project), { trialRuns: since.length, ...(legacy?.kind === 'rebuilt' ? { oldRuleToo: true } : {}) })
     }
     if (d.state === 'pending') return d
     if (d.regressed) {

@@ -3,7 +3,7 @@
 //
 // Fixture A (a git repo, a deliberately poor chart): `researcher` on `deep` with a >1,000-char prompt full of repeated
 // lines, an `implementer` whose reports collide on `src/routes/` worktrees, a read-only `reviewer`, an unused skill
-// grant, and four seeded finished work runs plus a seeded skill evaluation (repeated tool routine, never-loaded
+// grant, and ten (fixture B: four) seeded finished work runs plus a seeded skill evaluation (repeated tool routine, never-loaded
 // skill), written in the stores' real on-disk formats (runs.json / runs/<id>.json, skill-evaluations/<id>.json).
 //
 // 1. `org evolve` (text and JSON): the findings, wasteScore > 0, nothing changed (dry run).
@@ -117,8 +117,12 @@ function editStoredProject(id, fn) {
   fs.writeFileSync(PROJECTS_JSON, JSON.stringify(doc, null, 2))
 }
 
-/** Seed one poor project: the chart, an unused skill grant, four finished runs and a skill evaluation. Returns { project, ids, repo }. */
-async function seedPoorProject(tag, name) {
+/**
+ * Seed one poor project: the chart, an unused skill grant, `runs` finished runs (default four) and a skill evaluation.
+ * A trial needs a baseline of max(3, its window) clean runs (ratchet.ts baselineShortfall), so fixture A, applied with a
+ * window of 10, is seeded with ten. Returns { project, ids, repo }.
+ */
+async function seedPoorProject(tag, name, runs = 4) {
   const repo = makeFixtureRepo(tag)
   const seeded = await seedProject(repo, { name })
   editStoredProject(seeded.id, (p) => {
@@ -140,8 +144,8 @@ async function seedPoorProject(tag, name) {
   const skillId = project.skills?.[0]?.id
   if (!skillId) throw new Error('the seeded skill has no id')
   const records = []
-  for (let i = 0; i < 4; i++) {
-    records.push(runRecord({ id: `run_${tag}_${i + 1}`, projectId: project.id, startedAt: NOW - (10 - i) * HOUR, ids, conflicts: i % 2 === 0 }))
+  for (let i = 0; i < runs; i++) {
+    records.push(runRecord({ id: `run_${tag}_${i + 1}`, projectId: project.id, startedAt: NOW - (runs + 6 - i) * HOUR, ids, conflicts: i % 2 === 0 }))
   }
   writeRuns(records)
   const evalFile = path.join(HOST_DATA_DIR, 'skill-evaluations', `${project.id}.json`)
@@ -151,10 +155,10 @@ async function seedPoorProject(tag, name) {
     JSON.stringify({
       projectId: project.id,
       at: NOW - HOUR,
-      runsConsidered: 4,
+      runsConsidered: runs,
       findings: [
         { id: 'f1', kind: 'neverLoaded', severity: 'info', skillIds: [skillId], title: 'unused-helper was never loaded', detail: 'No run loaded it.' },
-        { id: 'f2', kind: 'repeatedToolSequence', severity: 'info', skillIds: [], title: 'Grep, Read, Edit repeats', detail: 'The same routine in 4 runs.', evidence: { runIds: records.map((x) => x.summary.id), sequence: ['Grep', 'Read', 'Edit'], count: 4 } }
+        { id: 'f2', kind: 'repeatedToolSequence', severity: 'info', skillIds: [], title: 'Grep, Read, Edit repeats', detail: `The same routine in ${runs} runs.`, evidence: { runIds: records.map((x) => x.summary.id), sequence: ['Grep', 'Read', 'Edit'], count: runs } }
       ],
       suggestions: [],
       modelAssisted: false
@@ -171,7 +175,7 @@ const kindsOf = (v) => (v?.diagnosis?.findings ?? []).map((f) => f.kind)
 const repos = []
 try {
   // ---------- fixture A ----------
-  const A = await seedPoorProject('evoA', 'Evolve A')
+  const A = await seedPoorProject('evoA', 'Evolve A', 10)
   repos.push(A.repo)
   const at = (args, opts = {}) => cli(args, { cwd: A.repo, timeoutMs: 180_000, ...opts })
   const jsonAt = async (args, opts) => {
