@@ -266,7 +266,7 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return this.storedContent(this.specDir(project.id, spec))
   }
 
-  create(input: SkillCreateInput, source: SkillSpec['source'] = 'user'): SkillMutationResult {
+  create(input: SkillCreateInput, source: SkillSpec['source'] = 'user', opts: { enabled?: boolean } = {}): SkillMutationResult {
     if (source === 'library') throw new Error('Use skills:linkLibrary to add a skill from the library.')
     const project = this.project(input?.projectId)
     const draft = validDraft(input.draft)
@@ -280,7 +280,9 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
       id: newId('skill'),
       name: draft.name,
       description: draft.description,
-      enabled: true,
+      // Enabled unless the caller says so: the evolution port creates its skills disabled in this one save, so no run can
+      // pick one up before a person has read it (opts.enabled is never read from a request, only from main-process callers).
+      enabled: opts.enabled !== false,
       source,
       digest: digestFiles(files),
       files: fileInfos(files),

@@ -52,6 +52,7 @@ import { SetupService } from '../setup/service'
 import { TemplateService } from '../setup/templates'
 import { skillsProject } from '../skills/assist'
 import { SkillEvaluationService } from '../skills/evaluation'
+import { evolveSkillsPort } from '../skills/evolvePort'
 import { SkillService } from '../skills/service'
 import { knowledgeStore } from '../store/knowledge'
 import { createOutputsService } from '../outputs/service'
@@ -749,7 +750,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     getDigest: (runId) => runStore.getDigest(runId),
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
-  }), { except: ['inFlightCount', 'dispose'] })
+  }), { except: ['inFlightCount', 'dispose', 'fresh'] })
   skillEvaluationService = skillEvaluation
   // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
   // completion runs on the connection of the project being analysed.
@@ -806,20 +807,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       const p = projects.get(projectId)
       return { mode: staffingModeOf(p), goal: staffingGoalOf(p) }
     },
-    skillFindings: (projectId) => skillEvaluation.last(projectId)?.findings ?? [],
-    skills: {
-      create: (input) => skills.create(input, 'suggestion'),
-      remove: (input) => skills.remove(input),
-      readDraft: (projectId, skillId) => {
-        try {
-          const info = skills.list(projectId).find((s) => s.spec.id === skillId)
-          if (!info) return null
-          return { name: info.spec.name, description: info.spec.description, body: skills.read({ projectId, skillId }).body }
-        } catch {
-          return null
-        }
-      }
-    },
+    // Fresh deterministic findings from the cached run digests (no model step, the stored evaluation is untouched). Only
+    // when that cannot be computed does evolution fall back to the last stored evaluation the user ran.
+    skillFindings: (projectId) => skillEvaluation.fresh(projectId) ?? skillEvaluation.last(projectId)?.findings ?? [],
+    // New skills are created DISABLED and evolution can never enable one (evolvePort.ts): a person turns it on.
+    skills: evolveSkillsPort(skills),
     // The project save already wrote `.orgai/` through the team files hook, but only for a project whose team files were
     // opened ('not-written' = a code project nobody opened yet: nothing was written, and evolving does not open it).
     syncTeamFiles: async (project) => {

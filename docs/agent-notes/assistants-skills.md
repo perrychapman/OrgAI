@@ -41,6 +41,40 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     already-digested runs a real `RunStore` is asked for no record, after one new run for that one; findings from digests,
     from digests that went through JSON and from records are equal (`evaluation.test.ts`, `evaluate.test.ts`). Live
     provider behaviour is unverified.
+  - Fresh findings for evolution (2026-11-25, self-healing efficiency D7): `SkillEvaluationService.fresh(projectId)`
+    returns the deterministic quality and gap findings over the newest 20 finished or failed work runs, computed now from
+    the cached digests, redacted like a report. It is synchronous and read-only: no model step, no drafts, never writes
+    `skill-evaluations/<pid>.json`, so the user's last evaluation and its suggestions are not touched (`last()` and
+    `suggestion()` are unchanged). Cost is one digest per finished run never digested before, none for the rest. A run in
+    progress is not read at all. Null when the project is unknown or the listing throws. The host's evolve port is
+    `fresh(id) ?? last(id)?.findings ?? []`: it is not merged with the stored report because the stored findings are the
+    same deterministic function run earlier (the model step adds only `suggestions`), so a merge could only add stale
+    items; the stored report is the fallback when `fresh` is null. `fresh` is on the class, not on `SkillEvaluationApi`,
+    and is excluded from the host's `oneChangePerCall` lock (it writes nothing). Checked by `evaluation.test.ts` "fresh":
+    a run finished after the stored evaluation shows up in the fresh findings while the stored file is byte-identical and
+    keeps its suggestion, no model call, no write when no evaluation ever ran, over 20 already-digested runs no
+    `getRecord` and one new run parses only that run (then none), an in-progress run is never read, unknown project
+    gives null. Live runs unverified. The bench builds its own findings and is unaffected.
+  - Skills drafted by evolution (2026-11-25, D8): the host's evolve skills port is `skills/evolvePort.ts`
+    `evolveSkillsPort`. `create` stores the skill DISABLED in the same save (`SkillService.create(input, 'suggestion',
+    { enabled: false })`, a main-process option, no IPC reaches it) and grants only the `roleIds` the engine passes (the
+    plan's `grantTo` that exist; the gate drops the root and checking roles). `setEnabled` accepts only `false`; anything
+    else throws, so no evolution path (the unattended post-run pass, `org evolve --apply`, rollback) can switch a skill
+    on. A person approving a plan still gets a disabled skill and turns it on in the Skills page (`skills:update`), which
+    is not this port. `remove` refuses a skill that is switched on (a person enabled it: a rollback leaves it and says
+    so in its reason). A disabled skill is not in `SkillService.forRun`, so it adds no prompt tokens; an enabled granted
+    skill adds its name and description to each granted role's prompt (not measured). The gate's skill rules
+    (`validateEvolutionPlan`, unchanged): at most 3 new skills per plan and 100 per project, `draftProblem` (name
+    charset and length, description 1 to 1024 characters without `<` `>`, no shell-injection forms), body at most 6,000
+    characters, no secret-shaped token, no duplicate name, grants only to existing roles other than the root and the
+    checking roles, no pruning of skills. It cannot judge prose: a body saying "ignore previous instructions" passes, and
+    only the disabled state protects a run. A skill body can only come from the hybrid model's answer (the deterministic
+    strategy only notes a crystallization finding); that call's prompt is the bounded digest built by `buildDigest`
+    (counts and `safeLine`d names, read in `synthesizer.ts`, not re-audited here), so the gate's limits are the only check
+    on the body itself. Checked by `skills/evolvePort.test.ts` over the real `SkillService`, `ProjectStore` and the
+    evolve engine (created disabled, grants only dev, `forRun` empty, enable refused, rollback removes, an enabled skill
+    survives a rollback, injection-shaped names and bodies refused, prose-only injection stored disabled). Live model
+    drafts unverified.
   - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
     readable by any agent with Read or Bash. Verified by unit tests and the mock adapter only.
 - Team assistant (`src/main/capabilities/`, `CapabilityService`, capabilities:* IPC; see ARCHITECTURE.md "Capabilities

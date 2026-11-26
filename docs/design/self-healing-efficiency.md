@@ -283,6 +283,18 @@ path to a person) and its ranked gaps. Two additions from this evaluation:
 
 Each of these changes a spend or safety boundary file and needs the Reviewer, as the bench says.
 
+Status (2026-11-25): D7 and D8 done in `bootstrap.ts` and the skills modules (the bench's trial fixes are separate). D7 is computed on demand, not at run end (no `runManager.ts` hook): `SkillEvaluationService.fresh(id)` is
+the deterministic half of the evaluation over the newest 20 finished runs from the cached digests (no model step, no
+drafts, never writes the stored evaluation; one digest per newly finished run), and evolution reads `fresh(id) ??
+last(id)?.findings ?? []`. D8: `skills/evolvePort.ts` wires `setEnabled` so `planFor` keeps a hybrid plan's skills;
+the port creates them disabled in one save, throws on any enable request and refuses to remove a skill a person switched
+on, so evolution can never enable a skill and a rollback removes what it created. Nothing in `evolve/` changed (no gap
+found there that blocks this). The advisory-finding change for the waste score is separate: with fresh findings a chart
+with a repeated routine raises `skill_crystallization` at every pass until that lands. `bench:heal -- --seed 1`:
+identical `results.json` apart from `sha` and `generatedAt` (the bench has no `skills` port, so a follow-up for the
+bench owner is a fake skills port with `setEnabled` to exercise the skill gap). Checks and limits:
+`docs/agent-notes/assistants-skills.md` "Fresh findings for evolution" and "Skills drafted by evolution".
+
 ### Step 8. Evolution on the desktop (needs the Reviewer and the owner)
 
 Offer the post-run pass for desktop work runs, deterministic only, with the same unattended rule as today (spend
