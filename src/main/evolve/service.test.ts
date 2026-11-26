@@ -747,3 +747,121 @@ describe('run loading (review M: synchronous records)', () => {
     expect(readdirSync(join(dir, 'evolution'))).toEqual(['p1.json'])
   })
 })
+
+describe('trial rule 2 (the trial judges the change)', () => {
+  const file = () => join(dir, 'evolution', 'p1.json')
+  const editLedger = async (fn: (led: Record<string, any>) => void) => {
+    const { readFileSync, writeFileSync } = await import('node:fs')
+    const led = JSON.parse(readFileSync(file(), 'utf8'))
+    fn(led)
+    writeFileSync(file(), JSON.stringify(led))
+  }
+  /** Runs in which dev never ran (only the reviewer did). */
+  const reviewOnly = (n: number, t0: number) => cleanRuns(n, t0, { agents: [{ slug: 'review', turns: 3 }], assignments: [] })
+
+  it('an applied generation records its scope and a clean baseline; runs without dev keep it pending, and 15 of them roll it back as inconclusive', async () => {
+    const h = harness()
+    const original = structuredClone(h.proj)
+    await h.svc.apply({ projectId: 'p1' })
+    const g = h.svcLedger().generations[0]
+    expect(g.scope?.roles).toEqual([{ id: 'r_dev', slug: 'dev' }])
+    expect(g.scope?.baseline.patched).toMatchObject({ runs: 8, agents: 16, firstPass: 16 })
+    expect(g.baselineMetrics.runs).toBe(8)
+    h.setRuns([...reviewOnly(14, NOW + 10), ...cleanRuns(8, 1_000_000)])
+    const pending = await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(pending.ratchetReason).toContain('0 of 3 runs that used the change (14 of at most 15')
+    h.setRuns([...reviewOnly(15, NOW + 10), ...cleanRuns(8, 1_000_000)])
+    const r = await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(r.ratchet).toBe('rolled_back')
+    expect(r.ratchetReason).toContain('inconclusive')
+    expect(h.proj.roles).toEqual(original.roles)
+    expect(h.svcLedger().rejectedHypotheses.map((x) => [x.strikes, x.roles])).toEqual([[1, [{ id: 'r_dev', slug: 'dev' }]], [1, [{ id: 'r_dev', slug: 'dev' }]]])
+  })
+
+  it('nothing is applied when no clean run outside a rolled-back trial used the role', async () => {
+    const h = harness()
+    const original = structuredClone(h.proj)
+    await h.svc.apply({ projectId: 'p1' })
+    // Turn the trial into a rolled-back generation whose window covers every listed run (and that cools no role).
+    await editLedger((led) => {
+      Object.assign(led.generations[0], { status: 'rolled_back', appliedAt: 0, decidedAt: NOW })
+      led.generations[0].plan.rolePatches = []
+      delete led.generations[0].scope
+    })
+    h.proj = original
+    const res = await h.svc.apply({ projectId: 'p1' })
+    expect(res.applied).toBe(false)
+    expect(res.reason).toContain('nothing to compare with')
+    expect(h.proj.roles).toEqual(original.roles)
+  })
+
+  it('an old ledger\'s open trial (no scope) is judged under the new rule with a scope and baseline derived from its plan and the runs before it', async () => {
+    for (const outcome of ['promoted', 'rolled_back'] as const) {
+      rmSync(join(dir, 'evolution'), { recursive: true, force: true })
+      const h = harness()
+      await h.svc.apply({ projectId: 'p1' })
+      await editLedger((led) => {
+        delete led.generations[0].scope
+        led.generations[0].baselineMetrics = { runs: 10, firstPassRate: 0.5, conflictRate: 0, errorRunRate: 0.5, medianCostUsd: 1, medianWallMs: 60_000, medianInputTokens: 1, dagConcurrencyRatio: 1 }
+      })
+      expect(h.svcLedger().generations[0].scope).toBeUndefined()
+      // Under the old rule the bad window (dev failing its receipts, no error run) would have passed this baseline.
+      const window = outcome === 'promoted' ? cleanRuns(3, NOW + 10) : cleanRuns(3, NOW + 10, { agents: [{ slug: 'dev', verdict: 'failed' }, { slug: 'dev' }] })
+      h.setRuns([...reviewOnly(2, NOW + 1), ...window, ...cleanRuns(8, 1_000_000)])
+      const r = await h.svc.afterRun({ projectId: 'p1', evolve: false })
+      expect(r.ratchet).toBe(outcome)
+      const g = h.svcLedger().generations[0]
+      expect(g.scope?.roles).toEqual([{ id: 'r_dev', slug: 'dev' }])
+      expect(g.scope?.baseline.patched.agents).toBe(16)
+      expect(g.baselineMetrics.errorRunRate).toBe(0)
+      if (outcome === 'rolled_back') expect(r.ratchetReason).toContain('the changed role: first pass fell')
+    }
+  })
+
+  it('rejection expiry is counted on the apply pass, never written by analyze, and an expired rejection is tried again as a new trial', async () => {
+    const h = harness()
+    await h.svc.apply({ projectId: 'p1' })
+    h.setRuns([...cleanRuns(3, NOW + 10, { status: 'error', agents: [{ slug: 'dev', state: 'error' }] }), ...cleanRuns(8, 1_000_000)])
+    expect((await h.svc.afterRun({ projectId: 'p1', evolve: true })).ratchet).toBe('rolled_back')
+    // 19 runs that used dev since the rejection: still blocking; analyze counts them in memory only.
+    h.setRuns([...cleanRuns(19, NOW + 100_000), ...cleanRuns(8, 1_000_000)])
+    const a = await h.svc.analyze({ projectId: 'p1' })
+    expect(a.plan.rolePatches.find((p) => p.slug === 'dev')).toBeUndefined()
+    expect(h.svcLedger().rejectedHypotheses.map((x) => x.seen)).toEqual([0, 0])
+    const blocked = await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(blocked.applied).toBeUndefined()
+    expect(h.svcLedger().rejectedHypotheses.map((x) => x.seen)).toEqual([19, 19])
+    // The 20th: expired, and the same change is applied again as gen_2 (its trial bounds the retry).
+    h.setRuns([...cleanRuns(20, NOW + 100_000), ...cleanRuns(8, 1_000_000)])
+    expect((await h.svc.analyze({ projectId: 'p1' })).plan.rolePatches.find((p) => p.slug === 'dev')).toMatchObject({ effort: 'medium' })
+    const again = await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(again.applied?.id).toBe('gen_2')
+    // Rolled back again: a second strike, 40 runs before it may be tried a third time. (The test clock stands still, so
+    // gen_2 was applied at NOW too: the failing runs are given start times before the 20 that expired the rejection.)
+    h.setRuns([...cleanRuns(20, NOW + 100_000), ...cleanRuns(3, NOW + 50, { status: 'error', agents: [{ slug: 'dev', state: 'error' }] }), ...cleanRuns(8, 1_000_000)])
+    expect((await h.svc.afterRun({ projectId: 'p1', evolve: true })).ratchet).toBe('rolled_back')
+    expect(h.svcLedger().rejectedHypotheses.map((x) => [x.strikes, x.seen])).toEqual([[2, 0], [2, 0]])
+  })
+
+  it('a person\'s rollback never expires; a promotion clears the strikes of what it promoted', async () => {
+    const h = harness()
+    await h.svc.apply({ projectId: 'p1' })
+    await h.svc.rollback({ projectId: 'p1', reason: 'no' })
+    expect(h.svcLedger().rejectedHypotheses.every((x) => x.permanent === true)).toBe(true)
+    h.setRuns([...cleanRuns(50, NOW + 100_000)])
+    await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(h.svc.history('p1').rejectedHypotheses).toHaveLength(2)
+  })
+
+  it('a plan with two role patches applies only the first; the other waits for a later generation', async () => {
+    const complete = vi.fn(async () => ({ text: JSON.stringify({ rolePatches: [{ slug: 'dev', effort: 'medium', reason: 'cheaper' }, { slug: 'review', addTools: ['Glob'], reason: 'search' }] }) }))
+    const h = harness({ complete })
+    const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+    expect(a.plan.rolePatches.map((p) => p.slug)).toEqual(['dev'])
+    expect(a.plan.gate.violations.some((v) => v.rule === 'one_patch_per_generation' && v.roleSlug === 'review')).toBe(true)
+    const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid', expectedFingerprint: a.plan.fingerprint })
+    expect(res.applied).toBe(true)
+    expect(res.generation?.plan.rolePatches.map((p) => p.slug)).toEqual(['dev'])
+    expect(h.proj.roles.find((r) => r.slug === 'review')?.tools).toEqual(['Read', 'Grep'])
+  })
+})
