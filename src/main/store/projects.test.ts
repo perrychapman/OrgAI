@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@shared/types'
 import { PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, RENAME_CARRY_MS, cleanClient, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { project, role, runSummary } from '../runtime/testHelpers'
+import { qualityFindings } from '../skills/evaluate'
+import { ProjectStore, RENAME_CARRY_MS, newlyGrantedSkillIds, cleanClient, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -38,6 +39,57 @@ afterEach(() => {
 
 const server = { id: 'mcp1', name: 'github' } as McpServerSpec
 const plugin = { id: 'pl1' } as PluginSpec
+
+describe('a role grant restarts the skill never-loaded count (stampGrantedSkills)', () => {
+  const OLD = '2026-01-01T00:00:00.000Z'
+  const spec = (id: string, over: Partial<SkillSpec> = {}): SkillSpec => ({ id, name: id, description: 'Use when filling in or reading PDF forms, extracting text and merging documents.', enabled: true, source: 'user', digest: 'x', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: OLD, updatedAt: OLD, ...over })
+  const withSkills = (): Project => project({ skills: [spec('s1'), spec('s2')], roles: [role({ id: 'r-eng', slug: 'engineer', skills: ['s2'] }), role({ id: 'r-rev', slug: 'reviewer' })] })
+
+  it('newlyGrantedSkillIds is per role: a skill another role already held is new for this role', () => {
+    const before = withSkills()
+    expect([...newlyGrantedSkillIds(before, before)]).toEqual([])
+    const next = { ...before, roles: before.roles.map((r) => (r.id === 'r-rev' ? { ...r, skills: ['s2'] } : r)) }
+    expect([...newlyGrantedSkillIds(before, next)]).toEqual(['s2'])
+    // A brand new role holds everything it lists newly; a revoke grants nothing.
+    expect([...newlyGrantedSkillIds(before, { roles: [...before.roles, role({ id: 'r-new', slug: 'n', skills: ['s1'] })] })]).toEqual(['s1'])
+    expect([...newlyGrantedSkillIds(before, { roles: before.roles.map((r) => ({ ...r, skills: [] })) })]).toEqual([])
+  })
+
+  it('a Team-editor style role save (projects:save) moves the skill updatedAt, so it is not flagged for older runs', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(withSkills())
+    const before = store.get('p1')!
+    const saved = store.saveFromRenderer({ ...before, roles: before.roles.map((r) => (r.id === 'r-rev' ? { ...r, skills: ['s1'] } : r)) })
+    const s1 = saved.skills!.find((s) => s.id === 's1')!
+    const s2 = saved.skills!.find((s) => s.id === 's2')!
+    expect(Date.parse(s1.updatedAt)).toBeGreaterThan(Date.parse(OLD))
+    expect(s1.addedAt).toBe(OLD)
+    // The skill that was not newly granted keeps its time; the stored copy matches what the save returned.
+    expect(s2.updatedAt).toBe(OLD)
+    expect(store.get('p1')!.skills!.find((s) => s.id === 's1')!.updatedAt).toBe(s1.updatedAt)
+    // The never-loaded count: runs that started before the grant do not count, so there is no finding.
+    const runs = Array.from({ length: 5 }, (_, i) => ({ summary: runSummary({ id: `old${i}`, startedAt: Date.parse(s1.updatedAt) - (i + 1) * 60_000 }), transcript: [] }))
+    const info = (sp: SkillSpec, grantedTo: string[]) => ({ info: { spec: sp, grantedTo }, skillMd: '' })
+    const found = qualityFindings({ roles: saved.roles, skills: [info(s1, ['r-rev'])], runs, pathExists: () => true }).map((f) => f.kind)
+    expect(found).not.toContain('neverLoaded')
+    // Without the stamp (the old updatedAt) the same runs would flag it.
+    expect(qualityFindings({ roles: saved.roles, skills: [info({ ...s1, updatedAt: OLD }, ['r-rev'])], runs, pathExists: () => true }).map((f) => f.kind)).toContain('neverLoaded')
+  })
+
+  it('every writer ends in commitSave: save() and saveInternal() stamp too, and a save that grants nothing leaves updatedAt alone', () => {
+    const store = new ProjectStore(dataDir())
+    store.save(withSkills())
+    const a = store.get('p1')!
+    const same = store.save({ ...a, name: 'Renamed' })
+    expect(same.skills!.map((s) => s.updatedAt)).toEqual([OLD, OLD])
+    const granted = store.saveInternal({ ...same, roles: same.roles.map((r) => (r.id === 'r-rev' ? { ...r, skills: ['s1', 's2'] } : r)) })
+    expect(granted.skills!.map((s) => s.updatedAt !== OLD)).toEqual([true, true])
+    // A later revoke and an unchanged re-save never move it back.
+    const keep = granted.skills!.map((s) => s.updatedAt)
+    const revoked = store.save({ ...granted, roles: granted.roles.map((r) => ({ ...r, skills: [] })) })
+    expect(revoked.skills!.map((s) => s.updatedAt)).toEqual(keep)
+  })
+})
 
 describe('ProjectStore.saveFromRenderer', () => {
   it('keeps the stored mcpServers and plugins over a stale renderer copy', () => {

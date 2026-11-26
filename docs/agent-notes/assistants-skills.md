@@ -59,8 +59,13 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     `updatedAt`, and still needs `MIN_RUNS_FOR_NEVER_LOADED` (3) of them; an unreadable timestamp counts none.
     `SkillService.update` moves `updatedAt` when it switches a skill on or grants it to a role that did not hold it
     (not when it switches it off or takes a grant away), and a library link's `updatedAt` is the later of the entry's
-    and the project's own. No per-grant time is stored, so a grant made by editing the role itself (projects:save, the
-    Team editor) does not restart the count. Without this, evolution (which reads fresh findings every pass) built a
+    and the project's own. Recheck fix N1: every writer of `Role.skills` (projects:save, team-files ingest, capabilities
+    apply, an approved proposal, SkillService) ends in `ProjectStore.commitSave`, which now stamps `updatedAt` = now on
+    every skill a role newly holds in that save (`stampGrantedSkills`; per role, a new role holds all its skills
+    newly; never moves a time earlier; a revoke or an unchanged save changes nothing). So a skill granted by editing
+    the role restarts the count, and no run that started before the grant can flag it. A restore that puts a grant back
+    (a failed proposal's rollback, an evolution rollback) stamps too, which only delays a finding. Unit tested in
+    `store/projects.test.ts` (a Team-editor style save, then `qualityFindings` with older runs). Without this, evolution (which reads fresh findings every pass) built a
     `removeSkills` patch for a skill a person had just switched on (unit tested: `evaluate.test.ts`, a skill switched on
     today with 20 older runs; `service.test.ts` in evolve, no `removeSkills` patch; `skills/service.test.ts`, which
     updates move the timestamp). Checked by `evaluation.test.ts` "fresh":
@@ -87,20 +92,24 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     on the body itself. Checked by `skills/evolvePort.test.ts` over the real `SkillService`, `ProjectStore` and the
     evolve engine (created disabled, grants only dev, `forRun` empty, enable refused, rollback removes, an enabled skill
     survives a rollback, injection-shaped names and bodies refused, prose-only injection stored disabled). Live model
-    drafts unverified. Open (Reviewer's question, answered from the code 2026-11-25, not changed): when the project's
-    `.orgai/` team files are in use, a DISABLED drafted skill is written into the repository like any other project
-    skill. `teamFiles/project.ts` `docFromProject` exports every `project.skills` entry with `enabled: spec.enabled`
-    and no filter on the enabled state or source; `teamFiles/serialize.ts` writes its body as plain
+    drafts unverified. Team files (Reviewer's question, answered from the code 2026-11-25; mitigated in the recheck
+    fixes): when the project's `.orgai/` team files are in use, a DISABLED drafted skill is written into the repository
+    like any other project skill. `teamFiles/project.ts` `docFromProject` exports every `project.skills` entry with
+    `enabled: spec.enabled` and no filter on the enabled state or source; `teamFiles/serialize.ts` writes its body as plain
     `.orgai/skills/<name>/SKILL.md` (name, description, body) and lists the name in `team.json` `disabledSkills`. The
     project save that `create` makes triggers that write through the team files hook (bootstrap's `syncTeamFiles`
-    comment). So an agent with Read in that project can open the drafted body as a file before a person reviews it; it
-    is never loaded as a skill (not in `forRun`). Not changed because it is not small and local: no field marks a
-    skill as evolution's draft (source 'suggestion' is shared with drafts a person applied from an evaluation and later
-    switched off), and leaving disabled skills out of the export would change what team files share for every disabled
-    skill, how they are ingested back (a skill missing from the files is kept as local) and the files of `teamFiles/`,
-    which this change does not own. Options for the owner: a draft marker on `SkillSpec` (types.ts) that
-    `docFromProject` skips until enabled, or keeping evolution's drafts outside team files until a person enables them.
-    The data-dir copy is readable by any agent with Read or Bash anyway (next item).
+    comment). So an agent with Read in that project could open the drafted body as a file before a person reviews it; it
+    is never loaded as a skill (not in `forRun`). The smallest mitigation, in force: the evolve service
+    (`dropUnreviewableSkills`, used by `planFor` and on the reviewed-plan path of `applyCore`) drops `newSkills` with the
+    same `skill_needs_review` violation the no-`setEnabled` path reports, whenever the host's `teamFilesState` port
+    (`teamFiles.check(id).state`, already wired for the apply wait) says anything but 'off', or throws (unknown counts as
+    in use); a missing port means no team files. The plan still lists the suggestion (name in the violation message),
+    so the person sees it and can create the skill by hand. Not changed: the export itself (no field marks a skill as
+    evolution's draft: source 'suggestion' is shared with drafts a person applied from an evaluation and later switched
+    off). Checked by `evolve/service.test.ts` "skills" (team files in use: nothing created and the plan reports it; off or
+    no port: created disabled as before; a reviewed plan holding a skill is refused once team files are in use).
+    Skills a person drafts and turns off still export; a project that begins using team files later exports the
+    drafts it already holds. The data-dir copy is readable by any agent with Read or Bash anyway (next item).
   - Grants are not a confidentiality boundary (review M5): skill files sit in the data dir and the temp plugin dir,
     readable by any agent with Read or Bash. Verified by unit tests and the mock adapter only.
 - Team assistant (`src/main/capabilities/`, `CapabilityService`, capabilities:* IPC; see ARCHITECTURE.md "Capabilities

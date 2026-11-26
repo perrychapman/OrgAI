@@ -323,6 +323,86 @@ describe('afterRun ratchet', () => {
       expect(complete).toHaveBeenCalledTimes(1)
       expect(a.plan.empty).toBe(true)
     })
+    describe('waiting for a baseline (review fix N2)', () => {
+      const usable = '{"rolePatches":[{"slug":"dev","effort":"medium","reason":"cheaper"}]}'
+      /** Every listed run sits inside a rolled-back window (nothing cooled): the baseline is empty, so the plan waits. */
+      const rolledBack = async () => {
+        const { mkdirSync, writeFileSync } = await import('node:fs')
+        mkdirSync(join(dir, 'evolution'), { recursive: true })
+        const rolled = { id: 'gen_1', status: 'rolled_back', strategy: 'deterministic', fingerprint: 'x', summary: 's', appliedAt: 0, appliedAtRunCount: 0, decidedAt: NOW, evalWindowRuns: 3, baselineMetrics: {}, plan: { rolePatches: [], newSkills: [], pruneSkillIds: [] }, snapshot: { roles: [], maxConcurrentSubagents: null, postMaxConcurrentSubagents: null, edits: [], addedSkillIds: [], prunedSkills: [] } }
+        writeFileSync(join(dir, 'evolution', 'p1.json'), JSON.stringify({ version: 1, generations: [rolled], rejectedHypotheses: [] }))
+      }
+      const apply = (h: ReturnType<typeof harness>) => h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
+      it('two passes waiting on an unchanged digest make one call and give the same refusal; the plan is never the deterministic one', async () => {
+        const complete = vi.fn(async () => ({ text: usable }))
+        const h = harness({ complete })
+        await rolledBack()
+        const first = await apply(h)
+        expect(first.applied).toBe(false)
+        expect(first.reason).toContain('waiting for a baseline (0 of the 3 clean runs')
+        expect(complete).toHaveBeenCalledTimes(1)
+        expect(h.svcLedger().hybridMemo).toMatchObject({ outcome: 'waiting', at: NOW })
+        expect(h.svcLedger().hybridMemo?.detail).toContain('0 of the 3 clean runs')
+        const second = await apply(h)
+        expect(complete).toHaveBeenCalledTimes(1)
+        expect(second.applied).toBe(false)
+        expect(second.reason).toContain('waiting for a baseline (0 of the 3 clean runs')
+        expect(second.plan.rolePatches).toEqual([])
+        expect(second.plan.strategy).toBe('hybrid')
+        expect(h.state.updates).toBe(0)
+        expect(h.svcLedger().generations).toHaveLength(1)
+        expect(h.svcLedger().rejectedHypotheses).toEqual([])
+        // The unattended path says the same, still without a call.
+        const post = await h.svc.afterRun({ projectId: 'p1', evolve: true, strategy: 'hybrid' })
+        expect(complete).toHaveBeenCalledTimes(1)
+        expect(post.applied).toBeUndefined()
+        expect(post.ratchetReason).toContain('waiting for a baseline')
+        // analyze honours it too (no call, an empty plan) and never writes.
+        const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+        expect(complete).toHaveBeenCalledTimes(1)
+        expect(a.plan.empty).toBe(true)
+      })
+      it('after the baseline fills (the digest changes) the model is called again and the apply proceeds', async () => {
+        const complete = vi.fn(async () => ({ text: usable }))
+        const h = harness({ complete })
+        await rolledBack()
+        await apply(h)
+        await apply(h)
+        expect(complete).toHaveBeenCalledTimes(1)
+        const waiting = h.svcLedger().hybridMemo?.digestHash
+        // Four clean runs after the rolled-back window: a baseline of the minimum size, and a different digest.
+        h.setRuns([...cleanRuns(4, NOW + 10, { agents: [{ slug: 'dev', turns: 9, out: 4000 }, { slug: 'dev', turns: 9, out: 4000 }] }), ...cleanRuns(8, 1_000_000)])
+        const filled = await apply(h)
+        expect(complete).toHaveBeenCalledTimes(2)
+        expect(filled.applied).toBe(true)
+        expect(filled.generation).toMatchObject({ strategy: 'hybrid' })
+        expect(h.proj.roles.find((r) => r.slug === 'dev')?.effort).toBe('medium')
+        expect(waiting).toMatch(/^[0-9a-f]{64}$/)
+      })
+      it('a waiting memo older than 14 days is ignored: the model is asked again', async () => {
+        const complete = vi.fn(async () => ({ text: usable }))
+        const h = harness({ complete })
+        await rolledBack()
+        await apply(h)
+        const { writeLedger } = await import('./ratchet')
+        const l = h.svcLedger()
+        l.hybridMemo = { ...l.hybridMemo!, at: NOW - HYBRID_MEMO_MAX_AGE_MS - 1 }
+        writeLedger(dir, l)
+        const again = await apply(h)
+        expect(complete).toHaveBeenCalledTimes(2)
+        expect(again.reason).toContain('waiting for a baseline')
+        expect(h.svcLedger().hybridMemo).toMatchObject({ outcome: 'waiting', at: NOW })
+      })
+      it('a deterministic pass never stores or reads a waiting memo', async () => {
+        const complete = vi.fn(async () => ({ text: usable }))
+        const h = harness({ complete })
+        await rolledBack()
+        const res = await h.svc.apply({ projectId: 'p1' })
+        expect(res.reason).toContain('waiting for a baseline')
+        expect(h.svcLedger().hybridMemo).toBeUndefined()
+        expect(complete).not.toHaveBeenCalled()
+      })
+    })
     it('a memo older than 14 days is ignored and the model is asked again', async () => {
       const complete = vi.fn(async () => ({ text: '{}' }))
       const h = stuck(complete)
@@ -533,6 +613,47 @@ describe('skills', () => {
     const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
     expect(res.plan.newSkills).toEqual([])
     expect(res.plan.gate.violations.some((v) => v.rule === 'skill_needs_review')).toBe(true)
+    expect(h.created).toEqual([])
+  })
+  it('with .orgai/ team files in use no skill is created (a disabled one would still be exported for agents to read) and the plan reports it', async () => {
+    const h = harness({ proj: withOld(), skills: true, skillFindings: never, teamFilesState: () => 'in-sync', complete: async () => ({ text: modelAnswer }) })
+    const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
+    expect(res.plan.newSkills).toEqual([])
+    expect(h.created).toEqual([])
+    expect(h.skills.create).not.toHaveBeenCalled()
+    expect(res.plan.gate.violations.find((v) => v.rule === 'skill_needs_review')?.message).toContain('run-tests')
+    // The removal note made before it is kept beside it.
+    expect(res.plan.gate.violations.some((v) => v.rule === 'skill_prune_needs_review')).toBe(true)
+    // An analysis shows the same report, so the person still sees the suggestion.
+    const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+    expect(a.plan.newSkills).toEqual([])
+    expect(a.plan.gate.violations.some((v) => v.rule === 'skill_needs_review' && v.message.includes('run-tests'))).toBe(true)
+  })
+  it('team files in any state but off, or a state that cannot be read, also keep skills from being created; off creates them disabled as before', async () => {
+    for (const state of ['rejected', 'problem', 'pending', 'throws']) {
+      const h = harness({ proj: withOld(), skills: true, skillFindings: never, teamFilesState: () => { if (state === 'throws') throw new Error('x'); return state }, complete: async () => ({ text: modelAnswer }) })
+      const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+      expect([state, a.plan.newSkills.length]).toEqual([state, 0])
+      expect(a.plan.gate.violations.some((v) => v.rule === 'skill_needs_review')).toBe(true)
+    }
+    for (const state of ['off', undefined]) {
+      // Each pass starts from no ledger (the first one leaves a trial open).
+      rmSync(join(dir, 'evolution'), { recursive: true, force: true })
+      const h = harness({ proj: withOld(), skills: true, skillFindings: never, teamFilesState: () => state, complete: async () => ({ text: modelAnswer }) })
+      const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
+      expect(res.applied).toBe(true)
+      expect(h.created).toEqual(['run-tests'])
+      expect(h.disabled).toEqual(['sk_run-tests'])
+    }
+  })
+  it('a reviewed plan that holds a skill is not applied once team files are in use (its fingerprint changes)', async () => {
+    let state = 'off'
+    const h = harness({ proj: withOld(), skills: true, skillFindings: never, teamFilesState: () => state, complete: async () => ({ text: modelAnswer }) })
+    const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+    expect(a.plan.newSkills.map((s) => s.name)).toEqual(['run-tests'])
+    state = 'in-sync'
+    const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid', expectedFingerprint: a.plan.fingerprint })
+    expect(res.applied).toBe(false)
     expect(h.created).toEqual([])
   })
   it('drops skill changes when the host has no skills port', async () => {

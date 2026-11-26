@@ -539,7 +539,9 @@ describe('applyProposal', () => {
       svc.libraryCreate(draft('shared'))
       const entry = svc.libraryList()[0].entry
       svc.applyProposal('p1', payload(item({ scope: 'project', draft: draft('own'), roles: ['engineer'] })))
-      const snap = () => JSON.stringify({ ...store.get('p1'), updatedAt: 0 })
+      // A grant the restore puts back is a new grant to the store (ProjectStore stamps the skill's updatedAt, which only
+      // delays a never-loaded finding), so that one time is left out of the comparison.
+      const snap = () => JSON.stringify({ ...store.get('p1'), updatedAt: 0, skills: store.get('p1')?.skills?.map((s) => ({ ...s, updatedAt: 0 })) })
       const before = snap()
       const real = svc.remove.bind(svc)
       vi.spyOn(svc, 'remove').mockImplementation((i) => {

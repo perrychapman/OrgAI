@@ -419,7 +419,10 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const minWaste = typeof input.minWaste === 'number' && Number.isFinite(input.minWaste) ? Math.min(100, Math.max(0, input.minWaste)) : MIN_WASTE_DEFAULT
     // The hybrid memo is read here and only reported back (`unusable`); the caller that holds the write lock stores it.
     let unusable: { digestHash: string; outcome: HybridMemo['outcome'] } | undefined
-    let plan = await synthesize({ project, diagnosis, strategy, rejected: liveRejections(ledger), minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs, ...(ledger.hybridMemo && now() - ledger.hybridMemo.at <= HYBRID_MEMO_MAX_AGE_MS ? { memo: ledger.hybridMemo } : {}), onUnusable: (m) => { unusable = m } })
+    // The hash of the digest this pass used and the memo it hit, so a refusal for want of a baseline can be remembered.
+    let digest: { digestHash: string; memoHit: HybridMemo | undefined } | undefined
+    const memo = ledger.hybridMemo && now() - ledger.hybridMemo.at <= HYBRID_MEMO_MAX_AGE_MS ? ledger.hybridMemo : undefined
+    let plan = await synthesize({ project, diagnosis, strategy, rejected: liveRejections(ledger), minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs, ...(memo ? { memo } : {}), onUnusable: (m) => { unusable = m }, onDigest: (d) => { digest = { digestHash: d.digestHash, memoHit: d.memoHit ? memo : undefined } } })
     // The synthesizer gates without the service-only rules (one role patch per generation, no cut on a role with reports),
     // so its plan is gated again with the service's options; the trims it already carried are kept beside the new ones.
     if (plan.rolePatches.length) {
@@ -438,14 +441,37 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       plan = validateEvolutionPlan(project, { ...plan, pruneSkillIds: [] }, gate)
       plan.gate.violations.push({ rule: 'skill_prune_needs_review', message: `Unused skills not removed (remove them yourself if you agree): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
     }
-    // New skills are always created DISABLED (the skills service has an `enabled` flag, so a person turns one on after
-    // reading it). Without the setEnabled port they cannot be made safe, so they are dropped and only reported.
-    if (plan.newSkills.length && !deps.skills?.setEnabled) {
-      const dropped = plan.newSkills.map((s) => s.name)
-      plan = validateEvolutionPlan(project, { ...plan, newSkills: [] }, gate)
-      plan.gate.violations.push({ rule: 'skill_needs_review', message: `Suggested skills not applied (they need review): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
+    plan = dropUnreviewableSkills(project, plan, gate)
+    return { diagnosis, plan, minWaste, gate, unusable, digest }
+  }
+
+  /** True when the project's .orgai/ team files are in use (any state but 'off'); an unreadable state counts as in use. */
+  function teamFilesInUse(projectId: string): boolean {
+    if (!deps.teamFilesState) return false
+    try {
+      const state = deps.teamFilesState(projectId)
+      return state !== undefined && state !== 'off'
+    } catch {
+      return true
     }
-    return { diagnosis, plan, minWaste, gate, unusable }
+  }
+
+  /**
+   * New skills are always created DISABLED (the skills service has an `enabled` flag, so a person turns one on after
+   * reading it). They are dropped, and only reported ('skill_needs_review'), when that cannot be made safe: without the
+   * setEnabled port, or when the project uses .orgai/ team files, which export even a disabled skill into the repository as
+   * .orgai/skills/<name>/SKILL.md where agents can read it before a person has reviewed it.
+   */
+  function dropUnreviewableSkills(project: Project, plan: EvolutionPlan, gate: GateOptions): EvolutionPlan {
+    if (!plan.newSkills.length) return plan
+    const noPort = !deps.skills?.setEnabled
+    if (!noPort && !teamFilesInUse(project.id)) return plan
+    const dropped = plan.newSkills.map((s) => s.name)
+    const out = validateEvolutionPlan(project, { ...plan, newSkills: [] }, gate)
+    // The re-gate starts from no notes: the report-only skill removal note made above is kept.
+    out.gate.violations.push(...plan.gate.violations.filter((v) => v.rule === 'skill_prune_needs_review'))
+    out.gate.violations.push({ rule: 'skill_needs_review', message: `Suggested skills not applied (they need review${noPort ? '' : '; the .orgai/ team files would publish them before you read them'}): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
+    return out
   }
 
   async function analyze(input: EvolveAnalyzeInput): Promise<EvolveAnalyzeResult> {
@@ -503,6 +529,8 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     let plan: EvolutionPlan
     let gate: GateOptions
     let missingReviewed = false
+    // What the planning pass reported about the hybrid memo (absent when the reviewed plan was reused).
+    let made: Awaited<ReturnType<typeof planFor>> | undefined
     if (strategy === 'hybrid' && expected !== undefined) {
       const g = gateFor(project, input, ledger, src)
       diagnosis = g.diagnosis
@@ -512,12 +540,15 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
         const carried = kept.gate.violations.filter((v) => v.rule === 'skill_prune_needs_review' || v.rule === 'skill_needs_review')
         plan = validateEvolutionPlan(project, kept, gate)
         plan.gate.violations.push(...carried)
+        // Team files may have been switched on since the analysis: the plan then differs from the reviewed one (its
+        // fingerprint no longer matches) and nothing is applied.
+        plan = dropUnreviewableSkills(project, plan, gate)
       } else {
         missingReviewed = true
         plan = validateEvolutionPlan(project, { strategy: 'hybrid', fingerprint: '', rolePatches: [], newSkills: [], pruneSkillIds: [], rationale: '', expectedImpact: {}, gate: { ok: true, violations: [] }, promptChars: { before: 0, after: 0, limit: 0 }, empty: true }, gate)
       }
     } else {
-      const made = await planFor(project, input, ledger, strategy, src)
+      made = await planFor(project, input, ledger, strategy, src)
       diagnosis = made.diagnosis
       plan = made.plan
       gate = made.gate
@@ -549,7 +580,11 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     if (missingReviewed) return refuse('Nothing was applied: the hybrid plan that was reviewed is no longer available (it is kept for 30 minutes and only while the team is unchanged). Run the analysis again; no model call was made.')
     if (expected !== undefined && plan.fingerprint !== expected) return refuse(`Nothing was applied: the plan changed since it was reviewed (now ${plan.fingerprint}, reviewed ${expected.slice(0, 32)}). Run the analysis again.`)
     if (!plan.gate.ok) return refuse(`The safety gate refused this plan: ${plan.gate.violations.filter((v) => v.action === 'rejected').map((v) => v.rule).join(', ')}.`)
-    if (plan.empty) return refuse(diagnosis.wasteScore < (input.minWaste ?? MIN_WASTE_DEFAULT) ? `Waste score ${diagnosis.wasteScore} is below the threshold; nothing to change.` : 'No safe change follows from the findings.')
+    // The same telemetry was refused for want of a baseline last time: no model call was made for it, and the answer is the
+    // same refusal (the memo holds the shortfall it reported), never the deterministic plan.
+    const waitedBefore = made?.digest?.memoHit
+    if (waitedBefore?.outcome === 'waiting') return refuse(`Nothing was applied yet: waiting for a baseline (${waitedBefore.detail ?? 'too few clean runs'}). The change is not rejected; it is tried again after more runs (the model is not asked again until the runs change).`)
+    if (plan.empty) return refuse(diagnosis.wasteScore < (input.minWaste ?? MIN_WASTE_DEFAULT) ?`Waste score ${diagnosis.wasteScore} is below the threshold; nothing to change.` : 'No safe change follows from the findings.')
     // Spend rises only with the person's approval of the reviewed plan: otherwise the raising parts are held (reported
     // as 'spend_held') and only the rest applies, as the team files gate does for an edit that may spend more.
     if (plan.spendRaises.length && input.allowSpendRaise !== true) {
@@ -572,7 +607,19 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     // Every scope needs a baseline of minimum size (ratchet.ts baselineShortfall): not a rejection, the change waits for
     // more runs and may be applied on a later pass.
     const short = baselineShortfall(scope, base, input.evalWindowRuns)
-    if (short) return refuse(`Nothing was applied yet: waiting for a baseline (${short}). The change is not rejected; it is tried again after more runs.`)
+    if (short) {
+      // A plan the model made, refused only for want of a baseline: remembered by the digest's hash, so the next pass on the
+      // same telemetry does not ask the model again (a pass that already stored another outcome keeps it).
+      if (made?.digest && !made.digest.memoHit && !made.unusable && plan.strategy === 'hybrid') {
+        ledger.hybridMemo = { digestHash: made.digest.digestHash, outcome: 'waiting', at: now(), detail: short.slice(0, 300) }
+        try {
+          writeLedger(deps.dataDir, ledger)
+        } catch (e) {
+          log('warn', `Evolution could not store the hybrid memo: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      return refuse(`Nothing was applied yet: waiting for a baseline (${short}). The change is not rejected; it is tried again after more runs.`)
+    }
     scope.baseline = { patched: figuresOf(base, scope.roles), downstream: figuresOf(base, scope.downstream) }
     const snapshot = snapshotOf(project, next, plan)
     for (const id of plan.pruneSkillIds) {

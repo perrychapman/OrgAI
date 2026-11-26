@@ -67,6 +67,11 @@ export interface SynthesizeInput {
   memo?: Pick<HybridMemo, 'digestHash' | 'outcome'>
   /** Told when a model answer gave nothing usable (the caller decides whether and where to store it). */
   onUnusable?: (memo: Pick<HybridMemo, 'digestHash' | 'outcome'>) => void
+  /**
+   * Told the hash of the digest a pass is about to send (or, on a memo hit, would have sent) and whether the memo covered
+   * it, so the caller can store a later outcome (a refusal for want of a baseline) against the same hash.
+   */
+  onDigest?: (info: { digestHash: string; memoHit: boolean }) => void
 }
 
 /** sha256 hex of the digest text. */
@@ -452,14 +457,21 @@ export async function synthesize(input: SynthesizeInput): Promise<EvolutionPlan>
   if (!input.complete) return note('no model adapter, used the deterministic plan')
   const digest = buildDigest(project, diagnosis, rejected, input.cooldownSlugs)
   const digestHash = digestHashOf(digest)
-  if (input.memo && input.memo.digestHash === digestHash) {
-    // Every proposed patch was trimmed last time and nothing applied: stay with that (an empty gated plan), never
-    // apply the deterministic plan where the model call itself applied nothing.
-    if (input.memo.outcome === 'trimmed') {
+  const memoHit = !!input.memo && input.memo.digestHash === digestHash
+  try {
+    input.onDigest?.({ digestHash, memoHit })
+  } catch {
+    // memo bookkeeping must never break a plan
+  }
+  if (input.memo && memoHit) {
+    // Every proposed patch was trimmed last time (or the plan was refused for want of a baseline) and nothing applied:
+    // stay with that (an empty gated plan), never apply the deterministic plan where the model call itself applied nothing.
+    if (input.memo.outcome === 'trimmed' || input.memo.outcome === 'waiting') {
       const { maxConcurrentSubagents: _drop, ...rest } = base
       void _drop
       const emptied = validateEvolutionPlan(project, { ...rest, strategy: 'hybrid', rolePatches: [], newSkills: [], pruneSkillIds: [] }, { rejected, diagnosis, cooldownSlugs: input.cooldownSlugs })
-      return { ...emptied, rationale: safeLine(`${base.rationale} | hybrid unavailable: the same telemetry got no usable answer last time (${input.memo.outcome}), nothing applied (no model call)`, 1200) }
+      const why = input.memo.outcome === 'waiting' ? 'the same telemetry was waiting for a baseline last time' : `the same telemetry got no usable answer last time (${input.memo.outcome})`
+      return { ...emptied, rationale: safeLine(`${base.rationale} | hybrid unavailable: ${why}, nothing applied (no model call)`, 1200) }
     }
     return note(`the same telemetry got no usable answer last time (${input.memo.outcome}), used the deterministic plan (no model call)`)
   }

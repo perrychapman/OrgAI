@@ -327,6 +327,16 @@ never-loaded skill findings count only runs after the skill was added or last sw
 that every rule only adds a way to roll back was wrong (window and baseline both changed); the exact guarantee is in
 `ratchet.ts` "trial rule 2". Merged bench numbers: `org-chart-self-healing-bench.md` "Merged Step 7".
 
+Recheck fixes (2026-11-25, Reviewer recheck, none moves the deterministic bench): a skill granted by editing a role (any
+writer, through `ProjectStore.commitSave`) restarts its never-loaded count; a hybrid plan refused for want of a baseline
+is remembered by the digest hash (`waiting`), so an unchanged digest makes no new model call; a person's rollback is never
+cleared by a promotion (`clearRejected` skips `permanent`); with `.orgai/` team files in use evolution drops new skills
+instead of creating them (reported as `skill_needs_review`), because team files export even a disabled draft. Remaining
+gaps, named: the new trial rule can promote where the old one would have rolled back when harm shows only in runs that ended
+'done' without exercising the patched role; a ledger with 200 or more never-expiring rejections freezes evolution with no
+in-app way out (follow-up: a forget-rejection command, not built); a baseline that fills while the digest text is
+unchanged waits for the 14-day memo limit.
+
 ### Step 8. Evolution on the desktop (needs the Reviewer and the owner)
 
 Offer the post-run pass for desktop work runs, deterministic only, with the same unattended rule as today (spend
