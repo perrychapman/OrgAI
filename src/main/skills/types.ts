@@ -47,7 +47,8 @@ export interface SkillSnapshotInput {
 export interface SkillServiceApi {
   list(projectId: string): SkillInfo[]
   read(input: { projectId: string; skillId: string }): SkillContent
-  create(input: SkillCreateInput, source?: SkillSpec['source']): SkillMutationResult
+  /** `opts.enabled: false` stores the skill switched off in the same save (main-process callers only; default on). */
+  create(input: SkillCreateInput, source?: SkillSpec['source'], opts?: { enabled?: boolean }): SkillMutationResult
   update(input: SkillUpdateInput): SkillMutationResult
   remove(input: { projectId: string; skillId: string }): SkillMutationResult
   linkLibrary(input: SkillLinkLibraryInput): SkillMutationResult

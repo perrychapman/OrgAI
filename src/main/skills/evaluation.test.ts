@@ -335,4 +335,82 @@ describe('SkillEvaluationService reads cached run digests', () => {
     const report = await svc.evaluate('p1')
     expect(report.runsConsidered).toBe(2)
   })
+
+  // Self-healing efficiency D7: evolution reads fresh deterministic findings, not the user's last evaluation.
+  describe('fresh (deterministic findings for evolution)', () => {
+    const kinds = (f: { kind: string }[] | null): string[] => (f ?? []).map((x) => x.kind)
+    const addRun = (id: string, startedAt: number): void => {
+      const r = finished(id, startedAt)
+      store.upsert(r.summary)
+      store.saveRecord(r)
+    }
+
+    it('reflects a run finished after the last evaluation, and leaves the stored evaluation and its drafts untouched', async () => {
+      // The user's evaluation ran earlier, over three other runs (r1..r3), and drafted one suggestion.
+      const stored = await svc.evaluate('p1')
+      expect(stored.suggestions).toHaveLength(1)
+      const seqRuns = (fs: { kind: string; evidence?: { runIds?: string[] } }[] | null): string[] => (fs ?? []).find((x) => x.kind === 'repeatedToolSequence')?.evidence?.runIds ?? []
+      expect(seqRuns(stored.findings)).toEqual(expect.arrayContaining(['r1']))
+      const file = join(dataDir, 'skill-evaluations', 'p1.json')
+      const bytes = readFileSync(file, 'utf8')
+      const calls = complete.mock.calls.length
+
+      // Since then three runs finished (the host's run store now holds them).
+      fill(2)
+      addRun('d-late', 900)
+      hosted()
+      const f = svc.fresh('p1')
+      expect(seqRuns(f)).toEqual(expect.arrayContaining(['d-late', 'd0', 'd1']))
+      expect(seqRuns(f)).not.toContain('r1')
+      // The stored evaluation is as the user left it: same bytes, same findings and drafts, no model call.
+      expect(readFileSync(file, 'utf8')).toBe(bytes)
+      expect(svc.last('p1')).toEqual(stored)
+      expect(svc.last('p1')?.suggestions).toHaveLength(1)
+      expect(seqRuns(svc.last('p1')?.findings ?? [])).not.toContain('d-late')
+      expect(complete.mock.calls.length).toBe(calls)
+    })
+
+    it('writes nothing when no evaluation was ever run, and spends no tokens', () => {
+      fill(5)
+      hosted()
+      const f = svc.fresh('p1')
+      expect(kinds(f)).toContain('repeatedToolSequence')
+      expect(svc.last('p1')).toBeNull()
+      expect(complete).not.toHaveBeenCalled()
+    })
+
+    it('over 20 already-digested runs parses no record; one new run parses that run only', () => {
+      for (const r of fill(20)) expect(store.getDigest(r.summary.id)).not.toBeNull()
+      hosted()
+      const read = vi.spyOn(store, 'getRecord')
+      expect(svc.fresh('p1')?.length).toBeGreaterThan(0)
+      expect(read).not.toHaveBeenCalled()
+      addRun('fresh', 500)
+      read.mockClear()
+      svc.fresh('p1')
+      expect(read.mock.calls.map((c) => c[0])).toEqual(['fresh'])
+      // And the new digest is cached: asking again parses nothing.
+      read.mockClear()
+      svc.fresh('p1')
+      expect(read).not.toHaveBeenCalled()
+    })
+
+    it('counts finished and failed runs only: a run in progress is never digested for evolution', () => {
+      const live = finished('live', 900)
+      live.summary = { ...live.summary, status: 'running', endedAt: undefined }
+      const getRun = vi.fn(() => live)
+      const getDigest = vi.fn(() => null)
+      build({ listRuns: () => [live.summary], getRun, getDigest })
+      // Only skill quality findings (the skill itself), nothing derived from a run.
+      expect(kinds(svc.fresh('p1')).filter((k) => k === 'repeatedToolSequence' || k === 'repeatedCorrection' || k === 'neverLoaded')).toEqual([])
+      expect(getRun).not.toHaveBeenCalled()
+      expect(getDigest).not.toHaveBeenCalled()
+    })
+
+    it('is null for an unknown project or a throwing run listing (the host then falls back to the stored report)', () => {
+      expect(svc.fresh('nope')).toBeNull()
+      build({ listRuns: () => { throw new Error('index unreadable') } })
+      expect(svc.fresh('p1')).toBeNull()
+    })
+  })
 })

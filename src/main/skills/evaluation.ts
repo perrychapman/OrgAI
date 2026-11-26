@@ -113,14 +113,31 @@ export class SkillEvaluationService implements SkillEvaluationApi {
     return p
   }
 
-  private async run(projectId: string): Promise<SkillEvaluationReport> {
+  /**
+   * The deterministic findings over the newest ended work runs, computed now from the cached run digests. Token-free
+   * (no model step, no drafts) and read-only: it never writes, replaces or reads-then-rewrites the stored report that
+   * skills:evaluate saves, so the user's last evaluation and its suggestions stay exactly as they were. Cost: one digest
+   * per finished run never digested before (RunStore.getDigest caches it beside the record), nothing for the rest.
+   * Self-healing efficiency D7: evolution reads this instead of `last()`, which changes only when the user evaluates.
+   * Null when the project is unknown or the evaluation throws (the caller falls back to the stored report).
+   */
+  fresh(projectId: string): SkillFinding[] | null {
+    try {
+      const d = this.deterministic(projectId, true)
+      return [...d.quality, ...d.gaps]
+    } catch {
+      return null
+    }
+  }
+
+  /** The pure half of an evaluation: the runs as digests, the skills and the redacted quality and gap findings. */
+  private deterministic(projectId: string, endedOnly: boolean): { project: Project; runs: RunDigest[]; skills: EvalSkill[]; quality: SkillFinding[]; gaps: SkillFinding[] } {
     const project = this.deps.project(projectId)
     if (!project) throw new Error('Project not found')
-    const settings = skillEvaluationOf(project)
-
+    const ended = (s: RunSummary): boolean => s.status === 'finished' || s.status === 'error'
     const summaries = this.deps
       .listRuns(projectId)
-      .filter((r) => r.kind === 'work')
+      .filter((r) => r.kind === 'work' && (!endedOnly || ended(r)))
       .sort((a, b) => b.startedAt - a.startedAt)
       .slice(0, SKILL_EVALUATION_RUNS)
     // Digests (cached beside each record by RunStore.getDigest): a pass parses only a record never digested. A run with
@@ -129,8 +146,7 @@ export class SkillEvaluationService implements SkillEvaluationApi {
       try {
         // A run still in progress is digested on the fly from getRun (the in-memory record, never cached): the stored
         // record behind getDigest may lag it or not exist yet.
-        const ended = summary.status === 'finished' || summary.status === 'error'
-        const digest = ended ? this.deps.getDigest?.(summary.id) : null
+        const digest = ended(summary) ? this.deps.getDigest?.(summary.id) : null
         if (digest) return digest
         const rec = this.deps.getRun(summary.id)
         return digestRun(rec ?? { summary, agents: {}, transcript: [], logs: [] })
@@ -157,8 +173,12 @@ export class SkillEvaluationService implements SkillEvaluationApi {
       detail: redactEvidence(f.detail),
       ...(f.evidence ? { evidence: { ...f.evidence, ...(f.evidence.paths ? { paths: f.evidence.paths.map(redactEvidence) } : {}), ...(f.evidence.sequence ? { sequence: f.evidence.sequence.map(redactEvidence) } : {}) } } : {})
     })
-    const quality = evaluated.quality.map(redactFinding)
-    const gaps = evaluated.gaps.map(redactFinding)
+    return { project, runs, skills, quality: evaluated.quality.map(redactFinding), gaps: evaluated.gaps.map(redactFinding) }
+  }
+
+  private async run(projectId: string): Promise<SkillEvaluationReport> {
+    const { project, runs, skills, quality, gaps } = this.deterministic(projectId, false)
+    const settings = skillEvaluationOf(project)
     const report: SkillEvaluationReport = {
       projectId,
       at: Date.now(),

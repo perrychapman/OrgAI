@@ -123,6 +123,19 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     or not exist (unit tested); the Team review lists only runs with an `endedAt`, so it has no such gap. A tool name that
     is not a plain identifier (key `#<hash>`) is shown to the person as "an unnamed tool" / "a tool"; keys and evidence
     ids are unchanged (unit tested). `hideHome` also matches `\users\x` in any letter case.
+- Evolution and skills (2026-11-25, self-healing efficiency step 7, D7 and D8; facts and checks in
+  `docs/agent-notes/assistants-skills.md` "Fresh findings for evolution" and "Skills drafted by evolution"): the host's
+  evolve wiring reads `skillEvaluation.fresh(projectId)` (deterministic findings from the cached digests, no model, the
+  stored evaluation untouched) and falls back to the stored report only when that is null; `skills` is
+  `evolveSkillsPort(skills)`, which creates every evolution skill disabled, refuses any enable request and refuses to
+  delete a skill a person switched on. Because `setEnabled` now exists, `planFor` no longer drops new skills: a hybrid
+  plan's skills (at most 3, gate-checked) are applied disabled, and a rollback removes them. Spend: nothing new is
+  enabled, so no prompt grows until a person turns a skill on; no model call, tier, budget or default changed.
+  `bench:heal -- --seed 1` gave an identical `results.json` apart from `sha` and `generatedAt` before and after: the
+  bench builds its own ports (no `skills` port at all, so it still cannot exercise a drafted skill; a follow-up for the
+  bench owner). Evolution still reads digests for runs and the fresh findings still raise `skill_crystallization`;
+  moving advisory findings out of the waste score is another change and is not relied on here. Only a plan from the hybrid strategy (which the caller asks for; unchanged) carries new skills,
+  and the unattended post-run pass applies them the same way (disabled) and never enables one.
   - Cache key: `DIGEST_VERSION`, the record file's size, mtime in ns and inode, and the run's `endedAt` in the index, so a
     continued run (its record rewritten) is digested again; the transcript length the handoff suggested is capped at
     5,000 entries and could not tell a continued run at the cap (unit tested: continued run, open run not cached).
