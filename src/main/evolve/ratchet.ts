@@ -52,7 +52,8 @@ import {
   upsertScopeBlock,
   type PatchedField
 } from './plan'
-import { isInterruptedTrialRun, isTrialRun, measure, type RunLike } from './telemetry'
+import { isFailedExecOutcome, isInterruptedTrialRun, isMeasuredRun, isTrialRun, measure, type RunLike } from './telemetry'
+import { asDigest, digestKey, planLevels, type DigestAgent, type RunDigest } from '../store/runDigest'
 
 /**
  * The safety gate and the ledger of the Pareto-Ratchet. The gate is a spend and security boundary: it fails closed, it
@@ -68,6 +69,13 @@ export interface GateOptions {
   diagnosis?: Pick<TeamEvolutionDiagnosis, 'findings'> & { metrics?: Pick<EvolutionMetrics, 'runs'> }
   /** Roles patched in either of the last two decided generations: no new patch for them (anti-oscillation). */
   cooldownSlugs?: readonly string[]
+  /** Keep only the first role patch (rule 'one_patch_per_generation'). The evolve service sets it for every plan it makes or applies. */
+  onePatchPerGeneration?: boolean
+  /**
+   * Drop the sizing part of a patch that lowers a role with reports (rule 'cut_on_lead'). Such a cut acts on its reports
+   * through retries the run record does not attribute to it, so a trial cannot judge it. The evolve service sets it.
+   */
+  noCutsOnLeads?: boolean
 }
 
 /** Plan or patch keys that would widen access or spend. Their presence rejects the whole plan. */
@@ -345,6 +353,22 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
       rsOk = []
     }
     if (rsOk.length) out.removeSkills = [...new Set(rsOk)]
+    // A role with reports is never cut on a plan the service makes: the harm of a lead too weak for its reports shows up
+    // as their retries, which no trial of a few runs can see (the bench: large-chart lead cuts promoted on windows with no
+    // failed step). The whole sizing part goes (a raise riding with it is dropped too; it is held unattended anyway).
+    if (opts.noCutsOnLeads && project.roles.some((r) => r.reportsTo === role.id)) {
+      const lowers =
+        (out.tier !== undefined && !!cur && compareTier(out.tier, cur) < 0) ||
+        (out.effort !== undefined && compareEffort(out.effort, curEffort) < 0) ||
+        (!!out.staffing?.maxEffort && compareEffort(out.staffing.maxEffort, curMax) < 0) ||
+        (!!out.staffing && !!curFloor && (!out.staffing.minTier || compareTier(out.staffing.minTier, curFloor) < 0))
+      if (lowers) {
+        delete out.tier
+        delete out.effort
+        delete out.staffing
+        trim('cut_on_lead', `${slug} has reports: a cut would act on them in ways a trial cannot measure, so its tier, effort and staffing stay; change them yourself if you agree`, slug)
+      }
+    }
     if (rawPatch.prompt !== undefined) {
       const pr = rawPatch.prompt
       if (typeof pr !== 'string' || !pr.trim()) trim('prompt_empty', 'an empty prompt is never set', slug)
@@ -400,6 +424,14 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     trim('prompt_bloat', `${patches[worst].slug}'s prompt would take the chart above ${limit} characters`, patches[worst].slug)
     delete patches[worst].prompt
     if (patches[worst].tier === undefined && patches[worst].effort === undefined && !patches[worst].staffing && !patches[worst].addTools && !patches[worst].removeTools && !patches[worst].removeSkills) patches.splice(worst, 1)
+  }
+
+  // ---- one role patch per generation (the service always asks for it): a trial judges one role's change on that role's
+  // own figures, so a harmful cut never rides with a good change (the bench, large:effort-high gen_2). The first patch
+  // that survived every rule above is kept; the rest wait for later generations.
+  if (opts.onePatchPerGeneration) {
+    for (const extra of patches.slice(1)) trim('one_patch_per_generation', `${extra.slug} waits for a later generation: one role changes per generation, so each change is judged on its own`, extra.slug)
+    patches.splice(1)
   }
 
   // ---- skills
@@ -506,13 +538,76 @@ export interface StoredGeneration extends EvolutionGeneration {
   snapshot: GenerationSnapshot
   /** Measured work runs the store listed when the generation was decided (audit; the cooldown counts runs by time). */
   decidedAtRunCount?: number
+  /**
+   * What the trial judges, fixed when the generation was applied (trial rule 2, 2026-11-25). Absent on a generation
+   * applied before that rule (or dropped by the shape check): the service derives it from the plan and the snapshot when
+   * it settles the trial. Never crosses IPC (pub / toHistory strip it).
+   */
+  scope?: TrialScope
+}
+
+/** A role a trial judges, as the chart held it when the generation was applied. */
+export interface TrialRole {
+  id: string
+  slug: string
+  /** The chart's root: it runs in every run, and run digests keep no figures of their own for it. */
+  root?: true
+}
+
+/** Summed figures of a set of roles over a set of runs (rates are taken when compared). */
+export interface RoleFigures {
+  /** Runs in which at least one of the roles ran. */
+  runs: number
+  agents: number
+  /** Agents that passed first time (telemetry's first pass; none counted in a run that did not complete). */
+  firstPass: number
+  /** Agents that ended in error. */
+  errors: number
+  /** Failed delegation receipts naming one of the roles. */
+  failedReceipts: number
+  /** Staffing assignments of the roles, and how many of them were escalations. */
+  assignments: number
+  escalated: number
+  costUsd: number
+  turns: number
+}
+
+export interface TrialScope {
+  rule: 2
+  /** The roles the plan patched. Empty = no role patch (skills or the concurrency limit only). */
+  roles: TrialRole[]
+  /** Roles below a patched role in the chart (its reports, transitively), not themselves patched. */
+  downstream: TrialRole[]
+  /** Roles with an open tier_underprovisioned finding when the generation was applied (an error the engine flagged). */
+  flagged: TrialRole[]
+  /** Effective concurrency limit before and after, when the plan changed it. */
+  limit?: { before: number; after: number }
+  /** The patched and downstream roles' figures over the clean baseline runs (see baselineRuns). */
+  baseline: { patched: RoleFigures; downstream: RoleFigures }
+}
+
+/**
+ * A rejected hypothesis as the ledger keeps it. The shared fields are what history shows; the rest (absent in a ledger
+ * written before 2026-11-25) drive expiry and back-off: see liveRejections.
+ */
+export interface StoredRejection extends EvolutionRejectedHypothesis {
+  /** Roles the rejected change patched; expiry counts runs in which one of them ran. Absent = every measured run counts. */
+  roles?: TrialRole[]
+  /** Consecutive rejections of this fingerprint (1 = first). Absent = 1. */
+  strikes?: number
+  /** Exercised runs counted since the rejection. Absent = 0. */
+  seen?: number
+  /** startedAt of the newest run counted (runs started after it are counted next). Absent = `at`. */
+  countedUntil?: number
+  /** A person rolled it back: it never expires. */
+  permanent?: boolean
 }
 
 export interface Ledger {
   version: 1
   projectId: string
   generations: StoredGeneration[]
-  rejectedHypotheses: EvolutionRejectedHypothesis[]
+  rejectedHypotheses: StoredRejection[]
   /** The newest hybrid answer that gave nothing usable (only a hash of the digest text, never the text). Absent in older ledgers. */
   hybridMemo?: HybridMemo
 }
@@ -543,10 +638,77 @@ export function ledgerPath(dataDir: string, projectId: string): string {
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 
+/** Most roles a trial scope or a rejection keeps (a chart this size is far past any real team). */
+const MAX_SCOPE_ROLES = 100
+const ROLE_KEY_MAX = 128
+
+function sanitizeRoles(v: unknown): TrialRole[] | undefined {
+  if (!Array.isArray(v) || v.length > MAX_SCOPE_ROLES) return undefined
+  const out: TrialRole[] = []
+  for (const r of v) {
+    if (!isObj(r) || typeof r.id !== 'string' || typeof r.slug !== 'string' || !r.id || r.id.length > ROLE_KEY_MAX || r.slug.length > ROLE_KEY_MAX) return undefined
+    if (r.root !== undefined && r.root !== true) return undefined
+    out.push({ id: r.id, slug: r.slug, ...(r.root === true ? { root: true as const } : {}) })
+  }
+  return out
+}
+
+const FIGURE_KEYS = ['runs', 'agents', 'firstPass', 'errors', 'failedReceipts', 'assignments', 'escalated', 'costUsd', 'turns'] as const
+function sanitizeFigures(v: unknown): RoleFigures | undefined {
+  if (!isObj(v)) return undefined
+  const out = {} as RoleFigures
+  for (const k of FIGURE_KEYS) {
+    const n = v[k]
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1e12) return undefined
+    out[k] = n
+  }
+  return out
+}
+
+/** Shape-check a stored trial scope; anything off = undefined (the service then derives the scope from the plan). */
+function sanitizeScope(v: unknown): TrialScope | undefined {
+  if (!isObj(v) || v.rule !== 2 || !isObj(v.baseline)) return undefined
+  const roles = sanitizeRoles(v.roles)
+  const downstream = sanitizeRoles(v.downstream)
+  const flagged = sanitizeRoles(v.flagged)
+  const patched = sanitizeFigures(v.baseline.patched)
+  const down = sanitizeFigures(v.baseline.downstream)
+  if (!roles || !downstream || !flagged || !patched || !down) return undefined
+  let limit: TrialScope['limit']
+  if (v.limit !== undefined) {
+    const l = v.limit
+    const ok = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_CONCURRENT_SUBAGENTS_LIMIT
+    if (!isObj(l) || !ok(l.before) || !ok(l.after)) return undefined
+    limit = { before: l.before, after: l.after }
+  }
+  return { rule: 2, roles, downstream, flagged, ...(limit ? { limit } : {}), baseline: { patched, downstream: down } }
+}
+
+/** A stored rejection with its expiry fields shape-checked (a bad field is dropped and reads as its default). */
+function sanitizeRejection(r: EvolutionRejectedHypothesis & Record<string, unknown>): StoredRejection {
+  const out: StoredRejection = { fingerprint: r.fingerprint, summary: r.summary, reason: r.reason, at: r.at, ...(typeof r.generationId === 'string' ? { generationId: r.generationId } : {}) }
+  const roles = r.roles === undefined ? undefined : sanitizeRoles(r.roles)
+  if (roles) out.roles = roles
+  else if (r.roles !== undefined) out.roles = [] // a malformed role list counts no run, so the rejection never expires (fails closed)
+  if (typeof r.strikes === 'number' && Number.isInteger(r.strikes) && r.strikes >= 1 && r.strikes <= REJECTION_MAX_STRIKES) out.strikes = r.strikes
+  if (typeof r.seen === 'number' && Number.isInteger(r.seen) && r.seen >= 0 && r.seen <= 1_000_000) out.seen = r.seen
+  if (typeof r.countedUntil === 'number' && Number.isFinite(r.countedUntil)) out.countedUntil = r.countedUntil
+  if (r.permanent === true) out.permanent = true
+  return out
+}
+
 function sanitizeLedger(raw: unknown, projectId: string): Ledger | null {
   if (!isObj(raw) || raw.version !== 1 || !Array.isArray(raw.generations) || !Array.isArray(raw.rejectedHypotheses)) return null
   const gens = raw.generations.filter((g): g is StoredGeneration => isObj(g) && typeof g.id === 'string' && (g.status === 'trial' || g.status === 'promoted' || g.status === 'rolled_back') && isObj(g.snapshot) && isObj(g.baselineMetrics) && isObj(g.plan))
-  const rej = raw.rejectedHypotheses.filter((r): r is EvolutionRejectedHypothesis => isObj(r) && typeof r.fingerprint === 'string' && typeof r.summary === 'string' && typeof r.reason === 'string' && typeof r.at === 'number')
+  for (const g of gens) {
+    if (g.scope === undefined) continue
+    const s = sanitizeScope(g.scope)
+    if (s) g.scope = s
+    else delete g.scope
+  }
+  const rej = raw.rejectedHypotheses
+    .filter((r): r is EvolutionRejectedHypothesis & Record<string, unknown> => isObj(r) && typeof r.fingerprint === 'string' && typeof r.summary === 'string' && typeof r.reason === 'string' && typeof r.at === 'number')
+    .map(sanitizeRejection)
   const keep = new Set(gens.slice(-MAX_GENERATIONS))
   const trial = gens.find((g) => g.status === 'trial')
   if (trial) keep.add(trial)
@@ -605,9 +767,18 @@ export function writeLedger(dataDir: string, ledger: Ledger): void {
 
 export const trialOf = (l: Ledger): StoredGeneration | undefined => l.generations.find((g) => g.status === 'trial')
 
-/** The ledger as callers see it: no snapshots. */
+/** A generation as callers see it: no snapshot, no trial scope. */
+export function publicGeneration(g: StoredGeneration): EvolutionGeneration {
+  const { snapshot: _s, scope: _scope, ...rest } = g
+  return rest
+}
+
+/** A rejection as callers see it (the shared fields only). */
+const publicRejection = (r: StoredRejection): EvolutionRejectedHypothesis => ({ fingerprint: r.fingerprint, summary: r.summary, reason: r.reason, ...(r.generationId !== undefined ? { generationId: r.generationId } : {}), at: r.at })
+
+/** The ledger as callers see it: no snapshots, and only the rejections that still block (liveRejections). */
 export function toHistory(l: Ledger): EvolutionHistory {
-  const generations: EvolutionGeneration[] = l.generations.slice(-MAX_GENERATIONS).map(({ snapshot: _s, ...g }) => g)
+  const generations: EvolutionGeneration[] = l.generations.slice(-MAX_GENERATIONS).map(publicGeneration)
   const champion = [...l.generations].reverse().find((g) => g.status === 'promoted')
   const trial = trialOf(l)
   return {
@@ -615,7 +786,7 @@ export function toHistory(l: Ledger): EvolutionHistory {
     generations,
     ...(champion ? { championId: champion.id } : {}),
     ...(trial ? { trialId: trial.id } : {}),
-    rejectedHypotheses: l.rejectedHypotheses.slice(-MAX_REJECTED)
+    rejectedHypotheses: liveRejections(l).slice(-MAX_REJECTED)
   }
 }
 
@@ -624,8 +795,87 @@ export const nextGenerationId = (l: Ledger): string => {
   return `gen_${max + 1}`
 }
 
-export function addRejected(l: Ledger, r: Omit<EvolutionRejectedHypothesis, 'summary' | 'reason'> & { summary: string; reason: string }): void {
-  l.rejectedHypotheses = [...l.rejectedHypotheses.filter((x) => !(x.fingerprint === r.fingerprint && x.reason === r.reason)), { ...r, summary: cap(r.summary, 240), reason: cap(r.reason, 240) }].slice(-MAX_REJECTED)
+// ---------- rejection expiry and back-off -------------------------------------------------------------------------------
+
+/**
+ * A rejection made by a trial expires once the roles it patched have run in this many measured runs since it (the first
+ * rejection), so a correct change rolled back by noise can be tried again; the retry is an ordinary trial. Consecutive
+ * rejections of the same fingerprint back off: the second waits REJECTION_EXPIRY_RUNS * 2 exercised runs, the third and
+ * later never expire. A person's rollback never expires. A rejection without role names (a ledger written before
+ * 2026-11-25) counts every measured run.
+ */
+export const REJECTION_EXPIRY_RUNS = 20
+export const REJECTION_MAX_STRIKES = 3
+
+/** Exercised runs after which a rejection with this many strikes stops blocking (Infinity = never). */
+export function rejectionExpiry(r: Pick<StoredRejection, 'strikes' | 'permanent'>): number {
+  const s = r.strikes ?? 1
+  if (r.permanent || s >= REJECTION_MAX_STRIKES) return Infinity
+  return REJECTION_EXPIRY_RUNS * 2 ** (s - 1)
+}
+
+export const isLiveRejection = (r: StoredRejection): boolean => (r.seen ?? 0) < rejectionExpiry(r)
+
+/** The rejections that still block a plan or patch (what the gate, the synthesizer and history read). */
+export function liveRejections(l: Pick<Ledger, 'rejectedHypotheses'>): EvolutionRejectedHypothesis[] {
+  return l.rejectedHypotheses.filter(isLiveRejection).map(publicRejection)
+}
+
+/**
+ * Record a rejected hypothesis. One entry per fingerprint: a repeat replaces the old entry and adds a strike (capped at
+ * REJECTION_MAX_STRIKES), and its run count starts again.
+ */
+export function addRejected(l: Ledger, r: Omit<EvolutionRejectedHypothesis, 'summary' | 'reason'> & { summary: string; reason: string; roles?: readonly TrialRole[]; permanent?: boolean }): void {
+  const prev = l.rejectedHypotheses.find((x) => x.fingerprint === r.fingerprint)
+  const strikes = Math.min(REJECTION_MAX_STRIKES, (prev ? (prev.strikes ?? 1) : 0) + 1)
+  const entry: StoredRejection = {
+    fingerprint: r.fingerprint,
+    summary: cap(r.summary, 240),
+    reason: cap(r.reason, 240),
+    ...(r.generationId !== undefined ? { generationId: r.generationId } : {}),
+    at: r.at,
+    ...(r.roles ? { roles: r.roles.slice(0, MAX_SCOPE_ROLES).map((x) => ({ id: x.id, slug: x.slug, ...(x.root ? { root: true as const } : {}) })) } : {}),
+    strikes,
+    seen: 0,
+    countedUntil: r.at,
+    ...(r.permanent || prev?.permanent ? { permanent: true } : {})
+  }
+  l.rejectedHypotheses = [...l.rejectedHypotheses.filter((x) => x.fingerprint !== r.fingerprint), entry].slice(-MAX_REJECTED)
+}
+
+/** Drop the rejections of these fingerprints (a change that has now passed its trial starts from no strikes). */
+export function clearRejected(l: Ledger, fingerprints: readonly string[]): boolean {
+  const drop = new Set(fingerprints)
+  const before = l.rejectedHypotheses.length
+  l.rejectedHypotheses = l.rejectedHypotheses.filter((x) => !drop.has(x.fingerprint))
+  return l.rejectedHypotheses.length !== before
+}
+
+/** The startedAt after which a rejection still has runs to count, or undefined when it no longer counts (expired or permanent). */
+export function rejectionCountsFrom(r: StoredRejection): number | undefined {
+  if (!isLiveRejection(r) || rejectionExpiry(r) === Infinity) return undefined
+  return r.countedUntil ?? r.at
+}
+
+/**
+ * Count, for every rejection that can still expire, the measured runs started after its `countedUntil` in which one of
+ * its roles ran (any measured run when it names none), and move `countedUntil` to the newest run looked at. Mutates;
+ * true when anything changed. Runs may be records or digests, in any order.
+ */
+export function ageRejections(l: Pick<Ledger, 'rejectedHypotheses'>, runs: readonly RunLike[]): boolean {
+  const measured = runs.filter(isMeasuredRun).map(asDigest)
+  let changed = false
+  for (const r of l.rejectedHypotheses) {
+    const from = rejectionCountsFrom(r)
+    if (from === undefined) continue
+    const fresh = measured.filter((d) => d.summary.startedAt > from)
+    if (!fresh.length) continue
+    const uses = r.roles === undefined ? () => true : roleMatcher(r.roles).ran
+    r.seen = (r.seen ?? 0) + fresh.filter(uses).length
+    r.countedUntil = Math.max(...fresh.map((d) => d.summary.startedAt))
+    changed = true
+  }
+  return changed
 }
 
 // ---------- snapshots and restore ---------------------------------------------------------------------------------------
@@ -885,25 +1135,286 @@ export function compareMetrics(baseline: EvolutionMetrics, trial: EvolutionMetri
   return { regressed: false, reason: `first-pass ${baseline.firstPassRate} to ${trial.firstPassRate}, errors ${baseline.errorRunRate} to ${trial.errorRunRate}${note ? `; ${note}` : ''}` }
 }
 
-export type TrialDecision = { state: 'pending'; have: number; need: number } | { state: 'decided'; regressed: boolean; trialMetrics: EvolutionMetrics; reason: string }
+export type TrialDecision =
+  | { state: 'pending'; have: number; need: number; runs: number; cap: number }
+  | { state: 'decided'; regressed: boolean; trialMetrics: EvolutionMetrics; reason: string; inconclusive?: boolean }
+
+// ---------- trial rule 2: judge the change, not the week (2026-11-25) ---------------------------------------------------
+//
+// A trial counts only runs that EXERCISED the change: a run in which a patched role ran (matched by role id, else slug);
+// for a concurrency change, a run whose observed peak parallelism reached the lower of the old and new limit or whose
+// plan was wider than it (the limit could bind); with neither a role patch nor a limit change (skills only), every run.
+// An interrupted trial run always counts (what it would have run is unknown) and fails the trial as before. The trial is
+// decided on the first `evalWindowRuns` (default 3, 1..10) exercised runs that started at or after the apply; if
+// trialRunCap (5 x that, at most 50) trial runs pass without them, it is rolled back as inconclusive, never promoted.
+//
+// The baseline is fixed at apply time: the newest BASELINE_RUNS measured runs among the newest 50 that exercised the
+// change, leaving out (a) every run that started inside the window of a rolled-back generation (apply to decision) and
+// (b) every error run (status error, paused, failed or interrupted exec outcome) in which a role the engine had flagged
+// as under-provisioned erred, failed a receipt or was escalated. A plan whose patched roles ran in no such run is not
+// applied.
+//
+// Regressed (rolled back) when any of these holds, every threshold strict (">"), rates rounded to 6 places:
+//   1. the patched roles' own figures (all their agents in the window against the baseline): first pass fell more than
+//      0.15; errors (max of error agents and failed receipts) per agent rose more than 0.15; escalations per assignment
+//      rose more than 0.15; or, without a better first pass, cost per agent (turns per agent when cost is unknown on
+//      either side) rose more than 25%;
+//   2. downstream (roles below a patched role): first pass fell, or errors or escalations rose, more than 0.15;
+//   3. the whole team over the window runs (compareMetrics against the baseline runs' metrics, today's rule: first pass
+//      fell more than 0.15, error-run rate rose more than 0.2, cost x time worse than 25% without a better first pass),
+//      leaving out runs whose only flagged errors come from a flagged role that is neither patched nor downstream;
+//   4. a window run was interrupted (as before);
+//   5. inconclusive: the patched roles have no baseline agent or no window agent, every window run was left out of 3,
+//      or the cap was reached.
+// Otherwise it is promoted. Each rule only adds a way to roll back to today's whole-team rule, so a cut is never easier
+// to promote than before.
+
+/** A trial still short of its exercised runs is rolled back (inconclusive) once this many times `need` trial runs passed. */
+export const TRIAL_RUN_CAP_FACTOR = 5
+export const trialRunCap = (need: unknown): number => Math.min(50, TRIAL_RUN_CAP_FACTOR * clampWindow(need))
+/** Most exercised runs a trial's baseline holds. */
+export const BASELINE_RUNS = 10
+/** Measured runs searched for the baseline (newest first). */
+export const BASELINE_SEARCH_RUNS = 50
+export const MAX_ROLE_FIRST_PASS_DROP = 0.15
+export const MAX_ROLE_FAILURE_RISE = 0.15
+export const MAX_ROLE_COST_WORSENING = 0.25
+
+export const emptyFigures = (): RoleFigures => ({ runs: 0, agents: 0, firstPass: 0, errors: 0, failedReceipts: 0, assignments: 0, escalated: 0, costUsd: 0, turns: 0 })
+
+/** A trial with no role patch and no limit change: every run counts and only the whole-team rule applies. */
+const EVERY_RUN_SCOPE: TrialScope = { rule: 2, roles: [], downstream: [], flagged: [], baseline: { patched: emptyFigures(), downstream: emptyFigures() } }
 
 /**
- * Decide an active trial. The window is the first `evalWindowRuns` finished work runs that STARTED at or after the
- * generation was applied (a run in flight at apply time ran on the old chart, so it never counts; this is equivalent to
- * counting runs since `appliedAtRunCount` and does not depend on how many records the store lists). Pure. `runs` are
- * run digests (RunStore.getDigest) or records (digested here), so settling a trial needs no full record.
+ * Matches a digest's agents, assignments and receipts to roles (digestKey of the role id, or of the slug for agents).
+ * `ran`: one of the roles ran in the run; always true when the set holds the root (the root runs in every run).
  */
-export function evaluateActiveTrial(gen: Pick<EvolutionGeneration, 'appliedAt' | 'evalWindowRuns' | 'baselineMetrics'>, runs: readonly RunLike[], limit = 8): TrialDecision {
+export function roleMatcher(roles: readonly TrialRole[]): { agent: (a: DigestAgent) => boolean; id: (key: string) => boolean; ran: (r: RunLike) => boolean } {
+  const ids = new Set(roles.map((r) => digestKey(r.id)))
+  const slugs = new Set(roles.map((r) => digestKey(r.slug)).filter(Boolean))
+  const agent = (a: DigestAgent): boolean => (a.roleId !== undefined && ids.has(a.roleId)) || slugs.has(a.slug)
+  const root = roles.some((r) => r.root)
+  return { agent, id: (k) => ids.has(k), ran: (r) => root || asDigest(r).agents.some(agent) }
+}
+
+const incompleteRun = (d: RunDigest): boolean => d.summary.status === 'paused' || isFailedExecOutcome(d.summary.execOutcome) || isInterruptedTrialRun(d)
+const errorRun = (d: RunDigest): boolean => d.summary.status === 'error' || incompleteRun(d)
+
+/** The roles' figures over these runs. */
+export function figuresOf(runs: readonly RunLike[], roles: readonly TrialRole[]): RoleFigures {
+  const m = roleMatcher(roles)
+  const f = emptyFigures()
+  for (const d of runs.map(asDigest)) {
+    const incomplete = incompleteRun(d)
+    let ran = false
+    for (const a of d.agents) {
+      if (!m.agent(a)) continue
+      ran = true
+      f.agents++
+      if (!incomplete && a.firstPass) f.firstPass++
+      if (a.error) f.errors++
+      f.costUsd += a.costUsd
+      f.turns += a.turns
+    }
+    for (const x of d.assignments) {
+      if (!m.id(x.roleId)) continue
+      f.assignments++
+      if (x.escalated) f.escalated++
+    }
+    for (const id of d.failedReceiptRoleIds) if (m.id(id)) f.failedReceipts++
+    if (ran) f.runs++
+  }
+  f.costUsd = r6(f.costUsd)
+  return f
+}
+
+/** An error run in which one of these (flagged) roles erred, failed a receipt or was escalated. */
+export function isFlaggedErrorRun(r: RunLike, flagged: readonly TrialRole[]): boolean {
+  if (!flagged.length) return false
+  const d = asDigest(r)
+  if (!errorRun(d)) return false
+  const m = roleMatcher(flagged)
+  return d.agents.some((a) => m.agent(a) && a.error) || d.failedReceiptRoleIds.some(m.id) || d.assignments.some((x) => x.escalated && m.id(x.roleId))
+}
+
+/** Whether a run exercised the change a scope describes (the rule above). */
+export function exercises(r: RunLike, scope: Pick<TrialScope, 'roles' | 'limit'>): boolean {
+  const d = asDigest(r)
+  if (isInterruptedTrialRun(d)) return true
+  if (!scope.roles.length && !scope.limit) return true
+  if (scope.roles.length && roleMatcher(scope.roles).ran(d)) return true
+  if (scope.limit) {
+    const low = Math.min(scope.limit.before, scope.limit.after)
+    if (d.shape.maxParallel >= low) return true
+    if (d.plan && planLevels(d.plan.steps, d.plan.overlaps).width > low) return true
+  }
+  return false
+}
+
+/** [appliedAt, decidedAt] of every rolled-back generation: runs started inside it never enter a baseline. */
+export function rolledBackWindows(l: Pick<Ledger, 'generations'>): [number, number][] {
+  return l.generations
+    .filter((g) => g.status === 'rolled_back' && typeof g.appliedAt === 'number' && typeof g.decidedAt === 'number')
+    .map((g) => [g.appliedAt, g.decidedAt as number])
+}
+
+/**
+ * The clean baseline of a scope: the newest BASELINE_RUNS measured runs (started before `before`, when given) that
+ * exercised it, outside every rolled-back window and without a flagged role's error run. Newest first.
+ */
+export function baselineRuns<T extends RunLike>(scope: Pick<TrialScope, 'roles' | 'limit' | 'flagged'>, runs: readonly T[], windows: readonly [number, number][], before?: number): T[] {
+  return runs
+    .filter(isMeasuredRun)
+    .filter((r) => before === undefined || r.summary.startedAt < before)
+    .filter((r) => !windows.some(([a, b]) => r.summary.startedAt >= a && r.summary.startedAt <= b))
+    .filter((r) => !isFlaggedErrorRun(r, scope.flagged) && exercises(r, scope))
+    .sort((a, b) => b.summary.startedAt - a.summary.startedAt)
+    .slice(0, BASELINE_RUNS)
+}
+
+/** Roles below any of these role ids (their reportsTo chain passes through one), not themselves in it. */
+function downstreamOf(roles: readonly Pick<Role, 'id' | 'slug' | 'reportsTo'>[], ids: ReadonlySet<string>): TrialRole[] {
+  const byId = new Map(roles.map((r) => [r.id, r]))
+  const out: TrialRole[] = []
+  for (const r of roles) {
+    if (ids.has(r.id)) continue
+    const seen = new Set<string>()
+    let cur = r.reportsTo
+    while (cur !== null && cur !== undefined && !seen.has(cur)) {
+      if (ids.has(cur)) {
+        out.push({ id: r.id, slug: r.slug })
+        break
+      }
+      seen.add(cur)
+      cur = byId.get(cur)?.reportsTo ?? null
+    }
+  }
+  return out
+}
+
+/**
+ * The scope of a plan applied to `chart` (the roles as they were before the change; `project` gives the concurrency
+ * limit): patched roles, downstream roles, flagged roles and the limit change. The baseline is left empty for the caller.
+ * Undefined when the plan's role patches are unreadable.
+ */
+export function scopeOf(chart: readonly Pick<Role, 'id' | 'slug' | 'reportsTo'>[], project: Pick<Project, 'maxConcurrentSubagents'>, plan: Pick<EvolutionPlan, 'rolePatches' | 'maxConcurrentSubagents'>, diagnosis?: Pick<TeamEvolutionDiagnosis, 'findings'>): TrialScope | undefined {
+  if (!Array.isArray(chart) || !plan || !Array.isArray(plan.rolePatches)) return undefined
+  const bySlug = new Map(chart.filter((r) => isObj(r) && typeof r.id === 'string' && typeof r.slug === 'string').map((r) => [r.slug, r]))
+  const roles: TrialRole[] = []
+  for (const p of plan.rolePatches) {
+    const r = isObj(p) && typeof p.slug === 'string' ? bySlug.get(p.slug) : undefined
+    if (!r) return undefined
+    if (!roles.some((x) => x.id === r.id)) roles.push({ id: r.id, slug: r.slug, ...(r.reportsTo === null ? { root: true as const } : {}) })
+  }
+  const ids = new Set(roles.map((r) => r.id))
+  const flagged = [...new Set((diagnosis?.findings ?? []).filter((f) => f.kind === 'tier_underprovisioned' && f.roleSlug).map((f) => f.roleSlug as string))]
+    .map((s) => bySlug.get(s))
+    .filter((r): r is Pick<Role, 'id' | 'slug' | 'reportsTo'> => !!r && !ids.has(r.id))
+    .map((r) => ({ id: r.id, slug: r.slug }))
+  const limit =
+    typeof plan.maxConcurrentSubagents === 'number' ? { before: effectiveConcurrency(project), after: effectiveConcurrency({ maxConcurrentSubagents: plan.maxConcurrentSubagents }) } : undefined
+  return {
+    rule: 2,
+    roles: roles.slice(0, MAX_SCOPE_ROLES),
+    downstream: downstreamOf([...bySlug.values()], ids).slice(0, MAX_SCOPE_ROLES),
+    flagged: flagged.slice(0, MAX_SCOPE_ROLES),
+    ...(limit && limit.before !== limit.after ? { limit } : {}),
+    baseline: { patched: emptyFigures(), downstream: emptyFigures() }
+  }
+}
+
+const rate = (n: number, d: number): number => (d > 0 ? r6(n / d) : 0)
+const pts = (x: number): number => Math.round(x * 100)
+
+/** Rule 1 (`own`) or rule 2 of the decision above on two sets of figures; the reason when it regressed, else undefined. */
+function figuresRegressed(what: string, b: RoleFigures, t: RoleFigures, own: boolean): string | undefined {
+  if (!b.agents || !t.agents) return undefined
+  const bfp = rate(b.firstPass, b.agents)
+  const tfp = rate(t.firstPass, t.agents)
+  if (r6(bfp - tfp) > MAX_ROLE_FIRST_PASS_DROP) return `${what}: first pass fell ${pts(bfp - tfp)} points (${bfp} to ${tfp})`
+  const bErr = rate(Math.max(b.errors, b.failedReceipts), b.agents)
+  const tErr = rate(Math.max(t.errors, t.failedReceipts), t.agents)
+  if (r6(tErr - bErr) > MAX_ROLE_FAILURE_RISE) return `${what}: errors per agent rose ${pts(tErr - bErr)} points (${bErr} to ${tErr})`
+  if (b.assignments > 0 && t.assignments > 0) {
+    const bEsc = rate(b.escalated, b.assignments)
+    const tEsc = rate(t.escalated, t.assignments)
+    if (r6(tEsc - bEsc) > MAX_ROLE_FAILURE_RISE) return `${what}: escalations rose ${pts(tEsc - bEsc)} points (${bEsc} to ${tEsc})`
+  }
+  if (own && r6(tfp - bfp) <= 0) {
+    const costOk = b.costUsd > 0 && t.costUsd > 0
+    const bx = costOk ? b.costUsd / b.agents : b.turns / b.agents
+    const tx = costOk ? t.costUsd / t.agents : t.turns / t.agents
+    if (bx > 0 && tx > 0 && r6(tx / bx - 1) > MAX_ROLE_COST_WORSENING) return `${what}: ${costOk ? 'cost' : 'turns'} per agent rose ${pts(tx / bx - 1)}% without a better first pass`
+  }
+  return undefined
+}
+
+const figuresLine = (what: string, b: RoleFigures, t: RoleFigures): string =>
+  `${what}: first pass ${rate(b.firstPass, b.agents)} to ${rate(t.firstPass, t.agents)}, errors ${rate(Math.max(b.errors, b.failedReceipts), b.agents)} to ${rate(Math.max(t.errors, t.failedReceipts), t.agents)}, cost per agent ${rate(b.costUsd, b.agents)} to ${rate(t.costUsd, t.agents)} (${b.agents} to ${t.agents} agents)`
+
+/** Rules 1 to 3 and the inconclusive cases of 5 on a full window (newest last or any order). Pure. */
+export function judgeTrial(scope: TrialScope, baselineMetrics: EvolutionMetrics, windowRuns: readonly RunLike[]): { regressed: boolean; reason: string; inconclusive?: boolean } {
+  const parts: string[] = []
+  // The root keeps no figures of its own in a run digest: a root patch is judged on its reports and the team (rules 2, 3).
+  const measured = scope.roles.filter((r) => !r.root)
+  if (measured.length < scope.roles.length) parts.push('the root\'s own figures are not measured')
+  if (measured.length) {
+    const b = scope.baseline.patched
+    const t = figuresOf(windowRuns, measured)
+    if (!b.agents) return { regressed: true, inconclusive: true, reason: 'inconclusive: no clean run before the change used the changed role, so there is nothing to compare with' }
+    if (!t.agents) return { regressed: true, inconclusive: true, reason: 'inconclusive: the changed role ran in none of the trial runs' }
+    const r = figuresRegressed('the changed role', b, t, true)
+    if (r) return { regressed: true, reason: r }
+    parts.push(figuresLine('changed role', b, t))
+  }
+  if (scope.downstream.length) {
+    const b = scope.baseline.downstream
+    const t = figuresOf(windowRuns, scope.downstream)
+    const r = figuresRegressed('its reports', b, t, false)
+    if (r) return { regressed: true, reason: r }
+    if (b.agents && t.agents) parts.push(figuresLine('reports', b, t))
+  }
+  const near = new Set([...scope.roles, ...scope.downstream].map((r) => r.id))
+  const unrelated = scope.flagged.filter((r) => !near.has(r.id))
+  const guard = windowRuns.filter((r) => !isFlaggedErrorRun(r, unrelated))
+  if (!guard.length) return { regressed: true, inconclusive: true, reason: 'inconclusive: every trial run carried the errors of an open, unrelated defect' }
+  const team = compareMetrics(baselineMetrics, measure(guard, 8, { includeInterrupted: true }))
+  if (team.regressed) return { regressed: true, reason: `team: ${team.reason}` }
+  parts.push(`team: ${team.reason}`)
+  return { regressed: false, reason: parts.join('; ') }
+}
+
+/**
+ * Decide an active trial (trial rule 2, above). Only runs that STARTED at or after the apply count (a run in flight at
+ * apply time ran on the old chart). `gen.scope` absent = every run counts and only the whole-team rule applies (the
+ * service always gives a scope; this keeps the function total). `opts.trialRuns`: how many trial runs the caller knows
+ * started since the apply, when it handed over only a prefix of them. Pure. `runs` are run digests or records.
+ */
+export function evaluateActiveTrial(gen: Pick<StoredGeneration, 'appliedAt' | 'evalWindowRuns' | 'baselineMetrics' | 'scope'>, runs: readonly RunLike[], _limit = 8, opts?: { trialRuns?: number }): TrialDecision {
   const need = clampWindow(gen.evalWindowRuns)
+  const cap = trialRunCap(need)
+  const scope = gen.scope ?? EVERY_RUN_SCOPE
   const since = runs
     .filter((r) => isTrialRun(r) && r.summary.startedAt >= gen.appliedAt)
     .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
-  if (since.length < need) return { state: 'pending', have: since.length, need }
-  const windowRuns = since.slice(0, need)
-  const trialMetrics = measure(windowRuns, limit, { includeInterrupted: true })
-  const c = compareMetrics(gen.baselineMetrics, trialMetrics)
+    .slice(0, cap)
+    .map(asDigest)
+  const total = Math.min(cap, Math.max(opts?.trialRuns ?? 0, since.length))
+  const windowRuns = since.filter((d) => exercises(d, scope)).slice(0, need)
+  if (windowRuns.length < need) {
+    if (total < cap) return { state: 'pending', have: windowRuns.length, need, runs: total, cap }
+    return {
+      state: 'decided',
+      regressed: true,
+      inconclusive: true,
+      trialMetrics: measure(windowRuns, 8, { includeInterrupted: true }),
+      reason: `inconclusive: only ${windowRuns.length} of ${cap} runs since the change used the changed role${scope.limit && !scope.roles.length ? ' or limit' : ''} (${need} needed)`
+    }
+  }
+  const trialMetrics = measure(windowRuns, 8, { includeInterrupted: true })
   const interrupted = windowRuns.filter(isInterruptedTrialRun).length
   if (interrupted > 0) {
+    const c = compareMetrics(gen.baselineMetrics, trialMetrics)
     return {
       state: 'decided',
       regressed: true,
@@ -913,5 +1424,6 @@ export function evaluateActiveTrial(gen: Pick<EvolutionGeneration, 'appliedAt' |
         : `trial run interrupted/timed out (${interrupted}/${windowRuns.length})`
     }
   }
-  return { state: 'decided', regressed: c.regressed, trialMetrics, reason: c.reason }
+  const j = judgeTrial(scope, gen.baselineMetrics, windowRuns)
+  return { state: 'decided', regressed: j.regressed, trialMetrics, reason: j.reason, ...(j.inconclusive ? { inconclusive: true } : {}) }
 }

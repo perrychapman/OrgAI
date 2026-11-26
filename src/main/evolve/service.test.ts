@@ -693,7 +693,7 @@ describe('run loading (review M: synchronous records)', () => {
     await h.svc.afterRun({ projectId: 'p1', evolve: true })
     expect(h.state.listCalls).toBeLessThanOrEqual(1)
   })
-  it('with summaries and single-record ports, a pending trial loads no full record and a full window loads only its runs', async () => {
+  it('with summaries and single-record ports, a trial loads only runs since the change, oldest first, until enough used the changed role', async () => {
     const h = harness()
     await h.svc.apply({ projectId: 'p1' })
     let runs = cleanRuns(8, 1_000_000)
@@ -703,11 +703,14 @@ describe('run loading (review M: synchronous records)', () => {
     runs = [...cleanRuns(1, NOW + 10), ...runs]
     expect((await svc.afterRun({ projectId: 'p1', evolve: false })).ratchetReason).toContain('1 of 3')
     expect(listRunRecords).not.toHaveBeenCalled()
-    expect(getRunRecord).not.toHaveBeenCalled()
+    // Changed (trial rule 2): whether a run counts depends on which roles ran in it, so a pending pass reads the run
+    // since the change (a digest through the host's port; a record here, where the test gives no digest port).
+    expect(getRunRecord).toHaveBeenCalledTimes(1)
     runs = [...cleanRuns(3, NOW + 10_000), ...runs]
     expect((await svc.afterRun({ projectId: 'p1', evolve: false })).ratchet).toBe('promoted')
     expect(listRunRecords).not.toHaveBeenCalled()
-    expect(getRunRecord).toHaveBeenCalledTimes(3)
+    // 3 more: the 4 runs since the change are read oldest first and reading stops at the third that used dev.
+    expect(getRunRecord).toHaveBeenCalledTimes(4)
   })
   it('rolls back an active trial on an interrupted/timed-out exec run', async () => {
     const h = harness()

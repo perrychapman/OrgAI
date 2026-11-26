@@ -620,7 +620,8 @@ describe('promote vs rollback thresholds (boundary values)', () => {
   const g = (over: Partial<EvolutionGeneration> = {}): Pick<EvolutionGeneration, 'appliedAt' | 'evalWindowRuns' | 'baselineMetrics'> => ({ appliedAt: 5_000_000, evalWindowRuns: 3, baselineMetrics: b, ...over })
   const after = (n: number, over: Parameters<typeof run>[0] = {}) => Array.from({ length: n }, (_, i) => run({ startedAt: 5_000_000 + i * 1000, agents: [{ slug: 'dev' }], ...over }))
   it('waits for the window, ignores runs started before the apply, setup and quick runs', () => {
-    expect(evaluateActiveTrial(g(), after(2))).toEqual({ state: 'pending', have: 2, need: 3 })
+    // Pending now also says how many trial runs passed and the cap at which it is rolled back as inconclusive.
+    expect(evaluateActiveTrial(g(), after(2))).toEqual({ state: 'pending', have: 2, need: 3, runs: 2, cap: 15 })
     const noise = [run({ startedAt: 4_999_999 }), run({ startedAt: 5_000_100, kind: 'setup' }), run({ startedAt: 5_000_100, quick: true })]
     expect(evaluateActiveTrial(g(), [...after(2), ...noise]).state).toBe('pending')
     expect(evaluateActiveTrial(g(), after(3)).state).toBe('decided')
@@ -859,12 +860,12 @@ describe('trial comparison edge cases', () => {
     const userStopped = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev', state: 'thinking' }] })
     userStopped.summary.endedBy = 'user'
     userStopped.summary.execOutcome = 'interrupted'
-    expect(evaluateActiveTrial(gen, [userStopped])).toEqual({ state: 'pending', have: 0, need: 1 })
+    expect(evaluateActiveTrial(gen, [userStopped])).toEqual({ state: 'pending', have: 0, need: 1, runs: 0, cap: 5 })
 
     const appCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
     appCut.summary.endedBy = 'app'
     appCut.summary.endedWhile = 'working'
-    expect(evaluateActiveTrial(gen, [appCut])).toEqual({ state: 'pending', have: 0, need: 1 })
+    expect(evaluateActiveTrial(gen, [appCut])).toEqual({ state: 'pending', have: 0, need: 1, runs: 0, cap: 5 })
 
     // An 'interrupted' outcome neither the user nor the app ended still fails the trial.
     const hostCut = run({ startedAt: 5_000_100, status: 'finished', agents: [{ slug: 'dev' }] })
