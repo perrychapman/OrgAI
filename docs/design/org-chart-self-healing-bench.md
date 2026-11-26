@@ -51,8 +51,10 @@ truth), `defects.mjs` (injectors, the healing mechanism and blocker per defect),
    time and no more failed steps than the reference); generations applied / promoted / rolled back and the run of the
    last change; collateral (fields changed at the end that the defect did not touch); oscillation (an apply returning a
    field to an earlier value); rejected hypotheses re-proposed (the plan the synthesizer builds with no memory holds a
-   patch on the ledger's rejected list); blind trials (decided on runs where no patched role ran); excess cost over the
-   reference with evolution on and left alone. Controls: any applied change is a false positive.
+   patch on the ledger's rejected list); blind trials (a generation promoted or rolled back although no patched role ran
+   in any run of its decision window, which runs from the apply to the run whose post-run pass decided it; until
+   2026-11-25 the runner took the first `evalWindowRuns` runs after the apply, which is the same window for an engine
+   that decides on exactly those runs); excess cost over the reference with evolution on and left alone. Controls: any applied change is a false positive.
 
 ## Simulator rules
 
