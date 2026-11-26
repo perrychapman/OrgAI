@@ -28,8 +28,9 @@ import { tokenSet } from '../skills/tokens'
 /**
  * Bump when the body's shape or meaning changes: every cached sidecar is then recomputed. 3: run text also loses
  * credential words (URL userinfo, the value after --password / -u / --header ...) and home folders with spaces.
+ * 4: plan steps also carry the hashed owner (ownerKey) and whether a done step had no staffing row bound to it.
  */
-export const DIGEST_VERSION = 3
+export const DIGEST_VERSION = 4
 
 /** Transcript entries read per run (the record keeps at most this many: RunStore MAX_TRANSCRIPT_ENTRIES). */
 export const DIGEST_TRANSCRIPT_LIMIT = 5000
@@ -67,6 +68,15 @@ export const safeName = (s: unknown, max = 40): string => String(s ?? '').replac
 /** Short hex hash of a string (equality comparisons only; never shown). */
 export function digestHash(s: string, hex = 16): string {
   return createHash('sha256').update(s).digest('hex').slice(0, hex)
+}
+
+/**
+ * A plan step owner, or a role slug or name to compare with one, as a hash: trimmed, lowercased, a leading '@' and a
+ * trailing handle number ("builder-2", "builder 2") dropped. '' for an empty value. Equality only; never shown.
+ */
+export function ownerKey(s: unknown): string {
+  const v = String(s ?? '').trim().toLowerCase().replace(/^@+/, '').replace(/[-_ ]?\d+$/, '').trim()
+  return v ? digestHash(v) : ''
 }
 
 const KEY_PLAIN = /^[A-Za-z0-9_.:-]{1,128}$/
@@ -254,8 +264,12 @@ export interface DigestAssignment {
 }
 
 export interface DigestPlan {
-  /** Step ids replaced by opaque ids (`s1`, `s2`, ... equal ids stay equal); `role` = digestHash of the lowercased trimmed staff role. */
-  steps: { id: string; after: string[]; role?: string }[]
+  /**
+   * Step ids replaced by opaque ids (`s1`, `s2`, ... equal ids stay equal); `role` = digestHash of the lowercased trimmed
+   * staff role; `owner` = ownerKey of PlanStep.owner (a hash, never the text); `unstaffed` = the step ended 'done' and
+   * no staffing row of the run was bound to it (no report was spawned for it, or the binding was not recorded).
+   */
+  steps: { id: string; after: string[]; role?: string; owner?: string; unstaffed?: true }[]
   /** pathOverlaps of the steps (as pending), in opaque ids. */
   overlaps: { first: string; second: string }[]
 }
@@ -458,10 +472,18 @@ export function digestBody(r: RunRecord): RunDigestBody {
       return v
     }
     const graph = steps.map((s) => ({ id: String(s.id), status: 'pending' as const, after: Array.isArray(s.after) ? s.after.map(String) : undefined, paths: Array.isArray(s.paths) ? s.paths.map(String) : undefined }))
+    const bound = new Set(assignmentsRaw.flatMap((x) => (x && typeof x.stepId === 'string' ? [x.stepId] : [])))
     plan = {
       steps: steps.map((s) => {
         const role = typeof s.staff?.role === 'string' ? s.staff.role.trim().toLowerCase() : ''
-        return { id: idOf(s.id), after: (Array.isArray(s.after) ? s.after : []).map(idOf), ...(role ? { role: digestHash(role) } : {}) }
+        const owner = typeof s.owner === 'string' ? ownerKey(s.owner) : ''
+        return {
+          id: idOf(s.id),
+          after: (Array.isArray(s.after) ? s.after : []).map(idOf),
+          ...(role ? { role: digestHash(role) } : {}),
+          ...(owner ? { owner } : {}),
+          ...(s.status === 'done' && !bound.has(String(s.id)) ? { unstaffed: true as const } : {})
+        }
       }),
       overlaps: pathOverlaps({ steps: graph }).map((o) => ({ first: idOf(o.first), second: idOf(o.second) }))
     }
@@ -680,7 +702,7 @@ export function parseDigestBody(v: unknown): RunDigestBody | undefined {
   if (v.plan !== undefined) {
     const p = v.plan
     if (!isObj(p)) return undefined
-    const stepOk = (s: unknown): boolean => isObj(s) && typeof s.id === 'string' && OPAQUE_RE.test(s.id) && arr(s.after, 10_000, (x) => typeof x === 'string' && OPAQUE_RE.test(x)) && (s.role === undefined || (typeof s.role === 'string' && HASH_RE.test(s.role)))
+    const stepOk = (s: unknown): boolean => isObj(s) && typeof s.id === 'string' && OPAQUE_RE.test(s.id) && arr(s.after, 10_000, (x) => typeof x === 'string' && OPAQUE_RE.test(x)) && (s.role === undefined || (typeof s.role === 'string' && HASH_RE.test(s.role))) && (s.owner === undefined || (typeof s.owner === 'string' && HASH_RE.test(s.owner))) && (s.unstaffed === undefined || s.unstaffed === true)
     if (!arr(p.steps, DIGEST_MAX_STEPS, stepOk) || (p.steps as unknown[]).length < 2) return undefined
     if (!arr(p.overlaps, DIGEST_MAX_STEPS * DIGEST_MAX_STEPS, (o) => isObj(o) && typeof o.first === 'string' && OPAQUE_RE.test(o.first) && typeof o.second === 'string' && OPAQUE_RE.test(o.second))) return undefined
   }

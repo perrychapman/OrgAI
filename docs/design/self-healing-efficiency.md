@@ -295,6 +295,16 @@ identical `results.json` apart from `sha` and `generatedAt` (the bench has no `s
 bench owner is a fake skills port with `setEnabled` to exercise the skill gap). Checks and limits:
 `docs/agent-notes/assistants-skills.md` "Fresh findings for evolution" and "Skills drafted by evolution".
 
+Status (2026-11-25): bench item 2, calibrated detection, is done except its exploration part. A spawner is never cut on
+work length, a fast role's effort is judged, advisory findings (skill_crystallization, ceremonial_layer, exploration,
+spawner_step_work, unused_role) stay out of the waste score (the D7 pairing above), repeated-sequence findings drop
+orchestration tools and windows of fewer than 3 distinct tools, and the two structural findings are advisory notes.
+Checked by unit tests and `bench:heal` seeds 1 to 3 before and after (controls changed 2 of 3 to 1 of 3 on every seed,
+generations applied 78 / 87 / 90 to 32 / 34 / 32, cases under the waste threshold 0 to 33 / 19 / 20 of 46; table in
+the bench doc, "After detection calibration"). Not done: running the exploration (1 in K steps one tier down with its
+own first-pass record) needs `runtime/staffing.ts`, a spend file, and a per-assignment first-pass record in the digest;
+until then the checker is still cut on length alone. Awaits the Reviewer.
+
 ### Step 8. Evolution on the desktop (needs the Reviewer and the owner)
 
 Offer the post-run pass for desktop work runs, deterministic only, with the same unattended rule as today (spend

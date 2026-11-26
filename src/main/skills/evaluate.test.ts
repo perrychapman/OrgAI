@@ -165,6 +165,27 @@ describe('gap findings', () => {
     expect(f.every((x) => x.evidence?.runIds?.length === 3 && x.evidence.count === undefined)).toBe(true)
   })
 
+  it('needs 3 distinct tools in a window: a two-tool back-and-forth is not a routine', () => {
+    const two = ['Read', 'Grep', 'Read', 'Grep', 'Read']
+    expect(toolSequenceFindings([runWith('1', two), runWith('2', two), runWith('3', two)])).toHaveLength(0)
+    const three = ['Read', 'Grep', 'Read', 'Edit']
+    expect(toolSequenceFindings([runWith('1', three), runWith('2', three), runWith('3', three)])).toHaveLength(1)
+  })
+
+  it('drops windows holding an orchestration tool (Claude, Codex and harness names, with or without the orgai prefix)', () => {
+    for (const orch of ['Agent', 'Task', 'TodoWrite', 'Skill', 'SendMessage', 'ListAgents', 'spawn_report', 'list_team', 'message_agent', 'mcp__orgai__set_plan', 'mcp__orgai__update_plan', 'mcp__orgai__todo_list', 'integrate_worktrees']) {
+      const names = ['Read', orch, 'Edit', 'Bash']
+      expect(toolSequenceFindings([runWith('1', names), runWith('2', names), runWith('3', names)])).toHaveLength(0)
+    }
+    // A routine between orchestration calls still counts, once its own window is clean.
+    const around = ['TodoWrite', 'Glob', 'Read', 'Bash', 'Edit', 'Agent']
+    const f = toolSequenceFindings([runWith('1', around), runWith('2', around), runWith('3', around)])
+    expect(f.map((x) => x.evidence?.sequence)).toEqual([['Glob', 'Read', 'Bash', 'Edit']])
+    // An MCP tool from another server is ordinary work.
+    const mcp = ['Read', 'mcp__github__get_issue', 'Edit', 'Bash']
+    expect(toolSequenceFindings([runWith('1', mcp), runWith('2', mcp), runWith('3', mcp)])).toHaveLength(1)
+  })
+
   it('does not join tool calls of different agents', () => {
     const mixed = (id: string): EvalRun => run(id, [tool('a', 'Read'), tool('b', 'Grep'), tool('a', 'Edit'), tool('b', 'Bash')])
     expect(toolSequenceFindings([mixed('1'), mixed('2'), mixed('3')])).toHaveLength(0)
