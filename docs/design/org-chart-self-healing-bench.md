@@ -284,3 +284,69 @@ Ranked by the simulated excess cost of the unhealed cases (the price of not heal
 12. **Serial bottleneck (concurrency 1)** (small detected only, medium detected only, large detected only; +$2.05). Could heal it today: interactive `orgai org evolve --apply` with a person approving the concurrency raise. What stops the unattended path: spend.ts spendRaisesOf counts a higher concurrency limit as a raise; service.ts applyCore holds it on the post-run pass (spend_held). telemetry.ts spawnShape also reads only the ROOT's direct reports, so a chart whose leads fan out is measured on the leads, not the workers. Gate rules seen: spend_held. Held raises: project.concurrency.
 13. **Tool friction (lookup role lacks Grep)** (small negligible here, medium healed, large healed; +$0.80). Could heal it today: deterministic evolve (adds Read, Glob or Grep). What stops the unattended path: ratchet.ts evaluateActiveTrial / compareMetrics judge a trial on whole-team medians of the next 3 runs whatever tasks they were, so a correct patch can be rolled back when those runs never used the role (small chart, seed 1); service.ts rollbackCore then records it with addRejected, which never expires, and deterministicPlan drops the same patch on every later pass.
 14. **Effort too high (simple-work role on high)** (small negligible here, medium healed, large healed; +$0.68). Could heal it today: deterministic evolve on everyday/deep roles; nothing on a fast role. What stops the unattended path: telemetry.ts diagnose: the over-provisioned rule requires `tierDown(runtimeTier)` (deep or everyday), so effort waste on a fast role is never a finding; on an everyday role it fires only for short work (avg turns <= 6 and output <= 4,000 tokens).
+
+## After the trial rework (2026-11-25)
+
+Change: item 1 of "Three changes to make first" (trial rule 2, `src/main/evolve/ratchet.ts` "trial rule 2", `service.ts`;
+ARCHITECTURE.md "Team evolution"). In short: a trial counts only runs that exercised the change and waits for 3 of them
+(rolled back as inconclusive after 15 trial runs without them); it judges the patched role's own first pass, errors,
+escalations and cost per agent, its reports' first pass, errors and escalations, and keeps today's whole-team rule as a
+guard, all against a clean baseline fixed at apply time (no rolled-back trial window, no error run of a role flagged
+under-provisioned); the service applies one role patch per generation and never cuts a role with reports; a trial's
+rejection expires after 20 runs that used its roles, 40 after a second strike, never after a third or a person's rollback.
+Detection was not changed here (item 2 is separate work), so the same findings drive both columns.
+
+How it was measured: `npm run bench:heal -- --seed <n> --out <temp dir>` for seeds 1 to 3, before on 3c21900f and after on
+the trial rework, plus an analysis of each `results.json` outside the repository for the figures the report does not
+print (median runs from apply to decision; promoted cuts on a right-sized role, that is a promoted tier or effort cut on a
+role the defect did not target, every such role being right-sized in the reference charts). The runner's blind-trial
+window was changed first, in its own commit (83821518), to run from the apply to the pass that decided the generation;
+on the old engine it gives the identical `results.json` for all three seeds (compared without `generatedAt` and `sha`).
+It is still non-zero if a trial is decided although no patched role ran in any run of that window: an inconclusive
+rollback at the cap on runs that never used the role, or a fault in the exercised-run rule (a role matched by the wrong
+key, a root or limit rule counting runs it should not).
+
+Status counts are over the 43 defect cases; generations over all 46 cases.
+
+| Measure | seed 1 before | seed 1 after | seed 2 before | seed 2 after | seed 3 before | seed 3 after |
+| --- | --- | --- | --- | --- | --- | --- |
+| healed / symptom / negligible / detected / missed / made worse | 7 / 4 / 9 / 15 / 6 / 2 | 6 / 3 / 10 / 18 / 6 / 0 | 5 / 1 / 8 / 12 / 4 / 13 | 7 / 3 / 10 / 18 / 5 / 0 | 5 / 2 / 10 / 19 / 7 / 0 | 8 / 4 / 7 / 17 / 7 / 0 |
+| generations applied / promoted / rolled back (on trial at the end) | 78 / 15 / 63 (0) | 77 / 9 / 67 (1) | 87 / 53 / 34 (0) | 75 / 13 / 62 (0) | 90 / 22 / 68 (0) | 75 / 14 / 61 (0) |
+| blind trials (promoted) | 2 (1) | 0 | 1 (1) | 0 | 0 | 0 |
+| rejected re-proposed, passes (cases) | 1463 (31) | 988 (31) | 1299 (31) | 785 (30) | 1493 (33) | 753 (31) |
+| controls with a change: medium, large (a / p / r) | 1/0/1, 3/0/3 | 2/0/2, 2/0/2 | 1/0/1, 4/3/1 (worse) | 2/0/2, 2/0/2 | 1/0/1, 4/1/3 (worse) | 2/0/2, 2/0/2 |
+| promoted cuts on a right-sized role | 4 | 0 | 43 | 0 | 12 | 0 |
+| median runs from apply to decision (max) | 3 (3) | 4 (10) | 3 (3) | 4 (10) | 3 (3) | 4 (6) |
+
+What moved, from the per-case rows:
+
+- Harmful cuts: none promoted on any seed. Seed 2's large-chart lead cuts (quality-lead, build-lead, content-lead to
+  fast in 12 cases) are no longer applied: the first rework run, before the `cut_on_lead` rule, still promoted them on
+  windows with no failed step at all (for example large:control seed 2, gen_1 promoted with the lead's first pass 1 to 1,
+  its reports' 1 to 1, no error), because their harm is retries of the reports that the run record does not attribute to
+  the lead. The checker cut in the medium and large charts is now rolled back on its own figures ("the changed role:
+  first pass fell 50 points") instead of on whole-team noise; small:ceremonial (seeds 1 and 2) and medium:tier-under
+  (seed 1) are no longer made worse because the coordinator cut is not applied and the checker cut is rolled back.
+- Made worse: 2 / 13 / 0 to 0 / 0 / 0. A first rework run with rejections expiring after 10 exercised runs was worse
+  (22 / 21 / 13): known-harmful cuts were retried two or three times and their trial runs landed in the last-10 window;
+  20 / 40 / never fixed it.
+- Correct patches kept: small:tool-friction is healed on all three seeds (before: rolled back on seeds 1 and 3); medium
+  tool friction and prompt bloat (seed 2) and large tool friction and prompt bloat (seed 3) are healed where they were
+  negligible. Lost on seed 1: medium:effort-high and large:effort-high (healed before) and small:tier-over (symptom healed
+  before): each correct cut passed its own-role rule and was rolled back by the whole-team guard on its three exercised
+  runs ("team: cost x time worsened 34%" for the medium checker's effort, "1027%" for the small researcher's tier); the
+  retry after the rejection expired was rolled back again by the same guard (medium:effort-high, run 40, "114%") or was
+  still on trial at the horizon (small:tier-over, applied run 57). That guard is today's rule, kept so no cut is easier
+  to promote than before; on three runs of a mixed task stream its medians are noisy.
+- Rejected re-proposals fall by a third to a half but stay in the hundreds: in every medium and large case (controls
+  included) the checker cut is rolled back twice (the second time after the 20-run expiry) and then backs off, and the
+  synthesizer, which has no memory, rebuilds it on every later pass (23 to 30 passes per case). The measure counts the
+  rejection working, not a fault.
+- Trials take longer: median 3 to 4 runs from apply to decision, at most 10 (the cap of 15 was not reached in a decided
+  trial; one seed 1 trial was still open at the end).
+- Spend and safety: no raise is applied (passes that held a raise: 308 / 313 / 287 before, 311 / 318 / 301 after, the
+  hold itself unchanged; the count is of passes, which shift with when trials open and close), no gate rule was
+  loosened; the new rules only remove patches or add ways to roll back. A rejection expiring re-tries a change that once
+  regressed, at most twice per fingerprint, each retry an ordinary trial.
+
+Not changed and still open: the whole-team cost x time guard (above); detection (item 2) and a path to a person (item 3).

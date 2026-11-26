@@ -283,6 +283,18 @@ path to a person) and its ranked gaps. Two additions from this evaluation:
 
 Each of these changes a spend or safety boundary file and needs the Reviewer, as the bench says.
 
+Status (2026-11-25): the bench's item 1 (D6) is done as "trial rule 2" (`ratchet.ts`, `service.ts`; ARCHITECTURE.md
+"Team evolution", `docs/agent-notes/project-features.md`). A trial counts only runs that exercised the change (cap 5 x the
+window, then rolled back as inconclusive), judges the patched role's own figures and its reports' figures beside
+today's whole-team rule against a clean baseline fixed at apply time; one role patch per generation; no cut on a role
+with reports (added after the first bench run still promoted harmful lead cuts on windows with no failed step);
+rejections expire after 20 / 40 exercised runs and are permanent from the third strike or after a person's rollback.
+Bench seeds 1 to 3 (bench doc "After the trial rework"): no harmful cut promoted (4 / 43 / 12 before), made worse 0 / 0 /
+0 (2 / 13 / 0), blind trials 0, rejected re-proposals 988 / 785 / 753 (1,463 / 1,299 / 1,493), median runs per decision 3
+to 4. Open: the whole-team cost x time guard rolled back three correct cuts on seed 1; replacing it by the patched role's
+own cost needs the Reviewer and the owner, since it removes a way a cut is rolled back. Checked by unit tests, the e2e and
+the bench; needs the Reviewer before it is pushed. Not run live. D7 and D8 are separate work.
+
 ### Step 8. Evolution on the desktop (needs the Reviewer and the owner)
 
 Offer the post-run pass for desktop work runs, deterministic only, with the same unattended rule as today (spend

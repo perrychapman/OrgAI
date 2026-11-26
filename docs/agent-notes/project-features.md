@@ -65,7 +65,8 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
   something says so in its reason, also when the post-run pass rolls a trial back. What evolve may still change without
   a person: on an unattended pass (and with `--yes`), lowering tier / effort / staffing bounds, prompt compression and
   the fixed file-scope block, safe read tools added, tools and skill grants removed with a finding, and the automatic
-  promote / roll back of a trial (a rollback restores earlier values, including a tool some role still holds);
+  promote / roll back of a trial (a rollback restores earlier values, including a tool some role still holds; since
+  2026-11-25 one role per generation and no cut on a role with reports, see "trial rule 2" below);
   suggested skills are reported only (the host's skills port has no setEnabled, so they are dropped) and skill pruning
   is report-only. A refused or fully held apply still exits 0 (the JSON `applied` / `heldSpendRaises` say which). The
   CLI's interactive confirmation trusts a terminal on stdin (`manage.ts` `confirm`): a process that allocates a pty can
@@ -101,6 +102,37 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     empty one (unit tested, `ratchet.test.ts`).
   - Unchanged: the deterministic strategy and the bench: `npm run bench:heal -- --seed 1` gave an identical `results.json`
     (without `generatedAt`) before and after. It only removes calls; live model answers were not run.
+- Team evolution trial rule 2 (2026-11-25, self-healing efficiency step 7 / D6, the bench's first change; ARCHITECTURE.md
+  "Team evolution", the decision rule in full at `ratchet.ts` "trial rule 2"). Facts, each with how it was checked:
+  - Exercised runs only: a run counts toward a trial when a patched role ran in it (digest agent matched by role id, else
+    slug); the root counts in every run (digests keep no root agent); a concurrency change counts a run whose peak
+    parallelism reached the lower of the two limits or whose plan was wider; a plan with neither counts every run. An
+    interrupted trial run always counts and fails the trial. Decided on the first `evalWindowRuns` (default 3) exercised
+    runs; after 5 x that trial runs (at most 50) without them it is rolled back as inconclusive, never promoted (unit
+    tested, `ratchet.test.ts` "trial rule 2"; `service.test.ts` "trial rule 2", 15 reviewer-only runs).
+  - Comparison: the patched role's own first pass, errors per agent, escalations per assignment and cost per agent; the
+    downstream roles' first pass, errors and escalations; today's whole-team `compareMetrics` as a guard. Every rule only
+    adds a way to roll back. A bad patch with identical whole-team figures is rolled back and a good one promoted; a
+    lead cut whose reports start failing is rolled back (unit tested).
+  - Clean baseline, fixed at apply time in `StoredGeneration.scope`: newest 10 exercised measured runs among the newest
+    50, without runs inside a rolled-back generation's window or error runs of a role flagged tier_underprovisioned
+    (unit tested, `baselineRuns`); no such run = nothing applied (unit tested, service).
+  - One role patch per generation and no cut on a role with reports, both gate options the service always sets
+    (`one_patch_per_generation`, `cut_on_lead`); direct callers of `validateEvolutionPlan` (the synthesizer, `spend.ts`)
+    are unchanged, and the service gates the synthesizer's plan again with them (unit tested; `e2e/cli-org-evolve.mjs`:
+    gen_1 is the orchestrator's file-scope block alone, gen_2 the researcher's cut). Why no lead cut: in the bench the
+    harmful lead cuts passed windows with no failed step at all; their harm is retries of the reports, which the run
+    record does not attribute to the lead (bench rows, seed 2).
+  - Rejections: one entry per fingerprint with roles, strikes and a run count; a trial's rejection stops blocking after
+    20 runs that used its roles, 40 on the second consecutive strike, never from the third; a person's rollback never
+    expires; a promotion clears the entry. Counted and stored on the apply / post-run path only; analyze counts in
+    memory; history lists blocking ones only (unit tested, both suites).
+  - Old ledgers: a trial without `scope` is judged under rule 2 with a scope from its own plan and snapshot and a clean
+    baseline from the runs before its apply; an unreadable plan is closed as inconclusive; old rejections name no role
+    and count every measured run, so they expire after 20 measured runs (unit tested, both suites).
+  - Bench (`npm run bench:heal`, seeds 1 to 3, before and after in `docs/design/org-chart-self-healing-bench.md` "After
+    the trial rework"): no harmful cut promoted, made worse 2 / 13 / 0 to 0 / 0 / 0, blind trials 0, median runs per
+    decision 3 to 4. Not verified: live runs; whether the real runtime's runs give the per-role signals the simulator does.
 - Run digests (2026-11-25, self-healing efficiency step 1, first half; `docs/design/self-healing-efficiency.md`, ARCHITECTURE.md
   "Team evolution"): `src/main/store/runDigest.ts` `digestRun(record)` is the one place a finished run is reduced for the
   self-healing loops; `RunStore.getDigest(runId)` caches its body beside the record (`runs/<runId>/digest.json`) and the
