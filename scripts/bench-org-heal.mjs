@@ -120,6 +120,8 @@ async function runCase(spec, seed, base, skillEval = true) {
   let finalWaste = 0
   const appliedSummaries = []
   const applies = []
+  /** Generation id -> the run whose post-run pass promoted or rolled it back. */
+  const decidedRun = new Map()
   let gens = []
   const touchesDefect = (plan) =>
     plan.rolePatches.some((p) => inj.touched.some((t) => t.slug === p.slug)) ||
@@ -154,6 +156,8 @@ async function runCase(spec, seed, base, skillEval = true) {
           gateRules.spend_held = (gateRules.spend_held ?? 0) + 1
           for (const h of pr.heldSpendRaises) held.add(`${h.roleSlug ?? 'project'}.${h.field}`)
         }
+        // The pass that decided a generation ends its decision window (the blind-trial measure below).
+        if ((pr.ratchet === 'promoted' || pr.ratchet === 'rolled_back') && pr.decided?.id) decidedRun.set(pr.decided.id, i)
         if (pr.applied) {
           appliedSummaries.push(`r${i} ${pr.applied.summary}`)
           applies.push({ run: i, id: pr.applied.id, window: pr.applied.evalWindowRuns, slugs: pr.applied.plan.rolePatches.map((p) => p.slug), limit: pr.applied.plan.maxConcurrentSubagents !== undefined })
@@ -189,11 +193,15 @@ async function runCase(spec, seed, base, skillEval = true) {
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
-  // A trial decided on runs in which no patched role ran (a limit change always counts as exercised).
+  // A trial decided on runs in which no patched role ran (a limit change always counts as exercised). The window is every
+  // run from the apply to the run whose pass decided the generation (the engine may wait past `evalWindowRuns` for runs
+  // that exercise the change); without a recorded decision, the first `evalWindowRuns` runs after the apply.
   const blindTrials = applies
     .map((a) => {
       const g = gens.find((x) => x.id === a.id)
-      const win = rows.filter((r) => r.run > a.run).slice(0, a.window)
+      const end = decidedRun.get(a.id)
+      const after = rows.filter((r) => r.run > a.run)
+      const win = end !== undefined ? after.filter((r) => r.run <= end) : after.slice(0, a.window)
       const exercised = a.limit || win.some((r) => a.slugs.some((s) => r.roles.includes(s)))
       return { id: a.id, status: g?.status ?? 'unknown', exercised }
     })

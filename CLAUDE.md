@@ -89,7 +89,7 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
 - `docs/agent-notes/engagements-knowledge.md`: engagement kind, reference folders, engagement document and notes,
   knowledge graph, retrieval and inferred links, Knowledge tab and graph view.
 - `docs/agent-notes/project-features.md`: agent import, run outputs (and Outputs 2, read_document), team files, practice kit,
-  repository clone and From GitHub start, folder config trust, team evolution spend gate.
+  repository clone and From GitHub start, folder config trust, team evolution spend gate and trials (trial rule 2).
 - `docs/agent-notes/cli-host.md`: CLI and host. Several `orgai` processes share one data folder and its projects
   (sessions, docs/design/cli-sessions.md: session locks, the write lock every shared store goes through, run owners,
   projects open in several sessions; a store that keeps a shared file in memory must use `storeSyncFor`, and code that

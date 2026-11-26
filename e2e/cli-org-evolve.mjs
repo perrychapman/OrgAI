@@ -7,14 +7,15 @@
 // skill), written in the stores' real on-disk formats (runs.json / runs/<id>.json, skill-evaluations/<id>.json).
 //
 // 1. `org evolve` (text and JSON): the findings, wasteScore > 0, nothing changed (dry run).
-// 2. `org evolve --apply --eval-window 10` non-TTY: gen_1 on trial in <data>/evolution/<projectId>.json, the researcher
-//    cheaper, the prompt budget kept, the read-only reviewer gains no write / exec tool, `.orgai/` state as the fixture has it.
+// 2. `org evolve --apply --eval-window 10` non-TTY: gen_1 on trial in <data>/evolution/<projectId>.json, one role
+//    changed (one role patch per generation), the prompt budget kept, the read-only reviewer gains no write / exec tool,
+//    `.orgai/` state as the fixture has it.
 // 3. `org evolve loop --iterations 2` and `exec --evolve` unattended on mock runs (the trial window of 10 stays open).
 // 4. `org retro <run> --unattended` (the headless retro).
 // 5. Fixture B (same chart): apply a 2-run trial, seed two regressed runs right after it, settle the window with
 //    `exec --evolve` (the post-run ratchet): automatic rollback, the fingerprint in rejectedHypotheses[], and a following
 //    `org evolve` does not re-propose it.
-// 6. `org evolve history` and a manual `org evolve rollback` on fixture A.
+// 6. `org evolve history` and a manual `org evolve rollback` on fixture A, then gen_2: the researcher cheaper, prompts shorter.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, finish, log, makeFixtureRepo, removeFixture } from './lib.mjs'
@@ -213,10 +214,14 @@ try {
   const after = storedProject(A.project.id)
   const roleOf = (p, slug) => p.roles.find((x) => x.slug === slug)
   const TIER_RANK = { fast: 0, everyday: 1, deep: 2, top: 3 }
-  const newResearcher = roleOf(after, 'researcher')
-  check(TIER_RANK[newResearcher.tier] < TIER_RANK.deep, `the researcher is cheaper than deep (now ${newResearcher.tier})`, JSON.stringify({ tier: newResearcher.tier, model: newResearcher.model, effort: newResearcher.effort }))
+  // One role patch per generation (trial rule 2, 2026-11-25): gen_1 changes one role (the orchestrator's file-scope block
+  // for the colliding implementers); the researcher's cut waits for a later generation (section 6).
+  const patches1 = applied.v?.plan?.rolePatches ?? []
+  check(patches1.length === 1 && (applied.v?.plan?.gate?.violations ?? []).some((v) => v.rule === 'one_patch_per_generation'), `gen_1 changes one role (${patches1.map((p) => p.slug).join(', ')}); the others wait (one_patch_per_generation)`, JSON.stringify(applied.v?.plan?.gate?.violations ?? []).slice(0, 400))
+  const unpatched = before.roles.filter((x) => !patches1.some((p) => p.slug === x.slug))
+  check(unpatched.every((x) => JSON.stringify(roleOf(after, x.slug)) === JSON.stringify(x)), 'every role gen_1 did not patch is unchanged', unpatched.map((x) => x.slug).join(', '))
   const limit = applied.v?.plan?.promptChars?.limit ?? 0
-  check(limit > 0 && promptChars(after) <= limit && promptChars(after) < promptChars(before), `total prompt characters ${promptChars(before)} -> ${promptChars(after)} within the anti-bloat limit ${limit}`)
+  check(limit > 0 && promptChars(after) <= limit, `total prompt characters ${promptChars(before)} -> ${promptChars(after)} within the anti-bloat limit ${limit}`)
   check(!(roleOf(after, 'reviewer').tools ?? []).some((t) => WRITE_EXEC.has(t)), 'the read-only reviewer gained no write or exec tool', JSON.stringify(roleOf(after, 'reviewer').tools))
   // No repo-derived text (the seeded conflict paths src/routes/...) may reach a role prompt.
   const leaked = after.roles.filter((x) => /routes|notes\.js|src\/routes/i.test(x.prompt ?? '')).map((x) => x.slug)
@@ -269,7 +274,8 @@ try {
   check(gen1?.status === 'rolled_back' && !histB.trialId, 'history: gen_1 rolled_back and no active trial', JSON.stringify(histB ?? {}).slice(0, 400))
   check((histB?.rejectedHypotheses ?? []).some((h) => h.fingerprint === fingerprint), 'the rolled-back fingerprint is in rejectedHypotheses[]', JSON.stringify(histB?.rejectedHypotheses ?? []).slice(0, 300))
   const restored = storedProject(B.project.id)
-  check(roleOf(restored, 'researcher').tier === roleOf(beforeB, 'researcher').tier && roleOf(restored, 'researcher').prompt === roleOf(beforeB, 'researcher').prompt, 'the researcher is back to its pre-trial tier and prompt')
+  const patchedB = (appliedB?.plan?.rolePatches ?? []).map((p) => p.slug)
+  check(patchedB.length === 1 && JSON.stringify(restored.roles) === JSON.stringify(beforeB.roles), `the patched role (${patchedB.join(', ')}) is back to its pre-trial values; the chart equals the one before the trial`)
   const again = json((await atB(['--output-format', 'json', 'org', 'evolve'])).out)
   const reproposed = again?.plan && !again.plan.empty && again.plan.fingerprint === fingerprint && again.plan.gate?.ok !== false && !(again.plan.gate?.violations ?? []).some((v) => v.rule === 'rejected_hypothesis')
   check(again && !reproposed, 'a following org evolve does not re-propose the rejected plan', JSON.stringify(again?.plan ?? {}).slice(0, 400))
@@ -291,6 +297,15 @@ try {
   check(histA?.generations?.find((g) => g.id === 'gen_1')?.status === 'rolled_back' && !histA.trialId, 'history after rollback: gen_1 rolled_back, no trial', JSON.stringify(histA ?? {}).slice(0, 300))
   r = await at(['org', 'evolve', 'rollback'])
   check(r.code !== 0, 'a second rollback with nothing left to undo is not success', show(r))
+  // The next generation takes the researcher's cut (gen_1's change is rejected for good: a person rolled it back).
+  const applied2 = await jsonAt(['org', 'evolve', '--apply', '--yes', '--eval-window', '10'])
+  const patches2 = applied2.v?.plan?.rolePatches ?? []
+  check(applied2.r.code === 0 && applied2.v?.applied === true && applied2.v.generation?.id === 'gen_2' && patches2.length === 1 && patches2[0].slug === 'researcher', 'org evolve --apply then applies gen_2 on the researcher alone', show(applied2.r))
+  const after2 = storedProject(A.project.id)
+  const newResearcher = roleOf(after2, 'researcher')
+  check(TIER_RANK[newResearcher.tier] < TIER_RANK.deep, `the researcher is cheaper than deep (now ${newResearcher.tier})`, JSON.stringify({ tier: newResearcher.tier, model: newResearcher.model, effort: newResearcher.effort }))
+  const limit2 = applied2.v?.plan?.promptChars?.limit ?? 0
+  check(limit2 > 0 && promptChars(after2) <= limit2 && promptChars(after2) < promptChars(before), `total prompt characters ${promptChars(before)} -> ${promptChars(after2)} within the anti-bloat limit ${limit2}`)
 } catch (e) {
   check(false, 'the script ran to the end', e?.stack ?? String(e))
 } finally {
