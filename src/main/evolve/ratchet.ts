@@ -619,21 +619,31 @@ export interface Ledger {
   hybridMemo?: HybridMemo
 }
 
-export const HYBRID_MEMO_OUTCOMES = ['empty', 'refused', 'unusable', 'trimmed'] as const
+/**
+ * 'waiting': the model gave a usable plan but the apply was refused for want of a baseline (baselineShortfall). A pass on
+ * the same digest makes no call and is refused the same way, with the same plan (none: like 'trimmed', never the
+ * deterministic plan); a changed digest, or a memo older than HYBRID_MEMO_MAX_AGE_MS, asks again.
+ */
+export const HYBRID_MEMO_OUTCOMES = ['empty', 'refused', 'unusable', 'trimmed', 'waiting'] as const
 /** A memo older than this is ignored (the model is asked again); it can only restore a call that existed before the memo. */
 export const HYBRID_MEMO_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+/** Longest `HybridMemo.detail` kept. */
+const HYBRID_MEMO_DETAIL_MAX = 300
 export interface HybridMemo {
   /** sha256 hex of the digest text the model was given. */
   digestHash: string
   outcome: (typeof HYBRID_MEMO_OUTCOMES)[number]
   at: number
+  /** Only with 'waiting': the baseline shortfall the first pass reported, so the memo pass says the same thing. */
+  detail?: string
 }
 
 /** Shape-check a stored memo; anything off is dropped (the next pass simply calls the model again). */
 function sanitizeMemo(raw: unknown): HybridMemo | undefined {
   if (!isObj(raw) || typeof raw.digestHash !== 'string' || !/^[0-9a-f]{64}$/.test(raw.digestHash)) return undefined
   if (!(HYBRID_MEMO_OUTCOMES as readonly unknown[]).includes(raw.outcome) || typeof raw.at !== 'number' || !Number.isFinite(raw.at)) return undefined
-  return { digestHash: raw.digestHash, outcome: raw.outcome as HybridMemo['outcome'], at: raw.at }
+  const detail = raw.outcome === 'waiting' && typeof raw.detail === 'string' ? raw.detail.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, HYBRID_MEMO_DETAIL_MAX) : ''
+  return { digestHash: raw.digestHash, outcome: raw.outcome as HybridMemo['outcome'], at: raw.at, ...(detail ? { detail } : {}) }
 }
 
 export const emptyLedger = (projectId: string): Ledger => ({ version: 1, projectId, generations: [], rejectedHypotheses: [] })
@@ -915,11 +925,15 @@ export function addRejected(l: Ledger, r: Omit<EvolutionRejectedHypothesis, 'sum
   return true
 }
 
-/** Drop the rejections of these fingerprints (a change that has now passed its trial starts from no strikes). */
+/**
+ * Drop the rejections of these fingerprints (a change that has now passed its trial starts from no strikes). A permanent
+ * rejection (a person rolled the change back) is never cleared, whatever its fingerprint: only the trial's own expiring
+ * strikes go.
+ */
 export function clearRejected(l: Ledger, fingerprints: readonly string[]): boolean {
   const drop = new Set(fingerprints)
   const before = l.rejectedHypotheses.length
-  l.rejectedHypotheses = l.rejectedHypotheses.filter((x) => !drop.has(x.fingerprint))
+  l.rejectedHypotheses = l.rejectedHypotheses.filter((x) => x.permanent || !drop.has(x.fingerprint))
   return l.rejectedHypotheses.length !== before
 }
 
@@ -1257,6 +1271,13 @@ export type TrialDecision =
 // trial is never easier to promote than under the old rule, because the window (exercised runs only) and the baseline
 // (the clean exercised runs, not the diagnosis window) both changed; a calm week that never used the change no longer
 // promotes it, but a window of exercised runs can differ from the first runs after the apply in either direction.
+// The remaining case where the new rule can promote and the old one would have rolled back: harm that shows only in runs
+// that ended 'done' and did not exercise the patched role (no patched agent, so rules 1 and 2 see nothing, and rule 3 adds
+// only error runs to the window). A legacy trial judged on the old rule alone (its per-role baseline could not be rebuilt)
+// still goes through judgeTrial, so a stored baseline under MIN_BASELINE_RUNS (3) runs is rolled back as inconclusive:
+// stricter than the old rule, which had no such check. Known limit, not built: a ledger holding MAX_REJECTED (200) or
+// more never-expiring rejections (rejectionsFull) applies nothing new and has no in-app way out; the follow-up is a
+// forget-rejection command.
 
 /** A trial still short of its exercised runs is rolled back (inconclusive) once this many times `need` trial runs passed. */
 export const TRIAL_RUN_CAP_FACTOR = 5

@@ -265,6 +265,27 @@ describe('hybrid memo', () => {
     expect(second.plan.empty).toBe(true)
     expect(second.plan.rolePatches).toEqual(first.plan.rolePatches)
   })
+  it('a waiting memo on the same digest makes no call and returns an empty hybrid plan, never the deterministic one; onDigest reports the hash and the hit', async () => {
+    const hash = digestHashOf(buildDigest(args.project, args.diagnosis, []))
+    const digests: { digestHash: string; memoHit: boolean }[] = []
+    const first = await capture(usable, { onDigest: (d) => digests.push(d) })
+    expect(first.complete).toHaveBeenCalledTimes(1)
+    expect(first.plan.rolePatches.length).toBeGreaterThan(0)
+    expect(digests).toEqual([{ digestHash: hash, memoHit: false }])
+    const again = await capture(usable, { memo: { digestHash: hash, outcome: 'waiting' }, onDigest: (d) => digests.push(d) })
+    expect(again.complete).not.toHaveBeenCalled()
+    expect(again.plan.strategy).toBe('hybrid')
+    expect(again.plan.empty).toBe(true)
+    expect(again.plan.rolePatches).toEqual([])
+    expect(again.plan.rationale).toContain('waiting for a baseline')
+    expect(digests[1]).toEqual({ digestHash: hash, memoHit: true })
+    // Another digest asks again.
+    const other = await capture(usable, { memo: { digestHash: digestHashOf('something else'), outcome: 'waiting' } })
+    expect(other.complete).toHaveBeenCalledTimes(1)
+    // A throwing callback never breaks the plan.
+    const safe = await capture(usable, { onDigest: () => { throw new Error('no') } })
+    expect(safe.plan.rolePatches.length).toBeGreaterThan(0)
+  })
   it('the empty and refused answers give the same fingerprint on the first pass and on the memo pass', async () => {
     const empty = await capture('{}')
     const emptyAgain = await capture(usable, { memo: empty.seen[0] as { digestHash: string; outcome: 'empty' } })

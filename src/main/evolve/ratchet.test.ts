@@ -585,6 +585,15 @@ describe('ledger', () => {
     l.hybridMemo = { digestHash: hash, outcome: 'empty', at: 5 }
     writeLedger(d, l)
     expect(readLedger(d, 'p1').hybridMemo).toEqual({ digestHash: hash, outcome: 'empty', at: 5 })
+    // A waiting memo keeps its one-line detail (capped); other outcomes drop it.
+    l.hybridMemo = { digestHash: hash, outcome: 'waiting', at: 6, detail: '0 of the 3 clean runs' }
+    writeLedger(d, l)
+    expect(readLedger(d, 'p1').hybridMemo).toEqual({ digestHash: hash, outcome: 'waiting', at: 6, detail: '0 of the 3 clean runs' })
+    writeFileSync(ledgerPath(d, 'p1'), JSON.stringify({ version: 1, generations: [], rejectedHypotheses: [], hybridMemo: { digestHash: hash, outcome: 'waiting', at: 6, detail: `a\nb${'x'.repeat(500)}` } }))
+    expect(readLedger(d, 'p1').hybridMemo?.detail).toHaveLength(300)
+    expect(readLedger(d, 'p1').hybridMemo?.detail).not.toContain('\n')
+    writeFileSync(ledgerPath(d, 'p1'), JSON.stringify({ version: 1, generations: [], rejectedHypotheses: [], hybridMemo: { digestHash: hash, outcome: 'empty', at: 6, detail: 'x' } }))
+    expect(readLedger(d, 'p1').hybridMemo).toEqual({ digestHash: hash, outcome: 'empty', at: 6 })
     for (const bad of [{ digestHash: 'short', outcome: 'empty', at: 1 }, { digestHash: hash, outcome: 'nope', at: 1 }, { digestHash: hash, outcome: 'empty', at: 'x' }, 'str', null]) {
       writeFileSync(ledgerPath(d, 'p1'), JSON.stringify({ version: 1, generations: [], rejectedHypotheses: [], hybridMemo: bad }))
       expect(readLedger(d, 'p1').hybridMemo).toBeUndefined()
@@ -1139,6 +1148,13 @@ describe('trial rule 2: the trial judges the change', () => {
     expect(fps()).toEqual(['f', 'g'])
     expect(clearRejected(l, ['f'])).toBe(true)
     expect(fps()).toEqual(['g'])
+    // A person's rollback is never cleared, even when a promotion names its fingerprint (review fix N4).
+    expect(clearRejected(l, ['g'])).toBe(false)
+    expect(fps()).toEqual(['g'])
+    addRejected(l, { fingerprint: 'h', summary: 's', reason: 'r', at: 800_000, roles: [DEV] })
+    expect(clearRejected(l, ['g', 'h'])).toBe(true)
+    expect(fps()).toEqual(['g'])
+    expect(l.rejectedHypotheses[0].permanent).toBe(true)
   })
 
   it('an old ledger loads: a trial without a scope, old rejections pinned unless provably a trial\'s, and bad new fields are dropped', () => {

@@ -182,8 +182,9 @@ export function qualityFindings(input: EvalInput): SkillFinding[] {
       push({ kind: 'neverGranted', severity: 'info', skillIds: [spec.id], title: `${spec.name} is not granted to any role`, detail: 'No role may load this skill, so no agent ever uses it. Grant it to a role or remove it.' })
     }
     // Only runs that started after the skill could be loaded count: after it was added and after it was last switched on
-    // or granted (SkillService.update moves updatedAt then; no per-grant time is stored, so a grant made by editing the
-    // role itself does not restart the count). An unreadable timestamp counts no run (no finding: it fails closed).
+    // or granted. Every project save moves updatedAt of a skill a role newly holds (ProjectStore.commitSave,
+    // stampGrantedSkills), so a grant made by editing the role itself restarts the count too. An unreadable timestamp
+    // counts no run (no finding: it fails closed).
     const considered = runs.filter((r) => r.summary.startedAt > activeSince(spec))
     if (spec.enabled && isGranted && !info.libraryMissing && considered.length >= MIN_RUNS_FOR_NEVER_LOADED && !(loads.get(digestKey(spec.id)) ?? 0)) {
       push({ kind: 'neverLoaded', severity: 'info', skillIds: [spec.id], title: `${spec.name} was never loaded`, detail: `Granted to a role but not loaded in the last ${considered.length} runs. Its description may not match the work, or it may not be needed.`, evidence: { runIds: considered.map((r) => r.summary.id) } })

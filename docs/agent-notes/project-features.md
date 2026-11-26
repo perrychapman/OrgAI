@@ -93,6 +93,17 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     fingerprint for all four outcomes). A failed or timed-out call stores nothing. An identical digest hash makes no call and returns
     the deterministic plan with a rationale saying so; any change to the digest (runs, team, rejected list, cooldown) calls
     again (unit tested, `synthesizer.test.ts`).
+  - `waiting` (recheck fix N2): the model gave a usable plan but `applyCore` refused it for want of a baseline
+    (`baselineShortfall`, "waiting for a baseline"). The memo is stored against the same digest hash, with the shortfall
+    text in an optional `detail` (waiting only, one line, 300 characters), only when the plan came from the model (strategy
+    hybrid) and no other outcome was stored this pass. A pass on the same digest makes no call and `applyCore` returns the
+    same refusal text before anything else is decided; the synthesizer returns the `trimmed`-style empty gated plan (never
+    the deterministic one, which could apply where the model call did not), so the `plan` field of that refusal is empty
+    while the first pass's carried the model's patches (the reason text is the same). A changed digest, or a memo over 14
+    days old, calls again and the apply proceeds when the baseline now fills. Not covered: a baseline that fills while the
+    digest text stays identical (the baseline searches the newest 50 runs, the digest the newest 10) waits for the 14-day
+    limit or the next digest change (unit tested, `service.test.ts` "waiting for a baseline", `synthesizer.test.ts`,
+    `ratchet.test.ts` storage).
   - Where written: `applyCore`, so the post-run pass and an explicit apply, under the project's serial chain through
     `writeLedger`. `analyze` reads the memo from its read-only ledger and never writes it (unit tested: analyze leaves no
     memo, a later pass writes one, a later analyze makes no call). Two post-run passes on an unchanged digest make one call
@@ -167,7 +178,14 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     inside the trial's span counts unless provably unrelated; a trial opened before rule 2 keeps its stored baseline and
     must also pass the old rule. Not guaranteed: that a new trial is never easier to promote than under the old rule
     (exercised runs only, against the clean exercised baseline, can differ from the first runs after the apply in either
-    direction).
+    direction). The remaining case where the new rule can promote and the old one would have rolled back: harm that shows
+    only in runs that ended 'done' and did not exercise the patched role (rules 1 and 2 see no patched agent and rule 3
+    adds only error runs to the window). A legacy trial judged on the old rule alone still goes through `judgeTrial`, so
+    a stored baseline under 3 runs rolls it back as inconclusive (stricter than the old rule). Known limit, not built: a
+    ledger holding 200 or more never-expiring rejections freezes evolution (`rejectionsFull`) with no in-app way out;
+    follow-up: a forget-rejection command.
+  - A rejection a person made (`permanent`) is never cleared: `clearRejected`, run on a promotion, skips every entry with
+    `permanent` set even when its fingerprint matches (unit tested).
   - Clean baseline, fixed at apply time in `StoredGeneration.scope`: newest 10 measured runs among the newest 50 in which
     a patched role had an agent (a limit: observed parallelism reached it), without runs inside a rolled-back
     generation's window or error runs of a role flagged tier_underprovisioned (unit tested, `baselineRuns`). Minimums

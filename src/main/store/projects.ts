@@ -224,6 +224,45 @@ export function reconcileNearLimitProject(stored: Project, incoming: Project): P
 }
 
 /**
+ * Skills a save newly grants to a role: a skill id a role in `next` holds that the same role (by id) did not hold in
+ * `stored` (a role that is new in `next` holds all its skills newly). Every writer of `Role.skills` (the Team editor's
+ * projects:save, team-files ingest, capabilities apply, an approved proposal, SkillService) ends in a project save, so this
+ * is the one place that sees them all. Pure.
+ */
+export function newlyGrantedSkillIds(stored: Pick<Project, 'roles'> | undefined, next: Pick<Project, 'roles'>): Set<string> {
+  const out = new Set<string>()
+  const before = new Map<string, Set<string>>()
+  for (const r of stored?.roles ?? []) if (r && typeof r.id === 'string') before.set(r.id, new Set(Array.isArray(r.skills) ? r.skills : []))
+  for (const r of next?.roles ?? []) {
+    if (!r || !Array.isArray(r.skills)) continue
+    const had = before.get(r.id)
+    for (const id of r.skills) if (typeof id === 'string' && !had?.has(id)) out.add(id)
+  }
+  return out
+}
+
+/**
+ * A grant restarts the skill's "never loaded" count (skills/evaluate.ts `activeSince` reads the later of addedAt and
+ * updatedAt): every skill a save newly grants gets `updatedAt` = `now`, so a skill granted by editing a role cannot be
+ * flagged for runs that started before the grant. Never moves an updatedAt earlier. Returns `next` itself when nothing
+ * is granted.
+ */
+export function stampGrantedSkills(stored: Project | undefined, next: Project, now: string): Project {
+  if (!stored || !Array.isArray(next.skills) || !next.skills.length) return next
+  const granted = newlyGrantedSkillIds(stored, next)
+  if (!granted.size) return next
+  let changed = false
+  const skills = next.skills.map((s) => {
+    if (!s || !granted.has(s.id)) return s
+    const cur = typeof s.updatedAt === 'string' ? Date.parse(s.updatedAt) : NaN
+    if (Number.isFinite(cur) && cur >= Date.parse(now)) return s
+    changed = true
+    return { ...s, updatedAt: now }
+  })
+  return changed ? { ...next, skills } : next
+}
+
+/**
  * A renderer save that renames roles (third review of the rename work; changes a saved shape): for each stored role whose
  * slug the save changes (matched by id), when no OTHER stored role held that old slug, every stored server whose `roles`
  * lists the old slug drops it and the renamed role gets the server by id (Role.mcpServers), so its access is kept and no
@@ -924,7 +963,9 @@ export class ProjectStore {
       for (const r of cleaned.roles ?? []) if (r) away.delete(r.slug)
       if (!away.size) this.renamedAway.delete(cleaned.id)
     }
-    const updated = { ...cleaned, updatedAt: this.nextUpdatedAt(cleaned.id) }
+    // A skill a role gained in this save restarts its never-loaded count (stampGrantedSkills).
+    const stamped = stampGrantedSkills(this.projects.find((p) => p.id === cleaned.id), cleaned, new Date().toISOString())
+    const updated = { ...stamped, updatedAt: this.nextUpdatedAt(cleaned.id) }
     this.change(() => {
       const idx = this.projects.findIndex((p) => p.id === cleaned.id)
       if (idx === -1) this.projects.push(updated)
