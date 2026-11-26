@@ -101,6 +101,44 @@ Agent import, run outputs, team files, practice kit, repository clone, folder co
     empty one (unit tested, `ratchet.test.ts`).
   - Unchanged: the deterministic strategy and the bench: `npm run bench:heal -- --seed 1` gave an identical `results.json`
     (without `generatedAt`) before and after. It only removes calls; live model answers were not run.
+- Detection calibration (2026-11-25, self-healing efficiency step 7, bench "Three changes" item 2; ARCHITECTURE.md "Team
+  evolution"; results in `docs/design/org-chart-self-healing-bench.md` "After detection calibration"). Detection only: no
+  gate rule, threshold, spend hold or synthesizer patch rule changed. Facts, each with how it was checked:
+  - Spawners: a role with `canSpawn` never gets tier_overprovisioned, whatever its work length; it can still be
+    under-provisioned (unit tested, `telemetry.test.ts`). Bench: no lead or coordinator tier cut on any seed (was the
+    source of the large control's promoted harmful cuts on seed 2).
+  - Fast roles: a fast role whose effort is above medium is judged with the same clean-first-pass, short-work rule; the
+    synthesizer steps its effort, never its tier; a thin finding's exploration names the effort step (unit tested,
+    `telemetry.test.ts`, `synthesizer.test.ts`; bench small:effort-high detected on all three seeds, not detected before).
+  - Advisory findings out of the waste score: `ADVISORY_FINDING_KINDS` (skill_crystallization, ceremonial_layer,
+    spawner_step_work, unused_role) and any finding carrying an `exploration` stay in `findings` but not in `wasteScore`;
+    when more than `MAX_FINDINGS` (12) fire, actionable ones are kept first (unit tested). Consequence: a prompt-bloat or an
+    everyday effort finding that only crossed 15 thanks to skill_crystallization no longer makes a plan (bench: small and
+    medium prompt-bloat and medium effort-high went from healed to negligible here).
+  - spawner_step_work (new kind, advisory): plan steps that ended 'done', had no staffing row bound to them (no
+    `StaffingAssignment.stepId`) and whose `owner` names no role of the chart (slug, name or id; '@', case and a trailing
+    handle number ignored), in at least 3 of the measured runs. Run digest v4 keeps the owner only as `ownerKey` (a hash)
+    and the `unstaffed` flag (unit tested, `runDigest.test.ts`, with an injection-shaped owner). In real runs a step is
+    bound only when its `staff.role` matched the spawn, and the run keeps at most `RUN_STAFFING_ASSIGNMENTS_MAX` rows, so
+    "unstaffed" can also mean "not recorded": that is why it is advisory (unverified live). Bench: detected on every
+    missing-specialty case of all three seeds (missed before, no finding kind).
+  - unused_role (new kind, advisory): a non-root role with no agent and no staffing row in a full window of
+    `UNUSED_ROLE_RUNS` (10) measured runs (unit tested). Bench: the archivist detected at run 10 on every redundant-role
+    case of all three seeds; the healthy controls' final findings hold none (bench report).
+  - Both new findings are notes in the plan rationale, never a patch (unit tested), skip the hybrid model call when they are
+    the only findings, and their text is built from `safeName` slugs and counts through `safeLine` (unit tested with an
+    injection-shaped, key-bearing role slug).
+  - Repeated tool sequences (`skills/evaluate.ts`, so also the Skills panel's suggestions, the evolve engine's
+    skill_crystallization and the Team review's evidence): a 4-call window counts only with at least 3 distinct tools
+    (`SEQUENCE_MIN_DISTINCT`) and no orchestration tool (`ORCHESTRATION_TOOLS`: Agent, Task, TaskOutput, TodoWrite, Skill,
+    SendMessage, ListAgents, SubagentHandback, Codex's spawn_report / message_agent / list_team and their legacy names,
+    and the harness's set_plan, update_plan, complete_plan, mark_blocked, integrate_worktrees, message_run, list_runs,
+    ask_user, todo_list, with or without `mcp__orgai__`). Unit tested (`evaluate.test.ts`); the capabilities, skills and
+    store suites passed with no expectation changed; `e2e/skills.mjs` passed but does not exercise sequence findings.
+  - Not done: the exploration itself (1 in K steps one tier down with its own first-pass record) exists only as a
+    suggestion on the finding; running it needs `runtime/staffing.ts` (a spend file) to pick the cheaper tier for some
+    steps and the digest to keep a per-assignment first-pass record. Until then a non-spawner with short, clean work
+    (the bench's checker) is still cut on length alone.
 - Run digests (2026-11-25, self-healing efficiency step 1, first half; `docs/design/self-healing-efficiency.md`, ARCHITECTURE.md
   "Team evolution"): `src/main/store/runDigest.ts` `digestRun(record)` is the one place a finished run is reduced for the
   self-healing loops; `RunStore.getDigest(runId)` caches its body beside the record (`runs/<runId>/digest.json`) and the

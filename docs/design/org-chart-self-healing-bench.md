@@ -282,3 +282,78 @@ Ranked by the simulated excess cost of the unhealed cases (the price of not heal
 12. **Serial bottleneck (concurrency 1)** (small detected only, medium detected only, large detected only; +$2.05). Could heal it today: interactive `orgai org evolve --apply` with a person approving the concurrency raise. What stops the unattended path: spend.ts spendRaisesOf counts a higher concurrency limit as a raise; service.ts applyCore holds it on the post-run pass (spend_held). telemetry.ts spawnShape also reads only the ROOT's direct reports, so a chart whose leads fan out is measured on the leads, not the workers. Gate rules seen: spend_held. Held raises: project.concurrency.
 13. **Tool friction (lookup role lacks Grep)** (small negligible here, medium healed, large healed; +$0.80). Could heal it today: deterministic evolve (adds Read, Glob or Grep). What stops the unattended path: ratchet.ts evaluateActiveTrial / compareMetrics judge a trial on whole-team medians of the next 3 runs whatever tasks they were, so a correct patch can be rolled back when those runs never used the role (small chart, seed 1); service.ts rollbackCore then records it with addRejected, which never expires, and deterministicPlan drops the same patch on every later pass.
 14. **Effort too high (simple-work role on high)** (small negligible here, medium healed, large healed; +$0.68). Could heal it today: deterministic evolve on everyday/deep roles; nothing on a fast role. What stops the unattended path: telemetry.ts diagnose: the over-provisioned rule requires `tierDown(runtimeTier)` (deep or everyday), so effort waste on a fast role is never a finding; on an everyday role it fires only for short work (avg turns <= 6 and output <= 4,000 tokens).
+
+## After detection calibration (2026-11-25)
+
+Item 2 of "Three changes to make first" (self-healing efficiency Step 7), on top of dev at 3c21900f (Steps 1, 2, 3, 5 and 6
+merged; the trial rewrite of item 1 was not in this tree). The 2026-11-19 results above are left as they were.
+
+What changed (detection only; no gate rule, threshold, spend hold or patch rule): `telemetry.ts diagnose` never takes a
+tier cut from a spawner (`canSpawn`); judges effort on a fast role above medium; keeps advisory findings
+(skill_crystallization, ceremonial_layer, any finding with an exploration, and the two new kinds) out of the waste score;
+adds spawner_step_work (done plan steps whose owner names no role of the chart and had no staffing row bound, in 3 or
+more runs; the digest keeps the owner as a hash) and unused_role (a non-root role with no agent in a full window of 10
+measured runs), both notes only. `skills/evaluate.ts` drops 4-call windows with fewer than 3 distinct tools or any
+orchestration tool (Agent, Task, TodoWrite, Skill, SendMessage, ListAgents, Codex's network tools, the harness's plan,
+integration, run-message and to-do tools). Not done: the exploration (1 in K steps one tier down with its own first-pass
+record) is still a suggestion; running it needs `runtime/staffing.ts`, a spend file, so a non-spawner with short, clean
+work (the checker) is still cut on length alone.
+
+Bench change: only `defects.mjs`, so that detection of the two structural defects can be counted. missing-specialty now
+expects `{ kind: 'spawner_step_work' }` (no role) and redundant-role `{ kind: 'unused_role', roleSlug: 'archivist' }`;
+both were `expect: null` ("no finding kind"), and their blocker text was updated. Not circular in the sense that matters:
+the simulator was not touched, the expectation only names the finding the defect should raise, and the signal is one a
+real run carries (a plan step owner the chart has no role for, done with no report bound to it; a role with no agent),
+not a simulator constant. It is circular in the same way as before for spawner_step_work: the simulator writes the
+missing role as the step owner, which is what the rule reads; a real orchestrator may name owners by handle or not at
+all (unverified live).
+
+Same commands as before (`npm run bench:heal -- --seed <n> --out <temp dir>`), run before and after the change on the
+same tree. Status counts over the 43 defect cases:
+
+| Seed | Run | healed | symptom healed | negligible here | detected only | missed | made worse | controls changed | generations applied / promoted / rolled back | cases with final waste < 15 | controls with final waste < 15 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | before | 7 | 4 | 9 | 15 | 6 | 2 | 2 of 3 (medium, large) | 78 / 15 / 63 | 0 of 46 | 0 of 3 (49, 54, 60) |
+| 1 | after | 4 | 4 | 12 | 18 | 4 | 1 | 1 of 3 (large: checker tier fast, rolled back) | 32 / 9 / 23 | 33 of 46 | 3 of 3 (0, 11, 11) |
+| 2 | before | 5 | 1 | 8 | 12 | 4 | 13 | 2 of 3 (medium; large worse, three lead cuts promoted) | 87 / 53 / 34 | 0 of 46 | 0 of 3 (48, 57, 64) |
+| 2 | after | 4 | 3 | 13 | 19 | 3 | 1 | 1 of 3 (large: checker tier fast, rolled back) | 34 / 9 / 25 | 19 of 46 | 2 of 3 (0, 11, 23) |
+| 3 | before | 5 | 2 | 10 | 19 | 7 | 0 | 2 of 3 (medium; large worse) | 90 / 22 / 68 | 0 of 46 | 0 of 3 (47, 56, 67) |
+| 3 | after | 2 | 4 | 13 | 20 | 4 | 0 | 1 of 3 (large: checker tier fast, rolled back) | 32 / 6 / 26 | 20 of 46 | 2 of 3 (0, 11, 23) |
+
+Controls (final waste in brackets): small clean on every seed before and after; medium went from a rolled-back checker
+cut to clean on every seed (its only finding, the checker's tier_overprovisioned, stays under 15 once skill_crystallization
+no longer adds to it); large went from three or four lead and checker cuts (seed 2: promoted and worse) to one checker cut,
+rolled back, on every seed. No lead or coordinator tier cut was applied in any case of any seed after (54 such changes
+before). The large control stays over 15 on seeds 2 and 3 because of serial_bottleneck plus the checker finding.
+
+Detection of the new and recalibrated findings, after (before: none of these was detected):
+
+- missing specialty (spawner_step_work): detected in all 9 cases (small r14 / r4 / r6, medium r5 / r5 / r4, large r8 / r5
+  / r4 for seeds 1 / 2 / 3); status detected only, or negligible here on large seeds 1 and 2.
+- redundant role (unused_role on the archivist): detected at run 10 in all 9 cases; negligible here as before.
+- effort too high on a fast role (small:effort-high, the researcher on fast/high): detected (r6 / r2 / r1); negligible
+  here, as before: the finding alone stays under the waste threshold, so no plan is made.
+
+Where a number moved the wrong way, from the per-case rows:
+
+- Fewer healed (7 / 5 / 5 to 4 / 4 / 2). small and medium prompt-bloat (seeds 1 to 3) and medium effort-high (seeds 1 and
+  3) end at waste 10 to 16 with no plan or one rolled-back plan: the bloat or effort finding alone is under 15, and before
+  it was the unrelated skill_crystallization finding that pushed the waste over the threshold (the "Robustness" note on
+  `--no-skill-eval` already showed this). The defects are cheap here (negligible here, +$0.01 to +$1). large effort-high
+  (seeds 1 and 3): the checker effort patch was applied and its trial rolled back on noise (error-run rate), which is the
+  trial's problem (item 1), not detection. Two gains: small tool-friction (seed 1, applied at run 11 instead of 6) and large
+  prompt-bloat (seed 3, with no lead cut in the next generation) are now healed because their trial was promoted.
+- small:tier-over (seed 1) went from symptom healed to detected only (final waste 0, no generation): with thin evidence
+  the researcher's finding carries an exploration and is advisory, and without skill_crystallization nothing lifts the
+  waste to 15, so the tier step is not taken. This is the intended price of item 2: fewer cuts, less saved where a cut
+  was right.
+- The two cases still made worse (seed 1 medium:tier-under, seed 2 large:tier-under) were made worse before as well and are
+  the checker cut to fast, promoted on a clean window, in a chart whose builder fails for its own reason. That is the
+  remaining length-based cut on a non-spawner, which only the exploration (not done) would gate.
+
+Unit tests: `telemetry.test.ts` (spawner excluded, under-provisioned still judged for a spawner, fast-role effort, advisory
+out of the score, the cap keeps actionable findings, both new findings and their thresholds, injection-shaped role slugs),
+`synthesizer.test.ts` (notes only, no hybrid call, fast effort step), `runDigest.test.ts` (owner hash, unstaffed flag,
+shape check) and `evaluate.test.ts` (3 distinct tools, orchestration tools with and without the orgai prefix). One older
+expectation changed: `telemetry.test.ts` "not raised for ... a fast role" used a fast role on effort high (the fixture's
+default), which is now a finding by design; it now uses effort medium, and a new test covers fast/high.

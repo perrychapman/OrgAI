@@ -29,6 +29,22 @@ export const MAX_STALE_PATHS = 50
 /** Tool sequences: window length, the runs a window must appear in, entries read per run, findings kept. */
 export const SEQUENCE_WINDOW = 4
 export const SEQUENCE_MIN_RUNS = 3
+/** A window counts only with at least this many distinct tools (two-tool back-and-forth is not a routine). */
+export const SEQUENCE_MIN_DISTINCT = 3
+/**
+ * Orchestration and bookkeeping tools (bare names; an `mcp__orgai__` prefix is dropped before the check): spawning,
+ * messaging, waiting, plans, to-dos and skill loading. A window holding one is coordination, never a routine a skill
+ * could hold. Claude's Agent/Task/TodoWrite/Skill/SendMessage/ListAgents, Codex's network tools (current and legacy
+ * names) and the harness's plan, integration, run-message and to-do tools.
+ */
+export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
+  'Agent', 'Task', 'TaskOutput', 'TodoWrite', 'Skill', 'SendMessage', 'ListAgents', 'SubagentHandback',
+  'spawn_report', 'message_agent', 'list_team', 'spawn_agent', 'send_message', 'list_agents',
+  'set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'integrate_worktrees', 'message_run', 'list_runs', 'ask_user', 'todo_list'
+])
+const ORGAI_PREFIX = 'mcp__orgai__'
+/** True for a tool name (as a digest holds it) that is orchestration, not step work. */
+export const isOrchestrationTool = (name: string): boolean => ORCHESTRATION_TOOLS.has(name.startsWith(ORGAI_PREFIX) ? name.slice(ORGAI_PREFIX.length) : name)
 export const MAX_GAP_FINDINGS = 5
 /**
  * Corrections: similarity to join a group, runs a group must span, candidates overall. (Per run: at most 50, their
@@ -198,12 +214,13 @@ export function toolSequenceFindings(runs: readonly EvalRunInput[]): SkillFindin
   for (const raw of runs) {
     const run = evalDigest(raw)
     const seen = new Set<string>()
-    // Each agent's calls in order (names as a digest holds them); a window with two or more distinct names counts once per run.
+    // Each agent's calls in order (names as a digest holds them); a window with SEQUENCE_MIN_DISTINCT or more distinct
+    // names and no orchestration tool counts once per run.
     for (const seq of run.toolSequences) {
       const names = seq.map((i) => run.toolNames[i] ?? '')
       for (let i = 0; i + SEQUENCE_WINDOW <= names.length; i++) {
         const win = names.slice(i, i + SEQUENCE_WINDOW)
-        if (new Set(win).size < 2) continue
+        if (new Set(win).size < SEQUENCE_MIN_DISTINCT || win.some(isOrchestrationTool)) continue
         const key = win.join('\u0000')
         if (seen.has(key)) continue
         seen.add(key)

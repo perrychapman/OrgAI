@@ -1,6 +1,7 @@
-import { QUICK_PROJECT_ID } from '../../shared/types'
+import { EFFORTS, QUICK_PROJECT_ID } from '../../shared/types'
 import type {
   EvolutionFinding,
+  EvolutionFindingKind,
   EvolutionMetrics,
   ModelTier,
   Project,
@@ -17,6 +18,7 @@ import {
   asDigest,
   digestHash,
   digestKey,
+  ownerKey,
   pendingOverlaps,
   planLevels,
   safeLine,
@@ -25,7 +27,7 @@ import {
   type RunDigest,
   type Shape
 } from '../store/runDigest'
-import { PROMPT_BUDGET_PER_ROLE, compressPrompt, effectiveConcurrency, isGuardRole, stepTier } from './plan'
+import { PROMPT_BUDGET_PER_ROLE, compressPrompt, effectiveConcurrency, isGuardRole, stepEffort, stepTier } from './plan'
 
 export { classifyError, safeLine, spawnShape } from '../store/runDigest'
 
@@ -46,6 +48,21 @@ export const OVER_FIRST_PASS = 0.9
 export const UNDER_ESCALATION_RATE = 0.35
 export const MAX_FINDINGS = 12
 const FINDING_SUMMARY_MAX = 240
+/** unused_role: a role spawned in none of the last this-many measured runs (needs that many runs in the window). */
+export const UNUSED_ROLE_RUNS = 10
+/** spawner_step_work: runs in which a planned step for a role the chart lacks was done with no report. */
+export const SELF_STEP_MIN_RUNS = 3
+
+/**
+ * Findings that explain but never justify a change on their own: shown in the diagnosis, kept out of the waste score
+ * that gates a plan (so a healthy chart can sit under MIN_WASTE_DEFAULT). A tier_overprovisioned finding that carries an
+ * `exploration` (thin evidence) is advisory too: the synthesizer only notes it.
+ */
+export const ADVISORY_FINDING_KINDS: ReadonlySet<EvolutionFindingKind> = new Set<EvolutionFindingKind>(['skill_crystallization', 'ceremonial_layer', 'spawner_step_work', 'unused_role'])
+
+export function isAdvisoryFinding(f: Pick<EvolutionFinding, 'kind' | 'exploration'>): boolean {
+  return ADVISORY_FINDING_KINDS.has(f.kind) || f.exploration !== undefined
+}
 
 /** A run as the analyzer takes it: a stored record or its digest. */
 export type RunLike = RunRecord | RunDigest
@@ -272,9 +289,29 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
   const pollAgg = new Map<string, { totalPolls: number; pollRuns: Set<string>; costUsd: number; inTokens: number }>()
   const serial: { ratio: number; width: number; shape: Shape }[] = []
   let serialRuns = 0
+  // Roles the chart has, as plan owners are compared (ownerKey of slug, name and id).
+  const chartOwnerKeys = new Set(project.roles.flatMap((r) => [r.slug, r.name, r.id].map(ownerKey)).filter(Boolean))
+  const selfStepRuns = new Set<string>()
+  let selfSteps = 0
+  const selfOwners = new Set<string>()
+  // Roles seen running (digestKey of role ids and slugs) for unused_role.
+  const seenRoleIds = new Set<string>()
+  const seenSlugs = new Set<string>()
 
   for (const r of runs) {
     totalCost += r.costUsd
+    // A done plan step owned by a role the chart lacks, with no report bound to it: a spawner did the work itself.
+    for (const s of r.plan?.steps ?? []) {
+      if (!s.unstaffed || !s.owner || chartOwnerKeys.has(s.owner)) continue
+      selfSteps++
+      selfStepRuns.add(r.summary.id)
+      selfOwners.add(s.owner)
+    }
+    for (const x of r.assignments) seenRoleIds.add(x.roleId)
+    for (const a of r.agents) {
+      seenSlugs.add(a.slug)
+      if (a.roleId) seenRoleIds.add(a.roleId)
+    }
     for (const a of r.agents) {
       const g = agg(a.slug)
       g.runs.add(r.summary.id)
@@ -367,9 +404,16 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
       })
       continue
     }
+    // A spawner's (lead's, coordinator's) short work is coordination, not easy work: its length never justifies a cut.
+    if (role.canSpawn) continue
     const simple = g.turns / g.agents <= 6 && g.outTokens / g.agents <= 4000
     const runtimeTier = roleTier ?? ([...g.tiers].sort((a, b) => b[1] - a[1])[0]?.[0] as ModelTier | undefined)
-    if (rate >= OVER_FIRST_PASS && g.escalated === 0 && g.failedReceipts === 0 && g.errors === 0 && simple && tierDown(runtimeTier) && !(runtimeTier === 'everyday' && role.effort === 'low') && !(totalCost > 0 && g.costUsd === 0)) {
+    // A deep or everyday role can step a tier (everyday/low is the floor); a fast role can only step its effort, and
+    // only from above medium (the synthesizer's effort rule).
+    const highEffort = !!role.effort && EFFORTS.indexOf(role.effort) > EFFORTS.indexOf('medium')
+    const fastEffort = runtimeTier === 'fast' && highEffort
+    const cheaper = (tierDown(runtimeTier) && !(runtimeTier === 'everyday' && role.effort === 'low')) || fastEffort
+    if (rate >= OVER_FIRST_PASS && g.escalated === 0 && g.failedReceipts === 0 && g.errors === 0 && simple && cheaper && !(totalCost > 0 && g.costUsd === 0)) {
       const saveUsd = perRunCost(g) * (role.effort && role.effort !== 'low' && role.effort !== 'medium' ? 0.2 : 0.5)
       const thin = g.agents < 6 || g.runs.size < 3
       findings.push({
@@ -381,7 +425,7 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
         estSavingsUsd: r4(saveUsd),
         estSavingsTokens: Math.round((g.outTokens / n) * 0.15),
         estSavingsMs: Math.round((g.wallMs / n) * 0.15),
-        ...(thin ? { exploration: { everyK: 4, ...(runtimeTier && stepTier(runtimeTier, -1) ? { tier: stepTier(runtimeTier, -1) } : {}) } } : {}),
+        ...(thin ? { exploration: { everyK: 4, ...(fastEffort && role.effort && stepEffort(role.effort, -1) ? { effort: stepEffort(role.effort, -1) } : runtimeTier && stepTier(runtimeTier, -1) ? { tier: stepTier(runtimeTier, -1) } : {}) } } : {}),
         data: { agents: g.agents, runs: g.runs.size, tier: runtimeTier ?? '' }
       })
     }
@@ -538,7 +582,43 @@ export function diagnose(input: DiagnoseInput): TeamEvolutionDiagnosis {
     })
   }
 
-  findings.sort((a, b) => b.severity - a.severity || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : (a.roleSlug ?? '') < (b.roleSlug ?? '') ? -1 : 1))
-  const kept = findings.slice(0, MAX_FINDINGS).map((f) => ({ ...f, evidence: f.evidence.slice(0, 6).map((e) => safeLine(e)) }))
-  return { ...base, findings: kept, wasteScore: wasteScoreOf(kept.map((f) => f.severity)) }
+  // 8. a spawner doing step work itself (advisory): plan steps owned by a role the chart lacks, done with no report.
+  //    Built from counts and the root's slug only; the owners themselves are hashes in the digest and never shown.
+  if (selfStepRuns.size >= SELF_STEP_MIN_RUNS) {
+    const rootSlug = safeName(rootRole?.slug ?? '', 60) || 'the root'
+    findings.push({
+      kind: 'spawner_step_work',
+      severity: clamp(4 + selfSteps, 0, 20),
+      summary: safeLine(`${selfSteps} planned steps in ${selfStepRuns.size} of ${n} runs named an owner the chart has no role for and ran with no report; ${rootSlug} or a lead did them itself. A specialist role may be missing (change the chart by hand).`, FINDING_SUMMARY_MAX),
+      evidence: [`${selfSteps} steps done with no report`, `${selfStepRuns.size} of ${n} runs`, `${selfOwners.size} owner name(s) not in the chart`],
+      data: { runs: selfStepRuns.size, steps: selfSteps, owners: selfOwners.size }
+    })
+  }
+
+  // 9. a role never spawned (advisory): only with a full window of UNUSED_ROLE_RUNS measured runs; the root always runs.
+  if (n >= UNUSED_ROLE_RUNS) {
+    for (const role of project.roles) {
+      if (role === rootRole || role.reportsTo === null) continue
+      if (seenRoleIds.has(digestKey(role.id)) || seenSlugs.has(digestKey(role.slug))) continue
+      const slug = safeName(role.slug, 60) || 'a role'
+      findings.push({
+        kind: 'unused_role',
+        roleSlug: role.slug,
+        severity: 5,
+        summary: safeLine(`Role ${slug} was not spawned in any of the last ${n} measured runs; it may be redundant (review the chart by hand).`, FINDING_SUMMARY_MAX),
+        evidence: [`0 agents in ${n} runs`, `prompt ${role.prompt?.length ?? 0} characters`],
+        data: { runs: n }
+      })
+    }
+  }
+
+  // Advisory findings never crowd an actionable one out of the cap, and never count toward the waste score.
+  const order = (a: EvolutionFinding, b: EvolutionFinding): number => b.severity - a.severity || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : (a.roleSlug ?? '') < (b.roleSlug ?? '') ? -1 : 1)
+  const actionable = findings.filter((f) => !isAdvisoryFinding(f)).sort(order)
+  const advisory = findings.filter(isAdvisoryFinding).sort(order)
+  const kept = [...actionable, ...advisory]
+    .slice(0, MAX_FINDINGS)
+    .sort(order)
+    .map((f) => ({ ...f, evidence: f.evidence.slice(0, 6).map((e) => safeLine(e)) }))
+  return { ...base, findings: kept, wasteScore: wasteScoreOf(kept.filter((f) => !isAdvisoryFinding(f)).map((f) => f.severity)) }
 }

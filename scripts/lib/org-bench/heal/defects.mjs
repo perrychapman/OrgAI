@@ -188,11 +188,12 @@ export const DEFECTS = [
       chart.project.roles = chart.project.roles.filter((x) => x !== r)
       for (const x of chart.project.roles) x.spawnable = x.spawnable.filter((id) => id !== r.id)
       for (const x of chart.project.roles) x.canSpawn = x.spawnable.length > 0
-      return { touched: [{ structure: true }], expect: null }
+      // Detection (since the 2026-11-25 calibration): the advisory spawner_step_work finding, chart-wide (no role).
+      return { touched: [{ structure: true }], expect: { kind: 'spawner_step_work' } }
     },
     heal: {
       mechanism: 'propose_org_change in a work run or the Architect retrospective',
-      blocker: 'telemetry.ts diagnose skips the root agent (isRoot) and has no finding for work a spawner does itself; ratchet.ts chartProblems rejects adding a role (chart_broken).'
+      blocker: 'telemetry.ts diagnose reports it only as the advisory spawner_step_work finding (no patch, no waste); ratchet.ts chartProblems rejects adding a role (chart_broken).'
     }
   },
   {
@@ -205,11 +206,12 @@ export const DEFECTS = [
       chart.project.roles.push({ id: 'r_archivist', slug: 'archivist', name: 'archivist', description: 'archivist role', responsibilities: [], prompt: ARCHIVIST_PROMPT, tools: ['Read', 'Glob', 'Grep', 'Write'], model: 'everyday', tier: 'everyday', effort: 'medium', canSpawn: false, spawnable: [], reportsTo: parent.id, position: { x: 9200, y: 160 }, color: '#888888' })
       parent.spawnable = [...parent.spawnable, 'r_archivist']
       chart.truth.archivist = { needTier: 'everyday', needEffort: 'medium', kind: 'write', tools: ['Read', 'Write'], refParent: parentSlug }
-      return { touched: [{ structure: true }], expect: null }
+      // Detection (since the 2026-11-25 calibration): the advisory unused_role finding on the archivist.
+      return { touched: [{ structure: true }], expect: { kind: 'unused_role', roleSlug: 'archivist' } }
     },
     heal: {
-      mechanism: 'the Architect retrospective or a person; nothing measures an unused role',
-      blocker: 'telemetry.ts diagnose aggregates only agents that ran, so a role never spawned has no finding (unless its prompt passes 900 characters); ratchet.ts chartProblems rejects removing a role (chart_broken).'
+      mechanism: 'the Architect retrospective or a person',
+      blocker: 'telemetry.ts diagnose reports it only as the advisory unused_role finding after 10 measured runs (no patch, no waste); ratchet.ts chartProblems rejects removing a role (chart_broken).'
     }
   },
   {

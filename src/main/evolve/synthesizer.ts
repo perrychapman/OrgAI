@@ -39,6 +39,7 @@ import {
 import { createHash } from 'node:crypto'
 import { validateEvolutionPlan, type HybridMemo } from './ratchet'
 import { safeLine } from './telemetry'
+import { safeName } from '../store/runDigest'
 import type { EvolveCompleteRequest, EvolveCompleteResult } from './service'
 
 /**
@@ -244,6 +245,12 @@ function fromFindings(project: Project, d: TeamEvolutionDiagnosis): Build {
       case 'orchestrator_polling':
         b.notes.push(`${f.roleSlug ?? 'orchestrator'}: polled ListAgents while waiting on reports; this is a wait-loop behavior (no tier or concurrency change fixes it)`)
         break
+      case 'spawner_step_work':
+        b.notes.push('the root or a lead did planned steps itself for a role the chart lacks; consider adding a specialist (change the chart by hand)')
+        break
+      case 'unused_role':
+        b.notes.push(`${safeName(f.roleSlug ?? '', 60) || 'a role'}: never spawned in the measured runs; consider removing or merging it (change the chart by hand)`)
+        break
     }
   }
   for (const [slug, op] of b.ops) {
@@ -430,7 +437,7 @@ export function parseModelDeltas(text: string, project: Project): ModelDeltas | 
 // ---------- synthesize --------------------------------------------------------------------------------------------------
 
 function isAdvisoryOnlyFinding(f: EvolutionFinding): boolean {
-  if (f.kind === 'ceremonial_layer' || f.kind === 'orchestrator_polling') return true
+  if (f.kind === 'ceremonial_layer' || f.kind === 'orchestrator_polling' || f.kind === 'spawner_step_work' || f.kind === 'unused_role') return true
   if (f.kind === 'prompt_deflation' && f.roleSlug && f.data?.removableChars !== undefined && Number(f.data.removableChars) === 0) return true
   return false
 }
