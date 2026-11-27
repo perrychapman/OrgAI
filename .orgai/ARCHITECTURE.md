@@ -16,8 +16,8 @@ The UI overhaul's shell pass and its parallel restyles have landed (docs/design/
 - ink 8.0.0 (terminal UI, `src/cli/tui/`, its own `out/cli/tui.mjs` chunk) and ink-testing-library 4.0.0 (its tests), exact pins
 - lucide-react 1.64 (SVG icons that take their color from currentColor)
 - Plain CSS with custom-property design tokens (no CSS framework)
-- @anthropic-ai/claude-agent-sdk 0.3.312 (Claude adapter), zod 4 for harness tool schemas
-- @openai/codex 0.169.0, exact pin, tested range 0.169.x (Codex adapter and the OpenAI connection: `codex app-server`, JSON-RPC over stdio; moved from 0.167.0 on 2026-11-20 after a token-free generate-ts diff, the installed-binary integration tests and the trust probe, see `docs/agent-notes/connections-mcp.md`)
+- @anthropic-ai/claude-agent-sdk 0.3.331 (Claude adapter; exact pin, at 0.3.331 since Dependabot PR #71, 2026-11-27; the facts in `docs/agent-notes/sdk-facts.md` were verified on 0.3.312 and not re-checked on 0.3.331), zod 4 for harness tool schemas
+- @openai/codex 0.172.0, exact pin, tested range 0.172.x (Codex adapter and the OpenAI connection: `codex app-server`, JSON-RPC over stdio; moved from 0.169.0 on 2026-11-27, PR #71, and from 0.167.0 on 2026-11-20, each after a token-free generate-ts diff, the installed-binary integration tests and the trust probe, see `docs/agent-notes/connections-mcp.md`)
 - vitest 3 (node env) for unit tests; playwright-core Electron driver for e2e
 - electron-builder (Windows nsis + portable tested; mac dmg and linux AppImage configured, untested)
 - electron-updater 6.8.11, exact pin (runtime dependency; builder-util-runtime 9.7.0 shared with electron-builder 26.18): the desktop updater's GitHub provider, loaded lazily by `src/main/updaterRuntime.ts` in packaged apps only (docs/agent-notes/updates.md)

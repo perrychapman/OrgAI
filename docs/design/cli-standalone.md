@@ -90,7 +90,7 @@ Phase 4 is a smaller follow-up.
 - CLI bundle: ESM `out/cli/orgai.mjs` + chunks, `#!/usr/bin/env -S node --disable-sigusr1`, externals
   `CLI_RUNTIME_PACKAGES` = claude-agent-sdk, codex, zod (`src/cli/packaging.ts`). package.json: `private`, `bin`,
   `engines.node >=22.19.0 <23 || >=24.5.0`,
-  `@openai/codex` 0.166.0, `@anthropic-ai/claude-agent-sdk` 0.3.312. The SDK declares peers `@anthropic-ai/sdk
+  `@openai/codex` 0.172.0, `@anthropic-ai/claude-agent-sdk` 0.3.331 (both since Dependabot PR #71, 2026-11-27). The SDK declares peers `@anthropic-ai/sdk
   >=0.93.0`, `@modelcontextprotocol/sdk ^1.29.0`, `zod ^4.0.0`. (code)
 - Claude binary: `claude.ts` computes `packagedClaudeExecutable()` once at import, only inside app.asar; the
   connection probe uses `anthropicAuth.ts` `bundledClaudeBinary()` and its own candidates. Codex: `resolveCodexBinary`
@@ -727,8 +727,8 @@ shim is never spawned (`spawn` of a `.cmd` without a shell fails, and a shell wo
 
 Version: the native binary's `--version` (async, cached by realpath + mtime + size) runs in `CodexAppServer.start`
 (so login, logout, discovery and runs are all covered) and in the OpenAI connection probe for every auth kind,
-never in the synchronous resolver. Outside the tested range (today exactly 0.169.x; package.json pins
-0.169.0 since 2026-11-20, previously 0.167.0 and 0.166.0, code): refused with "Codex <found> is not supported; install @openai/codex@0.169.0" when it came from steps
+never in the synchronous resolver. Outside the tested range (today exactly 0.172.x; package.json pins
+0.172.0 since 2026-11-27, previously 0.169.0, 0.167.0 and 0.166.0, code): refused with "Codex <found> is not supported; install @openai/codex@0.172.0" when it came from steps
 2-3; a run warning only when the user chose it through `ORGAI_CODEX_PATH`.
 
 ### 6.3 Environment

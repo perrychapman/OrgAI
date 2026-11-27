@@ -16,6 +16,13 @@ import type { ResolvedMcpServer, RunConnection } from './types'
  * additive fields and new client methods (agentMessage `moderation`, ItemCompleted `contentTokenCount`,
  * Thread `attachedToThreadId`, the `inferenceHookDenied` CodexErrorInfo, `modelProvider/list`, `thread/prepareApprovedPlan`;
  * none used, an unknown error info already reads as a plain failure).
+ * Re-generated for 0.172.0 and diffed against 0.169.0 (2026-11-27): InitializeParams, thread/turn start and resume params,
+ * approval params, SandboxPolicy and rate-limit shapes unchanged. ServerNotification adds `thread/search/partial`;
+ * ServerRequest drops `currentTime/read` (never handled here). Additive fields: `environmentId` on mcpToolCall items and
+ * MCP status updates, `AccountUpdatedNotification.reason`, `ThreadStartParams.daybreakProgramPropagationEnrolled`.
+ * CodexErrorInfo adds `apiKeySpendLimitExceeded`, `projectSpendLimitExceeded`, `organizationSpendLimitExceeded` and
+ * `bioPolicy`: read as plain failures, never as a usage-limit hold (a spend limit does not reset on a schedule).
+ * agentMessage `moderation.display` changed from a flat object to a `mode` union (show / hide / block); not read here.
  * VERIFIED against that schema: names and field shapes below. UNVERIFIED (needs a model turn, see
  * scripts/smoke-codex.mjs): the order and exact content of notifications during a real turn.
  */

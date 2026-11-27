@@ -161,8 +161,48 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   `error` with that one-line message, writes a harness system row whose detail is the scrubbed raw text, and
   `complete()` throws it. `[mock:auth-fail]` drives the mock the same way. The live failure shape is unverified
   (from the 0.3.312 typings and the user's report).
-- Codex (`@openai/codex` 0.169.0 pinned since 2026-11-20; facts below were checked on 0.166.0 unless they name 0.167.0
-  or 0.169.0):
+- Codex (`@openai/codex` 0.172.0 pinned since 2026-11-27; facts below were checked on 0.166.0 unless they name 0.167.0,
+  0.169.0 or 0.172.0):
+  - Move to 0.172.0 (Dependabot PR #71, 2026-11-27; crosses 0.170.0 and 0.171.0). `CODEX_PINNED_VERSION` /
+    `CODEX_SUPPORTED_RANGE` are now 0.172.0 / 0.172.x (`codexBinary.ts`); 0.169.x is refused like any other untested
+    version, except through `ORGAI_CODEX_PATH` (a warning). How it was checked, all token-free (no login, no model call):
+    - `codex app-server generate-ts --experimental` of 0.169.0 (installed into a temp folder) and 0.172.0 diffed:
+      `InitializeParams` / capabilities, thread/turn start and resume params (bar one optional field), approval request
+      params, `SandboxPolicy`, the rate-limit shapes and `GetAccountResponse` are unchanged. Additive: notification
+      `thread/search/partial`; client methods `thread/search/stream`, `thread/search/cancel`,
+      `thread/search/stream/cancel`, `thread/realtime/list`, `modelProvider/default/set`; optional
+      `ThreadStartParams.daybreakProgramPropagationEnrolled`, `Thread.daybreakProgramPropagationEnrolled`;
+      `environmentId` on mcpToolCall items, MCP status updates, elicitations and the MCP client calls;
+      `AccountUpdatedNotification.reason`; an optional Bedrock `providerId` on login and setup; `approvals_reviewer` per app
+      tool in `AppToolsConfig`; new `CodexErrorInfo` values `apiKeySpendLimitExceeded`, `projectSpendLimitExceeded`,
+      `organizationSpendLimitExceeded` and `bioPolicy`. Changed: agentMessage `moderation.display`
+      (`AgentMessageDisplay`) went from a flat `{ action, blockType, ... }` object to a `mode` union (show / hide /
+      block). Removed: server request `currentTime/read` and `Project.position`. OrgAI reads none of the changed or
+      removed shapes (it never answered `currentTime/read`, never reads `moderation` and never calls `project/*`), so the
+      adapter needed no mapping change. The new spend-limit and `bioPolicy` values are parsed as plain failures, never a
+      usage-limit hold, since a spend limit does not reset on a schedule (unit test in `codexEvents.test.ts`).
+    - Real 0.172.0 binary: `ORGAI_CODEX_INTEGRATION=1 ORGAI_TEST_INSTALLED_CODEX=1` runs of `codexAppServer.test.ts`
+      and `codexInstalled.test.ts` (loopback fake Responses and MCP endpoints) pass, 33 of 33, none skipped (Windows);
+      `scripts/probe-codex-trust.mjs`: with the untrusted override every scenario (B in all four sandbox and approval
+      combinations, C, E, G, G2, H dotted path, I old trust on disk) keeps a folder's config, hooks and MCP servers
+      disabled; only the no-override danger-full-access case (A) and the trusted control (T) load them, as on 0.169.0.
+      In those loaded cases `mcpServerStatus/list` still names the repo's server, so the probe's MCP signal survives
+      the lazy MCP startup below.
+    - Release-note items, judged from the types, the probe and adapter code: (1) optional stdio MCP servers with cached
+      tool lists now start on their first tool call by default: OrgAI only logs `mcpServer/startupStatus/updated`
+      failures and never waits on a ready status, so a failing server's warning may now arrive later in a run (when
+      first called) instead of at thread start; whether the model still sees the cached tools before the start is
+      model-facing and unverified. (2) Bedrock Runtime selection and per-tool app approval reviewers: OrgAI uses
+      neither. (3) Provider errors arrive as soon as they are streamed and name the spend limit: see the error values
+      above. (4) Interrupting a parent turn keeps queued child-agent replies: concerns Codex's native multi-agent
+      threads, which OrgAI turns off; OrgAI's reports are its own threads. (5) Sandbox preparation, Linux sandbox mode
+      and permission-profile changes: the `-c` overrides and thread/start policy OrgAI builds are still accepted by the
+      real binary (integration tests above); whether the sandbox enforces the same limits in a real command is
+      unverified (needs a turn). (6) The default catalog model is now `gpt-6.2-sol` (the probe's thread/start with no login
+      reports it). When `codexModelFor` sends no model (a role on `inherit`, a tier name or a Claude alias), Codex's
+      default applies, so such runs may now land on that model; which default a logged-in account gets is unverified.
+    - Live behaviour with a model (turn event order, approvals in a real turn, lazy MCP start, moderated messages,
+      spend-limit error text) is unverified.
   - Move to 0.169.0 (Dependabot PR #60, 2026-11-20). `CODEX_PINNED_VERSION` / `CODEX_SUPPORTED_RANGE` are now
     0.169.0 / 0.169.x (`codexBinary.ts`); 0.167.x is refused like any other untested version, except through
     `ORGAI_CODEX_PATH` (a warning). How it was checked, all token-free (no login, no model call):
