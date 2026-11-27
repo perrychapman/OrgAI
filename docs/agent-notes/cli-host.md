@@ -330,8 +330,9 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     POSIX `#!` wrapper that maps to no package is used as is, a Windows .cmd / .ps1 is refused), then `@openai/codex-<platform>-<arch>`,
     then a synchronous PATH walk (never the cwd). Hits are classified by content: native binaries used as is, npm shims mapped to the
     vendor binary and never spawned. `checkCodexBinary` runs `--version` (cached by realpath + mtime + size) in
-    `CodexAppServer.start` and the OpenAI probe; outside 0.169.x it refuses ("Codex <v> is not supported; install
-    @openai/codex@0.169.0"; the pin moved from 0.166.0 to 0.167.0 on 2026-11-12 and to 0.169.0 on 2026-11-20), except `ORGAI_CODEX_PATH`, which gets one run warning (a test ties package.json's pin to
+    `CodexAppServer.start` and the OpenAI probe; outside 0.172.x it refuses ("Codex <v> is not supported; install
+    @openai/codex@0.172.0"; the pin moved from 0.166.0 to 0.167.0 on 2026-11-12, to 0.169.0 on 2026-11-20 and to 0.172.0 on
+    2026-11-27, PR #71), except `ORGAI_CODEX_PATH`, which gets one run warning (a test ties package.json's pin to
     `CODEX_PINNED_VERSION`). Codex is a dependency of the npm package since 2026-11-23 (`scripts/lib/npmPackage.mjs` `NPM_RUNTIME_PACKAGES`): `lookupCodexBinary` step 2 finds the bundled per-platform binary, hoisted or nested, before PATH; `verify-npm` step 7 runs that binary and fails unless it is the pinned version and answers `initialize` (checked on macOS arm64 by a real install: `codex-cli 0.169.0; initialize answered`; other platforms by CI). The Codex MCP restart creates no app-server after End
     session; `codex --version` / app-server children untrack from `host/shutdown.ts` on 'error' and 'close' as well as 'exit'.
     Unit-tested with fake file systems and fake servers only; no real claude or codex binary was resolved through these paths.
