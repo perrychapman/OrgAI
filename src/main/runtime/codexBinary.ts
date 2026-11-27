@@ -20,8 +20,8 @@
  * the real binary (`launcherTarget`); other native launchers are not recognised and are used as is.
  *
  * Version (`checkCodexBinary`): `codex --version` (async, cached by realpath + mtime + size), run by
- * CodexAppServer.start and by the OpenAI connection probe, never by the synchronous resolver. Outside 0.169.x a binary
- * from steps 2-3 is refused ("Codex <v> is not supported; install @openai/codex@0.169.0"); one chosen through
+ * CodexAppServer.start and by the OpenAI connection probe, never by the synchronous resolver. Outside 0.172.x a binary
+ * from steps 2-3 is refused ("Codex <v> is not supported; install @openai/codex@0.172.0"); one chosen through
  * ORGAI_CODEX_PATH only gets a warning.
  *
  * Electron-free; relative imports only.
@@ -54,9 +54,9 @@ export interface CodexBinary {
 /** The variable that names a Codex executable explicitly. Not a secret: it stays in child environments. */
 export const CODEX_PATH_ENV = 'ORGAI_CODEX_PATH'
 /** The version package.json pins and OrgAI is tested with. */
-export const CODEX_PINNED_VERSION = '0.169.0'
+export const CODEX_PINNED_VERSION = '0.172.0'
 /** The tested range, as shown to users. */
-export const CODEX_SUPPORTED_RANGE = '0.169.x'
+export const CODEX_SUPPORTED_RANGE = '0.172.x'
 
 export const CODEX_NOT_INSTALLED_MESSAGE = `Codex is not installed; install @openai/codex@${CODEX_PINNED_VERSION} (npm i -g @openai/codex@${CODEX_PINNED_VERSION}), or set ${CODEX_PATH_ENV}.`
 
@@ -64,12 +64,12 @@ export function codexUnsupportedMessage(found: string): string {
   return `Codex ${found} is not supported; install @openai/codex@${CODEX_PINNED_VERSION}`
 }
 
-/** True for 0.169.x (any patch, a pre-release or build suffix included). */
+/** True for 0.172.x (any patch, a pre-release or build suffix included). */
 export function codexVersionSupported(version: string): boolean {
-  return /^0\.169\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)
+  return /^0\.172\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)
 }
 
-/** The version out of `codex --version` ("codex-cli 0.169.0"), else undefined. */
+/** The version out of `codex --version` ("codex-cli 0.172.0"), else undefined. */
 export function parseCodexVersion(stdout: string): string | undefined {
   return /(?:^|\s|v)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?=\s|$)/.exec(stdout.trim())?.[1]
 }
@@ -382,7 +382,7 @@ export type CodexRuntimeCheck =
   | { ok: false; reason: string; binary?: CodexBinary; version?: string }
 
 /**
- * The version policy for a resolved binary: 0.169.x passes; anything else (or a version that could not be read) is
+ * The version policy for a resolved binary: 0.172.x passes; anything else (or a version that could not be read) is
  * refused for the package and PATH sources and only warned about for ORGAI_CODEX_PATH. A binary without `source`
  * passes unchecked.
  */

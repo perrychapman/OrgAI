@@ -139,6 +139,16 @@ describe('parsing', () => {
     expect(final[0]).toMatchObject({ usageLimit: true })
   })
 
+  it('0.172.0 spend-limit and policy error infos are plain failures, never a usage-limit hold', () => {
+    const m = new CodexEventMapper()
+    for (const info of ['apiKeySpendLimitExceeded', 'projectSpendLimitExceeded', 'organizationSpendLimitExceeded', 'bioPolicy']) {
+      const out = m.handle('error', { threadId: 't', turnId: 'u', willRetry: false, error: { message: `stop: ${info}`, codexErrorInfo: info } })
+      expect(out).toEqual([{ type: 'error', threadId: 't', message: `stop: ${info}`, willRetry: false, usageLimit: false }])
+      const done = m.handle('turn/completed', { threadId: 't', turn: { id: 'u', status: 'failed', error: { message: 'x', codexErrorInfo: info } } })
+      expect(done.find((u) => u.type === 'turnCompleted')).toMatchObject({ status: 'failed', error: { info } })
+    }
+  })
+
   it('reads object-shaped codexErrorInfo and the http status', () => {
     const n = parseNotification('error', { threadId: 't', willRetry: false, error: { message: 'x', codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 502 } } } })
     expect(n).toMatchObject({ kind: 'error', error: { info: 'httpConnectionFailed', httpStatus: 502 } })

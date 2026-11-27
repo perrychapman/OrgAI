@@ -234,7 +234,7 @@ function fakeRoot({ shrinkwrap = true, codex = false } = {}) {
   fs.mkdirSync(path.join(root, 'scripts'))
   fs.writeFileSync(path.join(root, 'scripts', 'npm-install-scripts-allowlist.json'), JSON.stringify({ allowed: [] }))
   // `codex`: a package that brings Codex (a dependency, as the real one does since 2026-11-23).
-  const pkg = { name: 'orgai-cli', version: VERSION, dependencies: { a: '1.0.0', ...(codex ? { '@openai/codex': '0.169.0' } : {}) } }
+  const pkg = { name: 'orgai-cli', version: VERSION, dependencies: { a: '1.0.0', ...(codex ? { '@openai/codex': '0.172.0' } : {}) } }
   const sw = { packages: { '': {}, 'node_modules/a': { version: '1.0.0' }, [`node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`]: { version: '0.3.1', optional: true } } }
   fs.mkdirSync(path.join(root, 'release', 'npm'), { recursive: true })
   const files = { 'package/package.json': JSON.stringify(pkg) }
@@ -298,7 +298,7 @@ function fakeRun(calls, { pkg, sw }, answers = {}) {
     // The CLI marks its folder on first use (spec 3.1).
     if (cmd.env?.ORGAI_CLI_DATA_DIR && !fs.existsSync(path.join(cmd.env.ORGAI_CLI_DATA_DIR, 'product.json'))) fs.writeFileSync(path.join(cmd.env.ORGAI_CLI_DATA_DIR, 'product.json'), JSON.stringify({ product: 'orgai-cli', version: 1 }))
     if (a.includes('--version') && /claude(\.exe)?$/.test(cmd.command)) return { code: 0, stdout: '2.1.312 (Claude Code)\n', stderr: '' }
-    if (a.includes('--version') && /codex(\.exe)?$/.test(cmd.command)) return { code: 0, stdout: `codex-cli ${answers.codexVersion ?? '0.169.0'}\n`, stderr: '' }
+    if (a.includes('--version') && /codex(\.exe)?$/.test(cmd.command)) return { code: 0, stdout: `codex-cli ${answers.codexVersion ?? '0.172.0'}\n`, stderr: '' }
     if (a.includes('--version')) return { code: 0, stdout: `${VERSION} channel npm commit abc\n`, stderr: '' }
     if (a.includes('doctor')) return { code: 0, stdout: JSON.stringify({ ok: true, checks: [{ id: 'install-channel', status: 'ok', detail: 'channel npm' }] }), stderr: '' }
     if (a.includes('exec')) return answers.exec ?? { code: 0, stdout: JSON.stringify({ outcome: 'completed', exitCode: 0 }), stderr: '' }
@@ -352,7 +352,7 @@ test('main: a package that brings Codex must have this platform\'s binary, at th
       const r = await runMain(fake, answers, { handshake })
       assert.equal(r.code, 0, r.out)
       assert.match(r.out, /ok +\(1\) install/)
-      assert.match(r.out, /ok +\(7\) codex +bundled .*codex-cli 0\.169\.0; initialize answered/)
+      assert.match(r.out, /ok +\(7\) codex +bundled .*codex-cli 0\.172\.0; initialize answered/)
       // The binary that ran is the installed one, never one from PATH.
       const ran = r.calls.find((c) => c.args.includes('--version') && /codex(\.exe)?$/.test(c.command))
       assert.ok(ran.command.includes(path.join('@openai', `codex-${process.platform}-${process.arch}`, 'vendor')), ran.command)
@@ -366,7 +366,7 @@ test('main: a package that brings Codex must have this platform\'s binary, at th
   try {
     const r = await runMain(wrong, { codexVersion: '0.171.0' }, { handshake })
     assert.notEqual(r.code, 0)
-    assert.match(r.out, /fail +\(7\) codex .*is codex-cli 0\.171\.0, the package pins 0\.169\.0/)
+    assert.match(r.out, /fail +\(7\) codex .*is codex-cli 0\.171\.0, the package pins 0\.172\.0/)
   } finally {
     fs.rmSync(wrong.root, { recursive: true, force: true })
   }
