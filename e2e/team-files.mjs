@@ -170,7 +170,10 @@ try {
   check(read('agents/dev.md').includes('Keep changes small') && !read('agents/dev.md').includes('Write tests first'), 'Undo rewrote the file on disk')
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').prompt === DEV_PROMPT, 'Undo put the prompt back in the chart')
   await closePop()
-  check(await waitLine(/Team files: not committed/), 'after Undo the chip shows not committed', await lineText())
+  // The detail names git's own view (read-only, the store is not touched) so a red run says whether git saw the rewrite.
+  // Undo writes the tools sorted ("Grep, Read"), the committed fixture has "Read, Grep": same size, different bytes.
+  const undoneGit = () => `git status: [${gitSafe(repo, ['status', '--porcelain', '--', '.orgai']).replace(/\s+/g, ' ')}]; dev.md equals the committed bytes: ${read('agents/dev.md') === devFile()}`
+  check(await waitLine(/Team files: not committed/), 'after Undo the chip shows not committed', `${await lineText()} | ${undoneGit()}`)
   check((await line().getAttribute('data-tone')) === 'neutral', 'uncommitted files are neutral, not attention', await line().getAttribute('data-tone'))
   await openPop()
   check(/\d+ files? (is|are) not in git yet\./.test(await popText()) && /agents\/dev\.md/.test(await popText()), 'the popover says how many files are not in git and lists them', await popText())
